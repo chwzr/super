@@ -12,7 +12,7 @@ pub struct TaskRecord {
     pub blocked_by: Vec<String>,
 }
 
-#[derive(Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum TaskStatus {
     #[default]
     Pending,

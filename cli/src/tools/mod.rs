@@ -1,38 +1,107 @@
+pub mod agent;
+pub mod ask_user_question;
+pub mod bash;
 pub mod config_tool;
 pub mod contract;
 pub mod edit;
+pub mod enter_plan_mode;
+pub mod exit_plan_mode;
 pub mod glob_tool;
 pub mod grep;
 pub mod notebook_edit;
 pub mod permission;
 pub mod read;
+pub mod send_message;
+pub mod task_create;
+pub mod task_get;
+pub mod task_list;
+pub mod task_output;
+pub mod task_stop;
+pub mod task_update;
+pub mod todo_write;
+pub mod web_fetch;
+pub mod web_search;
 pub mod write;
 
 use std::sync::Arc;
 use contract::{Tool, ToolCallContext, ToolResult};
-use crate::state::store::PermissionMode;
-use read::ReadTool;
+use crate::state::store::{PermissionMode, Store};
+use agent::AgentTool;
+use ask_user_question::AskUserQuestionTool;
+use bash::BashTool;
+use config_tool::ConfigTool;
 use edit::EditTool;
-use write::WriteTool;
+use enter_plan_mode::EnterPlanModeTool;
+use exit_plan_mode::ExitPlanModeTool;
 use glob_tool::GlobTool;
 use grep::GrepTool;
 use notebook_edit::NotebookEditTool;
-use config_tool::ConfigTool;
+use read::ReadTool;
+use send_message::SendMessageTool;
+use task_create::TaskCreateTool;
+use task_get::TaskGetTool;
+use task_list::TaskListTool;
+use task_output::TaskOutputTool;
+use task_stop::TaskStopTool;
+use task_update::TaskUpdateTool;
+use todo_write::TodoWriteTool;
+use web_fetch::WebFetchTool;
+use web_search::WebSearchTool;
+use write::WriteTool;
 
 pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
-    pub fn new() -> Self {
+    pub fn new(store: Arc<Store>, config: shared::CliConfig) -> Self {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+
+        // Standard tools
         tools.push(Arc::new(ReadTool::default()));
         tools.push(Arc::new(EditTool::default()));
         tools.push(Arc::new(WriteTool::default()));
         tools.push(Arc::new(GlobTool::default()));
         tools.push(Arc::new(GrepTool::default()));
         tools.push(Arc::new(NotebookEditTool::default()));
+        tools.push(Arc::new(BashTool));
         tools.push(Arc::new(ConfigTool::default()));
+        tools.push(Arc::new(WebFetchTool));
+        tools.push(Arc::new(WebSearchTool));
+
+        // Agent and task management tools
+        tools.push(Arc::new(AgentTool {
+            store: store.clone(),
+            config: config.clone(),
+        }));
+        tools.push(Arc::new(TaskCreateTool {
+            store: store.clone(),
+        }));
+        tools.push(Arc::new(TaskGetTool {
+            store: store.clone(),
+        }));
+        tools.push(Arc::new(TaskListTool {
+            store: store.clone(),
+        }));
+        tools.push(Arc::new(TaskOutputTool {
+            store: store.clone(),
+        }));
+        tools.push(Arc::new(TaskStopTool {
+            store: store.clone(),
+        }));
+        tools.push(Arc::new(TaskUpdateTool {
+            store: store.clone(),
+        }));
+        tools.push(Arc::new(TodoWriteTool));
+        tools.push(Arc::new(EnterPlanModeTool {
+            store: store.clone(),
+        }));
+        tools.push(Arc::new(ExitPlanModeTool {
+            store: store.clone(),
+        }));
+        tools.push(Arc::new(SendMessageTool));
+        tools.push(Arc::new(AskUserQuestionTool));
+
         Self { tools }
     }
 
