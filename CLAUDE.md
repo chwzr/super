@@ -69,9 +69,9 @@ If a workflow works in Claude Code, the same workflow must work in Super without
 
 Treat these directories as authoritative sources of truth. When details in this file or `plan.md` conflict with them, the workspace specs win — flag the conflict.
 
-- **`analysis-workspace/`** — clean-room CLI UI/UX and implementation specifications. Source of truth for any UX detail not covered in `plan.md`.
-- **`design-system/`** — Linear and Apple design guidelines. Source of truth for the web frontend's visual language.
-
+- **`../analysis-workspace/`** — clean-room CLI UI/UX and implementation specifications. Source of truth for any UX detail not covered in `plan.md`.
+- **`../design-system/`** — Linear and Apple design guidelines. Source of truth for the web frontend's visual language.
+- **`../claude-code-src/`** -- original claude code sourcecode 
 ---
 
 ## CLI UI/UX — Non-Negotiables
