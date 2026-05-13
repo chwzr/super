@@ -3,15 +3,25 @@ pub mod ask_user_question;
 pub mod bash;
 pub mod config_tool;
 pub mod contract;
+pub mod cron_create;
+pub mod cron_delete;
+pub mod cron_list;
 pub mod edit;
 pub mod enter_plan_mode;
+pub mod enter_worktree;
 pub mod exit_plan_mode;
+pub mod exit_worktree;
 pub mod glob_tool;
 pub mod grep;
+pub mod lsp;
+pub mod monitor;
 pub mod notebook_edit;
 pub mod permission;
 pub mod read;
 pub mod send_message;
+pub mod skill;
+pub mod sleep;
+pub mod structured_output;
 pub mod task_create;
 pub mod task_get;
 pub mod task_list;
@@ -19,6 +29,7 @@ pub mod task_output;
 pub mod task_stop;
 pub mod task_update;
 pub mod todo_write;
+pub mod tool_search;
 pub mod web_fetch;
 pub mod web_search;
 pub mod write;
@@ -30,14 +41,24 @@ use agent::AgentTool;
 use ask_user_question::AskUserQuestionTool;
 use bash::BashTool;
 use config_tool::ConfigTool;
+use cron_create::CronCreateTool;
+use cron_delete::CronDeleteTool;
+use cron_list::CronListTool;
 use edit::EditTool;
 use enter_plan_mode::EnterPlanModeTool;
+use enter_worktree::EnterWorktreeTool;
 use exit_plan_mode::ExitPlanModeTool;
+use exit_worktree::ExitWorktreeTool;
 use glob_tool::GlobTool;
 use grep::GrepTool;
+use lsp::LspTool;
+use monitor::MonitorTool;
 use notebook_edit::NotebookEditTool;
 use read::ReadTool;
 use send_message::SendMessageTool;
+use skill::SkillTool;
+use sleep::SleepTool;
+use structured_output::StructuredOutputTool;
 use task_create::TaskCreateTool;
 use task_get::TaskGetTool;
 use task_list::TaskListTool;
@@ -45,6 +66,7 @@ use task_output::TaskOutputTool;
 use task_stop::TaskStopTool;
 use task_update::TaskUpdateTool;
 use todo_write::TodoWriteTool;
+use tool_search::ToolSearchTool;
 use web_fetch::WebFetchTool;
 use web_search::WebSearchTool;
 use write::WriteTool;
@@ -68,6 +90,34 @@ impl ToolRegistry {
         tools.push(Arc::new(ConfigTool::default()));
         tools.push(Arc::new(WebFetchTool));
         tools.push(Arc::new(WebSearchTool));
+
+        // LSP
+        tools.push(Arc::new(LspTool));
+
+        // Cron tools (share the same job registry)
+        let cron_jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        tools.push(Arc::new(CronCreateTool { jobs: cron_jobs.clone() }));
+        tools.push(Arc::new(CronDeleteTool { jobs: cron_jobs.clone() }));
+        tools.push(Arc::new(CronListTool { jobs: cron_jobs.clone() }));
+
+        // Sleep
+        tools.push(Arc::new(SleepTool));
+
+        // Monitor (stub)
+        tools.push(Arc::new(MonitorTool));
+
+        // Skill tool (empty skills vec for now)
+        tools.push(Arc::new(SkillTool { skills: Vec::new() }));
+
+        // ToolSearch
+        tools.push(Arc::new(ToolSearchTool));
+
+        // StructuredOutput
+        tools.push(Arc::new(StructuredOutputTool));
+
+        // Worktree tools (stubs)
+        tools.push(Arc::new(EnterWorktreeTool));
+        tools.push(Arc::new(ExitWorktreeTool));
 
         // Agent and task management tools
         tools.push(Arc::new(AgentTool {
