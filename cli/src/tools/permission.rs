@@ -1,1 +1,6 @@
-// Permission system — will be implemented in a later task
+#[derive(Debug, Clone, PartialEq)]
+pub enum Decision {
+    Allow,
+    Deny,
+    Ask,
+}
