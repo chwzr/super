@@ -208,7 +208,7 @@ impl Tool for NotebookEditTool {
         // Write the notebook back
         // Release the mutable borrow on cells so notebook can be serialized
         let cell_count = cells.len();
-        drop(cells);
+        let _ = cells;
         let json_str = match serde_json::to_string_pretty(&notebook) {
             Ok(s) => s,
             Err(e) => {
