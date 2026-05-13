@@ -17,21 +17,32 @@ The goal is a working end-to-end loop: `super login` (PKCE) → type a prompt �
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/auth/authorize` | PKCE token exchange |
+| `POST` | `/auth/register` | Create account (email + password) |
+| `POST` | `/auth/authorize` | PKCE token exchange (email + password auth) |
 | `POST` | `/auth/refresh` | Refresh access token |
 | `GET`  | `/auth/me`    | User profile + provisioned API key |
 | `GET`  | `/auth/key`   | Re-fetch per-user OpenRouter key |
 
 ### 1.2 Auth flow
 
-Standard PKCE (S256):
+The server provides email/password authentication. The CLI still uses PKCE for the token exchange to avoid ever sending the password directly to the CLI.
+
+**Registration:**
+
+1. User visits the platform server's web registration page (or `POST /auth/register`)
+2. Provides email + password
+3. Server hashes password (bcrypt), creates user record, and immediately provisions a per-user OpenRouter API key via the management key
+4. User is redirected to login
+
+**Login (PKCE):**
 
 1. User runs `super login` → CLI generates code_verifier + code_challenge, opens browser to platform server's `/login` page
-2. User authenticates (OAuth provider or email/password — server-side concern)
-3. Server redirects browser to localhost callback with `?code=<auth_code>`
-4. CLI exchanges code + verifier at `POST /auth/authorize` → receives `access_token` + `refresh_token`
-5. CLI stores tokens at `~/.super/config.json`
-6. On first `/auth/me` call after login, server provisions a per-user OpenRouter API key (if one doesn't exist) and returns it
+2. User enters email + password on the server's login page
+3. Server validates credentials, creates an authorization code bound to the code_challenge
+4. Server redirects browser to localhost callback with `?code=<auth_code>`
+5. CLI exchanges code + verifier at `POST /auth/authorize` → receives `access_token` + `refresh_token`
+6. CLI stores tokens at `~/.super/config.json`
+7. CLI calls `GET /auth/me` with the access token → receives user profile + the already-provisioned OpenRouter API key
 
 ### 1.3 OpenRouter key management
 
@@ -48,7 +59,8 @@ Standard PKCE (S256):
 ```
 users:
   id: uuid
-  email: string
+  email: string (unique)
+  password_hash: string (bcrypt)
   created_at: timestamp
 
 api_keys:
@@ -66,10 +78,12 @@ refresh_tokens:
 
 ### 1.5 Tech choices
 
-- **Runtime:** Node.js (TypeScript) — the server is a thin coordination layer, not performance-critical
-- **Framework:** Express or Fastify
-- **Database:** SQLite (single-file, zero-ops for phase 1)
-- **Deployment:** single process, single machine
+- **Runtime:** Rust
+- **Framework:** axum (lightweight, async, tower-based)
+- **Database:** SQLite via `rusqlite` (single-file, zero-ops for phase 1)
+- **Password hashing:** bcrypt via `bcrypt` crate
+- **JWT:** `jsonwebtoken` crate
+- **Deployment:** single binary, single process, single machine
 
 ---
 
