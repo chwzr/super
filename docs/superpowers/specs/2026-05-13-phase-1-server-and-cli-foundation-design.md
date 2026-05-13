@@ -76,14 +76,69 @@ refresh_tokens:
   expires_at: timestamp
 ```
 
-### 1.5 Tech choices
+### 1.5 Architecture: hexagonal (ports and adapters)
 
-- **Runtime:** Rust
-- **Framework:** axum (lightweight, async, tower-based)
+```
+┌──────────────────────────────────────────────────────┐
+│                  HTTP layer (axum)                    │
+│  routes/auth.rs  —  deserialize, call domain,       │
+│                     map domain errors → HTTP status  │
+├──────────────────────────────────────────────────────┤
+│                   Domain layer                        │
+│                                                     │
+│  auth/service.rs   —  register, login, refresh,     │
+│                       key provisioning orchestration │
+│  auth/ports.rs     —  trait AuthRepository          │
+│                                                     │
+├──────────────────────────────────────────────────────┤
+│                 Adapter layer                         │
+│  adapters/sqlite_auth_repo.rs                        │
+│    impl AuthRepository for SqliteAuthRepo            │
+│  adapters/openrouter_client.rs                       │
+│    calls OpenRouter key management API               │
+└──────────────────────────────────────────────────────┘
+```
+
+**Domain (no framework coupling):**
+- All business logic lives in the domain layer — plain Rust structs and trait definitions
+- `AuthService` takes `Arc<dyn AuthRepository>` — no knowledge of SQLite, HTTP, or axum
+- Errors are domain enums (`AuthError`), not HTTP status codes
+
+**Ports (traits):**
+
+```rust
+pub trait AuthRepository {
+    fn create_user(&self, email: &str, password_hash: &str) -> Result<User, AuthError>;
+    fn find_user_by_email(&self, email: &str) -> Result<Option<User>, AuthError>;
+    fn create_refresh_token(&self, user_id: &str, expires_at: DateTime) -> Result<String, AuthError>;
+    fn consume_refresh_token(&self, token_hash: &str) -> Result<Option<(String, String)>, AuthError>;
+    fn store_api_key(&self, user_id: &str, key_id: &str, key_value: &str) -> Result<(), AuthError>;
+    fn get_active_api_key(&self, user_id: &str) -> Result<Option<ApiKey>, AuthError>;
+    fn revoke_api_key(&self, user_id: &str, key_id: &str) -> Result<(), AuthError>;
+}
+
+pub trait OpenRouterProvider {
+    fn create_key(&self, label: &str, limit_usd: u32) -> Result<OpenRouterKey, Error>;
+    fn revoke_key(&self, key_id: &str) -> Result<(), Error>;
+}
+```
+
+**Adapters:**
+- `SqliteAuthRepo` implements `AuthRepository` using `rusqlite`
+- `OpenRouterClient` implements `OpenRouterProvider` using `reqwest`
+
+**HTTP layer (axum):**
+- Thin route handlers — extract body, call service method, map result to response
+- Shared application state holds `Arc<AuthService>`
+
+### 1.6 Tech choices
+
+- **Runtime / framework:** Rust + axum (async, tower-based)
 - **Database:** SQLite via `rusqlite` (single-file, zero-ops for phase 1)
 - **Password hashing:** bcrypt via `bcrypt` crate
 - **JWT:** `jsonwebtoken` crate
-- **Deployment:** single binary, single process, single machine
+- **HTTP client:** `reqwest` (for calling OpenRouter management API)
+- **Deployment:** single binary, single process
 
 ---
 
