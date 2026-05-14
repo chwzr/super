@@ -4,20 +4,37 @@ use uuid::Uuid;
 
 use crate::sdk::protocol::{BusMessage, SystemSubtype};
 
+/// Broadcast channel capacity. Big enough that a TUI consumer briefly behind
+/// on render doesn't drop events during normal tool-loop bursts; small enough
+/// that a genuinely stuck consumer surfaces as Lagged quickly rather than
+/// pinning RAM. Per the spec: "plenty for one human reading along."
+const BUS_CAPACITY: usize = 256;
+
 #[derive(Clone)]
 pub struct SessionBus {
     sender: Arc<broadcast::Sender<BusMessage>>,
-    pub session_id: String,
+    pub(crate) session_id: String,
 }
 
 impl SessionBus {
     pub fn new(session_id: String) -> Self {
-        let (sender, _) = broadcast::channel(256);
+        let (sender, _) = broadcast::channel(BUS_CAPACITY);
         Self { sender: Arc::new(sender), session_id }
     }
 
+    /// Subscribe to the bus.
+    ///
+    /// Callers MUST handle `broadcast::error::RecvError::Lagged(n)` /
+    /// `TryRecvError::Lagged(n)` on the returned `Receiver`. A consumer that
+    /// `.unwrap()`s these will panic under bursty load. The recommended
+    /// pattern in this project is to log/ignore Lagged and continue.
     pub fn subscribe(&self) -> broadcast::Receiver<BusMessage> {
         self.sender.subscribe()
+    }
+
+    /// Read-only access to the session id. Set once at construction.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     pub fn emit(&self, msg: BusMessage) {
@@ -25,7 +42,10 @@ impl SessionBus {
         let _ = self.sender.send(msg);
     }
 
-    /// Convenience for emitting a system notice.
+    /// Convenience for emitting a system notice. Generates a fresh `Uuid` per
+    /// call — callers that need a stable UUID (e.g. for dedup or correlation)
+    /// should construct the `BusMessage::SystemEvent` themselves and call
+    /// `emit`.
     pub fn emit_system(&self, subtype: SystemSubtype, message: impl Into<String>) {
         self.emit(BusMessage::SystemEvent {
             subtype,
