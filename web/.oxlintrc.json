@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["oxc", "typescript", "unicorn", "react"],
+  "categories": { "correctness": "warn" },
+  "env": { "builtin": true, "browser": true, "node": true },
+  "ignorePatterns": ["dist", "node_modules", "**/*.config.*", "**/components/ui/**"],
+  "rules": {
+    "no-empty": "warn",
+    "no-unused-vars": "warn",
+    "typescript/no-explicit-any": "warn",
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "warn",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.{ts,tsx}", "src/test/**"],
+      "rules": {
+        "no-unused-vars": "off",
+        "typescript/no-explicit-any": "off"
+      }
+    }
+  ]
+}
