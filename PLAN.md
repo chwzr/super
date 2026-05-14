@@ -221,5 +221,7 @@ The following Claude Code slash commands are intentionally **not** ported to Sup
 - `/voice` — voice-mode toggle.
 - `/keybindings` — keybinding configuration.
 - `/desktop` — desktop integration.
+- `/sandbox` — removed 2026-05-14: sandbox managed at platform level, not CLI UX
+- `/feedback` — removed 2026-05-14: feedback routed via platform UI, not CLI
 
 These commands must be removed from the registry, the `/help` text, and any UI surfaces (e.g. the slash-menu picker). Any documentation referencing them should be updated.

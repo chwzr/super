@@ -30,10 +30,8 @@ pub fn dispatch(command: &Command, input: &str, store: &Store) -> CommandResult 
         "/agents" => agents(),
         "/mcp" => mcp(args),
         "/plugin" => plugin(),
-        "/sandbox" => sandbox(),
         "/config" => config_panel(),
         "/permissions" => permissions(),
-        "/feedback" => feedback(args),
 
         "/init" => CommandResult::Prompt(prompts::init_prompt().to_string()),
         "/compact" => CommandResult::Prompt(prompts::compact_prompt(args)),
@@ -840,23 +838,6 @@ fn plugin() -> CommandResult {
     )
 }
 
-fn sandbox() -> CommandResult {
-    // CC description dynamically shows: "○ sandbox disabled (⏎ to configure)"
-    // CC opens an interactive toggle for macOS/Linux sandboxing (seatbelt/bubblewrap).
-    // Super does not yet have sandbox support; E2B is planned post-v1.
-    CommandResult::Display(
-        "Sandbox\n\
-         \n\
-         Status: disabled\n\
-         \n\
-         Sandboxing restricts shell commands to a safe environment.\n\
-         E2B sandbox integration is planned for a future release.\n\
-         \n\
-         No sandbox is active in this session."
-            .into(),
-    )
-}
-
 fn config_panel() -> CommandResult {
     // CC opens Settings dialog at "Config" tab. Key settings shown:
     //   Auto-compact, Show tips, Reduce motion, Thinking mode, Model, Theme,
@@ -954,52 +935,6 @@ fn permissions() -> CommandResult {
     );
 
     CommandResult::Display(out)
-}
-
-fn feedback(args: &str) -> CommandResult {
-    // CC description: "Submit feedback about Claude Code"
-    // CC opens a form that submits to GitHub Issues:
-    //   https://github.com/anthropics/claude-code/issues
-    // Super: open the GitHub Issues URL with the report pre-filled.
-    let body = args.trim();
-    let base_url = "https://github.com/anthropics/claude-code/issues/new";
-
-    if body.is_empty() {
-        CommandResult::Display(format!(
-            "Submit feedback about Super\n\
-             \n\
-             Usage: /feedback <your report>\n\
-             \n\
-             Or open an issue directly:\n\
-             {base_url}"
-        ))
-    } else {
-        // URL-encode the body for the GitHub new-issue URL.
-        let encoded = url_encode(body);
-        let url = format!("{base_url}?body={encoded}");
-        // Best-effort open in browser.
-        let _ = std::process::Command::new("open").arg(&url).status();
-        CommandResult::Display(format!(
-            "Thanks for the feedback!\n\
-             \n\
-             Opening GitHub Issues with your report pre-filled.\n\
-             If the browser didn't open, visit:\n\
-             {base_url}"
-        ))
-    }
-}
-
-/// Minimal percent-encoding for URL query values (RFC 3986 unreserved chars pass through).
-fn url_encode(s: &str) -> String {
-    s.bytes()
-        .flat_map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                vec![b as char]
-            }
-            b' ' => vec!['+'],
-            _ => format!("%{b:02X}").chars().collect(),
-        })
-        .collect()
 }
 
 /// What `dispatch` returns. The TUI decides what to do based on the variant.

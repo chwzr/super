@@ -57,10 +57,8 @@ impl CommandRegistry {
             ("/agents",      &[],                         "Manage agent configurations",                                                                      None,                              CommandKind::Local),
             ("/mcp",         &[],                         "Manage MCP servers",                                                                               Some("[enable|disable [server-name]]"), CommandKind::Local),
             ("/plugin",      &["/plugins", "/marketplace"],"Manage Super plugins",                                                                            None,                              CommandKind::Local),
-            ("/sandbox",     &[],                         "Toggle sandbox settings",                                                                          None,                              CommandKind::Local),
             ("/config",      &["/settings"],              "Open config panel",                                                                                None,                              CommandKind::Local),
             ("/permissions", &["/allowed-tools"],         "Manage allow & deny tool permission rules",                                                        None,                              CommandKind::Local),
-            ("/feedback",    &["/bug"],                   "Submit feedback about Super",                                                                      Some("[report]"),                  CommandKind::Local),
             // ----- Prompt commands -----
             ("/init",          &[], "Initialize a new CLAUDE.md file with codebase documentation",                                                            None,                              CommandKind::Prompt),
             ("/compact",       &[], "Clear conversation history but keep a summary in context. Optional: /compact [instructions for summarization]",           Some("<optional custom summarization instructions>"), CommandKind::Prompt),
