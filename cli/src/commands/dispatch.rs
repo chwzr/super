@@ -3,6 +3,7 @@ use crate::state::store::Store;
 use crate::tui::modal::Modal;
 use crate::tui::modals::effort_picker::EffortPicker;
 use crate::tui::modals::model_picker::ModelPicker;
+use crate::tui::modals::resume_picker::ResumePicker;
 use crate::tui::modals::status_view::{StatusSnapshot, StatusView};
 use super::prompts;
 use super::registry::{Command, CommandKind, CommandRegistry};
@@ -329,12 +330,7 @@ fn rename(args: &str) -> CommandResult {
 }
 
 fn resume() -> CommandResult {
-    // CC shows a full interactive session-picker. Super doesn't persist sessions
-    // yet, so show the closest stub that matches the empty-state message CC
-    // would display when no sessions exist for the current project.
-    CommandResult::Display(
-        "Resume session\n\nNo previous sessions found for this project.\n\nType to search · Esc to cancel".into(),
-    )
+    CommandResult::OpenModal(Modal::Resume(ResumePicker::new()))
 }
 
 fn login() -> CommandResult {
