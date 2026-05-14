@@ -21,6 +21,7 @@ use crate::conversation::engine::ConversationEngine;
 use crate::conversation::system_prompt::SystemPrompt;
 use crate::state::store::Store;
 use crate::tools::ToolRegistry;
+use crate::tui::modal::{Modal, ModalAction};
 
 const SHORTCUTS_HELP: &str = "Shortcuts\n\
     enter        submit prompt\n\
@@ -62,6 +63,7 @@ pub struct App {
     history_idx: Option<usize>,
     inflight: Option<mpsc::UnboundedReceiver<EngineEvent>>,
     auth_inflight: Option<mpsc::UnboundedReceiver<AuthEvent>>,
+    modal: Option<Modal>,
 }
 
 impl App {
@@ -104,6 +106,7 @@ impl App {
             history_idx: None,
             inflight: None,
             auth_inflight: None,
+            modal: None,
         }
     }
 
@@ -139,6 +142,9 @@ impl App {
                     }
                     CommandResult::Logout => {
                         self.do_logout();
+                    }
+                    CommandResult::OpenModal(m) => {
+                        self.modal = Some(m);
                     }
                 }
             } else {
@@ -229,6 +235,26 @@ impl App {
         };
         if key.kind != KeyEventKind::Press {
             return Ok(());
+        }
+
+        if let Some(ref mut modal) = self.modal {
+            match modal.handle_key(key) {
+                ModalAction::Continue => return Ok(()),
+                ModalAction::Close => {
+                    self.modal = None;
+                    return Ok(());
+                }
+                ModalAction::SetModel(m) => {
+                    self.store.set_model(m);
+                    self.modal = None;
+                    return Ok(());
+                }
+                ModalAction::SetEffort(e) => {
+                    self.store.set_effort(e);
+                    self.modal = None;
+                    return Ok(());
+                }
+            }
         }
 
         let entries = if self.slash_menu_open {
@@ -457,42 +483,60 @@ impl App {
     fn render(&self, f: &mut Frame) {
         let area = f.area();
 
-        let entries = if self.slash_menu_open {
-            self.slash_menu.filter(&self.input.content)
-        } else {
-            Vec::new()
-        };
-        let menu_height = if self.slash_menu_open {
-            SlashMenu::height(&entries)
-        } else {
-            0
-        };
         let activity_height = self.activity.height();
-        let input_height = 3u16;
-        let hint_height = 1u16;
-        let header_height = 3u16;
+        let header_height   = 3u16;
 
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(header_height),
-                Constraint::Length(1), // spacer
-                Constraint::Min(1),    // scroll area
-                Constraint::Length(menu_height),
-                Constraint::Length(activity_height),
-                Constraint::Length(input_height),
-                Constraint::Length(hint_height),
-            ])
-            .split(area);
+        if let Some(ref modal) = self.modal {
+            let modal_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(header_height),
+                    Constraint::Length(1),      // spacer
+                    Constraint::Min(1),         // scroll area
+                    Constraint::Length(activity_height),
+                    Constraint::Min(4),         // modal area
+                ])
+                .split(area);
+            self.header.render(f, modal_layout[0]);
+            self.scroll_area.render(f, modal_layout[2]);
+            self.activity.render(f, modal_layout[3]);
+            modal.render(f, modal_layout[4]);
+        } else {
+            let entries = if self.slash_menu_open {
+                self.slash_menu.filter(&self.input.content)
+            } else {
+                Vec::new()
+            };
+            let menu_height = if self.slash_menu_open {
+                SlashMenu::height(&entries)
+            } else {
+                0
+            };
+            let input_height = 3u16;
+            let hint_height  = 1u16;
 
-        self.header.render(f, layout[0]);
-        self.scroll_area.render(f, layout[2]);
-        if self.slash_menu_open {
-            self.slash_menu.render(f, layout[3], &entries);
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(header_height),
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                    Constraint::Length(menu_height),
+                    Constraint::Length(activity_height),
+                    Constraint::Length(input_height),
+                    Constraint::Length(hint_height),
+                ])
+                .split(area);
+
+            self.header.render(f, layout[0]);
+            self.scroll_area.render(f, layout[2]);
+            if self.slash_menu_open {
+                self.slash_menu.render(f, layout[3], &entries);
+            }
+            self.activity.render(f, layout[4]);
+            self.input.render(f, layout[5]);
+            self.render_hint(f, layout[6]);
         }
-        self.activity.render(f, layout[4]);
-        self.input.render(f, layout[5]);
-        self.render_hint(f, layout[6]);
     }
 }
 

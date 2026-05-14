@@ -1,5 +1,7 @@
 use crate::config::load_config;
 use crate::state::store::Store;
+use crate::tui::modal::Modal;
+use crate::tui::modals::model_picker::ModelPicker;
 use super::prompts;
 use super::registry::{Command, CommandKind, CommandRegistry};
 
@@ -166,42 +168,9 @@ fn friendly_model_short_name(slug: &str) -> String {
     bare.to_string()
 }
 
-fn model(args: &str, store: &Store) -> CommandResult {
-    // Table of (openrouter-slug, short-display-name, description) matching CC's picker labels.
-    let known: &[(&str, &str, &str)] = &[
-        ("anthropic/claude-opus-4-6",   "claude-opus-4-6",   "Most capable model"),
-        ("anthropic/claude-sonnet-4-6", "claude-sonnet-4-6", "Balanced speed and intelligence"),
-        ("anthropic/claude-haiku-4-5",  "claude-haiku-4-5",  "Fastest model"),
-    ];
+fn model(_args: &str, store: &Store) -> CommandResult {
     let current = store.get_state().model.clone();
-    let args = args.trim();
-    if args.is_empty() || args == "current" || args == "status" {
-        // Display the short slug (without provider prefix) for the current model.
-        let current_display = friendly_model_short_name(&current);
-        let mut out = format!("Current model: {current_display}\n\nAvailable models:\n");
-        for (slug, short, desc) in known {
-            let marker = if *slug == current { "❯" } else { " " };
-            out.push_str(&format!("  {marker} {short:<28}  {desc}\n"));
-        }
-        out.push_str("\nUsage: /model <name>   e.g. /model sonnet\n");
-        return CommandResult::Display(out);
-    }
-    if args == "default" {
-        let slug = "anthropic/claude-sonnet-4-6";
-        store.set_state(|s| s.model = slug.into());
-        let short = friendly_model_short_name(slug);
-        return CommandResult::Display(format!("Model reset to default: {short}"));
-    }
-    // Accept short names, aliases, or full slugs.
-    let resolved = match args {
-        "opus" | "opus-4.6" | "claude-opus-4-6" => "anthropic/claude-opus-4-6",
-        "sonnet" | "sonnet-4.6" | "claude-sonnet-4-6" => "anthropic/claude-sonnet-4-6",
-        "haiku" | "haiku-4.5" | "claude-haiku-4-5" => "anthropic/claude-haiku-4-5",
-        other => other,
-    };
-    store.set_state(|s| s.model = resolved.into());
-    let short = friendly_model_short_name(resolved);
-    CommandResult::Display(format!("Model set to: {short}"))
+    CommandResult::OpenModal(Modal::Model(ModelPicker::new(current)))
 }
 
 fn effort(args: &str, store: &Store) -> CommandResult {
@@ -951,4 +920,6 @@ pub enum CommandResult {
     Login,
     /// Clear stored auth tokens.
     Logout,
+    /// Open an interactive modal, replacing the input bar.
+    OpenModal(crate::tui::modal::Modal),
 }
