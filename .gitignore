@@ -19,5 +19,6 @@ target/
 .DS_Store
 Thumbs.db
 
-# Claude Code worktrees / local state
+# Worktrees / local state
 .claude/
+.worktrees/
