@@ -9,6 +9,7 @@ use ratatui::{
 
 use crate::tui::colors::CC_BLUE;
 use crate::tui::modals::effort_picker::{EffortAction, EffortPicker};
+use crate::tui::modals::mcp_list::{McpAction, McpList};
 use crate::tui::modals::model_picker::{ModelAction, ModelPicker};
 use crate::tui::modals::resume_picker::{ResumeAction, ResumePicker};
 use crate::tui::modals::status_view::{StatusAction, StatusView};
@@ -23,6 +24,7 @@ pub enum ModalAction {
 pub enum Modal {
     Model(ModelPicker),
     Effort(EffortPicker),
+    Mcp(McpList),
     Resume(ResumePicker),
     Status(StatusView),
 }
@@ -32,6 +34,7 @@ impl Modal {
         match self {
             Modal::Model(_) => "Set Model",
             Modal::Effort(_) => "Effort Level",
+            Modal::Mcp(_) => "MCP Servers",
             Modal::Resume(_) => "Resume Session",
             Modal::Status(_) => "Super",
         }
@@ -48,6 +51,10 @@ impl Modal {
                 EffortAction::Continue   => ModalAction::Continue,
                 EffortAction::Select(v)  => ModalAction::SetEffort(v.to_string()),
                 EffortAction::Cancel     => ModalAction::Close,
+            },
+            Modal::Mcp(p) => match p.handle_key(key) {
+                McpAction::Continue => ModalAction::Continue,
+                McpAction::Cancel   => ModalAction::Close,
             },
             Modal::Resume(p) => match p.handle_key(key) {
                 ResumeAction::Continue => ModalAction::Continue,
@@ -72,6 +79,7 @@ impl Modal {
         match self {
             Modal::Model(p) => p.render(f, content_area),
             Modal::Effort(p) => p.render(f, content_area),
+            Modal::Mcp(p) => p.render(f, content_area),
             Modal::Resume(p) => p.render(f, content_area),
             Modal::Status(v) => v.render(f, content_area),
         }
