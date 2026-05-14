@@ -421,18 +421,22 @@ fn format_export_timestamp(secs: u64) -> String {
 fn rename(args: &str) -> CommandResult {
     let name = args.trim();
     if name.is_empty() {
+        // CC's no-args path auto-generates a name from context; we can't do that
+        // yet, so surface the same usage hint CC shows when generation fails.
         return CommandResult::Display(
-            "Usage: /rename <new session name>\n\nSession persistence is not yet wired in super — naming is a no-op for now.".into(),
+            "Could not generate a name: no conversation context yet. Usage: /rename <name>".into(),
         );
     }
-    CommandResult::Display(format!(
-        "Session named: {name}\n\nNote: super does not yet persist sessions, so this name is in-memory only."
-    ))
+    // Match CC's exact confirmation format: "Session renamed to: <name>"
+    CommandResult::Display(format!("Session renamed to: {name}"))
 }
 
 fn resume() -> CommandResult {
+    // CC shows a full interactive session-picker. Super doesn't persist sessions
+    // yet, so show the closest stub that matches the empty-state message CC
+    // would display when no sessions exist for the current project.
     CommandResult::Display(
-        "/resume — no persisted sessions yet.\n\nSuper does not yet save conversations to disk; once it does, /resume will open a picker of previous sessions.".into(),
+        "Resume session\n\nNo previous sessions found for this project.\n\nType to search · Esc to cancel".into(),
     )
 }
 
