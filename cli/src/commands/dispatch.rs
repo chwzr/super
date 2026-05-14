@@ -3,6 +3,7 @@ use crate::state::store::Store;
 use crate::tui::modal::Modal;
 use crate::tui::modals::effort_picker::EffortPicker;
 use crate::tui::modals::model_picker::ModelPicker;
+use crate::tui::modals::status_view::{StatusSnapshot, StatusView};
 use super::prompts;
 use super::registry::{Command, CommandKind, CommandRegistry};
 
@@ -117,48 +118,21 @@ fn version() -> CommandResult {
 }
 
 fn status(store: &Store) -> CommandResult {
-    let state = store.get_state();
+    let state  = store.get_state();
     let config = load_config();
-    let signed_in = config.access_token.is_some();
-    let auth_status = if signed_in {
-        "Signed in to Super (OpenRouter via platform server)"
-    } else {
-        "Not signed in — run /login"
-    };
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "?".into());
-    // Display model using the same friendly short name as the header.
-    let model_display = friendly_model_short_name(&state.model);
-    let body = format!(
-        "Super status\n\
-         \n\
-         Version:         v{version}\n\
-         Model:           {model}\n\
-         Extended thinking: {thinking}\n\
-         Auth:            {auth}\n\
-         Working dir:     {cwd}\n\
-         Messages:        {messages}\n\
-         \n\
-         Tools\n\
-         \n\
-           Bash            Execute shell commands\n\
-           Read            Read files from disk\n\
-           Write           Write files to disk\n\
-           Edit            Make targeted edits to files\n\
-           WebFetch        Fetch a URL and return its content\n\
-           WebSearch       Search the web\n\
-           Agent           Spawn a sub-agent (task delegation)\n\
-         \n\
-         MCP servers: see /mcp for connected server list",
-        version = env!("CARGO_PKG_VERSION"),
-        model = model_display,
-        thinking = if state.thinking_enabled { "enabled" } else { "disabled" },
-        auth = auth_status,
-        cwd = cwd,
-        messages = state.messages.len(),
-    );
-    CommandResult::Display(body)
+    let snap = StatusSnapshot {
+        version:  env!("CARGO_PKG_VERSION").to_string(),
+        model:    state.model.clone(),
+        thinking: state.thinking_enabled,
+        effort:   state.effort_level.clone(),
+        email:    config.access_token.as_ref().map(|_| "signed in".to_string()),
+        messages: state.messages.len(),
+        cwd,
+    };
+    CommandResult::OpenModal(Modal::Status(StatusView::new(snap)))
 }
 
 /// Convert an OpenRouter slug to a short display name matching CC's labels.

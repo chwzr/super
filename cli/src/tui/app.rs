@@ -22,6 +22,7 @@ use crate::conversation::system_prompt::SystemPrompt;
 use crate::state::store::Store;
 use crate::tools::ToolRegistry;
 use crate::tui::modal::{Modal, ModalAction};
+use crate::tui::modals::status_view::StatusSnapshot;
 
 const SHORTCUTS_HELP: &str = "Shortcuts\n\
     enter        submit prompt\n\
@@ -63,6 +64,7 @@ pub struct App {
     history_idx: Option<usize>,
     inflight: Option<mpsc::UnboundedReceiver<EngineEvent>>,
     auth_inflight: Option<mpsc::UnboundedReceiver<AuthEvent>>,
+    status_fetch: Option<tokio::sync::mpsc::UnboundedReceiver<Result<(f64, f64), String>>>,
     modal: Option<Modal>,
 }
 
@@ -106,6 +108,7 @@ impl App {
             history_idx: None,
             inflight: None,
             auth_inflight: None,
+            status_fetch: None,
             modal: None,
         }
     }
@@ -144,7 +147,11 @@ impl App {
                         self.do_logout();
                     }
                     CommandResult::OpenModal(m) => {
+                        let is_status = matches!(m, crate::tui::modal::Modal::Status(_));
                         self.modal = Some(m);
+                        if is_status {
+                            self.spawn_status_fetch();
+                        }
                     }
                 }
             } else {
@@ -224,6 +231,34 @@ impl App {
             self.scroll_area
                 .push(Message::System("Not logged in.".into()));
         }
+    }
+
+    fn spawn_status_fetch(&mut self) {
+        let base_url = self._config.api_base_url.clone();
+        let token = match self._config.access_token.clone() {
+            Some(t) => t,
+            None => return, // not signed in; leave modal in Loading state
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let result: Result<(f64, f64), String> = async {
+                let resp = reqwest::Client::new()
+                    .get(format!("{}/auth/usage", base_url))
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    return Err(format!("HTTP {}", resp.status()));
+                }
+                let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                let used  = body["used_usd"].as_f64().unwrap_or(0.0);
+                let limit = body["limit_usd"].as_f64().unwrap_or(f64::MAX);
+                Ok((used, limit))
+            }.await;
+            let _ = tx.send(result);
+        });
+        self.status_fetch = Some(rx);
     }
 
     fn handle_event(&mut self) -> std::io::Result<()> {
@@ -394,6 +429,20 @@ impl App {
     }
 
     fn process_pending(&mut self) {
+        if let Some(rx) = self.status_fetch.as_mut() {
+            match rx.try_recv() {
+                Ok(result) => {
+                    if let Some(crate::tui::modal::Modal::Status(ref mut sv)) = self.modal {
+                        sv.set_usage(result.map_err(|e| e));
+                    }
+                    self.status_fetch = None;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.status_fetch = None;
+                }
+            }
+        }
         // Auth flow result first — it's small and orthogonal to engine events.
         if let Some(rx) = self.auth_inflight.as_mut() {
             match rx.try_recv() {
