@@ -561,7 +561,7 @@ fn friendly_model_name(slug: &str) -> String {
     match slug {
         "anthropic/claude-opus-4-7" => "Opus 4.7 (1M context)".to_string(),
         "anthropic/claude-sonnet-4-6" => "Sonnet 4.6".to_string(),
-        "anthropic/claude-haiku-4-5" => "Haiku 4.5".to_string(),
+        "anthropic/claude-haiku-4-5" | "anthropic/claude-haiku-4-5-20251001" => "Haiku 4.5".to_string(),
         other => other
             .rsplit_once('/')
             .map(|(_, rest)| rest.to_string())
