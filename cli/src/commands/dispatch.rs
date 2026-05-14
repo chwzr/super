@@ -108,64 +108,91 @@ fn status(store: &Store) -> CommandResult {
     let state = store.get_state();
     let config = load_config();
     let signed_in = config.access_token.is_some();
-    let auth_line = if signed_in {
-        "Account: signed in to Super (OpenRouter via platform server)"
+    let auth_status = if signed_in {
+        "Signed in to Super (OpenRouter via platform server)"
     } else {
-        "Account: signed out — run /login to sign in"
+        "Not signed in — run /login"
     };
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "?".into());
+    // Display model using the same friendly short name as the header.
+    let model_display = friendly_model_short_name(&state.model);
     let body = format!(
         "Super status\n\
          \n\
-         Version:  v{version}\n\
-         Model:    {model}\n\
-         Thinking: {thinking}\n\
-         {auth}\n\
-         Workdir:  {cwd}\n\
-         Messages: {messages}",
+         Version:         v{version}\n\
+         Model:           {model}\n\
+         Extended thinking: {thinking}\n\
+         Auth:            {auth}\n\
+         Working dir:     {cwd}\n\
+         Messages:        {messages}\n\
+         \n\
+         Tools\n\
+         \n\
+           Bash            Execute shell commands\n\
+           Read            Read files from disk\n\
+           Write           Write files to disk\n\
+           Edit            Make targeted edits to files\n\
+           WebFetch        Fetch a URL and return its content\n\
+           WebSearch       Search the web\n\
+           Agent           Spawn a sub-agent (task delegation)\n\
+         \n\
+         MCP servers: see /mcp for connected server list",
         version = env!("CARGO_PKG_VERSION"),
-        model = state.model,
-        thinking = if state.thinking_enabled { "on" } else { "off" },
-        auth = auth_line,
+        model = model_display,
+        thinking = if state.thinking_enabled { "enabled" } else { "disabled" },
+        auth = auth_status,
         cwd = cwd,
         messages = state.messages.len(),
     );
     CommandResult::Display(body)
 }
 
+/// Convert an OpenRouter slug to a short display name matching CC's labels.
+/// e.g. "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6"
+fn friendly_model_short_name(slug: &str) -> String {
+    // Strip provider prefix for display.
+    let bare = slug.rsplit_once('/').map(|(_, r)| r).unwrap_or(slug);
+    bare.to_string()
+}
+
 fn model(args: &str, store: &Store) -> CommandResult {
-    let current = store.get_state().model.clone();
-    let known: &[(&str, &str)] = &[
-        ("anthropic/claude-opus-4-7", "Opus 4.7 (1M context)"),
-        ("anthropic/claude-sonnet-4-6", "Sonnet 4.6"),
-        ("anthropic/claude-haiku-4-5", "Haiku 4.5"),
+    // Table of (openrouter-slug, short-display-name, description) matching CC's picker labels.
+    let known: &[(&str, &str, &str)] = &[
+        ("anthropic/claude-opus-4-6",   "claude-opus-4-6",   "Most capable model"),
+        ("anthropic/claude-sonnet-4-6", "claude-sonnet-4-6", "Balanced speed and intelligence"),
+        ("anthropic/claude-haiku-4-5",  "claude-haiku-4-5",  "Fastest model"),
     ];
+    let current = store.get_state().model.clone();
     let args = args.trim();
     if args.is_empty() || args == "current" || args == "status" {
-        let mut out = format!("Current model: {current}\n\nAvailable models:\n");
-        for (slug, friendly) in known {
+        // Display the short slug (without provider prefix) for the current model.
+        let current_display = friendly_model_short_name(&current);
+        let mut out = format!("Current model: {current_display}\n\nAvailable models:\n");
+        for (slug, short, desc) in known {
             let marker = if *slug == current { "❯" } else { " " };
-            out.push_str(&format!("  {marker} {slug:<32}  {friendly}\n"));
+            out.push_str(&format!("  {marker} {short:<28}  {desc}\n"));
         }
-        out.push_str("\nUsage: /model <slug>\n");
+        out.push_str("\nUsage: /model <name>   e.g. /model sonnet\n");
         return CommandResult::Display(out);
     }
     if args == "default" {
         let slug = "anthropic/claude-sonnet-4-6";
         store.set_state(|s| s.model = slug.into());
-        return CommandResult::Display(format!("Model reset to default: {slug}"));
+        let short = friendly_model_short_name(slug);
+        return CommandResult::Display(format!("Model reset to default: {short}"));
     }
-    // accept either a friendly short name or a slug
+    // Accept short names, aliases, or full slugs.
     let resolved = match args {
-        "opus" | "opus-4.7" => "anthropic/claude-opus-4-7",
-        "sonnet" | "sonnet-4.6" => "anthropic/claude-sonnet-4-6",
-        "haiku" | "haiku-4.5" => "anthropic/claude-haiku-4-5",
+        "opus" | "opus-4.6" | "claude-opus-4-6" => "anthropic/claude-opus-4-6",
+        "sonnet" | "sonnet-4.6" | "claude-sonnet-4-6" => "anthropic/claude-sonnet-4-6",
+        "haiku" | "haiku-4.5" | "claude-haiku-4-5" => "anthropic/claude-haiku-4-5",
         other => other,
     };
     store.set_state(|s| s.model = resolved.into());
-    CommandResult::Display(format!("Model set to: {resolved}"))
+    let short = friendly_model_short_name(resolved);
+    CommandResult::Display(format!("Model set to: {short}"))
 }
 
 fn effort(args: &str, _store: &Store) -> CommandResult {

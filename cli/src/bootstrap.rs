@@ -11,6 +11,11 @@ pub async fn run() {
     }
 
     let store = Arc::new(crate::state::store::Store::new());
+    // Seed the store's model from config so /status and /model see the correct value.
+    {
+        let model = config.model.clone();
+        store.set_state(|s| s.model = model);
+    }
     let engine = crate::conversation::engine::ConversationEngine::new(store.clone(), config.clone());
 
     // Build tool registry with all tools
