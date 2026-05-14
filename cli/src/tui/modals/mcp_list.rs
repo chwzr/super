@@ -78,6 +78,9 @@ fn save_disabled_set(disabled: &HashSet<String>) {
         .iter()
         .map(|s| serde_json::Value::String(s.clone()))
         .collect();
+    if !cfg.settings.is_object() {
+        cfg.settings = serde_json::Value::Object(serde_json::Map::new());
+    }
     if let Some(obj) = cfg.settings.as_object_mut() {
         obj.insert("disabledMcpServers".into(), serde_json::Value::Array(arr));
     }
