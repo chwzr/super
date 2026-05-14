@@ -1,9 +1,13 @@
-/// Compact diamond mascot rendered next to the header text.
+/// Diamond mascot rendered next to the header text.
 ///
-/// Three lines wide enough to balance the meta column, matching the
-/// footprint of Claude Code's clawd logo.
-pub const MASCOT: [&str; 3] = [
-    " ◢◇◆◇◣ ",
-    "◢◆◇◈◇◆◣",
-    " ◥◇◆◇◤ ",
+/// Six-line brilliant-cut diamond. Each line is padded to 17 columns so the
+/// header metadata to its right stays vertically aligned regardless of the
+/// glyph distribution on a given row.
+pub const MASCOT: [&str; 6] = [
+    "        _______  ",
+    "      .'_/_|_\\_'.",
+    "      \\`\\  |  /`/",
+    "       `\\\\ | //' ",
+    "         `\\|/`   ",
+    "           `     ",
 ];
