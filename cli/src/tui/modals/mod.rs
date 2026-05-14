@@ -1,3 +1,4 @@
+pub mod agents_view;
 pub mod config_view;
 pub mod effort_picker;
 pub mod mcp_list;

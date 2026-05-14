@@ -1,6 +1,7 @@
 use crate::config::load_config;
 use crate::state::store::Store;
 use crate::tui::modal::Modal;
+use crate::tui::modals::agents_view::AgentsView;
 use crate::tui::modals::config_view::ConfigView;
 use crate::tui::modals::effort_picker::EffortPicker;
 use crate::tui::modals::mcp_list::McpList;
@@ -380,73 +381,7 @@ fn memory() -> CommandResult {
 }
 
 fn agents() -> CommandResult {
-    let home = dirs::home_dir().unwrap_or_default();
-    let user_agents_dir = home.join(".claude").join("agents");
-    let project_agents_dir = std::env::current_dir()
-        .map(|p| p.join(".claude").join("agents"))
-        .unwrap_or_default();
-
-    fn list_agents(dir: &std::path::Path) -> Vec<String> {
-        std::fs::read_dir(dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let name = e.file_name().into_string().ok()?;
-                // Only show .md files (agent definitions) and skip hidden files.
-                if name.starts_with('.') { return None; }
-                Some(name)
-            })
-            .collect()
-    }
-
-    let user_agents = list_agents(&user_agents_dir);
-    let project_agents = list_agents(&project_agents_dir);
-
-    let has_any = !user_agents.is_empty() || !project_agents.is_empty();
-
-    if !has_any {
-        return CommandResult::Display(format!(
-            "Agents\n\nNo agents found.\n\n\
-             User agents:    {}\n\
-             Project agents: {}\n\n\
-             Create <name>.md files in either directory to define agents.",
-            user_agents_dir.display(),
-            project_agents_dir.display(),
-        ));
-    }
-
-    let mut out = String::from("Agents\n\n");
-
-    if !user_agents.is_empty() {
-        out.push_str(&format!("User agents  (~/.claude/agents/)\n\n"));
-        let mut sorted = user_agents;
-        sorted.sort();
-        for name in &sorted {
-            out.push_str(&format!("  {name}\n"));
-        }
-        out.push('\n');
-    } else {
-        out.push_str(&format!(
-            "User agents  (~/.claude/agents/)  — none\n\n"
-        ));
-    }
-
-    if !project_agents.is_empty() {
-        out.push_str("Project agents  (.claude/agents/)\n\n");
-        let mut sorted = project_agents;
-        sorted.sort();
-        for name in &sorted {
-            out.push_str(&format!("  {name}\n"));
-        }
-        out.push('\n');
-    } else {
-        out.push_str("Project agents  (.claude/agents/)  — none\n\n");
-    }
-
-    out.push_str("Create <name>.md files in either agents/ directory to define agents.");
-    CommandResult::Display(out)
+    CommandResult::OpenModal(Modal::Agents(AgentsView::new()))
 }
 
 fn mcp(_args: &str) -> CommandResult {
