@@ -1,5 +1,8 @@
-pub mod app;
 pub mod activity;
+pub mod app;
+pub mod colors;
+pub mod header;
 pub mod input_bar;
 pub mod scroll_area;
+pub mod slash_menu;
 pub mod splash;

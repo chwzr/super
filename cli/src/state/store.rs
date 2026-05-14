@@ -92,4 +92,12 @@ impl Store {
             sub(state);
         }
     }
+
+    pub fn set_model(&self, model: String) {
+        self.set_state(|s| s.model = model);
+    }
+
+    pub fn set_effort(&self, effort: String) {
+        self.set_state(|s| s.effort_level = Some(effort));
+    }
 }
