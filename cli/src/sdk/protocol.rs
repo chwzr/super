@@ -118,7 +118,7 @@ pub enum StreamEvent {
     #[serde(rename = "content_block_stop")]
     ContentBlockStop { index: u32 },
     #[serde(rename = "message_delta")]
-    MessageDelta { delta: MessageDeltaInfo, usage: UsageInfo },
+    MessageDelta { delta: MessageDeltaInfo, usage: AnthropicUsage },
     #[serde(rename = "message_stop")]
     MessageStop,
     /// Anthropic also sends `ping` events for keep-alive. We accept them silently.
@@ -150,7 +150,7 @@ pub enum ContentBlockFinal {
     #[serde(rename = "tool_use")]
     ToolUse { id: String, name: String, input: serde_json::Value },
     #[serde(rename = "tool_result")]
-    ToolResult { tool_use_id: String, content: String, is_error: bool },
+    ToolResult { tool_use_id: String, content: String, #[serde(default)] is_error: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +175,7 @@ pub struct MessageMeta {
     pub content: Vec<ContentBlockFinal>,
     pub stop_reason: Option<String>,
     pub stop_sequence: Option<String>,
-    pub usage: UsageInfo,
+    pub usage: AnthropicUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,8 +217,8 @@ pub enum BusMessage {
         session_id: String,
     },
     #[serde(rename = "stream_event")]
-    StreamEventEnvelope {
-        event: StreamEvent,
+    StreamEvent {
+        event: crate::sdk::protocol::StreamEvent,
         parent_tool_use_id: Option<String>,
         uuid: Uuid,
         session_id: String,
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn message_start_parses() {
-        let json = r#"{"type":"message_start","message":{"id":"msg_1","model":"anthropic/claude-sonnet-4-5","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0,"cost_usd":0.0}}}"#;
+        let json = r#"{"type":"message_start","message":{"id":"msg_1","model":"anthropic/claude-sonnet-4-5","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}"#;
         let parsed: StreamEvent = serde_json::from_str(json).unwrap();
         assert!(matches!(parsed, StreamEvent::MessageStart { .. }));
     }
@@ -337,6 +337,13 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: BusMessage = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, BusMessage::Assistant { .. }));
+        match back {
+            BusMessage::Assistant { message, session_id, .. } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(message.id, "m1");
+                assert_eq!(message.content.len(), 1);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }
