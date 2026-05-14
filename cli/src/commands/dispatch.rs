@@ -811,63 +811,184 @@ fn mcp_toggle(name: &str, enable: bool) -> CommandResult {
 }
 
 fn plugin() -> CommandResult {
+    // CC description: "Manage Claude Code plugins"
+    // CC opens an interactive marketplace/plugin manager. Super ships with the
+    // Superpowers plugin bundled. A full marketplace is out of scope for v1.
     CommandResult::Display(
-        "Plugins\n\n  Superpowers (bundled): on\n\nSuper ships with the Superpowers plugin baked in (CLAUDE.md). A user-extensible plugin marketplace is not part of v1.".into(),
+        "Plugins\n\
+         \n\
+         Installed\n\
+         \n\
+           superpowers  bundled  Superpowers skills + hook auto-loader\n\
+         \n\
+         Super ships with the Superpowers plugin built in.\n\
+         A user-extensible plugin marketplace is not part of v1.\n\
+         \n\
+         See https://github.com/obra/superpowers for documentation."
+            .into(),
     )
 }
 
 fn sandbox() -> CommandResult {
+    // CC description dynamically shows: "○ sandbox disabled (⏎ to configure)"
+    // CC opens an interactive toggle for macOS/Linux sandboxing (seatbelt/bubblewrap).
+    // Super does not yet have sandbox support; E2B is planned post-v1.
     CommandResult::Display(
-        "Sandbox\n\n  E2B sandbox integration is planned for post-v1 (PLAN.md).\n  No sandbox is active in this session.".into(),
+        "Sandbox\n\
+         \n\
+         Status: disabled\n\
+         \n\
+         Sandboxing restricts shell commands to a safe environment.\n\
+         E2B sandbox integration is planned for a future release.\n\
+         \n\
+         No sandbox is active in this session."
+            .into(),
     )
 }
 
 fn config_panel() -> CommandResult {
+    // CC opens Settings dialog at "Config" tab. Key settings shown:
+    //   Auto-compact, Show tips, Reduce motion, Thinking mode, Model, Theme,
+    //   Verbose output, etc.
+    // Super: show current live values and config file path.
     let path = dirs::home_dir()
         .map(|h| h.join(".super").join("config.json"))
         .unwrap_or_default();
     CommandResult::Display(format!(
-        "Config\n\n  File: {}\n\nEdit this file directly to change settings (auth token, model, MCP servers).",
-        path.display()
+        "Config\n\
+         \n\
+         Settings are stored in: {path}\n\
+         Edit that file directly to change persistent settings.\n\
+         \n\
+         To change settings for this session use slash commands:\n\
+         \n\
+           /model <name>         Switch the active model\n\
+           /think                Toggle extended thinking mode\n\
+           /effort <level>       Set effort level (low/medium/high/max)\n\
+           /mcp                  Manage MCP servers\n\
+           /permissions          Manage tool allow/deny rules\n\
+           /memory               View and edit CLAUDE.md memory files",
+        path = path.display(),
     ))
 }
 
 fn permissions() -> CommandResult {
-    CommandResult::Display(
-        "Permissions\n\n  Mode: default\n\nSuper does not yet expose per-tool allow/deny rules. The /permissions UI is planned alongside the platform-server-side permissions sync.".into(),
-    )
+    // CC description: "Manage allow & deny tool permission rules"
+    // CC opens PermissionRuleList with tabs: Recent denials, Allow rules, Ask rules,
+    // Deny rules, Workspace directories.
+    // Super: show allowed/denied rules from ~/.claude.json (same source as CC).
+    let path = dirs::home_dir()
+        .map(|h| h.join(".claude.json"))
+        .unwrap_or_default();
+
+    let root: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+
+    let cwd_key = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+
+    // Read allow rules from projects[cwd].allowedTools
+    let allow_rules: Vec<String> = root
+        .get("projects")
+        .and_then(|p| p.get(&cwd_key))
+        .and_then(|p| p.get("allowedTools"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Read deny rules from projects[cwd].deniedTools (if present)
+    let deny_rules: Vec<String> = root
+        .get("projects")
+        .and_then(|p| p.get(&cwd_key))
+        .and_then(|p| p.get("deniedTools"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut out = String::from("Permissions\n\nManage allow & deny tool permission rules.\n\n");
+
+    out.push_str("Allow rules\n\n");
+    if allow_rules.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for rule in &allow_rules {
+            out.push_str(&format!("  + {rule}\n"));
+        }
+    }
+
+    out.push('\n');
+    out.push_str("Deny rules\n\n");
+    if deny_rules.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for rule in &deny_rules {
+            out.push_str(&format!("  - {rule}\n"));
+        }
+    }
+
+    out.push_str(
+        "\nRules are stored in ~/.claude.json under projects[<cwd>].allowedTools / .deniedTools.\n\
+         Edit that file directly to add or remove rules.",
+    );
+
+    CommandResult::Display(out)
 }
 
 fn feedback(args: &str) -> CommandResult {
+    // CC description: "Submit feedback about Claude Code"
+    // CC opens a form that submits to GitHub Issues:
+    //   https://github.com/anthropics/claude-code/issues
+    // Super: open the GitHub Issues URL with the report pre-filled.
     let body = args.trim();
+    let base_url = "https://github.com/anthropics/claude-code/issues/new";
+
     if body.is_empty() {
-        CommandResult::Display(
-            "Usage: /feedback <your feedback>\n\nFeedback is logged locally for now. The submission endpoint on the Super platform server is not yet wired.".into(),
-        )
-    } else {
-        // Best-effort: append to ~/.super/feedback.log
-        if let Some(home) = dirs::home_dir() {
-            let path = home.join(".super").join("feedback.log");
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                let _ = writeln!(f, "[{}] {body}", chrono_now());
-            }
-        }
         CommandResult::Display(format!(
-            "Thanks for the feedback! It's logged locally and will be submitted once the platform-server endpoint is live.\n\n> {body}"
+            "Submit feedback about Super\n\
+             \n\
+             Usage: /feedback <your report>\n\
+             \n\
+             Or open an issue directly:\n\
+             {base_url}"
+        ))
+    } else {
+        // URL-encode the body for the GitHub new-issue URL.
+        let encoded = url_encode(body);
+        let url = format!("{base_url}?body={encoded}");
+        // Best-effort open in browser.
+        let _ = std::process::Command::new("open").arg(&url).status();
+        CommandResult::Display(format!(
+            "Thanks for the feedback!\n\
+             \n\
+             Opening GitHub Issues with your report pre-filled.\n\
+             If the browser didn't open, visit:\n\
+             {base_url}"
         ))
     }
 }
 
-fn chrono_now() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    now.to_string()
+/// Minimal percent-encoding for URL query values (RFC 3986 unreserved chars pass through).
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .flat_map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![b as char]
+            }
+            b' ' => vec!['+'],
+            _ => format!("%{b:02X}").chars().collect(),
+        })
+        .collect()
 }
 
 /// What `dispatch` returns. The TUI decides what to do based on the variant.
