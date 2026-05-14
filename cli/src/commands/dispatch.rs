@@ -311,26 +311,34 @@ fn approx_message_chars(m: &crate::tui::scroll_area::Message) -> usize {
 }
 
 fn diff() -> CommandResult {
-    // Inline git diff so /diff works in any TUI. Long diffs scroll inside
-    // the scroll area.
-    match std::process::Command::new("git")
-        .args(["--no-pager", "diff", "--no-color"])
-        .output()
-    {
-        Ok(out) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
-            if s.is_empty() {
-                CommandResult::Display("No uncommitted changes.".into())
-            } else {
-                CommandResult::Display(s)
-            }
-        }
-        Ok(out) => CommandResult::Display(format!(
-            "git diff failed:\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        )),
-        Err(e) => CommandResult::Display(format!("Failed to run git: {e}")),
+    // Show both unstaged and staged diffs, matching Claude Code's /diff behaviour.
+    let unstaged = run_git(&["--no-pager", "diff", "--no-color"]);
+    let staged = run_git(&["--no-pager", "diff", "--cached", "--no-color"]);
+
+    let mut parts: Vec<String> = Vec::new();
+    if !staged.is_empty() {
+        parts.push(format!("Staged changes:\n{staged}"));
     }
+    if !unstaged.is_empty() {
+        parts.push(format!("Unstaged changes:\n{unstaged}"));
+    }
+
+    if parts.is_empty() {
+        CommandResult::Display("No uncommitted changes.".into())
+    } else {
+        CommandResult::Display(parts.join("\n\n"))
+    }
+}
+
+/// Run a git sub-command and return stdout on success, empty string on failure.
+fn run_git(args: &[&str]) -> String {
+    std::process::Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+        .unwrap_or_default()
 }
 
 fn export(store: &Store) -> CommandResult {
@@ -339,40 +347,75 @@ fn export(store: &Store) -> CommandResult {
     if state.messages.is_empty() {
         return CommandResult::Display("Nothing to export — conversation is empty.".into());
     }
-    let ts = std::time::SystemTime::now()
+
+    // Build a timestamp in CC's format: YYYY-MM-DD-HHMMSS
+    let ts_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("super-export-{ts}.md"));
+    let ts = format_export_timestamp(ts_secs);
+
+    // Write into cwd, matching CC (which writes relative to getCwd()).
+    let filename = format!("conversation-{ts}.txt");
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let path = cwd.join(&filename);
+
     let Ok(mut file) = std::fs::File::create(&path) else {
         return CommandResult::Display(format!(
-            "Failed to create export file at {}",
+            "Failed to export conversation: could not create {}",
             path.display()
         ));
     };
-    let _ = writeln!(file, "# Super conversation export\n");
+
     for msg in &state.messages {
         use crate::tui::scroll_area::Message::*;
         match msg {
             User(s) => {
-                let _ = writeln!(file, "## User\n\n{}\n", s);
+                let _ = writeln!(file, "[user]: {s}\n");
             }
             Assistant(s) => {
-                let _ = writeln!(file, "## Assistant\n\n{}\n", s);
+                let _ = writeln!(file, "[assistant]: {s}\n");
             }
             System(s) => {
-                let _ = writeln!(file, "## System\n\n{}\n", s);
+                let _ = writeln!(file, "[system]: {s}\n");
             }
             ToolCall { name, input, result, .. } => {
-                let _ = writeln!(file, "## Tool call: {}\n\n```\n{}\n```\n", name, input);
+                let _ = writeln!(file, "[tool use: {name}]\n{input}\n");
                 if let Some(r) = result {
-                    let _ = writeln!(file, "Result:\n\n```\n{}\n```\n", r);
+                    let _ = writeln!(file, "[tool result]\n{r}\n");
                 }
             }
             Trail(_) | Thinking => {}
         }
     }
-    CommandResult::Display(format!("Exported conversation to {}", path.display()))
+
+    // CC's exact confirmation message format
+    CommandResult::Display(format!("Conversation exported to: {}", path.display()))
+}
+
+/// Format a Unix timestamp as YYYY-MM-DD-HHMMSS (matches CC's formatTimestamp).
+fn format_export_timestamp(secs: u64) -> String {
+    // Simple manual calculation — no chrono dependency needed.
+    // Days since epoch to calendar date via proleptic Gregorian algorithm.
+    let days = secs / 86400;
+    let time = secs % 86400;
+    let h = time / 3600;
+    let m = (time % 3600) / 60;
+    let s = time % 60;
+
+    // Gregorian calendar conversion (algorithm from civil_from_days, Howard Hinnant)
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let yr = if mo <= 2 { y + 1 } else { y };
+
+    format!("{yr:04}-{mo:02}-{d:02}-{h:02}{m:02}{s:02}")
 }
 
 fn rename(args: &str) -> CommandResult {
