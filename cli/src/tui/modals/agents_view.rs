@@ -46,22 +46,30 @@ fn scan_agents(dir: &std::path::Path) -> Vec<String> {
         .filter_map(|e| {
             let e = e.ok()?;
             let name = e.file_name().into_string().ok()?;
-            if name.ends_with(".md") {
-                Some(name.trim_end_matches(".md").to_string())
-            } else {
-                None
-            }
+            name.strip_suffix(".md").map(|s| s.to_string())
         })
         .collect()
 }
 
 pub struct AgentsView {
     pub tab: AgentsTab,
+    user_agents: Vec<String>,
+    proj_agents: Vec<String>,
 }
 
 impl AgentsView {
     pub fn new() -> Self {
-        Self { tab: AgentsTab::Agents }
+        let user_agents = dirs::home_dir()
+            .map(|h| scan_agents(&h.join(".claude").join("agents")))
+            .unwrap_or_default();
+        let proj_agents = std::env::current_dir()
+            .map(|cwd| scan_agents(&cwd.join(".claude").join("agents")))
+            .unwrap_or_default();
+        Self {
+            tab: AgentsTab::Agents,
+            user_agents,
+            proj_agents,
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> AgentsAction {
@@ -119,24 +127,17 @@ impl AgentsView {
     }
 
     fn render_agents(&self, lines: &mut Vec<Line>) {
-        let user_agents = dirs::home_dir()
-            .map(|h| scan_agents(&h.join(".claude").join("agents")))
-            .unwrap_or_default();
-        let proj_agents = std::env::current_dir()
-            .map(|cwd| scan_agents(&cwd.join(".claude").join("agents")))
-            .unwrap_or_default();
-
         lines.push(Line::from(Span::styled(
             "  User agents (~/.claude/agents/)",
             Style::default().fg(CC_DIM).add_modifier(Modifier::BOLD),
         )));
-        if user_agents.is_empty() {
+        if self.user_agents.is_empty() {
             lines.push(Line::from(Span::styled(
                 "    (no custom agents)",
                 Style::default().fg(CC_DIM),
             )));
         } else {
-            for name in &user_agents {
+            for name in &self.user_agents {
                 lines.push(Line::from(Span::styled(
                     format!("    {name}"),
                     Style::default().fg(CC_DIM),
@@ -148,13 +149,13 @@ impl AgentsView {
             "  Project agents (.claude/agents/)",
             Style::default().fg(CC_DIM).add_modifier(Modifier::BOLD),
         )));
-        if proj_agents.is_empty() {
+        if self.proj_agents.is_empty() {
             lines.push(Line::from(Span::styled(
                 "    (no project agents)",
                 Style::default().fg(CC_DIM),
             )));
         } else {
-            for name in &proj_agents {
+            for name in &self.proj_agents {
                 lines.push(Line::from(Span::styled(
                     format!("    {name}"),
                     Style::default().fg(CC_DIM),
