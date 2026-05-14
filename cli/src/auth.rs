@@ -21,15 +21,17 @@ impl AuthClient {
         let code_verifier = generate_code_verifier();
         let code_challenge = compute_s256_challenge(&code_verifier);
 
-        let login_url = format!(
-            "{}/auth/login?code_challenge={}&redirect_uri=http://localhost:0/callback",
-            self.base_url, code_challenge
-        );
-        webbrowser::open(&login_url)?;
-
+        // Bind listener first to get the actual port
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         println!("Listening on port {port} for callback...");
+
+        // Build login URL with the real port so redirect works
+        let login_url = format!(
+            "{}/auth/login?code_challenge={}&redirect_uri=http://localhost:{}/callback",
+            self.base_url, code_challenge, port
+        );
+        webbrowser::open(&login_url)?;
 
         let (mut stream, _) = listener.accept()?;
         use std::io::{BufRead, BufReader, Write};
