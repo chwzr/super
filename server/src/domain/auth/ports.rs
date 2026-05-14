@@ -58,4 +58,6 @@ pub trait AuthRepository: Send + Sync {
 pub trait OpenRouterProvider: Send + Sync {
     async fn create_key(&self, label: &str, limit_usd: u32) -> Result<OpenRouterKey, AuthError>;
     async fn revoke_key(&self, key_id: &str) -> Result<(), AuthError>;
+    /// Fetch usage for a user-level key. Returns (used_usd, limit_usd).
+    async fn fetch_key_usage(&self, user_key: &str) -> Result<(f64, f64), AuthError>;
 }

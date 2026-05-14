@@ -28,7 +28,7 @@ pub struct AppState {
     pub permission_mode: PermissionMode,
     pub model: String,
     pub thinking_enabled: bool,
-    pub fast_mode: bool,
+    pub effort_level: Option<String>,
     pub is_streaming: bool,
     pub should_compact: bool,
     pub tasks: HashMap<String, TaskRecord>,
@@ -91,5 +91,13 @@ impl Store {
         for sub in self.subscribers.read().unwrap().iter() {
             sub(state);
         }
+    }
+
+    pub fn set_model(&self, model: String) {
+        self.set_state(|s| s.model = model);
+    }
+
+    pub fn set_effort(&self, effort: String) {
+        self.set_state(|s| s.effort_level = Some(effort));
     }
 }

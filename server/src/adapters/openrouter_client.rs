@@ -33,6 +33,17 @@ struct OpenRouterKeysResponse {
     data: Vec<OpenRouterKeyResponse>,
 }
 
+#[derive(Deserialize)]
+struct OpenRouterKeyUsageData {
+    usage: f64,
+    limit: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct OpenRouterKeyUsageResponse {
+    data: OpenRouterKeyUsageData,
+}
+
 #[async_trait]
 impl OpenRouterProvider for OpenRouterClient {
     async fn create_key(&self, label: &str, limit_usd: u32) -> Result<OpenRouterKey, AuthError> {
@@ -94,5 +105,27 @@ impl OpenRouterProvider for OpenRouterClient {
             }
         }
         Ok(())
+    }
+
+    async fn fetch_key_usage(&self, user_key: &str) -> Result<(f64, f64), AuthError> {
+        let resp = self
+            .http
+            .get("https://openrouter.ai/api/v1/key")
+            .bearer_auth(user_key)
+            .send()
+            .await
+            .map_err(|e| AuthError::Internal(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            return Err(AuthError::Internal("OpenRouter usage fetch failed".into()));
+        }
+
+        let usage: OpenRouterKeyUsageResponse = resp
+            .json()
+            .await
+            .map_err(|e| AuthError::Internal(e.to_string()))?;
+
+        // None means no spending cap; use f64::MAX as sentinel for "unlimited".
+        Ok((usage.data.usage, usage.data.limit.unwrap_or(f64::MAX)))
     }
 }

@@ -209,3 +209,19 @@ Once implemented, E2B integration will boot a sandbox, clone/mount a Git repo, s
 - User-supplied OpenRouter keys (all credentials flow through the platform server).
 - iOS app (planned; server must be ready for it).
 - E2B sandbox integration (planned; architecture must not block it).
+
+---
+
+## Feature Blacklist (slash commands, 2026-05-14)
+
+The following Claude Code slash commands are intentionally **not** ported to Super and must not be reintroduced without re-opening this decision:
+
+- `/fast` — fast mode toggle.
+- `/ide` — IDE integration management.
+- `/voice` — voice-mode toggle.
+- `/keybindings` — keybinding configuration.
+- `/desktop` — desktop integration.
+- `/sandbox` — removed 2026-05-14: sandbox managed at platform level, not CLI UX
+- `/feedback` — removed 2026-05-14: feedback routed via platform UI, not CLI
+
+These commands must be removed from the registry, the `/help` text, and any UI surfaces (e.g. the slash-menu picker). Any documentation referencing them should be updated.
