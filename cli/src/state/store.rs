@@ -28,7 +28,6 @@ pub struct AppState {
     pub permission_mode: PermissionMode,
     pub model: String,
     pub thinking_enabled: bool,
-    pub fast_mode: bool,
     pub is_streaming: bool,
     pub should_compact: bool,
     pub tasks: HashMap<String, TaskRecord>,
