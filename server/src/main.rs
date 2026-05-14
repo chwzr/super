@@ -12,6 +12,7 @@ use adapters::openrouter_client::OpenRouterClient;
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
     let repo = Arc::new(SqliteAuthRepo::new("super.db").expect("failed to open database"));
