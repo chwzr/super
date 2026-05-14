@@ -22,7 +22,6 @@ use crate::conversation::system_prompt::SystemPrompt;
 use crate::state::store::Store;
 use crate::tools::ToolRegistry;
 use crate::tui::modal::{Modal, ModalAction};
-use crate::tui::modals::status_view::StatusSnapshot;
 
 const SHORTCUTS_HELP: &str = "Shortcuts\n\
     enter        submit prompt\n\
