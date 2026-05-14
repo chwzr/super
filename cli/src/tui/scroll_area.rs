@@ -1,7 +1,7 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
-    text::{Line, Text},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
@@ -17,6 +17,8 @@ pub enum Message {
         result: Option<String>,
     },
     System(String),
+    /// Persisted activity trail rendered as `◆ Verb for Xs`.
+    Trail(String),
     Thinking,
 }
 
@@ -37,42 +39,125 @@ impl ScrollArea {
         self.messages.push(msg);
     }
 
-    pub fn render(&self, f: &mut Frame, area: Rect) {
-        let lines: Vec<Line> = self
-            .messages
-            .iter()
-            .flat_map(|msg| match msg {
-                Message::User(text) => vec![
-                    Line::from(format!("╭─ User ─")),
-                    Line::from(text.as_str()),
-                    Line::from(""),
-                ],
-                Message::Assistant(text) => vec![
-                    Line::from(format!("╭─ Super ─")),
-                    Line::from(text.as_str()),
-                    Line::from(""),
-                ],
-                Message::ToolCall { name, input, result } => {
-                    let mut lines = vec![
-                        Line::from(format!("╭─ Tool: {name} ─")),
-                        Line::from(input.as_str()),
-                    ];
-                    if let Some(r) = result {
-                        lines.push(Line::from(r.as_str()));
-                    }
-                    lines.push(Line::from(""));
-                    lines
-                }
-                Message::System(text) => vec![Line::from(text.as_str())],
-                Message::Thinking => vec![Line::styled(
-                    "thinking...",
-                    Style::default().fg(Color::DarkGray),
-                )],
-            })
-            .collect();
+    pub fn clear(&mut self) {
+        self.messages.clear();
+        self.scroll_offset = 0;
+    }
 
-        let text = Text::from(lines);
-        let paragraph = Paragraph::new(text).scroll((self.scroll_offset, 0));
+    pub fn scroll_up(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_add(1);
+    }
+
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        if area.height == 0 {
+            return;
+        }
+        let user_prefix = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        let assistant_prefix = Style::default().fg(Color::Cyan);
+        let dim = Style::default().fg(Color::DarkGray);
+        let body_style = Style::default().fg(Color::White);
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        for msg in &self.messages {
+            match msg {
+                Message::User(text) => {
+                    lines.push(Line::from(""));
+                    for (i, body_line) in text.lines().enumerate() {
+                        if i == 0 {
+                            lines.push(Line::from(vec![
+                                Span::styled("❯ ", user_prefix),
+                                Span::styled(body_line.to_string(), body_style),
+                            ]));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::raw("  "),
+                                Span::styled(body_line.to_string(), body_style),
+                            ]));
+                        }
+                    }
+                }
+                Message::Assistant(text) => {
+                    lines.push(Line::from(""));
+                    for (i, body_line) in text.lines().enumerate() {
+                        if i == 0 {
+                            lines.push(Line::from(vec![
+                                Span::styled("◆ ", assistant_prefix),
+                                Span::styled(body_line.to_string(), body_style),
+                            ]));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::raw("  "),
+                                Span::styled(body_line.to_string(), body_style),
+                            ]));
+                        }
+                    }
+                }
+                Message::ToolCall {
+                    name,
+                    input,
+                    result,
+                } => {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled("◆ ", assistant_prefix),
+                        Span::styled(
+                            name.clone(),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("({})", input), dim),
+                    ]));
+                    if let Some(r) = result {
+                        for r_line in r.lines() {
+                            lines.push(Line::from(vec![
+                                Span::styled("  ⎿  ", dim),
+                                Span::styled(r_line.to_string(), dim),
+                            ]));
+                        }
+                    }
+                }
+                Message::System(text) => {
+                    lines.push(Line::from(""));
+                    for body_line in text.lines() {
+                        lines.push(Line::from(vec![
+                            Span::styled("※ ", dim),
+                            Span::styled(body_line.to_string(), dim),
+                        ]));
+                    }
+                }
+                Message::Trail(text) => {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled("◈ ", Style::default().fg(Color::Cyan)),
+                        Span::styled(text.clone(), dim),
+                    ]));
+                }
+                Message::Thinking => {
+                    lines.push(Line::from(Span::styled(
+                        "thinking…",
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    )));
+                }
+            }
+        }
+
+        // Auto-tail: clamp scroll so the latest line is visible.
+        let height = area.height as usize;
+        let total = lines.len();
+        let max_offset = total.saturating_sub(height);
+        let offset = (self.scroll_offset as usize).min(max_offset);
+
+        let paragraph = Paragraph::new(lines).scroll((offset as u16, 0));
         f.render_widget(paragraph, area);
     }
 }

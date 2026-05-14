@@ -27,6 +27,7 @@ fn estimate_chars(msg: &Message) -> usize {
             input.len() + result.as_ref().map_or(0, |r| r.len()) + 20
         }
         Message::System(s) => s.len(),
+        Message::Trail(s) => s.len(),
         Message::Thinking => 10,
     }
 }

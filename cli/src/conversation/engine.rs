@@ -74,7 +74,7 @@ impl ConversationEngine {
                         "content": s
                     }));
                 }
-                Message::Thinking => {}
+                Message::Trail(_) | Message::Thinking => {}
             }
         }
 
