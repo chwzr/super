@@ -235,6 +235,22 @@ impl AuthService {
         })
     }
 
+    pub async fn get_key_usage(&self, token: &str) -> Result<(f64, f64, f64), AuthError> {
+        let user_id = self.verify_jwt(token)?;
+        let api_key = self
+            .repo
+            .get_active_api_key(&user_id)
+            .await?
+            .ok_or_else(|| AuthError::Internal("no OpenRouter key for user".into()))?;
+
+        let (used, limit) = self
+            .openrouter
+            .fetch_key_usage(&api_key.openrouter_key_value)
+            .await?;
+
+        Ok((used, limit, (limit - used).max(0.0)))
+    }
+
     pub async fn rotate_key(&self, access_token: &str) -> Result<UserProfile, AuthError> {
         let user_id = self.verify_jwt(access_token)?;
         let user = self

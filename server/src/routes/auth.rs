@@ -6,7 +6,7 @@ use axum::{
     response::Html,
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use shared::{AuthorizeRequest, RefreshRequest, RegisterRequest, TokenResponse, UserProfile};
 
 use crate::domain::auth::service::AuthService;
@@ -16,6 +16,13 @@ struct AppState {
     service: Arc<AuthService>,
 }
 
+#[derive(Serialize)]
+struct UsageResponse {
+    used_usd: f64,
+    limit_usd: f64,
+    remaining_usd: f64,
+}
+
 pub fn routes_with_state(service: Arc<AuthService>) -> Router {
     Router::new()
         .route("/register", post(register))
@@ -23,6 +30,7 @@ pub fn routes_with_state(service: Arc<AuthService>) -> Router {
         .route("/refresh", post(refresh))
         .route("/me", get(me))
         .route("/key", post(rotate_key))
+        .route("/usage", get(usage))
         .route("/login", get(login_page))
         .route("/login", post(login))
         .with_state(AppState { service })
@@ -110,6 +118,35 @@ async fn rotate_key(
         .await
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn usage(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<UsageResponse>, (StatusCode, String)> {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or((StatusCode::UNAUTHORIZED, "missing authorization header".into()))?;
+
+    let (used, limit, remaining) = state
+        .service
+        .get_key_usage(token)
+        .await
+        .map_err(|e| {
+            if matches!(e, shared::AuthError::InvalidToken | shared::AuthError::TokenExpired) {
+                (StatusCode::UNAUTHORIZED, e.to_string())
+            } else {
+                (StatusCode::BAD_GATEWAY, e.to_string())
+            }
+        })?;
+
+    Ok(Json(UsageResponse {
+        used_usd: used,
+        limit_usd: limit,
+        remaining_usd: remaining,
+    }))
 }
 
 async fn login_page() -> Html<&'static str> {
