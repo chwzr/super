@@ -51,10 +51,11 @@ impl EffortLevel {
 
     fn from_str(s: &str) -> EffortLevel {
         match s {
-            "low"  => EffortLevel::Low,
-            "high" => EffortLevel::High,
-            "max"  => EffortLevel::Max,
-            _      => EffortLevel::Medium,
+            "low"    => EffortLevel::Low,
+            "medium" => EffortLevel::Medium,
+            "high"   => EffortLevel::High,
+            "max"    => EffortLevel::Max,
+            _        => EffortLevel::Medium,
         }
     }
 }
@@ -97,7 +98,7 @@ impl EffortPicker {
         let axis_line = Line::from(vec![
             Span::styled("  Speed ", Style::default().fg(CC_DIM)),
             Span::styled("←", Style::default().fg(CC_DIM)),
-            Span::styled("─────────────────────────────", Style::default().fg(CC_DIM)),
+            Span::styled("────────────────────────────────────", Style::default().fg(CC_DIM)),
             Span::styled("→", Style::default().fg(CC_DIM)),
             Span::styled(" Intelligence", Style::default().fg(CC_DIM)),
         ]);
