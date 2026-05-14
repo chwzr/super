@@ -195,26 +195,65 @@ fn model(args: &str, store: &Store) -> CommandResult {
     CommandResult::Display(format!("Model set to: {short}"))
 }
 
-fn effort(args: &str, _store: &Store) -> CommandResult {
-    let args = args.trim();
-    let valid = ["low", "medium", "high", "max", "auto"];
-    if args.is_empty() {
-        let mut out = String::from("Effort levels:\n");
-        for level in valid {
-            out.push_str(&format!("  {level}\n"));
-        }
-        out.push_str("\nUsage: /effort [low|medium|high|max|auto]\n");
-        return CommandResult::Display(out);
+fn effort(args: &str, store: &Store) -> CommandResult {
+    let args = args.trim().to_lowercase();
+    let args = args.as_str();
+
+    // Help args — match CC's exact help text format.
+    if matches!(args, "help" | "-h" | "--help") {
+        return CommandResult::Display(
+            "Usage: /effort [low|medium|high|max|auto]\n\n\
+             Effort levels:\n\
+             - low: Quick, straightforward implementation with minimal overhead\n\
+             - medium: Balanced approach with standard implementation and testing\n\
+             - high: Comprehensive implementation with extensive testing and documentation\n\
+             - max: Maximum capability with deepest reasoning (Opus 4.6 only)\n\
+             - auto: Use the default effort level for your model"
+                .into(),
+        );
     }
+
+    // No args or "status"/"current" — show current level like CC does.
+    if args.is_empty() || args == "current" || args == "status" {
+        let level = store.get_state().effort_level.clone();
+        let msg = match level.as_deref() {
+            None | Some("auto") => format!(
+                "Effort level: auto (currently high)"
+            ),
+            Some(l) => {
+                let desc = effort_level_description(l);
+                format!("Current effort level: {l} ({desc})")
+            }
+        };
+        return CommandResult::Display(msg);
+    }
+
+    // "auto" / "unset" — clear back to auto.
+    if args == "auto" || args == "unset" {
+        store.set_state(|s| s.effort_level = None);
+        return CommandResult::Display("Effort level set to auto".into());
+    }
+
+    let valid = ["low", "medium", "high", "max"];
     if !valid.contains(&args) {
         return CommandResult::Display(format!(
-            "Unknown effort level '{args}'. Use one of: {}",
-            valid.join(", ")
+            "Invalid argument: {args}. Valid options are: low, medium, high, max, auto"
         ));
     }
-    // Persistence wired through to the engine is a follow-up; for now we
-    // acknowledge so the UX matches claude.
-    CommandResult::Display(format!("Effort level set to: {args}"))
+
+    let desc = effort_level_description(args);
+    store.set_state(|s| s.effort_level = Some(args.to_string()));
+    CommandResult::Display(format!("Set effort level to {args}: {desc}"))
+}
+
+fn effort_level_description(level: &str) -> &'static str {
+    match level {
+        "low" => "Quick, straightforward implementation with minimal overhead",
+        "medium" => "Balanced approach with standard implementation and testing",
+        "high" => "Comprehensive implementation with extensive testing and documentation",
+        "max" => "Maximum capability with deepest reasoning (Opus 4.6 only)",
+        _ => "Use the default effort level for your model",
+    }
 }
 
 fn think(store: &Store) -> CommandResult {
@@ -229,28 +268,35 @@ fn think(store: &Store) -> CommandResult {
 fn context(store: &Store) -> CommandResult {
     let state = store.get_state();
     let count = state.messages.len();
-    // claude renders a token-grid; we approximate until our tokenizer is wired.
-    let approx_tokens: usize = state
-        .messages
-        .iter()
-        .map(approx_message_chars)
-        .sum::<usize>()
-        / 4;
-    let budget = 200_000usize; // Sonnet/Opus default window we target
-    let pct = ((approx_tokens as f64 / budget as f64) * 100.0).min(100.0);
-    let bar_width = 40usize;
-    let filled = ((approx_tokens as f64 / budget as f64) * bar_width as f64)
-        .round()
-        .min(bar_width as f64) as usize;
-    let bar = "█".repeat(filled) + &"·".repeat(bar_width - filled);
+    let model = friendly_model_short_name(&state.model);
+    // Approximate token counts (1 token ≈ 4 chars). Full tokenizer is a follow-up.
+    let msg_chars: usize = state.messages.iter().map(approx_message_chars).sum();
+    let msg_tokens = msg_chars / 4;
+    // Rough system prompt estimate (tools + instructions overhead)
+    let system_tokens: usize = 8_000;
+    let total_tokens = system_tokens + msg_tokens;
+    let budget = 200_000usize; // Sonnet/Opus default context window
+    let pct = ((total_tokens as f64 / budget as f64) * 100.0).min(100.0);
+    let free = budget.saturating_sub(total_tokens);
     let body = format!(
-        "Context usage\n\
+        "Context window usage\n\
          \n\
-         {bar}\n\
-         ~{approx_tokens} / {budget} tokens ({pct:.1}%)\n\
-         {count} messages\n\
+         Model:  {model}\n\
+         Tokens: ~{total_tokens} / {budget} ({pct:.1}%)\n\
          \n\
-         Run /compact to summarize older turns and free up context."
+         Estimated usage by category\n\
+         \n\
+         | Category      | Tokens        | % of window |\n\
+         |---------------|---------------|-------------|\n\
+         | System prompt | ~{system_tokens:<13} | {sys_pct:.1}%        |\n\
+         | Messages      | ~{msg_tokens:<13} | {msg_pct:.1}%        |\n\
+         | Free space    | ~{free:<13} | {free_pct:.1}%        |\n\
+         \n\
+         {count} message(s) in context.\n\
+         Run /compact to summarize older turns and free up space.",
+        sys_pct = (system_tokens as f64 / budget as f64) * 100.0,
+        msg_pct = (msg_tokens as f64 / budget as f64) * 100.0,
+        free_pct = (free as f64 / budget as f64) * 100.0,
     );
     CommandResult::Display(body)
 }
