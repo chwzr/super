@@ -12,6 +12,7 @@ pub struct Command {
     pub name: String,
     pub aliases: Vec<String>,
     pub description: String,
+    pub argument_hint: Option<&'static str>,
     pub kind: CommandKind,
     pub is_enabled: bool,
 }
@@ -34,46 +35,48 @@ impl CommandRegistry {
         // claude-code-src/commands/<name>/index.ts. Commands intentionally
         // excluded from super are recorded in PLAN.md under "Feature
         // Blacklist (slash commands, 2026-05-14)".
-        let builtins: Vec<(&str, &[&str], &str, CommandKind)> = vec![
+        // Tuple layout: (name, aliases, description, argument_hint, kind)
+        let builtins: Vec<(&str, &[&str], &str, Option<&'static str>, CommandKind)> = vec![
             // ----- Local commands -----
-            ("/help", &[] as &[&str], "Show help and available commands", CommandKind::Local),
-            ("/clear", &["/reset", "/new"], "Clear conversation history and free up context", CommandKind::Local),
-            ("/exit", &["/quit"], "Exit the REPL", CommandKind::Local),
-            ("/version", &[], "Print the version this session is running", CommandKind::Local),
-            ("/status", &[], "Show Super status including version, model, account, and tool statuses", CommandKind::Local),
-            ("/model", &[], "Set the AI model for Super", CommandKind::Local),
-            ("/effort", &[], "Set effort level for model usage", CommandKind::Local),
-            ("/think", &[], "Toggle extended thinking", CommandKind::Local),
-            ("/context", &[], "Visualize current context usage", CommandKind::Local),
-            ("/diff", &[], "View uncommitted changes and per-turn diffs", CommandKind::Local),
-            ("/export", &[], "Export the current conversation to a file", CommandKind::Local),
-            ("/rename", &[], "Rename the current conversation", CommandKind::Local),
-            ("/resume", &["/continue"], "Resume a previous conversation", CommandKind::Local),
-            ("/login", &[], "Sign in with your Super account", CommandKind::Local),
-            ("/logout", &[], "Sign out from your Super account", CommandKind::Local),
-            ("/memory", &[], "Edit Super memory files", CommandKind::Local),
-            ("/agents", &[], "Manage agent configurations", CommandKind::Local),
-            ("/mcp", &[], "Manage MCP servers", CommandKind::Local),
-            ("/plugin", &["/plugins", "/marketplace"], "Manage Super plugins", CommandKind::Local),
-            ("/sandbox", &[], "Toggle sandbox settings", CommandKind::Local),
-            ("/config", &["/settings"], "Open config panel", CommandKind::Local),
-            ("/permissions", &["/allowed-tools"], "Manage allow & deny tool permission rules", CommandKind::Local),
-            ("/feedback", &["/bug"], "Submit feedback about Claude Code", CommandKind::Local),
+            ("/help",        &[] as &[&str],              "Show help and available commands",                                                                None,                              CommandKind::Local),
+            ("/clear",       &["/reset", "/new"],         "Clear conversation history and free up context",                                                  None,                              CommandKind::Local),
+            ("/exit",        &["/quit"],                  "Exit the REPL",                                                                                   None,                              CommandKind::Local),
+            ("/version",     &[],                         "Print the version this session is running",                                                       None,                              CommandKind::Local),
+            ("/status",      &[],                         "Show Super status including version, model, account, API connectivity, and tool statuses",         None,                              CommandKind::Local),
+            ("/model",       &[],                         "Set the AI model for Super",                                                                       Some("[model]"),                   CommandKind::Local),
+            ("/effort",      &[],                         "Set effort level for model usage",                                                                 Some("[low|medium|high|max|auto]"),CommandKind::Local),
+            ("/think",       &[],                         "Toggle extended thinking",                                                                         None,                              CommandKind::Local),
+            ("/context",     &[],                         "Show current context usage",                                                                       None,                              CommandKind::Local),
+            ("/diff",        &[],                         "View uncommitted changes and per-turn diffs",                                                      None,                              CommandKind::Local),
+            ("/export",      &[],                         "Export the current conversation to a file or clipboard",                                           Some("[filename]"),                CommandKind::Local),
+            ("/rename",      &[],                         "Rename the current conversation",                                                                  Some("[name]"),                    CommandKind::Local),
+            ("/resume",      &["/continue"],              "Resume a previous conversation",                                                                   Some("[conversation id or search term]"), CommandKind::Local),
+            ("/login",       &[],                         "Sign in with your Super account",                                                                  None,                              CommandKind::Local),
+            ("/logout",      &[],                         "Sign out from your Super account",                                                                 None,                              CommandKind::Local),
+            ("/memory",      &[],                         "Edit Super memory files",                                                                          None,                              CommandKind::Local),
+            ("/agents",      &[],                         "Manage agent configurations",                                                                      None,                              CommandKind::Local),
+            ("/mcp",         &[],                         "Manage MCP servers",                                                                               Some("[enable|disable [server-name]]"), CommandKind::Local),
+            ("/plugin",      &["/plugins", "/marketplace"],"Manage Super plugins",                                                                            None,                              CommandKind::Local),
+            ("/sandbox",     &[],                         "Toggle sandbox settings",                                                                          None,                              CommandKind::Local),
+            ("/config",      &["/settings"],              "Open config panel",                                                                                None,                              CommandKind::Local),
+            ("/permissions", &["/allowed-tools"],         "Manage allow & deny tool permission rules",                                                        None,                              CommandKind::Local),
+            ("/feedback",    &["/bug"],                   "Submit feedback about Super",                                                                      Some("[report]"),                  CommandKind::Local),
             // ----- Prompt commands -----
-            ("/init", &[], "Initialize a new CLAUDE.md file with codebase documentation", CommandKind::Prompt),
-            ("/compact", &[], "Clear conversation history but keep a summary in context", CommandKind::Prompt),
-            ("/review", &[], "Review a pull request", CommandKind::Prompt),
-            ("/commit", &[], "Create a git commit", CommandKind::Prompt),
-            ("/commit-push-pr", &["/pr"], "Commit, push, and open a PR", CommandKind::Prompt),
+            ("/init",          &[], "Initialize a new CLAUDE.md file with codebase documentation",                                                            None,                              CommandKind::Prompt),
+            ("/compact",       &[], "Clear conversation history but keep a summary in context. Optional: /compact [instructions for summarization]",           Some("<optional custom summarization instructions>"), CommandKind::Prompt),
+            ("/review",        &[], "Review a pull request",                                                                                                  None,                              CommandKind::Prompt),
+            ("/commit",        &[], "Create a git commit",                                                                                                    None,                              CommandKind::Prompt),
+            ("/commit-push-pr",&["/pr"], "Commit, push, and open a PR",                                                                                      None,                              CommandKind::Prompt),
         ];
 
-        for (name, aliases, description, kind) in builtins {
+        for (name, aliases, description, argument_hint, kind) in builtins {
             self.commands.insert(
                 name.to_string(),
                 Command {
                     name: name.to_string(),
                     aliases: aliases.iter().map(|s| s.to_string()).collect(),
                     description: description.to_string(),
+                    argument_hint,
                     kind,
                     is_enabled: true,
                 },

@@ -75,23 +75,34 @@ fn extract_args<'a>(command: &Command, input: &'a str) -> &'a str {
 
 fn help() -> CommandResult {
     let registry = CommandRegistry::new();
-    let mut out = String::from("Super — Available Commands\n\n");
-    let mut commands = registry.list();
-    commands.sort_by_key(|c| c.name.clone());
-    let name_width = commands
+    let commands = registry.list();
+
+    // Compute max width of "name [hint]" for alignment.
+    let col_width = commands
         .iter()
-        .map(|c| c.name.chars().count())
+        .map(|c| {
+            c.name.len() + c.argument_hint.map(|h| h.len() + 1).unwrap_or(0)
+        })
         .max()
-        .unwrap_or(20);
-    for cmd in commands {
+        .unwrap_or(20)
+        + 2;
+
+    let mut out = String::from("Super — Available Commands\n\n");
+    for cmd in &commands {
+        let name_hint = match cmd.argument_hint {
+            Some(hint) => format!("{} {}", cmd.name, hint),
+            None => cmd.name.clone(),
+        };
         out.push_str(&format!(
             "  {:<width$}  {}\n",
-            cmd.name,
+            name_hint,
             cmd.description,
-            width = name_width,
+            width = col_width,
         ));
     }
-    out.push_str("\nType / and start typing to filter; Tab autocompletes.\n");
+    out.push_str(
+        "\nType / to open the command menu · Tab to autocomplete · ? for keyboard shortcuts\n",
+    );
     CommandResult::Display(out)
 }
 
