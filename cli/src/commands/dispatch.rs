@@ -1,6 +1,7 @@
 use crate::config::load_config;
 use crate::state::store::Store;
 use crate::tui::modal::Modal;
+use crate::tui::modals::effort_picker::EffortPicker;
 use crate::tui::modals::model_picker::ModelPicker;
 use super::prompts;
 use super::registry::{Command, CommandKind, CommandRegistry};
@@ -173,65 +174,9 @@ fn model(_args: &str, store: &Store) -> CommandResult {
     CommandResult::OpenModal(Modal::Model(ModelPicker::new(current)))
 }
 
-fn effort(args: &str, store: &Store) -> CommandResult {
-    let args = args.trim().to_lowercase();
-    let args = args.as_str();
-
-    // Help args — match CC's exact help text format.
-    if matches!(args, "help" | "-h" | "--help") {
-        return CommandResult::Display(
-            "Usage: /effort [low|medium|high|max|auto]\n\n\
-             Effort levels:\n\
-             - low: Quick, straightforward implementation with minimal overhead\n\
-             - medium: Balanced approach with standard implementation and testing\n\
-             - high: Comprehensive implementation with extensive testing and documentation\n\
-             - max: Maximum capability with deepest reasoning (Opus 4.6 only)\n\
-             - auto: Use the default effort level for your model"
-                .into(),
-        );
-    }
-
-    // No args or "status"/"current" — show current level like CC does.
-    if args.is_empty() || args == "current" || args == "status" {
-        let level = store.get_state().effort_level.clone();
-        let msg = match level.as_deref() {
-            None | Some("auto") => format!(
-                "Effort level: auto (currently high)"
-            ),
-            Some(l) => {
-                let desc = effort_level_description(l);
-                format!("Current effort level: {l} ({desc})")
-            }
-        };
-        return CommandResult::Display(msg);
-    }
-
-    // "auto" / "unset" — clear back to auto.
-    if args == "auto" || args == "unset" {
-        store.set_state(|s| s.effort_level = None);
-        return CommandResult::Display("Effort level set to auto".into());
-    }
-
-    let valid = ["low", "medium", "high", "max"];
-    if !valid.contains(&args) {
-        return CommandResult::Display(format!(
-            "Invalid argument: {args}. Valid options are: low, medium, high, max, auto"
-        ));
-    }
-
-    let desc = effort_level_description(args);
-    store.set_state(|s| s.effort_level = Some(args.to_string()));
-    CommandResult::Display(format!("Set effort level to {args}: {desc}"))
-}
-
-fn effort_level_description(level: &str) -> &'static str {
-    match level {
-        "low" => "Quick, straightforward implementation with minimal overhead",
-        "medium" => "Balanced approach with standard implementation and testing",
-        "high" => "Comprehensive implementation with extensive testing and documentation",
-        "max" => "Maximum capability with deepest reasoning (Opus 4.6 only)",
-        _ => "Use the default effort level for your model",
-    }
+fn effort(_args: &str, store: &Store) -> CommandResult {
+    let current = store.get_state().effort_level.clone();
+    CommandResult::OpenModal(Modal::Effort(EffortPicker::new(current)))
 }
 
 fn think(store: &Store) -> CommandResult {

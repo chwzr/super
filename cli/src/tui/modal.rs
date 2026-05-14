@@ -8,6 +8,7 @@ use ratatui::{
 };
 
 use crate::tui::colors::CC_BLUE;
+use crate::tui::modals::effort_picker::{EffortAction, EffortPicker};
 use crate::tui::modals::model_picker::{ModelAction, ModelPicker};
 
 pub enum ModalAction {
@@ -19,12 +20,14 @@ pub enum ModalAction {
 
 pub enum Modal {
     Model(ModelPicker),
+    Effort(EffortPicker),
 }
 
 impl Modal {
     pub fn title(&self) -> &str {
         match self {
             Modal::Model(_) => "Set Model",
+            Modal::Effort(_) => "Effort Level",
         }
     }
 
@@ -34,6 +37,11 @@ impl Modal {
                 ModelAction::Continue      => ModalAction::Continue,
                 ModelAction::Select(id)    => ModalAction::SetModel(id.to_string()),
                 ModelAction::Cancel        => ModalAction::Close,
+            },
+            Modal::Effort(p) => match p.handle_key(key) {
+                EffortAction::Continue   => ModalAction::Continue,
+                EffortAction::Select(v)  => ModalAction::SetEffort(v.to_string()),
+                EffortAction::Cancel     => ModalAction::Close,
             },
         }
     }
@@ -49,6 +57,7 @@ impl Modal {
         render_separator(f, sep_area, self.title());
         match self {
             Modal::Model(p) => p.render(f, content_area),
+            Modal::Effort(p) => p.render(f, content_area),
         }
     }
 }
