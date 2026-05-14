@@ -454,39 +454,104 @@ fn memory() -> CommandResult {
         .map(|p| p.join("CLAUDE.md"))
         .unwrap_or_default();
     let user_md = home.join(".claude").join("CLAUDE.md");
-    CommandResult::Display(format!(
-        "Memory files\n\n  Project:   {}{}\n  User:      {}{}\n\nEdit these files directly with your editor. They are loaded automatically each session.",
-        project_md.display(),
-        if project_md.exists() { "" } else { "  (not present)" },
-        user_md.display(),
-        if user_md.exists() { "" } else { "  (not present)" },
-    ))
+
+    // Show in CC's style: labelled entries with descriptions and existence status.
+    let user_label = "User memory";
+    let user_desc = "Saved in ~/.claude/CLAUDE.md";
+    let user_new = if user_md.exists() { "" } else { " (new)" };
+
+    // Check if cwd is inside a git repo to match CC's "Checked in at" vs "Saved in" wording.
+    let in_git = run_git(&["rev-parse", "--is-inside-work-tree"])
+        .trim()
+        .to_lowercase()
+        .as_str() == "true";
+    let project_label = "Project memory";
+    let project_verb = if in_git { "Checked in at" } else { "Saved in" };
+    let project_desc = format!("{project_verb} ./CLAUDE.md");
+    let project_new = if project_md.exists() { "" } else { " (new)" };
+
+    let mut out = String::from("Memory\n\n");
+    out.push_str(&format!(
+        "  {user_label}{user_new}\n    {user_desc}\n    {path}\n\n",
+        path = user_md.display(),
+    ));
+    out.push_str(&format!(
+        "  {project_label}{project_new}\n    {project_desc}\n    {path}\n\n",
+        path = project_md.display(),
+    ));
+    out.push_str("Open these files in your editor to update memory.\n");
+    out.push_str("Learn more: https://docs.anthropic.com/en/docs/claude-code/memory");
+    CommandResult::Display(out)
 }
 
 fn agents() -> CommandResult {
-    let agents_dir = std::env::current_dir()
+    let home = dirs::home_dir().unwrap_or_default();
+    let user_agents_dir = home.join(".claude").join("agents");
+    let project_agents_dir = std::env::current_dir()
         .map(|p| p.join(".claude").join("agents"))
         .unwrap_or_default();
-    let entries: Vec<String> = std::fs::read_dir(&agents_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
-    if entries.is_empty() {
-        CommandResult::Display(format!(
-            "No agents found in {}.\n\nCreate <name>.md files in that directory to define agents.",
-            agents_dir.display(),
-        ))
-    } else {
-        let mut out = String::from("Available agents:\n\n");
-        for name in entries {
+
+    fn list_agents(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                // Only show .md files (agent definitions) and skip hidden files.
+                if name.starts_with('.') { return None; }
+                Some(name)
+            })
+            .collect()
+    }
+
+    let user_agents = list_agents(&user_agents_dir);
+    let project_agents = list_agents(&project_agents_dir);
+
+    let has_any = !user_agents.is_empty() || !project_agents.is_empty();
+
+    if !has_any {
+        return CommandResult::Display(format!(
+            "Agents\n\nNo agents found.\n\n\
+             User agents:    {}\n\
+             Project agents: {}\n\n\
+             Create <name>.md files in either directory to define agents.",
+            user_agents_dir.display(),
+            project_agents_dir.display(),
+        ));
+    }
+
+    let mut out = String::from("Agents\n\n");
+
+    if !user_agents.is_empty() {
+        out.push_str(&format!("User agents  (~/.claude/agents/)\n\n"));
+        let mut sorted = user_agents;
+        sorted.sort();
+        for name in &sorted {
             out.push_str(&format!("  {name}\n"));
         }
-        out.push_str(&format!("\nDirectory: {}", agents_dir.display()));
-        CommandResult::Display(out)
+        out.push('\n');
+    } else {
+        out.push_str(&format!(
+            "User agents  (~/.claude/agents/)  — none\n\n"
+        ));
     }
+
+    if !project_agents.is_empty() {
+        out.push_str("Project agents  (.claude/agents/)\n\n");
+        let mut sorted = project_agents;
+        sorted.sort();
+        for name in &sorted {
+            out.push_str(&format!("  {name}\n"));
+        }
+        out.push('\n');
+    } else {
+        out.push_str("Project agents  (.claude/agents/)  — none\n\n");
+    }
+
+    out.push_str("Create <name>.md files in either agents/ directory to define agents.");
+    CommandResult::Display(out)
 }
 
 fn mcp() -> CommandResult {
