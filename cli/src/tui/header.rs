@@ -34,28 +34,32 @@ impl Header {
             .add_modifier(Modifier::BOLD);
         let meta_style = Style::default().fg(Color::Gray);
 
+        let gap = "   ";
         let lines = vec![
+            Line::from(Span::styled(MASCOT[0], mascot_style)),
             Line::from(vec![
-                Span::styled(MASCOT[0], mascot_style),
-                Span::raw("   "),
+                Span::styled(MASCOT[1], mascot_style),
+                Span::raw(gap),
                 Span::styled(format!("Super CLI v{}", self.version), title_style),
             ]),
             Line::from(vec![
-                Span::styled(MASCOT[1], mascot_style),
-                Span::raw("  "),
+                Span::styled(MASCOT[2], mascot_style),
+                Span::raw(gap),
                 Span::styled(
                     format!("{} · {}", self.model_label, self.provider),
                     meta_style,
                 ),
             ]),
             Line::from(vec![
-                Span::styled(MASCOT[2], mascot_style),
-                Span::raw("   "),
+                Span::styled(MASCOT[3], mascot_style),
+                Span::raw(gap),
                 Span::styled(
                     format!("@{} · {}", self.user_handle, self.cwd),
                     meta_style,
                 ),
             ]),
+            Line::from(Span::styled(MASCOT[4], mascot_style)),
+            Line::from(Span::styled(MASCOT[5], mascot_style)),
         ];
 
         let paragraph = Paragraph::new(lines);
