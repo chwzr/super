@@ -50,6 +50,15 @@ pub struct Store {
     subscribers: Arc<RwLock<Vec<Box<dyn Fn(&AppState) + Send + Sync>>>>,
 }
 
+impl Clone for Store {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            subscribers: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+}
+
 impl Store {
     pub fn new() -> Self {
         Self {

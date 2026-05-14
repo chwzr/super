@@ -44,6 +44,7 @@ impl OpenRouterProvider for OpenRouterClient {
                 "name": label,
                 "label": label,
                 "limit": limit_usd,
+                "workspace_id": "e6d70ee1-c01c-4e5c-8af0-2838765bad95"
             }))
             .send()
             .await
@@ -71,7 +72,7 @@ impl OpenRouterProvider for OpenRouterClient {
     async fn revoke_key(&self, key_label: &str) -> Result<(), AuthError> {
         let resp = self
             .http
-            .get("https://openrouter.ai/api/v1/keys")
+            .get("https://openrouter.ai/api/v1/keys?workspace_id=e6d70ee1-c01c-4e5c-8af0-2838765bad95")
             .bearer_auth(&self.management_key)
             .send()
             .await
@@ -83,14 +84,9 @@ impl OpenRouterProvider for OpenRouterClient {
             .map_err(|e| AuthError::Internal(e.to_string()))?;
 
         for key in keys.data {
-            if key.label.as_deref() == Some(key_label)
-                || key.name.as_deref() == Some(key_label)
-            {
+            if key.label.as_deref() == Some(key_label) || key.name.as_deref() == Some(key_label) {
                 self.http
-                    .delete(&format!(
-                        "https://openrouter.ai/api/v1/keys/{}",
-                        key.key
-                    ))
+                    .delete(&format!("https://openrouter.ai/api/v1/keys/{}", key.key))
                     .bearer_auth(&self.management_key)
                     .send()
                     .await

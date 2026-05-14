@@ -34,7 +34,7 @@ pub mod web_fetch;
 pub mod web_search;
 pub mod write;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use contract::{Tool, ToolCallContext, ToolResult};
 use crate::state::store::{PermissionMode, Store};
 use agent::AgentTool;
@@ -72,7 +72,7 @@ use web_search::WebSearchTool;
 use write::WriteTool;
 
 pub struct ToolRegistry {
-    tools: Vec<Arc<dyn Tool>>,
+    tools: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
 }
 
 impl ToolRegistry {
@@ -152,24 +152,24 @@ impl ToolRegistry {
         tools.push(Arc::new(SendMessageTool));
         tools.push(Arc::new(AskUserQuestionTool));
 
-        Self { tools }
+        Self { tools: Arc::new(RwLock::new(tools)) }
     }
 
-    pub fn register(&mut self, tool: Arc<dyn Tool>) {
-        self.tools.push(tool);
+    pub fn register(&self, tool: Arc<dyn Tool>) {
+        self.tools.write().unwrap().push(tool);
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.iter().find(|t| t.name() == name).cloned()
+        self.tools.read().unwrap().iter().find(|t| t.name() == name).cloned()
     }
 
     pub fn list(&self) -> Vec<String> {
-        self.tools.iter().map(|t| t.name().to_string()).collect()
+        self.tools.read().unwrap().iter().map(|t| t.name().to_string()).collect()
     }
 
     pub fn assemble_for_mode(&self, mode: &PermissionMode) -> Vec<Arc<dyn Tool>> {
-        let mut pool: Vec<Arc<dyn Tool>> = self
-            .tools
+        let tools = self.tools.read().unwrap();
+        let mut pool: Vec<Arc<dyn Tool>> = tools
             .iter()
             .filter(|t| match mode {
                 PermissionMode::Plan => t.is_read_only(),
@@ -199,5 +199,13 @@ impl ToolRegistry {
             .get(name)
             .ok_or_else(|| format!("unknown tool: {name}"))?;
         Ok(tool.call(input, context).await)
+    }
+}
+
+impl Clone for ToolRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            tools: self.tools.clone(),
+        }
     }
 }

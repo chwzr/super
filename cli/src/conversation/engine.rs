@@ -4,6 +4,7 @@ use crate::state::store::Store;
 use crate::tui::scroll_area::Message;
 use crate::conversation::system_prompt::SystemPrompt;
 
+#[derive(Clone)]
 pub struct ConversationEngine {
     pub store: Arc<Store>,
     pub config: CliConfig,

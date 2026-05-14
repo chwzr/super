@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub struct SystemPrompt {
     pub sections: Vec<String>,
 }
