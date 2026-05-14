@@ -1,6 +1,7 @@
 use crate::config::load_config;
 use crate::state::store::Store;
 use crate::tui::modal::Modal;
+use crate::tui::modals::config_view::ConfigView;
 use crate::tui::modals::effort_picker::EffortPicker;
 use crate::tui::modals::mcp_list::McpList;
 use crate::tui::modals::model_picker::ModelPicker;
@@ -472,29 +473,7 @@ fn plugin() -> CommandResult {
 }
 
 fn config_panel() -> CommandResult {
-    // CC opens Settings dialog at "Config" tab. Key settings shown:
-    //   Auto-compact, Show tips, Reduce motion, Thinking mode, Model, Theme,
-    //   Verbose output, etc.
-    // Super: show current live values and config file path.
-    let path = dirs::home_dir()
-        .map(|h| h.join(".super").join("config.json"))
-        .unwrap_or_default();
-    CommandResult::Display(format!(
-        "Config\n\
-         \n\
-         Settings are stored in: {path}\n\
-         Edit that file directly to change persistent settings.\n\
-         \n\
-         To change settings for this session use slash commands:\n\
-         \n\
-           /model <name>         Switch the active model\n\
-           /think                Toggle extended thinking mode\n\
-           /effort <level>       Set effort level (low/medium/high/max)\n\
-           /mcp                  Manage MCP servers\n\
-           /permissions          Manage tool allow/deny rules\n\
-           /memory               View and edit CLAUDE.md memory files",
-        path = path.display(),
-    ))
+    CommandResult::OpenModal(Modal::Config(ConfigView::new()))
 }
 
 fn permissions() -> CommandResult {

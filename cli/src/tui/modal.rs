@@ -8,6 +8,7 @@ use ratatui::{
 };
 
 use crate::tui::colors::CC_BLUE;
+use crate::tui::modals::config_view::{ConfigAction, ConfigView};
 use crate::tui::modals::effort_picker::{EffortAction, EffortPicker};
 use crate::tui::modals::mcp_list::{McpAction, McpList};
 use crate::tui::modals::model_picker::{ModelAction, ModelPicker};
@@ -27,6 +28,7 @@ pub enum Modal {
     Mcp(McpList),
     Resume(ResumePicker),
     Status(StatusView),
+    Config(ConfigView),
 }
 
 impl Modal {
@@ -37,6 +39,7 @@ impl Modal {
             Modal::Mcp(_) => "MCP Servers",
             Modal::Resume(_) => "Resume Session",
             Modal::Status(_) => "Super",
+            Modal::Config(_) => "Super Config",
         }
     }
 
@@ -64,6 +67,10 @@ impl Modal {
                 StatusAction::Continue => ModalAction::Continue,
                 StatusAction::Cancel   => ModalAction::Close,
             },
+            Modal::Config(p) => match p.handle_key(key) {
+                ConfigAction::Continue => ModalAction::Continue,
+                ConfigAction::Cancel   => ModalAction::Close,
+            },
         }
     }
 
@@ -82,6 +89,7 @@ impl Modal {
             Modal::Mcp(p) => p.render(f, content_area),
             Modal::Resume(p) => p.render(f, content_area),
             Modal::Status(v) => v.render(f, content_area),
+            Modal::Config(p) => p.render(f, content_area),
         }
     }
 }
