@@ -117,10 +117,7 @@ impl OpenRouterProvider for OpenRouterClient {
             .map_err(|e| AuthError::Internal(e.to_string()))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(AuthError::Internal(format!(
-                "OpenRouter usage fetch failed: {body}"
-            )));
+            return Err(AuthError::Internal("OpenRouter usage fetch failed".into()));
         }
 
         let usage: OpenRouterKeyUsageResponse = resp
@@ -128,6 +125,7 @@ impl OpenRouterProvider for OpenRouterClient {
             .await
             .map_err(|e| AuthError::Internal(e.to_string()))?;
 
-        Ok((usage.data.usage, usage.data.limit.unwrap_or(0.0)))
+        // None means no spending cap; use f64::MAX as sentinel for "unlimited".
+        Ok((usage.data.usage, usage.data.limit.unwrap_or(f64::MAX)))
     }
 }

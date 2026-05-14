@@ -138,7 +138,7 @@ async fn usage(
             if matches!(e, shared::AuthError::InvalidToken | shared::AuthError::TokenExpired) {
                 (StatusCode::UNAUTHORIZED, e.to_string())
             } else {
-                (StatusCode::BAD_GATEWAY, e.to_string())
+                (StatusCode::BAD_GATEWAY, "upstream usage fetch failed".into())
             }
         })?;
 
