@@ -187,14 +187,18 @@ pub async fn run_tool_uses(
         safe_results.into_iter().chain(unsafe_results.into_iter()).collect();
     combined.sort_by_key(|(i, _, _)| *i);
 
-    combined
-        .into_iter()
-        .map(|(_i, id, res)| ContentBlockFinal::ToolResult {
+    let mut blocks: Vec<ContentBlockFinal> = Vec::with_capacity(combined.len());
+    for (_i, id, res) in combined {
+        blocks.push(ContentBlockFinal::ToolResult {
             tool_use_id: id,
             content: res.content,
             is_error: res.is_error,
-        })
-        .collect()
+        });
+        for msg in res.inject_messages {
+            blocks.push(ContentBlockFinal::Text { text: msg });
+        }
+    }
+    blocks
 }
 
 fn downcast_panic(payload: &Box<dyn std::any::Any + Send>) -> String {
@@ -494,5 +498,39 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn inject_messages_become_text_blocks() {
+        use crate::sdk::protocol::ContentBlockFinal;
+        use crate::tools::contract::ToolResult;
+
+        // Simulate what run_tool_uses produces for one ToolResult with inject_messages.
+        let results: Vec<(usize, String, ToolResult)> = vec![(
+            0,
+            "tu_1".to_string(),
+            ToolResult {
+                content: "Launching skill: foo".into(),
+                is_error: false,
+                inject_messages: vec!["# Foo Skill\n\nDo the thing.".into()],
+                ..Default::default()
+            },
+        )];
+
+        let mut blocks: Vec<ContentBlockFinal> = Vec::new();
+        for (_i, id, res) in results {
+            blocks.push(ContentBlockFinal::ToolResult {
+                tool_use_id: id,
+                content: res.content,
+                is_error: res.is_error,
+            });
+            for msg in res.inject_messages {
+                blocks.push(ContentBlockFinal::Text { text: msg });
+            }
+        }
+
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], ContentBlockFinal::ToolResult { content, .. } if content == "Launching skill: foo"));
+        assert!(matches!(&blocks[1], ContentBlockFinal::Text { text } if text.contains("# Foo Skill")));
     }
 }
