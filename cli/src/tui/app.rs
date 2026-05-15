@@ -551,6 +551,8 @@ impl App {
             self.handle_event()?;
             self.process_pending();
         }
+        // Best-effort cleanup of any async subagents still running.
+        let _ = self.store.shutdown_async_agents();
         Ok(())
     }
 

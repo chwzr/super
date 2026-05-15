@@ -142,6 +142,22 @@ impl Store {
     pub fn list_async_agents(&self) -> Vec<AsyncAgentHandle> {
         self.state.read().unwrap().async_agents.values().cloned().collect()
     }
+
+    /// Abort every currently-registered async agent. Called by the TUI's exit
+    /// path. Returns the number of agents that were signalled.
+    pub fn shutdown_async_agents(&self) -> usize {
+        let ids: Vec<String> = self.list_async_agents()
+            .into_iter()
+            .map(|h| h.agent_id)
+            .collect();
+        let mut count = 0;
+        for id in &ids {
+            if self.abort_async_agent(id) {
+                count += 1;
+            }
+        }
+        count
+    }
 }
 
 #[cfg(test)]
@@ -181,5 +197,30 @@ mod tests {
         // Watch should have fired
         assert!(*rx.borrow_and_update());
         assert!(store.list_async_agents().is_empty(), "abort also removes the handle");
+    }
+
+    #[test]
+    fn shutdown_aborts_all_registered_agents() {
+        let store = Store::new();
+        let (tx1, mut rx1) = tokio::sync::watch::channel(false);
+        let (tx2, mut rx2) = tokio::sync::watch::channel(false);
+        store.register_async_agent(AsyncAgentHandle {
+            agent_id: "a1".into(),
+            parent_tool_use_id: "tu_1".into(),
+            abort: tx1,
+            description: "x".into(),
+            started_at: std::time::Instant::now(),
+        });
+        store.register_async_agent(AsyncAgentHandle {
+            agent_id: "a2".into(),
+            parent_tool_use_id: "tu_2".into(),
+            abort: tx2,
+            description: "y".into(),
+            started_at: std::time::Instant::now(),
+        });
+        assert_eq!(store.shutdown_async_agents(), 2);
+        assert!(*rx1.borrow_and_update());
+        assert!(*rx2.borrow_and_update());
+        assert!(store.list_async_agents().is_empty());
     }
 }
