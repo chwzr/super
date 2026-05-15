@@ -154,8 +154,6 @@ impl Tool for AgentTool {
         let bus_for_task = bus.clone();
         let agent_id_for_task = agent_id.clone();
         let parent_tu_for_task = parent_tool_use_id.clone();
-        let agent_type_for_task = agent_def.agent_type.clone();
-        let _ = agent_type_for_task;
 
         tokio::spawn(async move {
             let result = child.process_prompt(prompt, &sys, Some(parent_tu_for_task.clone())).await;
