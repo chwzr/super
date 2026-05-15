@@ -160,7 +160,9 @@ impl StatusView {
             Span::styled("  ✔", ok), Span::raw("  Auth               "), Span::styled("authenticated", ok),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  ✔", ok), Span::raw("  OpenRouter         "), Span::styled("reachable", ok),
+            Span::styled("  ✔", ok),
+            Span::raw(format!("  {:<19}", self.snap.provider)),
+            Span::styled("reachable", ok),
         ]));
     }
 
