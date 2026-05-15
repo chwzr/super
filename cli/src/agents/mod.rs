@@ -1,3 +1,4 @@
+pub mod built_in;
 pub mod definition;
 pub mod model;
 pub mod permission;
@@ -66,5 +67,29 @@ mod tests {
         use crate::state::store::PermissionMode;
         let out = resolve_permission_mode(&PermissionMode::Default, None, false);
         assert!(matches!(out, PermissionMode::Default));
+    }
+
+    #[test]
+    fn built_in_agents_list_contains_expected_types() {
+        use super::built_in::built_in_agents;
+        let agents = built_in_agents();
+        let names: Vec<&str> = agents.iter().map(|a| a.agent_type.as_str()).collect();
+        assert!(names.contains(&"general-purpose"));
+        assert!(names.contains(&"Explore"));
+        assert!(names.contains(&"Plan"));
+        assert!(names.contains(&"statusline-setup"));
+        assert!(names.contains(&"claude-code-guide"));
+    }
+
+    #[test]
+    fn explore_agent_is_read_only_blocking_edit_write() {
+        use super::built_in::built_in_agents;
+        let explore = built_in_agents().into_iter()
+            .find(|a| a.agent_type == "Explore")
+            .expect("Explore in built-ins");
+        assert!(explore.disallowed_tools.iter().any(|t| t == "Edit"));
+        assert!(explore.disallowed_tools.iter().any(|t| t == "Write"));
+        assert!(explore.disallowed_tools.iter().any(|t| t == "NotebookEdit"));
+        assert!(explore.disallowed_tools.iter().any(|t| t == "Task"));
     }
 }
