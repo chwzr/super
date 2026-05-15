@@ -2,7 +2,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 
@@ -32,7 +32,12 @@ pub struct ScrollArea {
     pub messages: Vec<Message>,
     /// New path — bus events folded into TranscriptItems at render time.
     pub events: Vec<BusMessage>,
+    /// Visual rows from top (what ratatui's Paragraph::scroll expects).
     scroll_offset: u16,
+    /// When true, render() pins scroll_offset to max so new content is always visible.
+    stick_to_bottom: bool,
+    /// Last rendered area height — used by scroll_up/down to scroll by page.
+    last_area_height: u16,
     pub show_detailed_transcript: bool,
 }
 
@@ -42,6 +47,8 @@ impl ScrollArea {
             messages: Vec::new(),
             events: Vec::new(),
             scroll_offset: 0,
+            stick_to_bottom: true,
+            last_area_height: 24,
             show_detailed_transcript: false,
         }
     }
@@ -75,14 +82,18 @@ impl ScrollArea {
     }
 
     pub fn scroll_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+        let page = self.last_area_height.saturating_sub(2).max(1);
+        self.scroll_offset = self.scroll_offset.saturating_sub(page);
+        self.stick_to_bottom = false;
     }
 
     pub fn scroll_down(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_add(1);
+        let page = self.last_area_height.saturating_sub(2).max(1);
+        self.scroll_offset = self.scroll_offset.saturating_add(page);
+        // render() will clamp to max_offset and re-enable stick_to_bottom if needed
     }
 
-    pub fn render(&self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect) {
         if area.height == 0 {
             return;
         }
@@ -248,12 +259,24 @@ impl ScrollArea {
             }
         }
 
-        let height = area.height as usize;
-        let total = lines.len();
-        let max_offset = total.saturating_sub(height);
-        let offset = (self.scroll_offset as usize).min(max_offset);
-        let paragraph = Paragraph::new(lines).scroll((offset as u16, 0));
-        f.render_widget(paragraph, area);
+        self.last_area_height = area.height;
+
+        // Compute the true visual row count after wrapping before consuming lines.
+        let total_visual: u16 = lines.iter().map(|l| visual_rows(l, area.width)).sum();
+        let max_offset = total_visual.saturating_sub(area.height);
+
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+
+        if self.stick_to_bottom {
+            self.scroll_offset = max_offset;
+        } else {
+            self.scroll_offset = self.scroll_offset.min(max_offset);
+            if self.scroll_offset >= max_offset {
+                self.stick_to_bottom = true;
+            }
+        }
+
+        f.render_widget(paragraph.scroll((self.scroll_offset, 0)), area);
     }
 }
 
@@ -389,6 +412,19 @@ fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
             }
         }
     }
+}
+
+/// Compute how many terminal rows a single `Line` occupies when wrapped at `width` columns.
+/// Uses char count as a proxy for display width (accurate for ASCII; close enough for most TUI text).
+fn visual_rows(line: &Line, width: u16) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+    let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if char_count == 0 {
+        return 1;
+    }
+    ((char_count + width as usize - 1) / width as usize) as u16
 }
 
 fn render_tool_result(lines: &mut Vec<Line>, r: &ToolResultRender, dim: &Style) {
