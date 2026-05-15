@@ -20,5 +20,6 @@ target/
 Thumbs.db
 
 # Worktrees / local state
-.claude/
+.claude/*
+!.claude/launch.json
 .worktrees/
