@@ -64,7 +64,7 @@ impl Tool for ReadTool {
                 return ToolResult {
                     content: "Missing required parameter: file_path".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -76,7 +76,7 @@ impl Tool for ReadTool {
                 return ToolResult {
                     content: format!("Access denied: reading '{}' is not allowed", dangerous),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
             if let Some(ref canon) = canonical {
@@ -84,7 +84,7 @@ impl Tool for ReadTool {
                     return ToolResult {
                         content: format!("Access denied: reading '{}' is not allowed", dangerous),
                         is_error: true,
-                        metadata: None,
+                        ..Default::default()
                     };
                 }
             }
@@ -96,7 +96,7 @@ impl Tool for ReadTool {
             return ToolResult {
                 content: format!("File not found: {}", file_path),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -135,6 +135,7 @@ impl Tool for ReadTool {
                 ),
                 is_error: false,
                 metadata: Some(meta),
+                inject_messages: Vec::new(),
             };
         }
 
@@ -167,7 +168,7 @@ impl ReadTool {
                 return ToolResult {
                     content: format!("Error reading file {}: {}", file_path, e),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -183,7 +184,7 @@ impl ReadTool {
                     offset, total_lines
                 ),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -214,6 +215,7 @@ impl ReadTool {
             content: result,
             is_error: false,
             metadata: Some(meta),
+            inject_messages: Vec::new(),
         }
     }
 
@@ -224,7 +226,7 @@ impl ReadTool {
                 return ToolResult {
                     content: format!("Error reading notebook {}: {}", file_path, e),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -281,12 +283,13 @@ impl ReadTool {
                     content: result,
                     is_error: false,
                     metadata: Some(meta),
+                    inject_messages: Vec::new(),
                 }
             }
             Err(e) => ToolResult {
                 content: format!("Error parsing notebook {}: {}", file_path, e),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             },
         }
     }
@@ -298,7 +301,7 @@ impl ReadTool {
                 return ToolResult {
                     content: format!("Error reading image {}: {}", file_path, e),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -323,6 +326,7 @@ impl ReadTool {
             content: format!("Image file: {}\nSize: {}", file_path, size_str),
             is_error: false,
             metadata: Some(meta),
+            inject_messages: Vec::new(),
         }
     }
 }

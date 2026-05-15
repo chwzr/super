@@ -30,13 +30,24 @@ pub async fn run() {
         agent_registry,
     );
 
-    // Load skills and (re-)register the SkillTool with loaded skills.
-    let skills = crate::skills::loader::load_all_skills();
-    if !skills.is_empty() {
-        registry.register(Arc::new(crate::tools::skill::SkillTool {
-            skills: skills.clone(),
-        }));
+    // Load skills: bundled (embedded in binary) + user/project.
+    // Bundled skills are extracted to ~/.super/plugins/superpowers/ on first run.
+    let bundled_skills = crate::skills::bundled::extract_bundled_skills();
+    let local_skills  = crate::skills::loader::load_all_skills();
+
+    // Merge: local (user/project) overrides bundled on name collision.
+    let mut by_name: std::collections::HashMap<String, crate::skills::loader::Skill> =
+        bundled_skills.into_iter().map(|s| (s.name.clone(), s)).collect();
+    for s in local_skills {
+        by_name.insert(s.name.clone(), s);
     }
+    let all_skills: Vec<crate::skills::loader::Skill> = by_name.into_values().collect();
+
+    // Register SkillTool (always — even when no skills are loaded the tool must
+    // exist so the model can receive a clear error on invocation).
+    registry.register(Arc::new(crate::tools::skill::SkillTool {
+        skills: all_skills.clone(),
+    }));
 
     // Session bus is the spine for all engine events. The TUI will subscribe
     // in a later task; for now we just hand the engine its publishing handle.
@@ -48,25 +59,17 @@ pub async fn run() {
     let sidechain_dir = crate::conversation::sidechain::default_sidechain_dir(bus.session_id());
     crate::conversation::sidechain::spawn_sidechain_writer(bus.clone(), sidechain_dir);
 
-    let engine = crate::conversation::engine::ConversationEngine::new(
+    let mut engine = crate::conversation::engine::ConversationEngine::new(
         store.clone(),
         config.clone(),
         registry.clone(),
         bus.clone(),
     );
+    engine.skills = Arc::new(all_skills);
 
     // Build system prompt.
     let cwd = std::env::current_dir().unwrap_or_default();
     let mut system_prompt = crate::conversation::system_prompt::SystemPrompt::build(&cwd);
-
-    // Add skill descriptions to system prompt.
-    if !skills.is_empty() {
-        let skill_desc: Vec<String> = skills
-            .iter()
-            .map(|s| format!("- {}: {}", s.name, s.description))
-            .collect();
-        system_prompt.add_section(format!("Available skills:\n{}", skill_desc.join("\n")));
-    }
 
     // Add tool descriptions.
     let tool_descriptions =

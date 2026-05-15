@@ -46,7 +46,7 @@ impl Tool for GlobTool {
                 return ToolResult {
                     content: "Missing required parameter: pattern".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -114,7 +114,7 @@ impl Tool for GlobTool {
                 return ToolResult {
                     content: format!("Invalid glob pattern '{}': {}", pattern, e),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         }
@@ -154,6 +154,7 @@ impl Tool for GlobTool {
             content: result,
             is_error: false,
             metadata: Some(meta),
+            inject_messages: Vec::new(),
         }
     }
 }

@@ -45,7 +45,7 @@ impl Tool for ConfigTool {
                 return ToolResult {
                     content: "Missing required parameter: key".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -64,7 +64,7 @@ impl Tool for ConfigTool {
                 return ToolResult {
                     content: "Cannot set configuration: settings is not an object".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
 
@@ -75,7 +75,7 @@ impl Tool for ConfigTool {
             ToolResult {
                 content: format!("Set configuration key '{}'", key),
                 is_error: false,
-                metadata: None,
+                ..Default::default()
             }
         } else {
             // Read mode: get the value
@@ -86,7 +86,7 @@ impl Tool for ConfigTool {
                     return ToolResult {
                         content: format!("Key '{}': settings is not an object", key),
                         is_error: true,
-                        metadata: None,
+                        ..Default::default()
                     };
                 }
             };
@@ -96,7 +96,7 @@ impl Tool for ConfigTool {
                     ToolResult {
                         content: format!("{}: {}", key, serde_json::to_string_pretty(val).unwrap_or_default()),
                         is_error: false,
-                        metadata: None,
+                        ..Default::default()
                     }
                 }
                 None => {
@@ -106,12 +106,12 @@ impl Tool for ConfigTool {
                         Some(val) => ToolResult {
                             content: format!("{}: {}", key, serde_json::to_string_pretty(&val).unwrap_or_default()),
                             is_error: false,
-                            metadata: None,
+                            ..Default::default()
                         },
                         None => ToolResult {
                             content: format!("Key '{}' not found in configuration", key),
                             is_error: true,
-                            metadata: None,
+                            ..Default::default()
                         },
                     }
                 }

@@ -29,6 +29,7 @@ impl Tool for SendMessageTool {
                 ("channel".into(), channel.into()),
                 ("message_length".into(), message.len().to_string()),
             ].into()),
+            inject_messages: Vec::new(),
         }
     }
 }

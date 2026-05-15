@@ -7,6 +7,21 @@ pub struct ToolResult {
     pub is_error: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
+    /// Additional text blocks to inject into the conversation alongside
+    /// the tool_result. Never serialized — in-process only.
+    #[serde(skip)]
+    pub inject_messages: Vec<String>,
+}
+
+impl Default for ToolResult {
+    fn default() -> Self {
+        ToolResult {
+            content: String::new(),
+            is_error: false,
+            metadata: None,
+            inject_messages: Vec::new(),
+        }
+    }
 }
 
 pub struct ToolCallContext {
@@ -60,6 +75,25 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_result_default_has_empty_inject_messages() {
+        let r = ToolResult::default();
+        assert!(r.inject_messages.is_empty());
+        assert!(!r.is_error);
+    }
+
+    #[test]
+    fn tool_result_inject_messages_not_in_json() {
+        let r = ToolResult {
+            content: "hello".into(),
+            inject_messages: vec!["injected".into()],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("inject_messages"), "inject_messages must not appear in JSON: {json}");
+        assert!(!json.contains("injected"));
+    }
 
     #[test]
     fn tool_call_context_carries_auto_deny_flag() {

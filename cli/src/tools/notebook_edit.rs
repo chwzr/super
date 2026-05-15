@@ -56,7 +56,7 @@ impl Tool for NotebookEditTool {
                 return ToolResult {
                     content: "Missing required parameter: notebook_path".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -67,7 +67,7 @@ impl Tool for NotebookEditTool {
                 return ToolResult {
                     content: "Missing required parameter: new_source".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -84,7 +84,7 @@ impl Tool for NotebookEditTool {
             return ToolResult {
                 content: format!("Notebook not found: {}", notebook_path),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -94,7 +94,7 @@ impl Tool for NotebookEditTool {
                 return ToolResult {
                     content: format!("Error reading notebook {}: {}", notebook_path, e),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -108,7 +108,7 @@ impl Tool for NotebookEditTool {
                         notebook_path, e
                     ),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -126,7 +126,7 @@ impl Tool for NotebookEditTool {
                         notebook_path
                     ),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -158,7 +158,7 @@ impl Tool for NotebookEditTool {
                         return ToolResult {
                             content: "cell_type is required when edit_mode is 'insert'".to_string(),
                             is_error: true,
-                            metadata: None,
+                            ..Default::default()
                         };
                     }
                 };
@@ -178,7 +178,7 @@ impl Tool for NotebookEditTool {
                                     cid, notebook_path
                                 ),
                                 is_error: true,
-                                metadata: None,
+                                ..Default::default()
                             };
                         }
                     }
@@ -200,7 +200,7 @@ impl Tool for NotebookEditTool {
                 return ToolResult {
                     content: format!("Invalid edit_mode '{}'. Must be 'replace', 'insert', or 'delete'.", edit_mode),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         }
@@ -215,7 +215,7 @@ impl Tool for NotebookEditTool {
                 return ToolResult {
                     content: format!("Error serializing notebook: {}", e),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -233,12 +233,13 @@ impl Tool for NotebookEditTool {
                     ),
                     is_error: false,
                     metadata: Some(meta),
+                    inject_messages: Vec::new(),
                 }
             }
             Err(e) => ToolResult {
                 content: format!("Error writing notebook {}: {}", notebook_path, e),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             },
         }
     }
@@ -262,7 +263,7 @@ fn find_cell_index(
                         cid, notebook_path
                     ),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 }),
             }
         }
@@ -271,7 +272,7 @@ fn find_cell_index(
                 Err(ToolResult {
                     content: format!("Notebook {} has no cells to edit", notebook_path),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 })
             } else {
                 Ok(0)

@@ -28,7 +28,7 @@ impl Tool for ExitWorktreeTool {
                       This feature will allow exiting isolated worktree sessions."
                 .into(),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

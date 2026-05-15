@@ -29,10 +29,10 @@ impl Tool for WebFetchTool {
 
         // Validate URL
         if url.len() > 2000 {
-            return ToolResult { content: "URL exceeds 2000 character limit".into(), is_error: true, metadata: None };
+            return ToolResult { content: "URL exceeds 2000 character limit".into(), is_error: true, ..Default::default() };
         }
         if url.contains('@') {
-            return ToolResult { content: "URLs with credentials are not supported".into(), is_error: true, metadata: None };
+            return ToolResult { content: "URLs with credentials are not supported".into(), is_error: true, ..Default::default() };
         }
 
         // Upgrade HTTP to HTTPS
@@ -56,12 +56,12 @@ impl Tool for WebFetchTool {
                     ToolResult {
                         content: format!("Content from {url}:\n\n{truncated}\n\nSources:\n- [{url}]({url})"),
                         is_error: false,
-                        metadata: None,
+                        ..Default::default()
                     }
                 }
-                Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, metadata: None },
+                Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, ..Default::default() },
             },
-            Err(e) => ToolResult { content: format!("Failed to fetch {url}: {e}"), is_error: true, metadata: None },
+            Err(e) => ToolResult { content: format!("Failed to fetch {url}: {e}"), is_error: true, ..Default::default() },
         }
     }
 }

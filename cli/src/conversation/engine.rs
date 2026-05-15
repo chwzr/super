@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use futures_util::StreamExt;
@@ -43,6 +44,12 @@ pub struct ConversationEngine {
     /// driven by this engine. `true` for async subagent engines, `false`
     /// everywhere else (root, sync subagents).
     pub auto_deny_prompts: bool,
+    /// All loaded skills (bundled + user + project). Used to build the
+    /// per-session skill listing injected on the first user turn.
+    pub skills: Arc<Vec<crate::skills::loader::Skill>>,
+    /// Whether the skill listing has been injected this session.
+    /// AtomicBool because process_prompt takes &self.
+    pub skill_listing_sent: Arc<AtomicBool>,
 }
 
 impl ConversationEngine {
@@ -62,6 +69,8 @@ impl ConversationEngine {
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
+            skills: Arc::new(Vec::new()),
+            skill_listing_sent: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -89,6 +98,8 @@ impl ConversationEngine {
             history_override: Some(Vec::new()),
             permission_mode_override,
             auto_deny_prompts,
+            skills: Arc::new(Vec::new()),
+            skill_listing_sent: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -130,16 +141,31 @@ impl ConversationEngine {
             .history_override
             .clone()
             .unwrap_or_else(|| self.store.get_state().history.clone());
+        // Reset listing flag when starting a fresh conversation.
+        if history.is_empty() {
+            self.skill_listing_sent.store(false, Ordering::Relaxed);
+        }
+
+        let mut user_content: Vec<ContentBlockFinal> = Vec::new();
+
+        // Inject skill listing on first turn of each session.
+        if !self.skill_listing_sent.swap(true, Ordering::Relaxed) && !self.skills.is_empty() {
+            let listing = build_skill_listing(&self.skills);
+            user_content.push(ContentBlockFinal::Text { text: listing });
+        }
+
         let user_block = ContentBlockFinal::Text { text: user_input.clone() };
+        user_content.push(user_block);
+
         history.push(HistoryEntry {
             role: Role::User,
-            content: vec![user_block.clone()],
+            content: user_content.clone(),
         });
 
         self.bus.emit(BusMessage::User {
             message: UserPayload {
                 role: "user".to_string(),
-                content: vec![user_block],
+                content: user_content,
             },
             parent_tool_use_id: parent_tool_use_id.clone(),
             uuid: Uuid::new_v4(),
@@ -442,6 +468,48 @@ fn clip(s: &str, max: usize) -> String {
     }
 }
 
+fn build_skill_listing(skills: &[crate::skills::loader::Skill]) -> String {
+    use crate::skills::loader::Skill;
+
+    let mut model_only: Vec<&Skill> = skills.iter().filter(|s| !s.user_invocable).collect();
+    let mut user_facing: Vec<&Skill> = skills.iter().filter(|s| s.user_invocable).collect();
+    model_only.sort_by(|a, b| a.name.cmp(&b.name));
+    user_facing.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut out = String::from("<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n");
+
+    for s in &model_only {
+        out.push_str(&format!("- {}\n", format_skill_entry(s)));
+    }
+
+    if !user_facing.is_empty() {
+        if !model_only.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("User-invocable skills (user can type /<name>):\n\n");
+        for s in &user_facing {
+            out.push_str(&format!("- {}\n", format_skill_entry(s)));
+        }
+    }
+
+    out.push_str("</system-reminder>");
+    out
+}
+
+fn format_skill_entry(skill: &crate::skills::loader::Skill) -> String {
+    const MAX: usize = 250;
+    let full = match &skill.when_to_use {
+        Some(w) => format!("{}: {} — {}", skill.name, skill.description, w),
+        None    => format!("{}: {}", skill.name, skill.description),
+    };
+    if full.chars().count() > MAX {
+        let truncated: String = full.chars().take(MAX - 1).collect();
+        format!("{truncated}…")
+    } else {
+        full
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,6 +668,8 @@ mod tests {
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
+            skills: std::sync::Arc::new(Vec::new()),
+            skill_listing_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         assert_eq!(engine.effective_session_id(), "s-root");
     }
@@ -623,6 +693,8 @@ mod tests {
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
+            skills: std::sync::Arc::new(Vec::new()),
+            skill_listing_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         assert_eq!(engine.effective_session_id(), "agent-1");
     }

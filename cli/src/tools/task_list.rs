@@ -22,7 +22,7 @@ impl Tool for TaskListTool {
             return ToolResult {
                 content: "No tasks.".into(),
                 is_error: false,
-                metadata: None,
+                ..Default::default()
             };
         }
         let mut lines = vec!["Tasks:".to_string()];
@@ -33,7 +33,7 @@ impl Tool for TaskListTool {
         ToolResult {
             content: lines.join("\n"),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

@@ -31,7 +31,7 @@ impl Tool for MonitorTool {
                       This feature will stream events from long-running scripts in a future release."
                 .into(),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

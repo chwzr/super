@@ -55,7 +55,7 @@ impl Tool for GrepTool {
                 return ToolResult {
                     content: "Missing required parameter: pattern".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -66,7 +66,7 @@ impl Tool for GrepTool {
                 return ToolResult {
                     content: format!("Invalid regex pattern '{}': {}", pattern_str, e),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -216,6 +216,7 @@ impl Tool for GrepTool {
             content: result,
             is_error: false,
             metadata: Some(meta),
+            inject_messages: Vec::new(),
         }
     }
 }

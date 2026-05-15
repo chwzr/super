@@ -43,7 +43,7 @@ impl Tool for TaskCreateTool {
         ToolResult {
             content: format!("Task created: {subject}"),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

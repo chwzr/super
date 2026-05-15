@@ -31,7 +31,7 @@ impl Tool for TaskStopTool {
             return ToolResult {
                 content: format!("Task not found: {task_id}"),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -44,7 +44,7 @@ impl Tool for TaskStopTool {
         ToolResult {
             content: format!("Task {task_id} stopped."),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

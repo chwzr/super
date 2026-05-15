@@ -38,12 +38,13 @@ impl Tool for TaskOutputTool {
                         ("task_id".into(), task.id.clone()),
                         ("status".into(), format!("{:?}", task.status)),
                     ].into()),
+                    inject_messages: Vec::new(),
                 }
             }
             None => ToolResult {
                 content: format!("Task not found: {task_id}"),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             },
         }
     }

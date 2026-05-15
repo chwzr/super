@@ -50,7 +50,7 @@ impl Tool for EditTool {
                 return ToolResult {
                     content: "Missing required parameter: file_path".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -61,7 +61,7 @@ impl Tool for EditTool {
                 return ToolResult {
                     content: "Missing required parameter: old_string".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -72,7 +72,7 @@ impl Tool for EditTool {
                 return ToolResult {
                     content: "Missing required parameter: new_string".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -86,7 +86,7 @@ impl Tool for EditTool {
             return ToolResult {
                 content: "old_string and new_string must be different".to_string(),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -95,7 +95,7 @@ impl Tool for EditTool {
             return ToolResult {
                 content: format!("File not found: {}", file_path),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -105,7 +105,7 @@ impl Tool for EditTool {
                 return ToolResult {
                     content: format!("Error reading file {}: {}", file_path, e),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -119,7 +119,7 @@ impl Tool for EditTool {
                     file_path
                 ),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -130,7 +130,7 @@ impl Tool for EditTool {
                     occurrences, file_path
                 ),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -164,12 +164,13 @@ impl Tool for EditTool {
                     ),
                     is_error: false,
                     metadata: Some(meta),
+                    inject_messages: Vec::new(),
                 }
             }
             Err(e) => ToolResult {
                 content: format!("Error writing file {}: {}", file_path, e),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             },
         }
     }

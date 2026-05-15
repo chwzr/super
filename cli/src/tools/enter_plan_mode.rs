@@ -25,7 +25,7 @@ impl Tool for EnterPlanModeTool {
         ToolResult {
             content: "Entered plan mode. Only read-only tools are available.".into(),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

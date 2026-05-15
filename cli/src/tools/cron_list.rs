@@ -24,7 +24,7 @@ impl Tool for CronListTool {
     async fn call(&self, _input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
         let jobs = self.jobs.lock().unwrap();
         if jobs.is_empty() {
-            return ToolResult { content: "No cron jobs registered.".into(), is_error: false, metadata: None };
+            return ToolResult { content: "No cron jobs registered.".into(), is_error: false, ..Default::default() };
         }
 
         let mut content = String::from("Registered cron jobs:\n");
@@ -37,6 +37,6 @@ impl Tool for CronListTool {
                 durable = job.durable,
             ));
         }
-        ToolResult { content, is_error: false, metadata: None }
+        ToolResult { content, is_error: false, ..Default::default() }
     }
 }

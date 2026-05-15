@@ -25,7 +25,7 @@ impl Tool for ToolSearchTool {
                       This tool requires access to the tool registry, which will be wired up in a future task."
                 .into(),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

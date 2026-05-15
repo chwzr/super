@@ -25,7 +25,7 @@ impl Tool for AskUserQuestionTool {
             return ToolResult {
                 content: "Permission denied: async subagents cannot prompt the user.".into(),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
         let question = input["question"].as_str().unwrap_or("");
@@ -36,6 +36,7 @@ impl Tool for AskUserQuestionTool {
                 ("question".into(), question.into()),
                 ("needs_response".into(), "true".into()),
             ].into()),
+            inject_messages: Vec::new(),
         }
     }
 }

@@ -27,12 +27,12 @@ impl Tool for StructuredOutputTool {
             Some(v) => ToolResult {
                 content: v.to_string(),
                 is_error: false,
-                metadata: None,
+                ..Default::default()
             },
             None => ToolResult {
                 content: "StructuredOutput: no value provided".into(),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             },
         }
     }

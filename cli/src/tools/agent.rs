@@ -143,6 +143,7 @@ impl Tool for AgentTool {
                         m.insert("agent_type".to_string(), agent_def.agent_type.clone());
                         m
                     }),
+                    inject_messages: Vec::new(),
                 },
                 Err(e) => err(&format!("Agent failed: {e}")),
             };
@@ -203,12 +204,13 @@ impl Tool for AgentTool {
                 m.insert("async".into(), "true".into());
                 m
             }),
+            inject_messages: Vec::new(),
         }
     }
 }
 
 fn err(msg: &str) -> ToolResult {
-    ToolResult { content: msg.to_string(), is_error: true, metadata: None }
+    ToolResult { content: msg.to_string(), is_error: true, ..Default::default() }
 }
 
 fn build_child_system_prompt(agent: &AgentDefinition) -> SystemPrompt {
