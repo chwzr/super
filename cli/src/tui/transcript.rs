@@ -111,10 +111,19 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                         (TranscriptItem::ToolCall { input, .. }, BlockDelta::InputJsonDelta { partial_json }) => {
                             // Accumulate partial JSON in a side string under
                             // "__partial__". We finalize on ContentBlockStop.
-                            let cur = input.get("__partial__")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                            // If the ContentBlockStart already delivered a
+                            // non-empty input (rare but allowed by the spec),
+                            // seed `__partial__` from the existing object so
+                            // the prefix isn't lost.
+                            let cur = if let Some(partial) = input.get("__partial__").and_then(|v| v.as_str()) {
+                                partial.to_string()
+                            } else if input.is_object() && !input.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                                // Serialize the prior input so concatenation
+                                // remains valid (or at least recoverable) JSON.
+                                serde_json::to_string(input).unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
                             let next = format!("{cur}{partial_json}");
                             *input = serde_json::json!({"__partial__": next});
                         }
@@ -142,7 +151,7 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
             BusMessage::ToolProgress { tool_use_id, elapsed_seconds, .. } => {
                 if let Some(&pos) = tool_use_idx.get(tool_use_id) {
                     if let TranscriptItem::ToolCall { elapsed_ms, .. } = &mut out[pos] {
-                        *elapsed_ms = (*elapsed_seconds as u64) * 1000;
+                        *elapsed_ms = (*elapsed_seconds * 1000.0) as u64;
                     }
                 }
             }
@@ -308,5 +317,34 @@ mod tests {
         let t = fold(&events, None);
         assert_eq!(t.len(), 1);
         assert!(matches!(&t[0], TranscriptItem::AssistantText { text, .. } if text == "hi"));
+    }
+
+    #[test]
+    fn tool_progress_preserves_sub_second_precision() {
+        let events = vec![
+            env(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::ToolUse {
+                    id: "tu_p".into(), name: "Bash".into(), input: serde_json::json!({}),
+                },
+            }),
+            env(StreamEvent::ContentBlockStop { index: 0 }),
+            BusMessage::ToolProgress {
+                tool_use_id: "tu_p".into(),
+                tool_name: "Bash".into(),
+                elapsed_seconds: 1.5,
+                parent_tool_use_id: None,
+                uuid: Uuid::new_v4(),
+                session_id: "s1".into(),
+            },
+        ];
+        let t = fold(&events, None);
+        assert_eq!(t.len(), 1);
+        match &t[0] {
+            TranscriptItem::ToolCall { elapsed_ms, .. } => {
+                assert_eq!(*elapsed_ms, 1500, "1.5s should be 1500ms not 1000ms");
+            }
+            other => panic!("wrong: {other:?}"),
+        }
     }
 }
