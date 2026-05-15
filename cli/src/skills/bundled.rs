@@ -5,7 +5,7 @@ include!(concat!(env!("OUT_DIR"), "/bundled_gen.rs"));
 
 use super::loader::{LoadedFrom, Skill};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Extract all bundled skills to `~/.super/plugins/superpowers/` (idempotent)
 /// and return them as `Skill` objects. Extraction failures are logged and
@@ -20,12 +20,14 @@ pub fn extract_bundled_skills() -> Vec<Skill> {
     let mut skills = Vec::new();
     for def in BUNDLED_SKILLS {
         let skill_dir = root.join(def.name);
-        if let Err(e) = extract_skill(def, &skill_dir) {
-            eprintln!("[super] warning: could not extract skill '{}': {e}", def.name);
-        }
-        // Always parse from in-memory content (extraction may have already
-        // existed; re-reading disk is not necessary and adds I/O).
-        if let Some(skill) = skill_from_def(def, Some(skill_dir)) {
+        let base = match extract_skill(def, &skill_dir) {
+            Ok(()) => Some(skill_dir),
+            Err(e) => {
+                eprintln!("[super] warning: could not extract skill '{}': {e}", def.name);
+                None
+            }
+        };
+        if let Some(skill) = skill_from_def(def, base) {
             skills.push(skill);
         }
     }
@@ -36,20 +38,25 @@ fn bundled_root() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".super").join("plugins").join("superpowers"))
 }
 
-fn extract_skill(def: &BundledSkillDef, skill_dir: &PathBuf) -> std::io::Result<()> {
+fn extract_skill(def: &BundledSkillDef, skill_dir: &Path) -> std::io::Result<()> {
     for file in def.files {
         let target = skill_dir.join(file.rel_path);
         if target.exists() {
-            continue; // idempotent
+            continue; // idempotent fast path
         }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut fh = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true) // O_EXCL: fail if already exists (race-safe)
-            .open(&target)?;
-        fh.write_all(file.content.as_bytes())?;
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+            Ok(mut fh) => {
+                if let Err(e) = fh.write_all(file.content.as_bytes()) {
+                    let _ = std::fs::remove_file(&target); // best-effort cleanup on partial write
+                    return Err(e);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
     }
     Ok(())
 }
