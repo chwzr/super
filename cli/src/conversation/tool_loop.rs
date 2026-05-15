@@ -56,6 +56,7 @@ pub async fn run_tool_uses(
             parent_tool_use_id: parent_tool_use_id.clone(),
             bus: Some(bus.clone()),
             auto_deny_prompts,
+            tool_use_id: id.clone(),
         };
         let bus_for_task = bus.clone();
         let tool_name = tool.name().to_string();
@@ -150,6 +151,7 @@ pub async fn run_tool_uses(
             parent_tool_use_id: parent_tool_use_id.clone(),
             bus: Some(bus.clone()),
             auto_deny_prompts,
+            tool_use_id: id.clone(),
         };
 
         // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
@@ -401,6 +403,45 @@ mod tests {
         ).await;
 
         assert_eq!(seen.lock().unwrap().clone().as_deref(), Some("tu_parent"));
+    }
+
+    #[tokio::test]
+    async fn run_tool_uses_passes_current_tool_use_id_to_context() {
+        use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+        use std::sync::{Arc, Mutex};
+
+        struct CaptureTool { seen: Arc<Mutex<Option<String>>> }
+        #[async_trait::async_trait]
+        impl Tool for CaptureTool {
+            fn name(&self) -> &str { "Capture2" }
+            fn description(&self) -> &str { "capture" }
+            fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext) -> ToolResult {
+                *self.seen.lock().unwrap() = Some(ctx.tool_use_id.clone());
+                ToolResult { content: "ok".into(), is_error: false, metadata: None }
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let store = Arc::new(Store::new());
+        let agent_reg = Arc::new(crate::agents::AgentRegistry::built_in_only());
+        let registry = ToolRegistry::new(store, CliConfig::default(), agent_reg);
+        registry.register(Arc::new(CaptureTool { seen: seen.clone() }));
+
+        let bus = Arc::new(SessionBus::new("s-root".into()));
+        let _ = run_tool_uses(
+            &registry,
+            vec![("tu_actual".into(), "Capture2".into(), serde_json::json!({}))],
+            std::env::current_dir().unwrap(),
+            PermissionMode::Default,
+            None,
+            bus,
+            None,
+            "test-session".into(),
+            false,
+        ).await;
+
+        assert_eq!(seen.lock().unwrap().clone().as_deref(), Some("tu_actual"));
     }
 
     /// A panicking tool MUST still produce a ToolResult with the correct

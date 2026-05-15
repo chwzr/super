@@ -26,6 +26,10 @@ pub struct ToolCallContext {
     /// permission prompts, etc.) must auto-deny and return an error result.
     /// Set by AgentTool for async subagents.
     pub auto_deny_prompts: bool,
+    /// The `tool_use_id` of the in-flight tool_use block that invoked this
+    /// tool. Empty string is acceptable when constructed outside the tool
+    /// loop (e.g. unit tests that aren't testing this field).
+    pub tool_use_id: String,
 }
 
 #[async_trait::async_trait]
@@ -68,7 +72,9 @@ mod tests {
             parent_tool_use_id: None,
             bus: None,
             auto_deny_prompts: true,
+            tool_use_id: "tu_test".into(),
         };
         assert!(ctx.auto_deny_prompts);
+        assert_eq!(ctx.tool_use_id, "tu_test");
     }
 }

@@ -81,15 +81,10 @@ impl Tool for AgentTool {
             return err("Task tool requires bus in ToolCallContext");
         };
 
-        // The actual invoking tool_use_id is set by tool_loop when populating
-        // ctx.parent_tool_use_id BUT note that's the parent CHAIN id, not the
-        // current tool_use_id. For Task tool spawning a NEW subagent, the
-        // parent_tool_use_id we want stamped on the CHILD's events is the
-        // tool_use_id of THIS Task call. tool_loop currently passes the chain
-        // id (or None at root). We use ctx.parent_tool_use_id as a best-effort
-        // placeholder; Task 17 introduces ctx.tool_use_id to fix this properly.
-        let parent_tool_use_id = ctx.parent_tool_use_id.clone()
-            .unwrap_or_else(|| format!("tu_{}", Uuid::new_v4()));
+        // The child's events must be stamped with the tool_use_id of THIS
+        // Task invocation — not the chain id (`ctx.parent_tool_use_id`).
+        // The tool_loop populates ctx.tool_use_id with the invoking block's id.
+        let parent_tool_use_id = ctx.tool_use_id.clone();
 
         // 4. Build child execution config
         let agent_id = Uuid::new_v4().to_string();
@@ -228,6 +223,7 @@ mod tests {
             parent_tool_use_id: None,
             bus: Some(bus),
             auto_deny_prompts: false,
+            tool_use_id: String::new(),
         };
         let input = serde_json::json!({
             "description": "do thing",
