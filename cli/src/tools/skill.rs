@@ -29,7 +29,7 @@ impl Tool for SkillTool {
         let args = input["args"].as_str().unwrap_or("");
 
         if skill_name.is_empty() {
-            return ToolResult { content: "No skill name provided.".into(), is_error: true, metadata: None };
+            return ToolResult { content: "No skill name provided.".into(), is_error: true, ..Default::default() };
         }
 
         // Find the skill by name
@@ -47,7 +47,7 @@ impl Tool for SkillTool {
                 } else {
                     format!("{}\n\n---\nArguments: {}", s.content, args)
                 };
-                ToolResult { content, is_error: false, metadata: None }
+                ToolResult { content, is_error: false, ..Default::default() }
             }
             None => {
                 let available: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
@@ -57,7 +57,7 @@ impl Tool for SkillTool {
                         if available.is_empty() { "none loaded".into() } else { available.join(", ") }
                     ),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 }
             }
         }

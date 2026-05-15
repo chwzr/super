@@ -27,7 +27,7 @@ impl Tool for EnterWorktreeTool {
                       This feature will create isolated worktrees for feature development."
                 .into(),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

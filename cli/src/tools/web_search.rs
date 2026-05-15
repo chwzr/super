@@ -43,7 +43,7 @@ impl Tool for WebSearchTool {
             .unwrap_or_default();
 
         if !_blocked.is_empty() && !_allowed.is_empty() {
-            return ToolResult { content: "Cannot specify both allowed_domains and blocked_domains".into(), is_error: true, metadata: None };
+            return ToolResult { content: "Cannot specify both allowed_domains and blocked_domains".into(), is_error: true, ..Default::default() };
         }
 
         // Use DuckDuckGo Instant Answer API as a simple web search fallback
@@ -97,11 +97,11 @@ impl Tool for WebSearchTool {
                     results.push_str(&url_encode(query));
                     results.push_str(")");
 
-                    ToolResult { content: results, is_error: false, metadata: None }
+                    ToolResult { content: results, is_error: false, ..Default::default() }
                 }
-                Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, metadata: None },
+                Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, ..Default::default() },
             },
-            Err(e) => ToolResult { content: format!("Search failed: {e}"), is_error: true, metadata: None },
+            Err(e) => ToolResult { content: format!("Search failed: {e}"), is_error: true, ..Default::default() },
         }
     }
 }

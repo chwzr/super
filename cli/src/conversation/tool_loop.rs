@@ -105,12 +105,12 @@ pub async fn run_tool_uses(
                         downcast_panic(&e.into_panic())
                     ),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 },
                 Err(e) => ToolResult {
                     content: format!("Tool task error: {e}"),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 },
             };
             ticker.abort();
@@ -134,7 +134,7 @@ pub async fn run_tool_uses(
                     ToolResult {
                         content: format!("Tool task join error: {e}"),
                         is_error: true,
-                        metadata: None,
+                        ..Default::default()
                     },
                 ));
             }
@@ -228,7 +228,7 @@ impl Tool for MissingTool {
         ToolResult {
             content: format!("Unknown tool: {}", self.name),
             is_error: true,
-            metadata: None,
+            ..Default::default()
         }
     }
 }
@@ -376,7 +376,7 @@ mod tests {
             fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
             async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext) -> ToolResult {
                 *self.seen_parent.lock().unwrap() = ctx.parent_tool_use_id.clone();
-                ToolResult { content: "ok".into(), is_error: false, metadata: None }
+                ToolResult { content: "ok".into(), is_error: false, ..Default::default() }
             }
         }
 
@@ -418,7 +418,7 @@ mod tests {
             fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
             async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext) -> ToolResult {
                 *self.seen.lock().unwrap() = Some(ctx.tool_use_id.clone());
-                ToolResult { content: "ok".into(), is_error: false, metadata: None }
+                ToolResult { content: "ok".into(), is_error: false, ..Default::default() }
             }
         }
 

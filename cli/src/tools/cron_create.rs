@@ -47,7 +47,7 @@ impl Tool for CronCreateTool {
             return ToolResult {
                 content: "Invalid cron expression: must have exactly 5 space-separated fields (minute hour day-of-month month day-of-week)".into(),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -60,7 +60,7 @@ impl Tool for CronCreateTool {
         ToolResult {
             content: format!("Cron job created with ID: {id} — \"{cron}\" (recurring: {recurring}, durable: {durable})"),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

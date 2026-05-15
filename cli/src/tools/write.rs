@@ -42,7 +42,7 @@ impl Tool for WriteTool {
                 return ToolResult {
                     content: "Missing required parameter: file_path".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -53,7 +53,7 @@ impl Tool for WriteTool {
                 return ToolResult {
                     content: "Missing required parameter: content".to_string(),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -67,7 +67,7 @@ impl Tool for WriteTool {
                     return ToolResult {
                         content: format!("Error creating parent directories for {}: {}", file_path, e),
                         is_error: true,
-                        metadata: None,
+                        ..Default::default()
                     };
                 }
             }
@@ -85,12 +85,13 @@ impl Tool for WriteTool {
                     ),
                     is_error: false,
                     metadata: Some(meta),
+                    inject_messages: Vec::new(),
                 }
             }
             Err(e) => ToolResult {
                 content: format!("Error writing to {}: {}", file_path, e),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             },
         }
     }

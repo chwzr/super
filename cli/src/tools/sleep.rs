@@ -21,6 +21,6 @@ impl Tool for SleepTool {
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
         let ms = input["duration_ms"].as_u64().unwrap_or(1000).min(300000);
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-        ToolResult { content: format!("Slept for {ms}ms"), is_error: false, metadata: None }
+        ToolResult { content: format!("Slept for {ms}ms"), is_error: false, ..Default::default() }
     }
 }

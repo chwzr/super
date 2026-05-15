@@ -25,6 +25,6 @@ impl Tool for LspTool {
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
         let operation = input["operation"].as_str().unwrap_or("");
         let file_path = input["filePath"].as_str().unwrap_or("");
-        ToolResult { content: format!("LSP {operation} on {file_path} — LSP server integration not yet implemented"), is_error: false, metadata: None }
+        ToolResult { content: format!("LSP {operation} on {file_path} — LSP server integration not yet implemented"), is_error: false, ..Default::default() }
     }
 }

@@ -37,7 +37,7 @@ impl Tool for BashTool {
             return ToolResult {
                 content: format!("Command blocked: {reason}"),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
 
@@ -45,9 +45,9 @@ impl Tool for BashTool {
             match Command::new("bash").arg("-c").arg(command_str).current_dir(&context.cwd).spawn() {
                 Ok(mut c) => {
                     tokio::spawn(async move { c.wait().await.ok(); });
-                    ToolResult { content: "Command launched in background".into(), is_error: false, metadata: None }
+                    ToolResult { content: "Command launched in background".into(), is_error: false, ..Default::default() }
                 }
-                Err(e) => ToolResult { content: format!("Failed to spawn: {e}"), is_error: true, metadata: None },
+                Err(e) => ToolResult { content: format!("Failed to spawn: {e}"), is_error: true, ..Default::default() },
             }
         } else {
             let result = tokio::time::timeout(
@@ -60,10 +60,10 @@ impl Tool for BashTool {
                     let stderr = String::from_utf8_lossy(&out.stderr);
                     let content = if stderr.is_empty() { stdout.to_string() } else { format!("stdout:\n{stdout}\nstderr:\n{stderr}") };
                     let truncated = if content.len() > 50000 { format!("{}...\n[output truncated]", &content[..50000]) } else { content };
-                    ToolResult { content: truncated, is_error: !out.status.success(), metadata: None }
+                    ToolResult { content: truncated, is_error: !out.status.success(), ..Default::default() }
                 }
-                Ok(Err(e)) => ToolResult { content: format!("Command failed: {e}"), is_error: true, metadata: None },
-                Err(_) => ToolResult { content: "Command timed out".into(), is_error: true, metadata: None },
+                Ok(Err(e)) => ToolResult { content: format!("Command failed: {e}"), is_error: true, ..Default::default() },
+                Err(_) => ToolResult { content: "Command timed out".into(), is_error: true, ..Default::default() },
             }
         }
     }

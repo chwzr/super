@@ -28,9 +28,9 @@ impl Tool for CronDeleteTool {
         let mut jobs = self.jobs.lock().unwrap();
 
         if jobs.remove(&id).is_some() {
-            ToolResult { content: format!("Cron job {id} deleted"), is_error: false, metadata: None }
+            ToolResult { content: format!("Cron job {id} deleted"), is_error: false, ..Default::default() }
         } else {
-            ToolResult { content: format!("Cron job {id} not found"), is_error: true, metadata: None }
+            ToolResult { content: format!("Cron job {id} not found"), is_error: true, ..Default::default() }
         }
     }
 }

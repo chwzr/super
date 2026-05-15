@@ -34,13 +34,13 @@ impl Tool for TaskGetTool {
                 ToolResult {
                     content: info,
                     is_error: false,
-                    metadata: None,
+                    ..Default::default()
                 }
             }
             None => ToolResult {
                 content: format!("Task not found: {task_id}"),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             },
         }
     }

@@ -35,7 +35,7 @@ impl Tool for TodoWriteTool {
         ToolResult {
             content: format!("Todo list updated ({todos} items)"),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

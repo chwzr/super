@@ -41,7 +41,7 @@ impl Tool for TaskUpdateTool {
                 return ToolResult {
                     content: format!("Unknown status: {status_str}"),
                     is_error: true,
-                    metadata: None,
+                    ..Default::default()
                 };
             }
         };
@@ -51,7 +51,7 @@ impl Tool for TaskUpdateTool {
             return ToolResult {
                 content: format!("Task not found: {task_id}"),
                 is_error: true,
-                metadata: None,
+                ..Default::default()
             };
         }
         self.store.set_state(move |s| {
@@ -62,7 +62,7 @@ impl Tool for TaskUpdateTool {
         ToolResult {
             content: format!("Task {task_id} updated to {status_str}"),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }

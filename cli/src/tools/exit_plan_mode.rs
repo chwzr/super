@@ -25,7 +25,7 @@ impl Tool for ExitPlanModeTool {
         ToolResult {
             content: "Exited plan mode. Full tool access restored.".into(),
             is_error: false,
-            metadata: None,
+            ..Default::default()
         }
     }
 }
