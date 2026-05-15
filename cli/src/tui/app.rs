@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -20,6 +20,7 @@ use super::slash_menu::SlashMenu;
 use crate::conversation::engine::ConversationEngine;
 use crate::conversation::session_bus::SessionBus;
 use crate::conversation::system_prompt::SystemPrompt;
+use crate::sdk::protocol::BusMessage;
 use crate::state::store::Store;
 use crate::tools::ToolRegistry;
 use crate::tui::modal::{Modal, ModalAction};
@@ -58,7 +59,8 @@ pub struct App {
     store: Arc<Store>,
     engine: ConversationEngine,
     _registry: Arc<ToolRegistry>,
-    _bus: Arc<SessionBus>,
+    bus: Arc<SessionBus>,
+    bus_rx: broadcast::Receiver<BusMessage>,
     system_prompt: SystemPrompt,
     should_quit: bool,
     history: Vec<String>,
@@ -93,6 +95,7 @@ impl App {
             "OpenRouter".to_string(),
             cwd,
         );
+        let bus_rx = bus.subscribe();
         Self {
             header,
             scroll_area: ScrollArea::new(),
@@ -104,7 +107,8 @@ impl App {
             store,
             engine,
             _registry: registry,
-            _bus: bus,
+            bus: bus.clone(),
+            bus_rx,
             system_prompt,
             should_quit: false,
             history: Vec::new(),
@@ -134,10 +138,6 @@ impl App {
                         self.scroll_area.clear();
                     }
                     CommandResult::Prompt(prompt_text) => {
-                        self.scroll_area.push(Message::User(text.clone()));
-                        self.store.set_state(|s| {
-                            s.messages.push(Message::User(prompt_text.clone()));
-                        });
                         self.spawn_engine(prompt_text);
                     }
                     CommandResult::Quit => {
@@ -164,11 +164,6 @@ impl App {
             }
             return;
         }
-        let msg = Message::User(text.clone());
-        self.scroll_area.push(msg);
-        self.store.set_state(|s| {
-            s.messages.push(Message::User(text.clone()));
-        });
         self.spawn_engine(text);
     }
 
@@ -429,6 +424,20 @@ impl App {
     }
 
     fn process_pending(&mut self) {
+        // Drain any BusMessage events the engine has emitted since last tick.
+        loop {
+            match self.bus_rx.try_recv() {
+                Ok(msg) => self.scroll_area.push_event(msg),
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(broadcast::error::TryRecvError::Closed) => break,
+                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                    // Subscriber fell behind by `n` events. Continue catching up.
+                    // The bus is sized for ~256 outstanding events; reaching here
+                    // means a long-stuck render. Log nothing visible — just resync.
+                    let _ = n;
+                }
+            }
+        }
         if let Some(rx) = self.status_fetch.as_mut() {
             match rx.try_recv() {
                 Ok(result) => {
@@ -469,7 +478,7 @@ impl App {
         };
         match rx.try_recv() {
             Ok(EngineEvent::Done {
-                result: Ok(response),
+                result: Ok(_response),
                 elapsed_secs,
             }) => {
                 let verb = self
@@ -477,7 +486,6 @@ impl App {
                     .verb()
                     .map(|v| past_tense(v))
                     .unwrap_or_else(|| "Cogitated".to_string());
-                self.scroll_area.push(Message::Assistant(response));
                 self.scroll_area
                     .push(Message::Trail(format!("{} for {}s", verb, elapsed_secs)));
                 self.activity = ActivityState::idle();
