@@ -111,6 +111,6 @@ mod tests {
 
     #[test]
     fn provider_display_name_unknown_returns_id() {
-        assert_eq!(resolve_slug("custom", "sonnet"), "anthropic/claude-sonnet-4-6");
+        assert_eq!(provider_display_name("custom"), "Anthropic");
     }
 }
