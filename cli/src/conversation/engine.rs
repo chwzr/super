@@ -16,7 +16,7 @@ use crate::sdk::protocol::{
     AnthropicUsage, AssistantPayload, BlockDelta, BusMessage, ContentBlockFinal,
     ContentBlockStream, StreamEvent, SystemSubtype, UserPayload,
 };
-use crate::state::store::Store;
+use crate::state::store::{PermissionMode, Store};
 use crate::tools::ToolRegistry;
 
 #[derive(Clone)]
@@ -29,6 +29,16 @@ pub struct ConversationEngine {
     /// When `Some`, every emit uses this as the session_id instead of
     /// `bus.session_id()`. Set by child engines spawned for subagents.
     pub session_id_override: Option<String>,
+    /// When `Some`, `process_prompt` seeds history from this value instead of
+    /// the shared store, and skips writing the updated history back to the
+    /// store. Child (subagent) engines set this to an empty Vec so they don't
+    /// inherit or pollute the parent's conversation.
+    pub history_override: Option<Vec<HistoryEntry>>,
+    /// When `Some`, `process_prompt` uses this permission mode instead of
+    /// reading from the shared store. Child engines set this to the resolved
+    /// agent-overlay mode so e.g. `permissionMode: plan` from an .md agent
+    /// is honored without mutating the root session's mode.
+    pub permission_mode_override: Option<PermissionMode>,
 }
 
 impl ConversationEngine {
@@ -38,11 +48,22 @@ impl ConversationEngine {
         registry: Arc<ToolRegistry>,
         bus: Arc<SessionBus>,
     ) -> Self {
-        Self { store, config, registry, bus, abort: None, session_id_override: None }
+        Self {
+            store,
+            config,
+            registry,
+            bus,
+            abort: None,
+            session_id_override: None,
+            history_override: None,
+            permission_mode_override: None,
+        }
     }
 
     /// Construct a child engine for subagent execution. Shares the parent's
-    /// bus and store, but stamps every emit with `agent_id` as the session_id.
+    /// bus and store, but stamps every emit with `agent_id` as the session_id,
+    /// starts with a fresh (empty) conversation history isolated from the
+    /// parent, and pins the resolved permission mode for the subagent.
     pub fn new_child(
         store: Arc<Store>,
         config: CliConfig,
@@ -50,6 +71,7 @@ impl ConversationEngine {
         bus: Arc<SessionBus>,
         agent_id: String,
         abort: Option<watch::Receiver<bool>>,
+        permission_mode_override: Option<PermissionMode>,
     ) -> Self {
         Self {
             store,
@@ -58,6 +80,8 @@ impl ConversationEngine {
             bus,
             abort,
             session_id_override: Some(agent_id),
+            history_override: Some(Vec::new()),
+            permission_mode_override,
         }
     }
 
@@ -86,11 +110,19 @@ impl ConversationEngine {
             .clone()
             .ok_or_else(|| "no OpenRouter API key configured".to_string())?;
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let permission_mode = self.store.get_state().permission_mode.clone();
+        let permission_mode = self
+            .permission_mode_override
+            .clone()
+            .unwrap_or_else(|| self.store.get_state().permission_mode.clone());
         let tools = self.registry.assemble_for_mode(&permission_mode);
 
-        // Seed history from the store and append the new user message.
-        let mut history: Vec<HistoryEntry> = self.store.get_state().history.clone();
+        // Seed history. Root engines inherit the shared store's history; child
+        // (subagent) engines pass an empty Vec via `history_override` so they
+        // don't ship the parent's transcript to the model.
+        let mut history: Vec<HistoryEntry> = self
+            .history_override
+            .clone()
+            .unwrap_or_else(|| self.store.get_state().history.clone());
         let user_block = ContentBlockFinal::Text { text: user_input.clone() };
         history.push(HistoryEntry {
             role: Role::User,
@@ -119,9 +151,12 @@ impl ConversationEngine {
             num_turns += 1;
             if num_turns >= 50 {
                 // Persist the trail of work before bailing, so /resume has something to load.
-                self.store.set_state(|s| {
-                    s.history = history.clone();
-                });
+                // Skip for child engines: they own an isolated, in-memory history.
+                if self.history_override.is_none() {
+                    self.store.set_state(|s| {
+                        s.history = history.clone();
+                    });
+                }
                 self.bus
                     .emit_system(SystemSubtype::Notice, "max turns (50) reached without end_turn");
                 return Err("max turns (50) reached without end_turn".to_string());
@@ -238,9 +273,12 @@ impl ConversationEngine {
                     uuid: Uuid::new_v4(),
                     session_id: session_id.clone(),
                 });
-                self.store.set_state(|s| {
-                    s.history = history.clone();
-                });
+                // Skip for child engines: they own an isolated, in-memory history.
+                if self.history_override.is_none() {
+                    self.store.set_state(|s| {
+                        s.history = history.clone();
+                    });
+                }
                 return Ok(last_assistant_text);
             }
 
@@ -551,6 +589,8 @@ mod tests {
             bus: bus.clone(),
             abort: None,
             session_id_override: None,
+            history_override: None,
+            permission_mode_override: None,
         };
         assert_eq!(engine.effective_session_id(), "s-root");
     }
@@ -571,6 +611,8 @@ mod tests {
             bus,
             abort: None,
             session_id_override: Some("agent-1".into()),
+            history_override: None,
+            permission_mode_override: None,
         };
         assert_eq!(engine.effective_session_id(), "agent-1");
     }
@@ -592,8 +634,34 @@ mod tests {
             bus,
             "agent-xyz".into(),
             None,
+            None,
         );
         assert_eq!(child.effective_session_id(), "agent-xyz");
         assert_eq!(child.session_id_override.as_deref(), Some("agent-xyz"));
+    }
+
+    #[test]
+    fn new_child_seeds_empty_history_and_overrides_permission_mode() {
+        use crate::conversation::session_bus::SessionBus;
+        use crate::state::store::PermissionMode;
+        let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
+        let store_arc = std::sync::Arc::new(crate::state::store::Store::new());
+        let agent_reg = std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only());
+        let registry = crate::tools::ToolRegistry::new(
+            store_arc.clone(),
+            shared::CliConfig::default(),
+            agent_reg,
+        );
+        let child = ConversationEngine::new_child(
+            store_arc,
+            shared::CliConfig::default(),
+            registry,
+            bus,
+            "agent-1".into(),
+            None,
+            Some(PermissionMode::Plan),
+        );
+        assert_eq!(child.history_override.as_ref().map(|v| v.len()), Some(0));
+        assert!(matches!(child.permission_mode_override, Some(PermissionMode::Plan)));
     }
 }

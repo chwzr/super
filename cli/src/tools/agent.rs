@@ -93,7 +93,6 @@ impl Tool for AgentTool {
             agent_def.permission_mode.as_ref(),
             is_async,
         );
-        let _ = child_perm; // applied by tool_loop via ctx.permission_mode; child engine inherits via process_prompt's read of permission_mode
         let child_model = resolve_model(
             model_override.as_deref().or(agent_def.model.as_deref()),
             &self.config.model,
@@ -112,6 +111,7 @@ impl Tool for AgentTool {
                 bus.clone(),
                 agent_id.clone(),
                 ctx.abort_signal.clone(),
+                Some(child_perm.clone()),
             );
             let sys = build_child_system_prompt(&agent_def);
 
@@ -147,6 +147,7 @@ impl Tool for AgentTool {
             bus.clone(),
             agent_id.clone(),
             Some(abort_rx),
+            Some(child_perm),
         );
         let sys = build_child_system_prompt(&agent_def);
         let store_for_task = self.store.clone();
