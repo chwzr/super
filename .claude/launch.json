@@ -4,7 +4,7 @@
     {
       "name": "web",
       "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "cd web && exec vp dev"],
+      "runtimeArgs": ["-c", "cd web && exec ./node_modules/.bin/vp dev"],
       "port": 5173
     },
     {
