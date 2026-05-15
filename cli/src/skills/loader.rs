@@ -118,6 +118,8 @@ fn build_skill(
     let description = fm.get("description").cloned().unwrap_or_default();
     let user_invocable = fm.get("user-invocable").map(|v| v != "false").unwrap_or(true);
     let when_to_use = fm.get("when_to_use").or_else(|| fm.get("when-to-use")).cloned();
+    // Only inline comma-separated format is supported (e.g. `allowed-tools: Bash,Read`).
+    // YAML block sequences are not parsed.
     let allowed_tools = fm
         .get("allowed-tools")
         .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
@@ -156,7 +158,7 @@ fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
         return (HashMap::new(), trimmed.to_string());
     };
     let fm_str = &rest[..end];
-    let body = rest[end + 4..].trim_start_matches('\n').to_string();
+    let body = rest[end + 4..].trim_start_matches(|c| c == '\n' || c == '\r').to_string();
     let mut map = HashMap::new();
     for line in fm_str.lines() {
         if let Some((k, v)) = line.split_once(':') {
