@@ -93,10 +93,17 @@ impl ScrollArea {
         // render() will clamp to max_offset and re-enable stick_to_bottom if needed
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        if area.height == 0 {
-            return;
+    /// Total visual rows the content would occupy at the given terminal width.
+    /// Returns 0 when there is no content (used to collapse the scroll area).
+    pub fn content_height(&self, width: u16) -> u16 {
+        if self.messages.is_empty() && self.events.is_empty() {
+            return 0;
         }
+        let lines = self.build_lines();
+        lines.iter().map(|l| visual_rows(l, width)).sum()
+    }
+
+    fn build_lines(&self) -> Vec<Line<'static>> {
         let user_prefix_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
         let assistant_prefix_style = Style::default().fg(Color::Cyan);
         let body_style = Style::default().fg(Color::White);
@@ -104,9 +111,8 @@ impl ScrollArea {
         let recap_style = Style::default().fg(Color::DarkGray);
         let tool_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
-        let mut lines: Vec<Line> = Vec::new();
+        let mut lines: Vec<Line<'static>> = Vec::new();
 
-        // Render legacy messages first (chronological).
         for m in &self.messages {
             match m {
                 Message::User(text) => {
@@ -171,7 +177,6 @@ impl ScrollArea {
             }
         }
 
-        // Then render the folded transcript from bus events.
         let items = fold(&self.events, None);
         for item in items {
             match item {
@@ -219,13 +224,11 @@ impl ScrollArea {
                     ]));
                     if name == "Task" {
                         if self.show_detailed_transcript {
-                            // Expanded: render the child transcript indented under the Task header.
                             let child_items = fold(&self.events, Some(&tool_use_id));
                             for child in &child_items {
                                 render_child_indented(&mut lines, child, dim);
                             }
                         }
-                        // Done summary (only if child has emitted Result)
                         if let Some(summary) = task_done_summary(&self.events, &tool_use_id) {
                             lines.push(Line::from(vec![
                                 Span::styled("  ⎿  ", dim),
@@ -259,9 +262,18 @@ impl ScrollArea {
             }
         }
 
+        lines
+    }
+
+    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        if area.height == 0 {
+            return;
+        }
+
+        let lines = self.build_lines();
+
         self.last_area_height = area.height;
 
-        // Compute the true visual row count after wrapping before consuming lines.
         let total_visual: u16 = lines.iter().map(|l| visual_rows(l, area.width)).sum();
         let max_offset = total_visual.saturating_sub(area.height);
 
