@@ -8,3 +8,4 @@ pub mod modals;
 pub mod scroll_area;
 pub mod slash_menu;
 pub mod splash;
+pub mod transcript;
