@@ -58,7 +58,9 @@ pub struct App {
     _config: CliConfig,
     store: Arc<Store>,
     engine: ConversationEngine,
-    _registry: Arc<ToolRegistry>,
+    /// Kept alive so the broadcast channel underlying `bus_rx` doesn't close
+    /// when the original Arc is dropped after `App::new` returns.
+    #[allow(dead_code)]
     bus: Arc<SessionBus>,
     bus_rx: broadcast::Receiver<BusMessage>,
     system_prompt: SystemPrompt,
@@ -87,7 +89,6 @@ impl App {
         config: CliConfig,
         store: Arc<Store>,
         engine: ConversationEngine,
-        registry: Arc<ToolRegistry>,
         bus: Arc<SessionBus>,
         system_prompt: SystemPrompt,
     ) -> Self {
@@ -117,7 +118,6 @@ impl App {
             _config: config,
             store,
             engine,
-            _registry: registry,
             bus: bus.clone(),
             bus_rx,
             system_prompt,
@@ -664,12 +664,12 @@ pub async fn run_with_engine(
     config: CliConfig,
     store: Arc<Store>,
     engine: ConversationEngine,
-    registry: Arc<ToolRegistry>,
+    _registry: Arc<ToolRegistry>,
     bus: Arc<SessionBus>,
     system_prompt: SystemPrompt,
 ) {
     let terminal = ratatui::init();
-    let mut app = App::new(config, store, engine, registry, bus, system_prompt);
+    let mut app = App::new(config, store, engine, bus, system_prompt);
     let _ = app.run(terminal);
     ratatui::restore();
 }
