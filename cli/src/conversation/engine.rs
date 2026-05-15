@@ -39,6 +39,10 @@ pub struct ConversationEngine {
     /// agent-overlay mode so e.g. `permissionMode: plan` from an .md agent
     /// is honored without mutating the root session's mode.
     pub permission_mode_override: Option<PermissionMode>,
+    /// Forwarded to `ToolCallContext.auto_deny_prompts` for every tool call
+    /// driven by this engine. `true` for async subagent engines, `false`
+    /// everywhere else (root, sync subagents).
+    pub auto_deny_prompts: bool,
 }
 
 impl ConversationEngine {
@@ -57,6 +61,7 @@ impl ConversationEngine {
             session_id_override: None,
             history_override: None,
             permission_mode_override: None,
+            auto_deny_prompts: false,
         }
     }
 
@@ -72,6 +77,7 @@ impl ConversationEngine {
         agent_id: String,
         abort: Option<watch::Receiver<bool>>,
         permission_mode_override: Option<PermissionMode>,
+        auto_deny_prompts: bool,
     ) -> Self {
         Self {
             store,
@@ -82,6 +88,7 @@ impl ConversationEngine {
             session_id_override: Some(agent_id),
             history_override: Some(Vec::new()),
             permission_mode_override,
+            auto_deny_prompts,
         }
     }
 
@@ -293,7 +300,7 @@ impl ConversationEngine {
                 self.bus.clone(),
                 parent_tool_use_id.clone(),
                 session_id.clone(),
-                false, // root engines never auto-deny; AgentTool sets true on async children via the child engine's child registry
+                self.auto_deny_prompts, // root engines never auto-deny; async child engines propagate true
             )
             .await;
 
@@ -592,6 +599,7 @@ mod tests {
             session_id_override: None,
             history_override: None,
             permission_mode_override: None,
+            auto_deny_prompts: false,
         };
         assert_eq!(engine.effective_session_id(), "s-root");
     }
@@ -614,6 +622,7 @@ mod tests {
             session_id_override: Some("agent-1".into()),
             history_override: None,
             permission_mode_override: None,
+            auto_deny_prompts: false,
         };
         assert_eq!(engine.effective_session_id(), "agent-1");
     }
@@ -636,6 +645,7 @@ mod tests {
             "agent-xyz".into(),
             None,
             None,
+            false,
         );
         assert_eq!(child.effective_session_id(), "agent-xyz");
         assert_eq!(child.session_id_override.as_deref(), Some("agent-xyz"));
@@ -661,8 +671,44 @@ mod tests {
             "agent-1".into(),
             None,
             Some(PermissionMode::Plan),
+            false,
         );
         assert_eq!(child.history_override.as_ref().map(|v| v.len()), Some(0));
         assert!(matches!(child.permission_mode_override, Some(PermissionMode::Plan)));
+    }
+
+    #[test]
+    fn new_child_propagates_auto_deny_prompts_flag() {
+        use crate::conversation::session_bus::SessionBus;
+        let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
+        let store_arc = std::sync::Arc::new(crate::state::store::Store::new());
+        let agent_reg = std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only());
+        let registry = crate::tools::ToolRegistry::new(
+            store_arc.clone(),
+            shared::CliConfig::default(),
+            agent_reg,
+        );
+        let sync_child = ConversationEngine::new_child(
+            store_arc.clone(),
+            shared::CliConfig::default(),
+            registry.clone(),
+            bus.clone(),
+            "agent-sync".into(),
+            None,
+            None,
+            false,
+        );
+        let async_child = ConversationEngine::new_child(
+            store_arc,
+            shared::CliConfig::default(),
+            registry,
+            bus,
+            "agent-async".into(),
+            None,
+            None,
+            true,
+        );
+        assert!(!sync_child.auto_deny_prompts);
+        assert!(async_child.auto_deny_prompts);
     }
 }

@@ -20,7 +20,14 @@ impl Tool for AskUserQuestionTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &ToolCallContext) -> ToolResult {
+        if context.auto_deny_prompts {
+            return ToolResult {
+                content: "Permission denied: async subagents cannot prompt the user.".into(),
+                is_error: true,
+                metadata: None,
+            };
+        }
         let question = input["question"].as_str().unwrap_or("");
         ToolResult {
             content: format!("Question displayed: {question}"),
@@ -30,5 +37,44 @@ impl Tool for AskUserQuestionTool {
                 ("needs_response".into(), "true".into()),
             ].into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::store::PermissionMode;
+
+    #[tokio::test]
+    async fn auto_denies_when_flag_set() {
+        let tool = AskUserQuestionTool;
+        let ctx = ToolCallContext {
+            cwd: std::env::current_dir().unwrap(),
+            permission_mode: PermissionMode::Default,
+            abort_signal: None,
+            parent_tool_use_id: None,
+            bus: None,
+            auto_deny_prompts: true,
+            tool_use_id: String::new(),
+        };
+        let result = tool.call(serde_json::json!({"question": "ok?"}), &ctx).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("async") || result.content.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn allows_when_flag_unset() {
+        let tool = AskUserQuestionTool;
+        let ctx = ToolCallContext {
+            cwd: std::env::current_dir().unwrap(),
+            permission_mode: PermissionMode::Default,
+            abort_signal: None,
+            parent_tool_use_id: None,
+            bus: None,
+            auto_deny_prompts: false,
+            tool_use_id: String::new(),
+        };
+        let result = tool.call(serde_json::json!({"question": "ok?"}), &ctx).await;
+        assert!(!result.is_error);
     }
 }

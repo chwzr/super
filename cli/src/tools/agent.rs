@@ -112,6 +112,7 @@ impl Tool for AgentTool {
                 agent_id.clone(),
                 ctx.abort_signal.clone(),
                 Some(child_perm.clone()),
+                false,
             );
             let sys = build_child_system_prompt(&agent_def);
 
@@ -148,7 +149,8 @@ impl Tool for AgentTool {
             bus.clone(),
             agent_id.clone(),
             Some(abort_rx),
-            Some(child_perm),
+            Some(child_perm.clone()),
+            true,
         );
         let sys = build_child_system_prompt(&agent_def);
         let store_for_task = self.store.clone();
