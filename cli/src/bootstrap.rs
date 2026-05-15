@@ -40,6 +40,10 @@ pub async fn run() {
         uuid::Uuid::new_v4().to_string(),
     ));
 
+    // Spawn sidechain JSONL writer so any subagent activity gets persisted.
+    let sidechain_dir = crate::conversation::sidechain::default_sidechain_dir(bus.session_id());
+    crate::conversation::sidechain::spawn_sidechain_writer(bus.clone(), sidechain_dir);
+
     let engine = crate::conversation::engine::ConversationEngine::new(
         store.clone(),
         config.clone(),
