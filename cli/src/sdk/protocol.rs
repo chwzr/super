@@ -253,6 +253,30 @@ pub enum BusMessage {
     },
 }
 
+impl BusMessage {
+    pub fn session_id(&self) -> &str {
+        match self {
+            BusMessage::User { session_id, .. }
+            | BusMessage::Assistant { session_id, .. }
+            | BusMessage::StreamEvent { session_id, .. }
+            | BusMessage::ToolProgress { session_id, .. }
+            | BusMessage::SystemEvent { session_id, .. }
+            | BusMessage::Result { session_id, .. } => session_id.as_str(),
+        }
+    }
+
+    pub fn parent_tool_use_id(&self) -> Option<&str> {
+        match self {
+            BusMessage::User { parent_tool_use_id, .. }
+            | BusMessage::Assistant { parent_tool_use_id, .. }
+            | BusMessage::StreamEvent { parent_tool_use_id, .. }
+            | BusMessage::ToolProgress { parent_tool_use_id, .. }
+            | BusMessage::SystemEvent { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+            BusMessage::Result { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPayload {
     pub role: String, // always "user"
@@ -343,6 +367,29 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn bus_message_accessors() {
+        let msg = BusMessage::Result {
+            stop_reason: None,
+            usage: AnthropicUsage::default(),
+            total_cost_usd: 0.0, duration_ms: 0, num_turns: 1,
+            uuid: Uuid::new_v4(),
+            session_id: "s-root".into(),
+        };
+        assert_eq!(msg.session_id(), "s-root");
+        assert_eq!(msg.parent_tool_use_id(), None);
+
+        let msg = BusMessage::SystemEvent {
+            subtype: SystemSubtype::Notice,
+            message: "x".into(),
+            parent_tool_use_id: Some("tu_p".into()),
+            uuid: Uuid::new_v4(),
+            session_id: "s-child".into(),
+        };
+        assert_eq!(msg.session_id(), "s-child");
+        assert_eq!(msg.parent_tool_use_id(), Some("tu_p"));
     }
 
     #[test]
