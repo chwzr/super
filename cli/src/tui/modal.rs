@@ -13,18 +13,21 @@ use crate::tui::modals::config_view::{ConfigAction, ConfigView};
 use crate::tui::modals::effort_picker::{EffortAction, EffortPicker};
 use crate::tui::modals::mcp_list::{McpAction, McpList};
 use crate::tui::modals::model_picker::{ModelAction, ModelPicker};
+use crate::tui::modals::provider_picker::{ProviderAction, ProviderPicker};
 use crate::tui::modals::resume_picker::{ResumeAction, ResumePicker};
 use crate::tui::modals::status_view::{StatusAction, StatusView};
 
 pub enum ModalAction {
     Continue,
     Close,
-    SetModel(String),
+    SetClass(String),
+    SetProvider(String),
     SetEffort(String),
 }
 
 pub enum Modal {
     Model(ModelPicker),
+    Provider(ProviderPicker),
     Effort(EffortPicker),
     Mcp(McpList),
     Resume(ResumePicker),
@@ -36,27 +39,33 @@ pub enum Modal {
 impl Modal {
     pub fn title(&self) -> &str {
         match self {
-            Modal::Model(_) => "Set Model",
-            Modal::Effort(_) => "Effort Level",
-            Modal::Mcp(_) => "MCP Servers",
-            Modal::Resume(_) => "Resume Session",
-            Modal::Status(_) => "Super",
-            Modal::Config(_) => "Super Config",
-            Modal::Agents(_) => "Agents",
+            Modal::Model(_)    => "Set Model Class",
+            Modal::Provider(_) => "Select Provider",
+            Modal::Effort(_)   => "Effort Level",
+            Modal::Mcp(_)      => "MCP Servers",
+            Modal::Resume(_)   => "Resume Session",
+            Modal::Status(_)   => "Super",
+            Modal::Config(_)   => "Super Config",
+            Modal::Agents(_)   => "Agents",
         }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ModalAction {
         match self {
             Modal::Model(p) => match p.handle_key(key) {
-                ModelAction::Continue      => ModalAction::Continue,
-                ModelAction::Select(id)    => ModalAction::SetModel(id.to_string()),
-                ModelAction::Cancel        => ModalAction::Close,
+                ModelAction::Continue   => ModalAction::Continue,
+                ModelAction::Select(c)  => ModalAction::SetClass(c.to_string()),
+                ModelAction::Cancel     => ModalAction::Close,
+            },
+            Modal::Provider(p) => match p.handle_key(key) {
+                ProviderAction::Continue   => ModalAction::Continue,
+                ProviderAction::Select(id) => ModalAction::SetProvider(id.to_string()),
+                ProviderAction::Cancel     => ModalAction::Close,
             },
             Modal::Effort(p) => match p.handle_key(key) {
-                EffortAction::Continue   => ModalAction::Continue,
-                EffortAction::Select(v)  => ModalAction::SetEffort(v.to_string()),
-                EffortAction::Cancel     => ModalAction::Close,
+                EffortAction::Continue  => ModalAction::Continue,
+                EffortAction::Select(v) => ModalAction::SetEffort(v.to_string()),
+                EffortAction::Cancel    => ModalAction::Close,
             },
             Modal::Mcp(p) => match p.handle_key(key) {
                 McpAction::Continue => ModalAction::Continue,
@@ -91,13 +100,14 @@ impl Modal {
         };
         render_separator(f, sep_area, self.title());
         match self {
-            Modal::Model(p) => p.render(f, content_area),
-            Modal::Effort(p) => p.render(f, content_area),
-            Modal::Mcp(p) => p.render(f, content_area),
-            Modal::Resume(p) => p.render(f, content_area),
-            Modal::Status(v) => v.render(f, content_area),
-            Modal::Config(p) => p.render(f, content_area),
-            Modal::Agents(p) => p.render(f, content_area),
+            Modal::Model(p)    => p.render(f, content_area),
+            Modal::Provider(p) => p.render(f, content_area),
+            Modal::Effort(p)   => p.render(f, content_area),
+            Modal::Mcp(p)      => p.render(f, content_area),
+            Modal::Resume(p)   => p.render(f, content_area),
+            Modal::Status(v)   => v.render(f, content_area),
+            Modal::Config(p)   => p.render(f, content_area),
+            Modal::Agents(p)   => p.render(f, content_area),
         }
     }
 }
