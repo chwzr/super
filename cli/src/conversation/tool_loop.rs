@@ -18,6 +18,9 @@ pub async fn run_tool_uses(
     permission_mode: PermissionMode,
     abort_signal: Option<watch::Receiver<bool>>,
     bus: Arc<SessionBus>,
+    parent_tool_use_id: Option<String>,
+    session_id: String,
+    auto_deny_prompts: bool,
 ) -> Vec<ContentBlockFinal> {
     // Partition into safe (read-only / pure) and unsafe (writes, shell, network with side effects).
     // Preserve original order index so we can recombine into emission order at the end.
@@ -50,11 +53,15 @@ pub async fn run_tool_uses(
             cwd: cwd.clone(),
             permission_mode: permission_mode.clone(),
             abort_signal: abort_signal.clone(),
-            parent_tool_use_id: None,
-            bus: None,
+            parent_tool_use_id: parent_tool_use_id.clone(),
+            bus: Some(bus.clone()),
+            auto_deny_prompts,
+            tool_use_id: id.clone(),
         };
         let bus_for_task = bus.clone();
         let tool_name = tool.name().to_string();
+        let parent_for_tick = parent_tool_use_id.clone();
+        let session_for_tick = session_id.clone();
         set.spawn(async move {
             // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
             // Aborted as soon as the inner call returns so the activity row
@@ -72,9 +79,9 @@ pub async fn run_tool_uses(
                         tool_use_id: id_for_tick.clone(),
                         tool_name: name_for_tick.clone(),
                         elapsed_seconds: start.elapsed().as_secs_f32(),
-                        parent_tool_use_id: None,
+                        parent_tool_use_id: parent_for_tick.clone(),
                         uuid: uuid::Uuid::new_v4(),
-                        session_id: bus_for_tick.session_id().to_string(),
+                        session_id: session_for_tick.clone(),
                     });
                 }
             });
@@ -141,14 +148,18 @@ pub async fn run_tool_uses(
             cwd: cwd.clone(),
             permission_mode: permission_mode.clone(),
             abort_signal: abort_signal.clone(),
-            parent_tool_use_id: None,
-            bus: None,
+            parent_tool_use_id: parent_tool_use_id.clone(),
+            bus: Some(bus.clone()),
+            auto_deny_prompts,
+            tool_use_id: id.clone(),
         };
 
         // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
         let bus_for_tick = bus.clone();
         let id_for_tick = id.clone();
         let name_for_tick = tool.name().to_string();
+        let parent_for_tick = parent_tool_use_id.clone();
+        let session_for_tick = session_id.clone();
         let ticker = tokio::spawn(async move {
             let start = std::time::Instant::now();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -159,9 +170,9 @@ pub async fn run_tool_uses(
                     tool_use_id: id_for_tick.clone(),
                     tool_name: name_for_tick.clone(),
                     elapsed_seconds: start.elapsed().as_secs_f32(),
-                    parent_tool_use_id: None,
+                    parent_tool_use_id: parent_for_tick.clone(),
                     uuid: uuid::Uuid::new_v4(),
-                    session_id: bus_for_tick.session_id().to_string(),
+                    session_id: session_for_tick.clone(),
                 });
             }
         });
@@ -231,7 +242,11 @@ mod tests {
     #[tokio::test]
     async fn unknown_tool_produces_error_result() {
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let bus = Arc::new(SessionBus::new("test".into()));
         let results = run_tool_uses(
             &registry,
@@ -240,6 +255,9 @@ mod tests {
             PermissionMode::Default,
             None,
             bus,
+            None,                  // parent_tool_use_id
+            "test-session".into(), // session_id
+            false,                 // auto_deny_prompts
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -256,7 +274,11 @@ mod tests {
     #[tokio::test]
     async fn read_tool_executes_against_real_file() {
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let tmpfile = std::env::temp_dir().join(format!(
             "super_tool_loop_test_{}.txt",
             uuid::Uuid::new_v4()
@@ -271,6 +293,9 @@ mod tests {
             PermissionMode::Default,
             None,
             bus,
+            None,                  // parent_tool_use_id
+            "test-session".into(), // session_id
+            false,                 // auto_deny_prompts
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -291,7 +316,11 @@ mod tests {
         // Read is concurrency-safe; Write is not. Verify both produce results
         // tagged with the right tool_use_id in original emission order.
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let tmp_read = std::env::temp_dir().join(format!(
             "super_tool_loop_mix_read_{}.txt",
             uuid::Uuid::new_v4()
@@ -314,6 +343,9 @@ mod tests {
             PermissionMode::Default,
             None,
             bus,
+            None,                  // parent_tool_use_id
+            "test-session".into(), // session_id
+            false,                 // auto_deny_prompts
         )
         .await;
 
@@ -327,6 +359,89 @@ mod tests {
 
         std::fs::remove_file(&tmp_read).ok();
         std::fs::remove_file(&tmp_write).ok();
+    }
+
+    #[tokio::test]
+    async fn run_tool_uses_passes_parent_tool_use_id_to_context() {
+        use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+        use std::sync::{Arc, Mutex};
+
+        struct CaptureTool {
+            seen_parent: Arc<Mutex<Option<String>>>,
+        }
+        #[async_trait::async_trait]
+        impl Tool for CaptureTool {
+            fn name(&self) -> &str { "Capture" }
+            fn description(&self) -> &str { "capture" }
+            fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext) -> ToolResult {
+                *self.seen_parent.lock().unwrap() = ctx.parent_tool_use_id.clone();
+                ToolResult { content: "ok".into(), is_error: false, metadata: None }
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let store = Arc::new(Store::new());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
+        registry.register(Arc::new(CaptureTool { seen_parent: seen.clone() }));
+
+        let bus = Arc::new(SessionBus::new("s-root".into()));
+        let _ = run_tool_uses(
+            &registry,
+            vec![("tu_x".into(), "Capture".into(), serde_json::json!({}))],
+            std::env::current_dir().unwrap(),
+            PermissionMode::Default,
+            None,
+            bus,
+            Some("tu_parent".into()),
+            "agent-1".into(),
+            false,
+        ).await;
+
+        assert_eq!(seen.lock().unwrap().clone().as_deref(), Some("tu_parent"));
+    }
+
+    #[tokio::test]
+    async fn run_tool_uses_passes_current_tool_use_id_to_context() {
+        use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+        use std::sync::{Arc, Mutex};
+
+        struct CaptureTool { seen: Arc<Mutex<Option<String>>> }
+        #[async_trait::async_trait]
+        impl Tool for CaptureTool {
+            fn name(&self) -> &str { "Capture2" }
+            fn description(&self) -> &str { "capture" }
+            fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext) -> ToolResult {
+                *self.seen.lock().unwrap() = Some(ctx.tool_use_id.clone());
+                ToolResult { content: "ok".into(), is_error: false, metadata: None }
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let store = Arc::new(Store::new());
+        let agent_reg = Arc::new(crate::agents::AgentRegistry::built_in_only());
+        let registry = ToolRegistry::new(store, CliConfig::default(), agent_reg);
+        registry.register(Arc::new(CaptureTool { seen: seen.clone() }));
+
+        let bus = Arc::new(SessionBus::new("s-root".into()));
+        let _ = run_tool_uses(
+            &registry,
+            vec![("tu_actual".into(), "Capture2".into(), serde_json::json!({}))],
+            std::env::current_dir().unwrap(),
+            PermissionMode::Default,
+            None,
+            bus,
+            None,
+            "test-session".into(),
+            false,
+        ).await;
+
+        assert_eq!(seen.lock().unwrap().clone().as_deref(), Some("tu_actual"));
     }
 
     /// A panicking tool MUST still produce a ToolResult with the correct
@@ -349,7 +464,11 @@ mod tests {
         }
 
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         registry.register(Arc::new(PanickingTool));
 
         let bus = Arc::new(SessionBus::new("test".into()));
@@ -360,6 +479,9 @@ mod tests {
             PermissionMode::Default,
             None,
             bus,
+            None,                  // parent_tool_use_id
+            "test-session".into(), // session_id
+            false,                 // auto_deny_prompts
         )
         .await;
 

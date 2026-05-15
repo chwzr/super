@@ -22,6 +22,15 @@ pub enum TaskStatus {
     Deleted,
 }
 
+#[derive(Clone)]
+pub struct AsyncAgentHandle {
+    pub agent_id: String,
+    pub parent_tool_use_id: String,
+    pub abort: tokio::sync::watch::Sender<bool>,
+    pub description: String,
+    pub started_at: std::time::Instant,
+}
+
 #[derive(Clone, Default)]
 pub struct AppState {
     pub messages: Vec<Message>,
@@ -33,9 +42,10 @@ pub struct AppState {
     pub should_compact: bool,
     pub tasks: HashMap<String, TaskRecord>,
     pub history: Vec<crate::conversation::anthropic::HistoryEntry>,
+    pub async_agents: HashMap<String, AsyncAgentHandle>,
 }
 
-#[derive(Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum PermissionMode {
     #[default]
     Default,
@@ -100,5 +110,117 @@ impl Store {
 
     pub fn set_effort(&self, effort: String) {
         self.set_state(|s| s.effort_level = Some(effort));
+    }
+
+    pub fn register_async_agent(&self, handle: AsyncAgentHandle) {
+        let id = handle.agent_id.clone();
+        self.set_state(|s| {
+            s.async_agents.insert(id.clone(), handle.clone());
+        });
+        let _ = id;
+    }
+
+    pub fn complete_async_agent(&self, agent_id: &str) {
+        self.set_state(|s| {
+            s.async_agents.remove(agent_id);
+        });
+    }
+
+    /// Returns true if an agent was found and signalled.
+    pub fn abort_async_agent(&self, agent_id: &str) -> bool {
+        // Read out the handle outside set_state so we can call its send()
+        let handle = self.state.read().unwrap().async_agents.get(agent_id).cloned();
+        if let Some(h) = handle {
+            let _ = h.abort.send(true);
+            self.set_state(|s| { s.async_agents.remove(agent_id); });
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn list_async_agents(&self) -> Vec<AsyncAgentHandle> {
+        self.state.read().unwrap().async_agents.values().cloned().collect()
+    }
+
+    /// Abort every currently-registered async agent. Called by the TUI's exit
+    /// path. Returns the number of agents that were signalled.
+    pub fn shutdown_async_agents(&self) -> usize {
+        let ids: Vec<String> = self.list_async_agents()
+            .into_iter()
+            .map(|h| h.agent_id)
+            .collect();
+        let mut count = 0;
+        for id in &ids {
+            if self.abort_async_agent(id) {
+                count += 1;
+            }
+        }
+        count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_and_complete_async_agent() {
+        let store = Store::new();
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        store.register_async_agent(AsyncAgentHandle {
+            agent_id: "a1".into(),
+            parent_tool_use_id: "tu_1".into(),
+            abort: tx,
+            description: "test".into(),
+            started_at: std::time::Instant::now(),
+        });
+        let list = store.list_async_agents();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].agent_id, "a1");
+        store.complete_async_agent("a1");
+        assert!(store.list_async_agents().is_empty());
+    }
+
+    #[test]
+    fn abort_async_agent_signals_watch() {
+        let store = Store::new();
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        store.register_async_agent(AsyncAgentHandle {
+            agent_id: "a2".into(),
+            parent_tool_use_id: "tu_2".into(),
+            abort: tx,
+            description: "test".into(),
+            started_at: std::time::Instant::now(),
+        });
+        assert!(store.abort_async_agent("a2"));
+        // Watch should have fired
+        assert!(*rx.borrow_and_update());
+        assert!(store.list_async_agents().is_empty(), "abort also removes the handle");
+    }
+
+    #[test]
+    fn shutdown_aborts_all_registered_agents() {
+        let store = Store::new();
+        let (tx1, mut rx1) = tokio::sync::watch::channel(false);
+        let (tx2, mut rx2) = tokio::sync::watch::channel(false);
+        store.register_async_agent(AsyncAgentHandle {
+            agent_id: "a1".into(),
+            parent_tool_use_id: "tu_1".into(),
+            abort: tx1,
+            description: "x".into(),
+            started_at: std::time::Instant::now(),
+        });
+        store.register_async_agent(AsyncAgentHandle {
+            agent_id: "a2".into(),
+            parent_tool_use_id: "tu_2".into(),
+            abort: tx2,
+            description: "y".into(),
+            started_at: std::time::Instant::now(),
+        });
+        assert_eq!(store.shutdown_async_agents(), 2);
+        assert!(*rx1.borrow_and_update());
+        assert!(*rx2.borrow_and_update());
+        assert!(store.list_async_agents().is_empty());
     }
 }

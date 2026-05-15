@@ -33,6 +33,7 @@ pub struct ScrollArea {
     /// New path — bus events folded into TranscriptItems at render time.
     pub events: Vec<BusMessage>,
     scroll_offset: u16,
+    pub show_detailed_transcript: bool,
 }
 
 impl ScrollArea {
@@ -41,7 +42,16 @@ impl ScrollArea {
             messages: Vec::new(),
             events: Vec::new(),
             scroll_offset: 0,
+            show_detailed_transcript: false,
         }
+    }
+
+    pub fn toggle_detailed_transcript(&mut self) {
+        self.show_detailed_transcript = !self.show_detailed_transcript;
+    }
+
+    pub fn is_detailed_transcript(&self) -> bool {
+        self.show_detailed_transcript
     }
 
     /// Legacy push — pushes onto the `messages` vec rendered before the
@@ -187,7 +197,7 @@ impl ScrollArea {
                         }
                     }
                 }
-                TranscriptItem::ToolCall { name, input, result, .. } => {
+                TranscriptItem::ToolCall { tool_use_id, name, input, result, .. } => {
                     lines.push(Line::from(""));
                     let summary = summarize_tool_call(&name, &input);
                     lines.push(Line::from(vec![
@@ -196,7 +206,27 @@ impl ScrollArea {
                         Span::raw(" "),
                         Span::styled(summary, dim),
                     ]));
-                    if let Some(r) = result {
+                    if name == "Task" {
+                        if self.show_detailed_transcript {
+                            // Expanded: render the child transcript indented under the Task header.
+                            let child_items = fold(&self.events, Some(&tool_use_id));
+                            for child in &child_items {
+                                render_child_indented(&mut lines, child, dim);
+                            }
+                        }
+                        // Done summary (only if child has emitted Result)
+                        if let Some(summary) = task_done_summary(&self.events, &tool_use_id) {
+                            lines.push(Line::from(vec![
+                                Span::styled("  ⎿  ", dim),
+                                Span::styled(summary, dim),
+                            ]));
+                        }
+                        if !self.show_detailed_transcript {
+                            lines.push(Line::from(vec![
+                                Span::styled("  (ctrl+o to expand)", dim),
+                            ]));
+                        }
+                    } else if let Some(r) = result {
                         render_tool_result(&mut lines, &r, &dim);
                     }
                 }
@@ -231,10 +261,109 @@ impl Default for ScrollArea {
     fn default() -> Self { Self::new() }
 }
 
+/// Compute the "Done (N tool uses · K tokens · Xs)" summary for a Task
+/// tool-call. Returns None if the child has not yet emitted Result.
+pub fn task_done_summary(
+    events: &[crate::sdk::protocol::BusMessage],
+    tool_use_id: &str,
+) -> Option<String> {
+    use crate::sdk::protocol::BusMessage;
+    let result = events.iter().rev().find(|e| {
+        matches!(e, BusMessage::Result { .. }) && e.parent_tool_use_id() == Some(tool_use_id)
+    })?;
+    let (tokens, duration_ms) = match result {
+        BusMessage::Result { usage, duration_ms, .. } => (
+            usage.output_tokens + usage.input_tokens,
+            *duration_ms,
+        ),
+        _ => unreachable!(),
+    };
+    let tool_count = fold(events, Some(tool_use_id))
+        .iter()
+        .filter(|i| matches!(i, TranscriptItem::ToolCall { .. }))
+        .count();
+    let secs = duration_ms / 1000;
+    Some(format!(
+        "Done ({tool_count} tool uses · {} · {secs}s)",
+        format_tokens(tokens)
+    ))
+}
+
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M tokens", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k tokens", n as f64 / 1_000.0)
+    } else {
+        format!("{n} tokens")
+    }
+}
+
+fn render_child_indented<'a>(
+    lines: &mut Vec<Line<'a>>,
+    item: &TranscriptItem,
+    dim: Style,
+) {
+    match item {
+        TranscriptItem::User { text } => {
+            lines.push(Line::from(vec![
+                Span::styled("  ⎿  ", dim),
+                Span::styled("Prompt:", dim),
+            ]));
+            for body in text.lines() {
+                lines.push(Line::from(vec![
+                    Span::styled("       ", dim),
+                    Span::styled(body.to_string(), dim),
+                ]));
+            }
+        }
+        TranscriptItem::AssistantText { text, .. } => {
+            lines.push(Line::from(vec![
+                Span::styled("  ⎿  ", dim),
+                Span::styled("Response:", dim),
+            ]));
+            for body in text.lines() {
+                lines.push(Line::from(vec![
+                    Span::styled("       ", dim),
+                    Span::styled(body.to_string(), dim),
+                ]));
+            }
+        }
+        TranscriptItem::ToolCall { name, input, .. } => {
+            // summarize_tool_call already wraps its output in parens.
+            let inner_summary = summarize_tool_call(name, input);
+            lines.push(Line::from(vec![
+                Span::styled("  ⎿  ", dim),
+                Span::styled(format!("{name}{inner_summary}"), dim),
+            ]));
+        }
+        TranscriptItem::Thinking { text, .. } => {
+            lines.push(Line::from(vec![
+                Span::styled("  ⎿  ", dim),
+                Span::styled("Thinking:", dim),
+            ]));
+            for body in text.lines() {
+                lines.push(Line::from(vec![
+                    Span::styled("       ", dim),
+                    Span::styled(body.to_string(), dim),
+                ]));
+            }
+        }
+        TranscriptItem::System { .. } => {
+            // Skip — system events inside subagents are noise in the drill-in.
+        }
+    }
+}
+
 fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
     // Match Claude's "Read 1 file" style where it makes sense; otherwise show
     // a single key argument.
     match name {
+        "Task" => {
+            let agent = input.get("subagent_type").and_then(|v| v.as_str()).unwrap_or("?");
+            let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            if desc.is_empty() { format!("({agent})") } else { format!("({agent}) {desc}") }
+        }
         "Read" => {
             let p = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
             format!("({p})")
@@ -317,6 +446,50 @@ mod tests {
     }
 
     #[test]
+    fn summarize_tool_call_task_shows_description() {
+        let input = serde_json::json!({
+            "description": "find auth code",
+            "prompt": "search the codebase for auth handlers",
+            "subagent_type": "Explore",
+        });
+        let summary = summarize_tool_call("Task", &input);
+        assert!(summary.contains("Explore"), "got: {summary}");
+        assert!(summary.contains("find auth code"), "got: {summary}");
+    }
+
+    #[test]
+    fn task_done_summary_computes_from_child_events() {
+        let tu = "tu_task".to_string();
+        let events = vec![
+            BusMessage::Result {
+                stop_reason: Some("end_turn".into()),
+                usage: crate::sdk::protocol::AnthropicUsage {
+                    input_tokens: 1000,
+                    output_tokens: 500,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                },
+                total_cost_usd: 0.0,
+                duration_ms: 11_000,
+                num_turns: 1,
+                parent_tool_use_id: Some(tu.clone()),
+                uuid: Uuid::new_v4(),
+                session_id: "agent-1".into(),
+            },
+        ];
+        let summary = task_done_summary(&events, &tu).expect("returns summary");
+        assert!(summary.contains("0 tool uses"), "got: {summary}");
+        assert!(summary.contains("1.5k tokens"), "got: {summary}");
+        assert!(summary.contains("11s"), "got: {summary}");
+    }
+
+    #[test]
+    fn task_done_summary_returns_none_when_no_result() {
+        let events: Vec<BusMessage> = vec![];
+        assert!(task_done_summary(&events, "tu_x").is_none());
+    }
+
+    #[test]
     fn clear_wipes_both_paths() {
         let mut sa = ScrollArea::new();
         sa.push(Message::System("a".into()));
@@ -324,6 +497,7 @@ mod tests {
             stop_reason: None,
             usage: crate::sdk::protocol::AnthropicUsage::default(),
             total_cost_usd: 0.0, duration_ms: 0, num_turns: 0,
+            parent_tool_use_id: None,
             uuid: Uuid::new_v4(), session_id: "s1".into(),
         });
         sa.clear();

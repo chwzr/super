@@ -185,7 +185,7 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let started = std::time::Instant::now();
-            let result = engine.process_prompt(prompt, &sp).await;
+            let result = engine.process_prompt(prompt, &sp, None).await;
             let _ = tx.send(EngineEvent::Done {
                 result,
                 elapsed_secs: started.elapsed().as_secs(),
@@ -327,6 +327,10 @@ impl App {
                 }
                 KeyCode::Char('e') => {
                     self.input.move_end();
+                    return Ok(());
+                }
+                KeyCode::Char('o') => {
+                    self.scroll_area.toggle_detailed_transcript();
                     return Ok(());
                 }
                 _ => {}
@@ -552,6 +556,8 @@ impl App {
             self.handle_event()?;
             self.process_pending();
         }
+        // Best-effort cleanup of any async subagents still running.
+        let _ = self.store.shutdown_async_agents();
         Ok(())
     }
 
@@ -564,6 +570,8 @@ impl App {
             Line::from(vec![
                 Span::styled("  ↑↓ select · enter to run · esc to dismiss", dim),
             ])
+        } else if self.scroll_area.is_detailed_transcript() {
+            Line::from(vec![Span::styled("  Showing detailed transcript · ctrl+o to toggle", dim)])
         } else if matches!(self.activity, ActivityState::Active { .. }) {
             Line::from(vec![Span::styled("  esc to interrupt · ? for shortcuts", dim)])
         } else {

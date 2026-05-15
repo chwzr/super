@@ -236,6 +236,8 @@ pub enum BusMessage {
     SystemEvent {
         subtype: SystemSubtype,
         message: String,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
         uuid: Uuid,
         session_id: String,
     },
@@ -246,9 +248,35 @@ pub enum BusMessage {
         total_cost_usd: f64,
         duration_ms: u64,
         num_turns: u32,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
         uuid: Uuid,
         session_id: String,
     },
+}
+
+impl BusMessage {
+    pub fn session_id(&self) -> &str {
+        match self {
+            BusMessage::User { session_id, .. }
+            | BusMessage::Assistant { session_id, .. }
+            | BusMessage::StreamEvent { session_id, .. }
+            | BusMessage::ToolProgress { session_id, .. }
+            | BusMessage::SystemEvent { session_id, .. }
+            | BusMessage::Result { session_id, .. } => session_id.as_str(),
+        }
+    }
+
+    pub fn parent_tool_use_id(&self) -> Option<&str> {
+        match self {
+            BusMessage::User { parent_tool_use_id, .. }
+            | BusMessage::Assistant { parent_tool_use_id, .. }
+            | BusMessage::StreamEvent { parent_tool_use_id, .. }
+            | BusMessage::ToolProgress { parent_tool_use_id, .. }
+            | BusMessage::SystemEvent { parent_tool_use_id, .. }
+            | BusMessage::Result { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +303,7 @@ pub enum SystemSubtype {
     ApiRetry,
     PermissionRequest,
     Notice,
+    AsyncAgentDone,
 }
 
 #[cfg(test)]
@@ -318,6 +347,92 @@ mod tests {
         let json = r#"{"type":"ping"}"#;
         let parsed: StreamEvent = serde_json::from_str(json).unwrap();
         assert!(matches!(parsed, StreamEvent::Ping));
+    }
+
+    #[test]
+    fn system_event_carries_parent_tool_use_id() {
+        let msg = BusMessage::SystemEvent {
+            subtype: SystemSubtype::AsyncAgentDone,
+            message: "agent-1 finished: ok".into(),
+            parent_tool_use_id: Some("tu_parent".into()),
+            uuid: Uuid::new_v4(),
+            session_id: "agent-1".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"parent_tool_use_id\":\"tu_parent\""));
+        assert!(json.contains("\"subtype\":\"async_agent_done\""));
+        let back: BusMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            BusMessage::SystemEvent { subtype, parent_tool_use_id, .. } => {
+                assert!(matches!(subtype, SystemSubtype::AsyncAgentDone));
+                assert_eq!(parent_tool_use_id.as_deref(), Some("tu_parent"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn bus_message_accessors() {
+        let msg = BusMessage::Result {
+            stop_reason: None,
+            usage: AnthropicUsage::default(),
+            total_cost_usd: 0.0, duration_ms: 0, num_turns: 1,
+            parent_tool_use_id: None,
+            uuid: Uuid::new_v4(),
+            session_id: "s-root".into(),
+        };
+        assert_eq!(msg.session_id(), "s-root");
+        assert_eq!(msg.parent_tool_use_id(), None);
+
+        let msg = BusMessage::SystemEvent {
+            subtype: SystemSubtype::Notice,
+            message: "x".into(),
+            parent_tool_use_id: Some("tu_p".into()),
+            uuid: Uuid::new_v4(),
+            session_id: "s-child".into(),
+        };
+        assert_eq!(msg.session_id(), "s-child");
+        assert_eq!(msg.parent_tool_use_id(), Some("tu_p"));
+    }
+
+    #[test]
+    fn result_message_carries_parent_tool_use_id() {
+        let msg = BusMessage::Result {
+            stop_reason: Some("end_turn".into()),
+            usage: AnthropicUsage::default(),
+            total_cost_usd: 0.01,
+            duration_ms: 1234,
+            num_turns: 3,
+            parent_tool_use_id: Some("tu_parent".into()),
+            uuid: Uuid::new_v4(),
+            session_id: "agent-1".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"parent_tool_use_id\":\"tu_parent\""));
+        let back: BusMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            BusMessage::Result { parent_tool_use_id, num_turns, .. } => {
+                assert_eq!(parent_tool_use_id.as_deref(), Some("tu_parent"));
+                assert_eq!(num_turns, 3);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn result_message_accessor_returns_parent_tool_use_id() {
+        let msg = BusMessage::Result {
+            stop_reason: None,
+            usage: AnthropicUsage::default(),
+            total_cost_usd: 0.0,
+            duration_ms: 0,
+            num_turns: 1,
+            parent_tool_use_id: Some("tu_x".into()),
+            uuid: Uuid::new_v4(),
+            session_id: "child".into(),
+        };
+        assert_eq!(msg.parent_tool_use_id(), Some("tu_x"));
+        assert_eq!(msg.session_id(), "child");
     }
 
     #[test]

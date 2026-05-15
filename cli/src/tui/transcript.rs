@@ -175,8 +175,9 @@ fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
         BusMessage::User { parent_tool_use_id, .. }
         | BusMessage::Assistant { parent_tool_use_id, .. }
         | BusMessage::StreamEvent { parent_tool_use_id, .. }
-        | BusMessage::ToolProgress { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
-        BusMessage::SystemEvent { .. } | BusMessage::Result { .. } => None,
+        | BusMessage::ToolProgress { parent_tool_use_id, .. }
+        | BusMessage::SystemEvent { parent_tool_use_id, .. }
+        | BusMessage::Result { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
     };
     match filter {
         None => parent.is_none(),
@@ -285,6 +286,7 @@ mod tests {
             stop_reason: Some("end_turn".into()),
             usage: AnthropicUsage::default(),
             total_cost_usd: 0.0, duration_ms: 0, num_turns: 1,
+            parent_tool_use_id: None,
             uuid: Uuid::new_v4(), session_id: "s1".into(),
         }];
         let t = fold(&events, None);
@@ -345,6 +347,100 @@ mod tests {
                 assert_eq!(*elapsed_ms, 1500, "1.5s should be 1500ms not 1000ms");
             }
             other => panic!("wrong: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fold_demuxes_subagent_events_under_parent_tool_use_id() {
+        let tu = "tu_task_1".to_string();
+        let events = vec![
+            // Root user prompt
+            BusMessage::User {
+                message: UserPayload {
+                    role: "user".into(),
+                    content: vec![ContentBlockFinal::Text { text: "find auth".into() }],
+                },
+                parent_tool_use_id: None,
+                uuid: Uuid::new_v4(),
+                session_id: "s-root".into(),
+            },
+            // Root assistant invokes Task
+            env(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::ToolUse {
+                    id: tu.clone(), name: "Task".into(),
+                    input: serde_json::json!({"description": "find auth", "subagent_type": "Explore"}),
+                },
+            }),
+            env(StreamEvent::ContentBlockStop { index: 0 }),
+            // Subagent emits its own user prompt + assistant text — these should
+            // NOT show up at the root level.
+            BusMessage::User {
+                message: UserPayload {
+                    role: "user".into(),
+                    content: vec![ContentBlockFinal::Text { text: "<subagent prompt>".into() }],
+                },
+                parent_tool_use_id: Some(tu.clone()),
+                uuid: Uuid::new_v4(),
+                session_id: "agent-xyz".into(),
+            },
+            BusMessage::StreamEvent {
+                event: StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlockStream::Text { text: "".into() } },
+                parent_tool_use_id: Some(tu.clone()),
+                uuid: Uuid::new_v4(),
+                session_id: "agent-xyz".into(),
+            },
+            BusMessage::StreamEvent {
+                event: StreamEvent::ContentBlockDelta { index: 0, delta: BlockDelta::TextDelta { text: "found auth in src/auth.rs".into() } },
+                parent_tool_use_id: Some(tu.clone()),
+                uuid: Uuid::new_v4(),
+                session_id: "agent-xyz".into(),
+            },
+            BusMessage::StreamEvent {
+                event: StreamEvent::ContentBlockStop { index: 0 },
+                parent_tool_use_id: Some(tu.clone()),
+                uuid: Uuid::new_v4(),
+                session_id: "agent-xyz".into(),
+            },
+            // The tool_result that closes the Task block
+            BusMessage::User {
+                message: UserPayload {
+                    role: "user".into(),
+                    content: vec![ContentBlockFinal::ToolResult {
+                        tool_use_id: tu.clone(),
+                        content: "found auth in src/auth.rs".into(),
+                        is_error: false,
+                    }],
+                },
+                parent_tool_use_id: None,
+                uuid: Uuid::new_v4(),
+                session_id: "s-root".into(),
+            },
+        ];
+
+        let root = fold(&events, None);
+        // Root should have: User(prompt) + ToolCall(Task, with result attached).
+        assert_eq!(root.len(), 2, "root view: {root:?}");
+        assert!(matches!(&root[0], TranscriptItem::User { text } if text == "find auth"));
+        match &root[1] {
+            TranscriptItem::ToolCall { name, result, .. } => {
+                assert_eq!(name, "Task");
+                let r = result.as_ref().expect("tool result attached");
+                assert!(r.content.contains("found auth"));
+            }
+            other => panic!("wrong root[1]: {other:?}"),
+        }
+
+        let sub = fold(&events, Some(&tu));
+        // Subagent view should have: User(<subagent prompt>) + AssistantText("found auth in src/auth.rs")
+        assert_eq!(sub.len(), 2, "sub view: {sub:?}");
+        assert!(matches!(&sub[0], TranscriptItem::User { text } if text.contains("subagent prompt")));
+        match &sub[1] {
+            TranscriptItem::AssistantText { text, complete } => {
+                assert_eq!(text, "found auth in src/auth.rs");
+                assert!(*complete);
+            }
+            other => panic!("wrong sub[1]: {other:?}"),
         }
     }
 }

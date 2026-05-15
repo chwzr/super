@@ -18,10 +18,13 @@ pub async fn run() {
     }
 
     // Build tool registry with all tools.
-    let registry = Arc::new(crate::tools::ToolRegistry::new(
+    let cwd_for_agents = std::env::current_dir().unwrap_or_default();
+    let agent_registry = Arc::new(crate::agents::AgentRegistry::load(&cwd_for_agents));
+    let registry = crate::tools::ToolRegistry::new(
         store.clone(),
         config.clone(),
-    ));
+        agent_registry,
+    );
 
     // Load skills and (re-)register the SkillTool with loaded skills.
     let skills = crate::skills::loader::load_all_skills();
@@ -36,6 +39,10 @@ pub async fn run() {
     let bus = Arc::new(crate::conversation::session_bus::SessionBus::new(
         uuid::Uuid::new_v4().to_string(),
     ));
+
+    // Spawn sidechain JSONL writer so any subagent activity gets persisted.
+    let sidechain_dir = crate::conversation::sidechain::default_sidechain_dir(bus.session_id());
+    crate::conversation::sidechain::spawn_sidechain_writer(bus.clone(), sidechain_dir);
 
     let engine = crate::conversation::engine::ConversationEngine::new(
         store.clone(),
