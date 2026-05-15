@@ -1,0 +1,110 @@
+//! Extracts Superpowers skills embedded at compile time into
+//! ~/.super/plugins/superpowers/ and parses them as Skill objects.
+
+include!(concat!(env!("OUT_DIR"), "/bundled_gen.rs"));
+
+use super::loader::{LoadedFrom, Skill};
+use std::io::Write;
+use std::path::PathBuf;
+
+/// Extract all bundled skills to `~/.super/plugins/superpowers/` (idempotent)
+/// and return them as `Skill` objects. Extraction failures are logged and
+/// skipped — the skill is still usable from in-memory content but
+/// companion files (visual-companion.md etc.) won't be accessible via Read.
+pub fn extract_bundled_skills() -> Vec<Skill> {
+    let root = match bundled_root() {
+        Some(r) => r,
+        None => return parse_in_memory_only(),
+    };
+
+    let mut skills = Vec::new();
+    for def in BUNDLED_SKILLS {
+        let skill_dir = root.join(def.name);
+        if let Err(e) = extract_skill(def, &skill_dir) {
+            eprintln!("[super] warning: could not extract skill '{}': {e}", def.name);
+        }
+        // Always parse from in-memory content (extraction may have already
+        // existed; re-reading disk is not necessary and adds I/O).
+        if let Some(skill) = skill_from_def(def, Some(skill_dir)) {
+            skills.push(skill);
+        }
+    }
+    skills
+}
+
+fn bundled_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".super").join("plugins").join("superpowers"))
+}
+
+fn extract_skill(def: &BundledSkillDef, skill_dir: &PathBuf) -> std::io::Result<()> {
+    for file in def.files {
+        let target = skill_dir.join(file.rel_path);
+        if target.exists() {
+            continue; // idempotent
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut fh = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true) // O_EXCL: fail if already exists (race-safe)
+            .open(&target)?;
+        fh.write_all(file.content.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn skill_from_def(def: &BundledSkillDef, base_directory: Option<PathBuf>) -> Option<Skill> {
+    let skill_content = def.files.iter().find(|f| f.rel_path == "SKILL.md")?.content;
+    super::loader::parse_skill_str(skill_content, def.name, base_directory, LoadedFrom::Bundled)
+}
+
+fn parse_in_memory_only() -> Vec<Skill> {
+    BUNDLED_SKILLS
+        .iter()
+        .filter_map(|def| skill_from_def(def, None))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_skills_constant_is_non_empty() {
+        assert!(
+            !BUNDLED_SKILLS.is_empty(),
+            "BUNDLED_SKILLS should contain at least one skill"
+        );
+    }
+
+    #[test]
+    fn every_bundled_skill_has_skill_md() {
+        for def in BUNDLED_SKILLS {
+            let has_skill_md = def.files.iter().any(|f| f.rel_path == "SKILL.md");
+            assert!(has_skill_md, "skill '{}' is missing SKILL.md", def.name);
+        }
+    }
+
+    #[test]
+    fn every_bundled_skill_parses_to_non_empty_name() {
+        for def in BUNDLED_SKILLS {
+            let skill = skill_from_def(def, None);
+            assert!(skill.is_some(), "skill '{}' failed to parse", def.name);
+            assert!(!skill.unwrap().name.is_empty(), "skill '{}' parsed with empty name", def.name);
+        }
+    }
+
+    #[test]
+    fn using_superpowers_is_not_user_invocable() {
+        let skill = BUNDLED_SKILLS
+            .iter()
+            .find(|d| d.name == "using-superpowers")
+            .and_then(|d| skill_from_def(d, None));
+        let skill = skill.expect("using-superpowers not found in BUNDLED_SKILLS");
+        assert!(
+            !skill.user_invocable,
+            "using-superpowers should have user-invocable: false"
+        );
+    }
+}
