@@ -24,37 +24,127 @@ const FRAGMENT_SHADER = `
   varying vec3 vWorldPos;
   varying vec3 vViewDir;
 
+  // Procedural environment lookup along the reflected view direction.
+  // Stands in for a cubemap: bright ceiling, soft side fill, dim floor.
+  vec3 sampleEnv(vec3 R) {
+    float ceil  = smoothstep(-0.10, 1.0, R.y);
+    float floor_ = smoothstep(0.0, 1.0, -R.y);
+    float side  = pow(max(0.0, 1.0 - abs(R.y)), 2.0);
+    vec3 col = vec3(0.0);
+    col += uShimmer * ceil * 1.10;
+    col += uHi * floor_ * 0.25;
+    col += vec3(0.45, 0.6, 0.9) * side * 0.35;
+    return col;
+  }
+
   void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(vViewDir);
 
     float ndv = abs(dot(N, V));
-    float fresnel = pow(1.0 - ndv, 2.6);
+    // Schlick-style Fresnel — most reflection is concentrated at grazing.
+    float fresnel = pow(1.0 - ndv, 2.4);
 
-    vec3 L1 = normalize(vec3(sin(uTime * 0.35) * 1.2, 0.85, cos(uTime * 0.35) * 1.2));
-    vec3 L2 = normalize(vec3(cos(uTime * 0.55 + 1.7) * 1.0, -0.25, sin(uTime * 0.55 + 1.7) * 1.0));
-    vec3 L3 = normalize(vec3(0.3, sin(uTime * 0.8) * 0.4 + 0.5, 0.8));
+    // Reflected view direction drives the "environment" sampling — fakes
+    // raytraced specular off a dome lighting setup.
+    vec3 R = reflect(-V, N);
+    vec3 env = sampleEnv(R);
+
+    // Three rotating point lights for facet glints.
+    vec3 L1 = normalize(vec3(sin(uTime * 0.40) * 1.2, 0.95, cos(uTime * 0.40) * 1.2));
+    vec3 L2 = normalize(vec3(cos(uTime * 0.60 + 1.7), 0.45, sin(uTime * 0.60 + 1.7)));
+    vec3 L3 = normalize(vec3(-0.40, sin(uTime * 0.90) * 0.4 + 0.6, 0.70));
 
     vec3 H1 = normalize(L1 + V);
     vec3 H2 = normalize(L2 + V);
     vec3 H3 = normalize(L3 + V);
 
-    float s1 = pow(max(dot(N, H1), 0.0), 80.0);
-    float s2 = pow(max(dot(N, H2), 0.0), 160.0);
-    float s3 = pow(max(dot(N, H3), 0.0), 260.0);
+    // Very tight speculars so each facet flashes individually as it rotates.
+    float s1 = pow(max(dot(N, H1), 0.0), 220.0);
+    float s2 = pow(max(dot(N, H2), 0.0), 380.0);
+    float s3 = pow(max(dot(N, H3), 0.0), 600.0);
 
-    float d1 = max(dot(N, L1), 0.0);
+    // Faint blue inner glow on top-facing facets so the table doesn't go pitch-black.
+    float topFill = max(dot(N, vec3(0.0, 1.0, 0.0)), 0.0);
 
-    vec3 color = uBase;
-    color += uShimmer * fresnel * 0.55;
-    color += uShimmer * d1 * 0.04;
-    color += uHi * s1 * 0.70;
-    color += uHi * s2 * 0.95;
-    color += uHi * s3 * 1.30;
+    // Two fixed diffuse lights so each facet picks up a distinct base shade.
+    vec3 skyLight = normalize(vec3(0.20, 0.90, 0.40));
+    vec3 keyLight = normalize(vec3(0.65, 0.50, 0.55));
+    float diffuseSky = max(dot(N, skyLight), 0.0);
+    float diffuseKey = max(dot(N, keyLight), 0.0);
+
+    vec3 color = uBase;                            // near-black core
+    color += uShimmer * diffuseSky * 0.55;         // strong facet-by-facet shading (legibility)
+    color += vec3(0.55, 0.70, 1.00) * diffuseKey * 0.30; // key fill so the table reads cleanly
+    color += env * fresnel * 1.40;                 // env reflection — strongest on grazing facets
+    color += uShimmer * fresnel * 0.85;            // saturated blue rim
+    color += uShimmer * topFill * 0.12;            // ambient blue on top-facing facets
+    color += uHi * s1 * 1.30;
+    color += uHi * s2 * 1.75;
+    color += vec3(1.15, 1.20, 1.35) * s3 * 2.30;   // brightest, narrowest glint
 
     gl_FragColor = vec4(color, 1.0);
   }
 `;
+
+/** Build a flat-shaded brilliant-cut diamond:
+ *  table (octagonal top) → crown bezels → girdle band → pavilion mains → culet.
+ *  Each triangle gets its own normals via non-indexed positions so the shader
+ *  produces crisp per-facet specular highlights instead of smooth shading. */
+function makeBrilliantGeometry(): THREE.BufferGeometry {
+  const SEG = 8;
+  const GIRDLE_R = 0.7;
+  const TABLE_R = 0.36;
+  const CROWN_H = 0.34;
+  const GIRDLE_H = 0.025;
+  const PAVILION_D = 0.95;
+
+  const ring = (radius: number, y: number): THREE.Vector3[] => {
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i < SEG; i++) {
+      const a = (i / SEG) * Math.PI * 2;
+      pts.push(new THREE.Vector3(Math.cos(a) * radius, y, Math.sin(a) * radius));
+    }
+    return pts;
+  };
+
+  const table = ring(TABLE_R, CROWN_H);
+  const girdleTop = ring(GIRDLE_R, 0);
+  const girdleBot = ring(GIRDLE_R, -GIRDLE_H);
+  const culet = new THREE.Vector3(0, -GIRDLE_H - PAVILION_D, 0);
+
+  const positions: number[] = [];
+  const pushTri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) => {
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  };
+
+  // Table top (fan triangulate; winding chosen so the normal points +y).
+  for (let i = 1; i < SEG - 1; i++) {
+    pushTri(table[0], table[i + 1], table[i]);
+  }
+  // Crown bezels — 8 quads.
+  for (let i = 0; i < SEG; i++) {
+    const j = (i + 1) % SEG;
+    pushTri(table[i], table[j], girdleTop[i]);
+    pushTri(table[j], girdleTop[j], girdleTop[i]);
+  }
+  // Girdle band — 8 quads.
+  for (let i = 0; i < SEG; i++) {
+    const j = (i + 1) % SEG;
+    pushTri(girdleTop[i], girdleTop[j], girdleBot[i]);
+    pushTri(girdleTop[j], girdleBot[j], girdleBot[i]);
+  }
+  // Pavilion mains — 8 triangles tapering to the culet point.
+  for (let i = 0; i < SEG; i++) {
+    const j = (i + 1) % SEG;
+    pushTri(girdleBot[i], girdleBot[j], culet);
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geom.computeVertexNormals();
+  return geom;
+}
 
 const DIAMOND_ASCII = `        _______
       .'_/_|_\\_'.
@@ -68,17 +158,12 @@ function Diamond({ mouseRef }: { mouseRef: React.MutableRefObject<{ x: number; y
   const materialRef = useRef<THREE.ShaderMaterial>(null);
   const startRef = useRef(performance.now());
 
-  const geometry = useMemo(() => {
-    const g = new THREE.OctahedronGeometry(0.78, 0);
-    g.scale(1, 1.45, 1);
-    g.computeVertexNormals();
-    return g;
-  }, []);
+  const geometry = useMemo(() => makeBrilliantGeometry(), []);
 
   const uniforms = useMemo(
     () => ({
       uTime: { value: 0 },
-      uBase: { value: new THREE.Color(0x000000) },
+      uBase: { value: new THREE.Color(0x05070b) },
       uShimmer: { value: new THREE.Color(0x8cc0ff) },
       uHi: { value: new THREE.Color(0xbcdcff) },
     }),
@@ -91,16 +176,17 @@ function Diamond({ mouseRef }: { mouseRef: React.MutableRefObject<{ x: number; y
       materialRef.current.uniforms.uTime.value = t;
     }
     if (meshRef.current) {
-      meshRef.current.rotation.y = t * 0.42 + mouseRef.current.x * 0.5;
-      meshRef.current.rotation.x = Math.sin(t * 0.28) * 0.18 + mouseRef.current.y * 0.3;
-      // Bias the diamond slightly downward in the canvas so it sits closer to
-      // the section bottom — visually tightens the gap to the hero text below.
-      meshRef.current.position.y = -0.35 + Math.sin(t * 0.5) * 0.04;
+      meshRef.current.rotation.y = t * 0.3 + mouseRef.current.x * 0.5;
+      // Forward tilt so the camera sees down onto the table — classic 3/4
+      // jewel view that reveals the crown facets without losing the pavilion.
+      meshRef.current.rotation.x = -0.28 + Math.sin(t * 0.28) * 0.12 + mouseRef.current.y * 0.3;
+      // Slight downward bias plus subtle vertical breathing.
+      meshRef.current.position.y = -0.15 + Math.sin(t * 0.5) * 0.04;
     }
   });
 
   return (
-    <mesh ref={meshRef} geometry={geometry}>
+    <mesh ref={meshRef} geometry={geometry} scale={1.45}>
       <shaderMaterial
         ref={materialRef}
         uniforms={uniforms}
