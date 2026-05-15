@@ -93,7 +93,9 @@ function Diamond({ mouseRef }: { mouseRef: React.MutableRefObject<{ x: number; y
     if (meshRef.current) {
       meshRef.current.rotation.y = t * 0.42 + mouseRef.current.x * 0.5;
       meshRef.current.rotation.x = Math.sin(t * 0.28) * 0.18 + mouseRef.current.y * 0.3;
-      meshRef.current.position.y = Math.sin(t * 0.5) * 0.04;
+      // Bias the diamond slightly downward in the canvas so it sits closer to
+      // the section bottom — visually tightens the gap to the hero text below.
+      meshRef.current.position.y = -0.35 + Math.sin(t * 0.5) * 0.04;
     }
   });
 

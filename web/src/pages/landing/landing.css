@@ -172,7 +172,7 @@
 /* ──────────────────────────────────────────────  HERO  ── */
 .landing-root .hero {
   position: relative;
-  padding: 88px 24px 64px;
+  padding: 8px 24px 64px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -268,7 +268,7 @@
 /* ──────────────────────────────────────────────  DIAMOND STAGE  ── */
 .landing-root .diamond-section {
   position: relative;
-  height: 90vh;
+  height: 28vh;
   z-index: 1;
   pointer-events: none;
 }
@@ -277,7 +277,7 @@
   position: sticky;
   top: 0;
   width: 100%;
-  height: 56vh;
+  height: 22vh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -793,11 +793,11 @@
     padding: 40px 18px 64px;
   }
   .landing-root .diamond-section {
-    height: 60vh;
+    height: 24vh;
   }
   .landing-root .diamond-stage {
-    height: 42vh;
-    margin-bottom: 16px;
+    height: 18vh;
+    margin-bottom: 0;
   }
   .landing-root .section {
     padding: 96px 18px;
