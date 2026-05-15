@@ -6,6 +6,7 @@ use crate::tui::modals::config_view::ConfigView;
 use crate::tui::modals::effort_picker::EffortPicker;
 use crate::tui::modals::mcp_list::McpList;
 use crate::tui::modals::model_picker::ModelPicker;
+use crate::tui::modals::provider_picker::ProviderPicker;
 use crate::tui::modals::resume_picker::ResumePicker;
 use crate::tui::modals::status_view::{StatusSnapshot, StatusView};
 use super::prompts;
@@ -25,6 +26,7 @@ pub fn dispatch(command: &Command, input: &str, store: &Store) -> CommandResult 
         "/version" => version(),
         "/status" => status(store),
         "/model" => model(args, store),
+        "/provider" => provider(store),
         "/effort" => effort(args, store),
         "/think" => think(store),
         "/context" => context(store),
@@ -127,9 +129,11 @@ fn status(store: &Store) -> CommandResult {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "?".into());
+    let slug = crate::providers::resolve_slug(&state.provider, &state.model_class);
     let snap = StatusSnapshot {
         version:  env!("CARGO_PKG_VERSION").to_string(),
-        model:    state.model.clone(),
+        model:    slug.to_string(),
+        provider: crate::providers::provider_display_name(&state.provider).to_string(),
         thinking: state.thinking_enabled,
         effort:   state.effort_level.clone(),
         email:    config.access_token.as_ref().map(|_| "signed in".to_string()),
@@ -148,8 +152,16 @@ fn friendly_model_short_name(slug: &str) -> String {
 }
 
 fn model(_args: &str, store: &Store) -> CommandResult {
-    let current = store.get_state().model.clone();
-    CommandResult::OpenModal(Modal::Model(ModelPicker::new(current)))
+    let state = store.get_state();
+    CommandResult::OpenModal(Modal::Model(ModelPicker::new(
+        state.provider.clone(),
+        state.model_class.clone(),
+    )))
+}
+
+fn provider(store: &Store) -> CommandResult {
+    let current = store.get_state().provider.clone();
+    CommandResult::OpenModal(Modal::Provider(ProviderPicker::new(current)))
 }
 
 fn effort(_args: &str, store: &Store) -> CommandResult {
@@ -169,7 +181,8 @@ fn think(store: &Store) -> CommandResult {
 fn context(store: &Store) -> CommandResult {
     let state = store.get_state();
     let count = state.messages.len();
-    let model = friendly_model_short_name(&state.model);
+    let slug  = crate::providers::resolve_slug(&state.provider, &state.model_class);
+    let model = friendly_model_short_name(slug);
     // Approximate token counts (1 token ≈ 4 chars). Full tokenizer is a follow-up.
     let msg_chars: usize = state.messages.iter().map(approx_message_chars).sum();
     let msg_tokens = msg_chars / 4;

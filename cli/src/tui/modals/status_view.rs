@@ -55,6 +55,7 @@ pub enum UsageState {
 pub struct StatusSnapshot {
     pub version: String,
     pub model: String,
+    pub provider: String,
     pub thinking: bool,
     pub effort: Option<String>,
     pub email: Option<String>,

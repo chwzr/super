@@ -44,6 +44,7 @@ impl CommandRegistry {
             ("/version",     &[],                         "Print the version this session is running",                                                       None,                              CommandKind::Local),
             ("/status",      &[],                         "Show Super status including version, model, account, API connectivity, and tool statuses",         None,                              CommandKind::Local),
             ("/model",       &[],                         "Set the AI model for Super",                                                                       Some("[model]"),                   CommandKind::Local),
+            ("/provider",   &[],                         "Select model provider (Anthropic, Z.ai, Moonshot, Deepseek, Free)",                                None,                              CommandKind::Local),
             ("/effort",      &[],                         "Set effort level for model usage",                                                                 Some("[low|medium|high|max|auto]"),CommandKind::Local),
             ("/think",       &[],                         "Toggle extended thinking",                                                                         None,                              CommandKind::Local),
             ("/context",     &[],                         "Show current context usage",                                                                       None,                              CommandKind::Local),
