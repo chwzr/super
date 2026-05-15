@@ -28,6 +28,7 @@ pub struct AsyncAgentHandle {
     pub parent_tool_use_id: String,
     pub abort: tokio::sync::watch::Sender<bool>,
     pub description: String,
+    pub started_at: std::time::Instant,
 }
 
 #[derive(Clone, Default)]
@@ -156,6 +157,7 @@ mod tests {
             parent_tool_use_id: "tu_1".into(),
             abort: tx,
             description: "test".into(),
+            started_at: std::time::Instant::now(),
         });
         let list = store.list_async_agents();
         assert_eq!(list.len(), 1);
@@ -173,6 +175,7 @@ mod tests {
             parent_tool_use_id: "tu_2".into(),
             abort: tx,
             description: "test".into(),
+            started_at: std::time::Instant::now(),
         });
         assert!(store.abort_async_agent("a2"));
         // Watch should have fired

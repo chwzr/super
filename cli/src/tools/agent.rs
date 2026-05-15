@@ -137,6 +137,7 @@ impl Tool for AgentTool {
             parent_tool_use_id: parent_tool_use_id.clone(),
             abort: abort_tx,
             description: description.to_string(),
+            started_at: std::time::Instant::now(),
         };
         self.store.register_async_agent(handle);
 
