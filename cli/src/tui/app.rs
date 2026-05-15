@@ -328,6 +328,10 @@ impl App {
                     self.input.move_end();
                     return Ok(());
                 }
+                KeyCode::Char('o') => {
+                    self.scroll_area.toggle_detailed_transcript();
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -565,6 +569,8 @@ impl App {
             Line::from(vec![
                 Span::styled("  ↑↓ select · enter to run · esc to dismiss", dim),
             ])
+        } else if self.scroll_area.is_detailed_transcript() {
+            Line::from(vec![Span::styled("  Showing detailed transcript · ctrl+o to toggle", dim)])
         } else if matches!(self.activity, ActivityState::Active { .. }) {
             Line::from(vec![Span::styled("  esc to interrupt · ? for shortcuts", dim)])
         } else {
