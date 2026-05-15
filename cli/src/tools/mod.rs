@@ -181,6 +181,24 @@ impl ToolRegistry {
         pool
     }
 
+    pub fn filter_for_agent(&self, agent: &crate::agents::definition::AgentDefinition) -> ToolRegistry {
+        let pool = self.tools.read().unwrap();
+        let filtered: Vec<Arc<dyn Tool>> = pool.iter()
+            .filter(|t| {
+                let name = t.name();
+                let in_allowed = match &agent.tools {
+                    None => true,
+                    Some(list) if list.iter().any(|s| s == "*") => true,
+                    Some(list) => list.iter().any(|s| s == name),
+                };
+                let in_disallowed = agent.disallowed_tools.iter().any(|s| s == name);
+                in_allowed && !in_disallowed
+            })
+            .cloned()
+            .collect();
+        ToolRegistry { tools: Arc::new(RwLock::new(filtered)) }
+    }
+
     pub fn tool_descriptions(&self, mode: &PermissionMode) -> String {
         let pool = self.assemble_for_mode(mode);
         pool.iter()
@@ -207,5 +225,65 @@ impl Clone for ToolRegistry {
         Self {
             tools: self.tools.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use crate::agents::definition::{AgentDefinition, AgentSource};
+    use crate::state::store::PermissionMode;
+
+    fn agent(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentDefinition {
+        AgentDefinition {
+            agent_type: "x".into(),
+            description: "x".into(),
+            system_prompt: "x".into(),
+            tools: tools.map(|v| v.into_iter().map(String::from).collect()),
+            disallowed_tools: disallowed.into_iter().map(String::from).collect(),
+            model: None,
+            permission_mode: None,
+            max_turns: None,
+            source: AgentSource::BuiltIn,
+        }
+    }
+
+    #[test]
+    fn filter_star_keeps_all() {
+        let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let reg = ToolRegistry::new(store, shared::CliConfig::default());
+        let all = reg.assemble_for_mode(&PermissionMode::Default).len();
+        let filtered = reg.filter_for_agent(&agent(Some(vec!["*"]), vec![]));
+        assert_eq!(filtered.assemble_for_mode(&PermissionMode::Default).len(), all);
+    }
+
+    #[test]
+    fn filter_named_subset_keeps_only_listed() {
+        let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let reg = ToolRegistry::new(store, shared::CliConfig::default());
+        let filtered = reg.filter_for_agent(&agent(Some(vec!["Read", "Grep"]), vec![]));
+        let names: Vec<String> = filtered.list();
+        assert!(names.contains(&"Read".to_string()));
+        assert!(names.contains(&"Grep".to_string()));
+        assert!(!names.iter().any(|n| n == "Edit"));
+    }
+
+    #[test]
+    fn filter_disallowed_removes_listed() {
+        let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let reg = ToolRegistry::new(store, shared::CliConfig::default());
+        let filtered = reg.filter_for_agent(&agent(Some(vec!["*"]), vec!["Edit", "Write"]));
+        let names: Vec<String> = filtered.list();
+        assert!(!names.iter().any(|n| n == "Edit"));
+        assert!(!names.iter().any(|n| n == "Write"));
+    }
+
+    #[test]
+    fn filter_none_means_inherit_all() {
+        let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let reg = ToolRegistry::new(store, shared::CliConfig::default());
+        let all = reg.assemble_for_mode(&PermissionMode::Default).len();
+        let filtered = reg.filter_for_agent(&agent(None, vec![]));
+        assert_eq!(filtered.assemble_for_mode(&PermissionMode::Default).len(), all);
     }
 }
