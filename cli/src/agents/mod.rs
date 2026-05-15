@@ -1,5 +1,6 @@
 pub mod definition;
 pub mod model;
+pub mod permission;
 
 #[cfg(test)]
 mod tests {
@@ -33,5 +34,37 @@ mod tests {
         assert_eq!(resolve_model(None, parent), parent);
         // Unknown -> pass through
         assert_eq!(resolve_model(Some("anthropic/claude-something-else"), parent), "anthropic/claude-something-else");
+    }
+
+    #[test]
+    fn permission_overlay_parent_bypass_wins() {
+        use super::permission::resolve_permission_mode;
+        use crate::state::store::PermissionMode;
+        let out = resolve_permission_mode(&PermissionMode::Bypass, Some(&PermissionMode::Plan), false);
+        assert!(matches!(out, PermissionMode::Bypass));
+    }
+
+    #[test]
+    fn permission_overlay_parent_accept_edits_wins() {
+        use super::permission::resolve_permission_mode;
+        use crate::state::store::PermissionMode;
+        let out = resolve_permission_mode(&PermissionMode::AcceptEdits, Some(&PermissionMode::Plan), false);
+        assert!(matches!(out, PermissionMode::AcceptEdits));
+    }
+
+    #[test]
+    fn permission_overlay_agent_override_applies_when_parent_default() {
+        use super::permission::resolve_permission_mode;
+        use crate::state::store::PermissionMode;
+        let out = resolve_permission_mode(&PermissionMode::Default, Some(&PermissionMode::Plan), false);
+        assert!(matches!(out, PermissionMode::Plan));
+    }
+
+    #[test]
+    fn permission_overlay_no_agent_override_inherits_parent() {
+        use super::permission::resolve_permission_mode;
+        use crate::state::store::PermissionMode;
+        let out = resolve_permission_mode(&PermissionMode::Default, None, false);
+        assert!(matches!(out, PermissionMode::Default));
     }
 }
