@@ -45,7 +45,10 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                 for block in &message.content {
                     match block {
                         ContentBlockFinal::Text { text } => {
-                            out.push(TranscriptItem::User { text: text.clone() });
+                            let stripped = strip_system_reminders(text);
+                            if !stripped.is_empty() {
+                                out.push(TranscriptItem::User { text: stripped });
+                            }
                         }
                         ContentBlockFinal::ToolResult { tool_use_id, content, is_error } => {
                             if let Some(idx) = tool_use_idx.get(tool_use_id) {
@@ -170,6 +173,40 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
     out
 }
 
+/// Strip `<system-reminder>…</system-reminder>` blocks from user-facing text.
+///
+/// Mirrors Claude Code's `stripSystemReminders` (components/messageActions.tsx):
+/// reminders are sent to the model verbatim, but the TUI hides them so the
+/// transcript only shows what the user actually typed.
+pub(crate) fn strip_system_reminders(text: &str) -> String {
+    const OPEN: &str = "<system-reminder>";
+    const CLOSE: &str = "</system-reminder>";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        match rest.find(OPEN) {
+            None => {
+                out.push_str(rest);
+                break;
+            }
+            Some(start) => {
+                out.push_str(&rest[..start]);
+                let after_open = &rest[start + OPEN.len()..];
+                match after_open.find(CLOSE) {
+                    None => {
+                        // Unterminated reminder — drop the rest (matches CC behavior of trimming).
+                        break;
+                    }
+                    Some(end) => {
+                        rest = &after_open[end + CLOSE.len()..];
+                    }
+                }
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
     let parent = match ev {
         BusMessage::User { parent_tool_use_id, .. }
@@ -200,6 +237,45 @@ mod tests {
             uuid: Uuid::new_v4(),
             session_id: "s1".into(),
         }
+    }
+
+    #[test]
+    fn strip_system_reminders_removes_wrapper() {
+        let s = "<system-reminder>\nSkills available:\n- foo\n</system-reminder>";
+        assert_eq!(strip_system_reminders(s), "");
+    }
+
+    #[test]
+    fn strip_system_reminders_keeps_user_text_intact() {
+        let s = "<system-reminder>x</system-reminder>hello world";
+        assert_eq!(strip_system_reminders(s), "hello world");
+    }
+
+    #[test]
+    fn strip_system_reminders_handles_multiple_blocks() {
+        let s = "<system-reminder>a</system-reminder>middle<system-reminder>b</system-reminder>tail";
+        assert_eq!(strip_system_reminders(s), "middletail");
+    }
+
+    #[test]
+    fn user_text_block_that_is_pure_reminder_is_not_rendered() {
+        let events = vec![BusMessage::User {
+            message: UserPayload {
+                role: "user".into(),
+                content: vec![
+                    ContentBlockFinal::Text {
+                        text: "<system-reminder>\nSkills...\n</system-reminder>".into(),
+                    },
+                    ContentBlockFinal::Text { text: "hello".into() },
+                ],
+            },
+            parent_tool_use_id: None,
+            uuid: Uuid::new_v4(),
+            session_id: "s1".into(),
+        }];
+        let t = fold(&events, None);
+        assert_eq!(t.len(), 1);
+        assert!(matches!(&t[0], TranscriptItem::User { text } if text == "hello"));
     }
 
     #[test]
