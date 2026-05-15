@@ -184,7 +184,7 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let started = std::time::Instant::now();
-            let result = engine.process_prompt(prompt, &sp).await;
+            let result = engine.process_prompt(prompt, &sp, None).await;
             let _ = tx.send(EngineEvent::Done {
                 result,
                 elapsed_secs: started.elapsed().as_secs(),

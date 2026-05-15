@@ -26,6 +26,9 @@ pub struct ConversationEngine {
     pub registry: Arc<ToolRegistry>,
     pub bus: Arc<SessionBus>,
     pub abort: Option<watch::Receiver<bool>>,
+    /// When `Some`, every emit uses this as the session_id instead of
+    /// `bus.session_id()`. Set by child engines spawned for subagents.
+    pub session_id_override: Option<String>,
 }
 
 impl ConversationEngine {
@@ -35,7 +38,14 @@ impl ConversationEngine {
         registry: Arc<ToolRegistry>,
         bus: Arc<SessionBus>,
     ) -> Self {
-        Self { store, config, registry, bus, abort: None }
+        Self { store, config, registry, bus, abort: None, session_id_override: None }
+    }
+
+    /// Effective session id for emits: override if set, else bus.session_id().
+    pub fn effective_session_id(&self) -> String {
+        self.session_id_override
+            .clone()
+            .unwrap_or_else(|| self.bus.session_id().to_string())
     }
 
     /// Drive one user turn end-to-end: emit the user message, loop on
@@ -45,8 +55,9 @@ impl ConversationEngine {
         &self,
         user_input: String,
         system_prompt: &SystemPrompt,
+        parent_tool_use_id: Option<String>,
     ) -> Result<String, String> {
-        let session_id = self.bus.session_id().to_string();
+        let session_id = self.effective_session_id();
         let model = self.config.model.clone();
         let base_url = self.config.api_messages_base_url.clone();
         let api_key = self
@@ -71,7 +82,7 @@ impl ConversationEngine {
                 role: "user".to_string(),
                 content: vec![user_block],
             },
-            parent_tool_use_id: None,
+            parent_tool_use_id: parent_tool_use_id.clone(),
             uuid: Uuid::new_v4(),
             session_id: session_id.clone(),
         });
@@ -135,7 +146,7 @@ impl ConversationEngine {
                 for event in parser.feed(&chunk) {
                     self.bus.emit(BusMessage::StreamEvent {
                         event: event.clone(),
-                        parent_tool_use_id: None,
+                        parent_tool_use_id: parent_tool_use_id.clone(),
                         uuid: Uuid::new_v4(),
                         session_id: session_id.clone(),
                     });
@@ -174,7 +185,7 @@ impl ConversationEngine {
             };
             self.bus.emit(BusMessage::Assistant {
                 message: assistant_msg.clone(),
-                parent_tool_use_id: None,
+                parent_tool_use_id: parent_tool_use_id.clone(),
                 uuid: Uuid::new_v4(),
                 session_id: session_id.clone(),
             });
@@ -229,7 +240,7 @@ impl ConversationEngine {
                     role: "user".to_string(),
                     content: tool_results.clone(),
                 },
-                parent_tool_use_id: None,
+                parent_tool_use_id: parent_tool_use_id.clone(),
                 uuid: Uuid::new_v4(),
                 session_id: session_id.clone(),
             });
@@ -498,5 +509,45 @@ mod tests {
         let body = "<html><body>502 Bad Gateway</body></html>";
         let out = truncate_error_body(body);
         assert!(out.contains("502"));
+    }
+
+    #[test]
+    fn engine_session_id_resolution_default_uses_bus() {
+        use crate::conversation::session_bus::SessionBus;
+        let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
+        let store_arc = std::sync::Arc::new(crate::state::store::Store::new());
+        let agent_reg = std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only());
+        let engine = ConversationEngine {
+            store: store_arc.clone(),
+            config: shared::CliConfig::default(),
+            registry: std::sync::Arc::new(crate::tools::ToolRegistry::new(
+                store_arc.clone(),
+                shared::CliConfig::default(),
+            )),
+            bus: bus.clone(),
+            abort: None,
+            session_id_override: None,
+        };
+        let _ = agent_reg; // touch to silence unused
+        assert_eq!(engine.effective_session_id(), "s-root");
+    }
+
+    #[test]
+    fn engine_session_id_override_used_when_set() {
+        use crate::conversation::session_bus::SessionBus;
+        let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
+        let store_arc = std::sync::Arc::new(crate::state::store::Store::new());
+        let engine = ConversationEngine {
+            store: store_arc.clone(),
+            config: shared::CliConfig::default(),
+            registry: std::sync::Arc::new(crate::tools::ToolRegistry::new(
+                store_arc,
+                shared::CliConfig::default(),
+            )),
+            bus,
+            abort: None,
+            session_id_override: Some("agent-1".into()),
+        };
+        assert_eq!(engine.effective_session_id(), "agent-1");
     }
 }
