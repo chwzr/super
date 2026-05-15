@@ -2,27 +2,30 @@
 
 /* ──────────────────────────────────────────────
    Super design system
-   Source of truth: ../design-system/{LINEAR,APPLE}.md
-   The base palette mirrors Linear's dark-first marketing
-   surface with an Apple-blue accent reserved for primary
-   actions.
+   Source of truth: /SUPER.md (repo root)
+   Dark-native: #08090a is the medium, not a theme.
+   Apple Action Blue is the only chromatic accent.
+   Berkeley Mono = system, Inter Variable = human.
    ────────────────────────────────────────────── */
 
 @font-face {
   font-family: "Berkeley Mono";
-  /* TODO: ship the woff2 from design-system/ via build copy step. */
-  src: local("Berkeley Mono");
+  src:
+    url("/fonts/BerkeleyMonoVariable.woff2") format("woff2-variations"),
+    url("/fonts/BerkeleyMonoVariable.woff2") format("woff2");
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
 }
 
 @theme inline {
+  /* Typography — Inter Variable for prose, Berkeley Mono for system/brand. */
   --font-sans:
     "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI",
     Roboto, Helvetica, Arial, sans-serif;
   --font-mono: "Berkeley Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
+  /* shadcn token bindings — all values resolve to the Super tokens below. */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
 
@@ -53,81 +56,114 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-  --radius-xl: 14px;
+  /* Super raw token aliases — for direct access in components. */
+  --color-canvas: var(--canvas);
+  --color-deepest: var(--deepest);
+  --color-panel: var(--panel);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-text-4: var(--text-4);
+
+  --color-apple-blue: var(--apple-blue);
+  --color-apple-blue-hi: var(--apple-blue-hi);
+  --color-apple-blue-link: var(--apple-blue-link);
+  --color-apple-blue-hover: var(--apple-blue-hover);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-standard: var(--border-standard);
+  --color-border-strong: var(--border-strong);
+  --color-border-blue-muted: var(--border-blue-muted);
+  --color-border-blue-checkpoint: var(--border-blue-checkpoint);
+
+  /* Radius scale — from SUPER.md §5 (Border Radius Scale). */
+  --radius-sm: 8px; /* Tight — install snippet, card icon */
+  --radius-md: 9px; /* Standard — card icon */
+  --radius-lg: 14px; /* Card — feature cards, terminal container */
+  --radius-xl: 16px; /* Panel — workflow container */
+  --radius-pill: 980px; /* All buttons, section eyebrow */
 }
 
-/* Light mode (Apple-inspired editorial palette). */
+/* ──────────────────────────────────────────────
+   Super tokens — dark-native, applied at :root.
+   SUPER.md §2 (Color Palette & Roles)
+   ────────────────────────────────────────────── */
 :root {
-  --background: oklch(0.99 0 0); /* #ffffff */
-  --foreground: oklch(0.16 0.005 270); /* #1d1d1f */
+  /* Background surfaces */
+  --canvas: #08090a;
+  --deepest: #010102;
+  --panel: #0f1011;
+  --surface-1: #191a1b;
+  --surface-2: #28282c;
 
-  --card: oklch(0.99 0 0);
-  --card-foreground: oklch(0.16 0.005 270);
+  /* Text */
+  --text: #f7f8f8;
+  --text-2: #d0d6e0;
+  --text-3: #8a8f98;
+  --text-4: #62666d;
 
-  --popover: oklch(0.99 0 0);
-  --popover-foreground: oklch(0.16 0.005 270);
+  /* Apple blue accent family — the only chromatic color in the system. */
+  --apple-blue: #0071e3;
+  --apple-blue-hi: #2997ff;
+  --apple-blue-link: #0066cc;
+  --apple-blue-hover: #1d83eb;
 
-  --primary: oklch(0.55 0.21 254); /* #0071e3 — Apple Action Blue */
-  --primary-foreground: oklch(0.99 0 0);
+  /* Borders */
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-standard: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --border-blue-muted: rgba(0, 113, 227, 0.25);
+  --border-blue-checkpoint: rgba(0, 113, 227, 0.15);
 
-  --secondary: oklch(0.97 0.005 270); /* #f5f5f7 — Pale Apple Gray */
-  --secondary-foreground: oklch(0.16 0.005 270);
+  /* Accent tints */
+  --tint-blue-10: rgba(0, 113, 227, 0.1);
+  --tint-blue-06: rgba(0, 113, 227, 0.06);
+  --tint-blue-05-hi: rgba(41, 151, 255, 0.05);
+  --glow-blue: rgba(0, 113, 227, 0.45);
+  --glow-phase: rgba(0, 113, 227, 0.55);
 
-  --muted: oklch(0.96 0.005 270);
-  --muted-foreground: oklch(0.5 0.01 270); /* #6e6e73 */
+  /* shadcn semantic bindings */
+  --background: var(--canvas);
+  --foreground: var(--text);
 
-  --accent: oklch(0.55 0.21 254);
-  --accent-foreground: oklch(0.99 0 0);
+  --card: var(--panel);
+  --card-foreground: var(--text);
 
-  --destructive: oklch(0.55 0.22 27); /* warm red */
-  --destructive-foreground: oklch(0.99 0 0);
+  --popover: var(--surface-1);
+  --popover-foreground: var(--text);
 
-  --success: oklch(0.6 0.16 152); /* #27a644 */
-  --success-foreground: oklch(0.99 0 0);
+  --primary: var(--apple-blue);
+  --primary-foreground: #ffffff;
 
-  --border: oklch(0.9 0.005 270); /* #d2d2d7 */
-  --input: oklch(0.9 0.005 270);
-  --ring: oklch(0.55 0.21 254 / 0.6);
+  --secondary: var(--surface-2);
+  --secondary-foreground: var(--text);
 
-  color-scheme: light;
-}
+  --muted: var(--surface-1);
+  --muted-foreground: var(--text-3);
 
-/* Dark mode (Linear marketing surface). */
-.dark {
-  --background: oklch(0.13 0.005 270); /* #08090a */
-  --foreground: oklch(0.97 0.003 240); /* #f7f8f8 */
-
-  --card: oklch(0.16 0.005 270); /* #0f1011 */
-  --card-foreground: oklch(0.97 0.003 240);
-
-  --popover: oklch(0.18 0.006 270); /* #191a1b */
-  --popover-foreground: oklch(0.97 0.003 240);
-
-  --primary: oklch(0.6 0.18 274); /* #5e6ad2 — Linear Brand Indigo */
-  --primary-foreground: oklch(0.97 0.003 240);
-
-  --secondary: oklch(0.22 0.008 270); /* #28282c */
-  --secondary-foreground: oklch(0.97 0.003 240);
-
-  --muted: oklch(0.2 0.005 270);
-  --muted-foreground: oklch(0.62 0.01 250); /* #8a8f98 */
-
-  --accent: oklch(0.7 0.21 282); /* #7170ff — Accent Violet */
-  --accent-foreground: oklch(0.97 0.003 240);
+  --accent: var(--apple-blue-hi);
+  --accent-foreground: var(--text);
 
   --destructive: oklch(0.55 0.22 27);
-  --destructive-foreground: oklch(0.97 0.003 240);
+  --destructive-foreground: var(--text);
 
-  --success: oklch(0.65 0.18 152); /* #10b981 */
-  --success-foreground: oklch(0.97 0.003 240);
+  --success: #27a644;
+  --success-foreground: var(--text);
 
-  --border: oklch(0.97 0.003 240 / 0.08);
-  --input: oklch(0.97 0.003 240 / 0.08);
-  --ring: oklch(0.6 0.18 274 / 0.6);
+  --border: var(--border-standard);
+  --input: var(--border-standard);
+  --ring: rgba(0, 113, 227, 0.6);
 
+  color-scheme: dark;
+}
+
+/* Super is dark-native (SUPER.md §7: "the default medium"). The .dark
+   class alias keeps `next-themes` and the existing toggle in main.tsx
+   functioning without diverging from the canonical palette. */
+.dark {
   color-scheme: dark;
 }
 
@@ -146,10 +182,29 @@
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-family: var(--font-sans);
+    /* SUPER.md §3: identity-defining OpenType features. Non-negotiable. */
     font-feature-settings: "cv01", "ss03";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+  }
+
+  /* Atmospheric depth layer — two fixed radial gradients (SUPER.md §6).
+     Persist beneath all content; never scroll. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(1200px 600px at 50% -200px, var(--tint-blue-10), transparent 60%),
+      radial-gradient(900px 500px at 90% 100%, var(--tint-blue-05-hi), transparent 60%);
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
   }
 
   .mono {
