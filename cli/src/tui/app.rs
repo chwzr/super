@@ -620,13 +620,18 @@ impl App {
             };
             let input_height = 3u16;
             let hint_height  = 1u16;
+            let fixed = header_height + 1 + menu_height + activity_height + input_height + hint_height;
+            let available_for_scroll = area.height.saturating_sub(fixed);
+            let scroll_height = self.scroll_area
+                .content_height(area.width)
+                .min(available_for_scroll);
 
             let layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(header_height),
                     Constraint::Length(1),
-                    Constraint::Min(1),
+                    Constraint::Length(scroll_height),
                     Constraint::Length(menu_height),
                     Constraint::Length(activity_height),
                     Constraint::Length(input_height),
