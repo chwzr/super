@@ -54,6 +54,7 @@ If a workflow works in Claude Code, the same workflow must work in Super without
   2. The [`assistant-ui`](https://www.assistant-ui.com/) registry.
   3. The [`tool-ui`](https://tool-ui.com) registry.
 - **No hand-written components.** Every UI element must come from one of the three registries above. If something isn't expressible with those components, **stop and escalate** before writing custom code.
+- **Marketing-surface carve-out:** Files under `web/src/pages/landing/**` are exempt from the registry-only rule. The public landing page implements SUPER.md verbatim (Three.js diamond, ASCII dissolve, phase timeline, terminal mocks, atmospheric gradients) — primitives that none of the three registries provide. The exemption is scoped to that directory only; the rest of the app (auth shell, dashboard, settings, anything authenticated) remains registry-only.
 - Follow Linear's and Apple's design guidelines. The canonical references live under `design-system/`.
 
 ### Remote control protocol
