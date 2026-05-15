@@ -69,7 +69,7 @@ function Diamond({ mouseRef }: { mouseRef: React.MutableRefObject<{ x: number; y
   const startRef = useRef(performance.now());
 
   const geometry = useMemo(() => {
-    const g = new THREE.OctahedronGeometry(1.15, 0);
+    const g = new THREE.OctahedronGeometry(0.78, 0);
     g.scale(1, 1.45, 1);
     g.computeVertexNormals();
     return g;
@@ -141,16 +141,19 @@ export function DiamondStage() {
   }, []);
 
   // Scroll handler: progress 0 → 1 across the diamond section's sticky pin range,
-  // plus the top-down mask wipe on the WebGL canvas.
+  // plus the top-down mask wipe on the WebGL canvas. The pin range is
+  // sectionH - stageH (how far the section can scroll while the stage stays
+  // pinned at top:0), not viewport height — the stage is smaller than vh now.
   useEffect(() => {
     const section = sectionRef.current;
+    const stage = stageRef.current;
     const wrap = wrapRef.current;
-    if (!section || !wrap) return;
+    if (!section || !stage || !wrap) return;
 
     const update = () => {
       const sectionTop = section.offsetTop;
       const sectionH = section.offsetHeight;
-      const stageH = window.innerHeight;
+      const stageH = stage.offsetHeight;
       const pinRange = Math.max(1, sectionH - stageH);
       const p = (window.scrollY - sectionTop) / pinRange;
       progressRef.current = Math.max(0, Math.min(1, p));

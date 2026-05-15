@@ -14,8 +14,8 @@ export function LandingPage() {
   return (
     <div className="landing-root">
       <Nav />
-      <Hero />
       <DiamondStage />
+      <Hero />
       <Phases />
       <Workflow />
       <Explain />
