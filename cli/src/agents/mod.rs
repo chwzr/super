@@ -3,6 +3,10 @@ pub mod definition;
 pub mod loader;
 pub mod model;
 pub mod permission;
+pub mod registry;
+
+pub use registry::AgentRegistry;
+pub use definition::{AgentDefinition, AgentSource};
 
 #[cfg(test)]
 mod tests {
@@ -110,6 +114,42 @@ mod tests {
         let src = "---\ndescription: x\n---\nbody";
         let def = parse_agent_md("my-agent.md", src, AgentSource::Project).unwrap();
         assert_eq!(def.agent_type, "my-agent");
+    }
+
+    #[test]
+    fn registry_built_ins_are_resolvable() {
+        use super::registry::AgentRegistry;
+        let reg = AgentRegistry::built_in_only();
+        assert!(reg.resolve("general-purpose").is_some());
+        assert!(reg.resolve("Explore").is_some());
+        assert!(reg.resolve("does-not-exist").is_none());
+    }
+
+    #[test]
+    fn registry_project_shadows_user_shadows_builtin() {
+        use super::definition::{AgentDefinition, AgentSource};
+        use super::registry::AgentRegistry;
+        fn mk(t: &str, src: AgentSource, prompt: &str) -> AgentDefinition {
+            AgentDefinition {
+                agent_type: t.into(),
+                description: format!("{t} {src:?}"),
+                system_prompt: prompt.into(),
+                tools: None,
+                disallowed_tools: vec![],
+                model: None,
+                permission_mode: None,
+                max_turns: None,
+                source: src,
+            }
+        }
+        let reg = AgentRegistry::from_layers(
+            vec![mk("Explore", AgentSource::BuiltIn, "built-in body")],
+            vec![mk("Explore", AgentSource::User, "user body")],
+            vec![mk("Explore", AgentSource::Project, "project body")],
+        );
+        let resolved = reg.resolve("Explore").unwrap();
+        assert!(matches!(resolved.source, AgentSource::Project));
+        assert_eq!(resolved.system_prompt, "project body");
     }
 
     #[test]
