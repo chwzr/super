@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "web",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "web", "dev"],
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd web && exec vp dev"],
       "port": 5173
     },
     {
