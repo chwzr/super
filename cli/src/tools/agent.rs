@@ -37,12 +37,28 @@ impl Tool for AgentTool {
     }
 
     fn input_schema(&self) -> serde_json::Value {
+        let agents = self.registry.list();
+        let agent_types: Vec<String> = agents.iter()
+            .map(|d| d.agent_type.clone())
+            .collect();
+        let agent_descriptions: String = agents.iter()
+            .map(|d| format!("- {}: {}", d.agent_type, d.description))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let subagent_desc = format!(
+            "The agent type to use. Available agents:\n{agent_descriptions}"
+        );
+
         json!({
             "type": "object",
             "properties": {
                 "description":   { "type": "string", "description": "A short (3-5 word) description of the task" },
                 "prompt":        { "type": "string", "description": "The task for the agent to perform" },
-                "subagent_type": { "type": "string", "description": "The agent type to use (e.g. Explore, Plan, general-purpose)" },
+                "subagent_type": {
+                    "type": "string",
+                    "enum": agent_types,
+                    "description": subagent_desc,
+                },
                 "model":         { "type": "string", "enum": ["sonnet", "opus", "haiku", "inherit"] },
                 "run_in_background": { "type": "boolean" }
             },
@@ -247,5 +263,27 @@ mod tests {
             store, config: cfg, registry: agent_reg, tool_registry: tool_reg,
         };
         assert_eq!(tool.name(), "Task");
+    }
+
+    #[test]
+    fn input_schema_lists_registered_agents() {
+        let store = Arc::new(Store::new());
+        let cfg = shared::CliConfig::default();
+        let agent_reg = Arc::new(AgentRegistry::built_in_only());
+        let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
+        let tool = AgentTool {
+            store, config: cfg, registry: agent_reg, tool_registry: tool_reg,
+        };
+        let schema = tool.input_schema();
+        let st = &schema["properties"]["subagent_type"];
+        let enum_vals: Vec<&str> = st["enum"].as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(enum_vals.contains(&"general-purpose"), "missing general-purpose: {enum_vals:?}");
+        assert!(enum_vals.contains(&"Explore"), "missing Explore: {enum_vals:?}");
+        assert!(enum_vals.contains(&"Plan"), "missing Plan: {enum_vals:?}");
+        let desc = st["description"].as_str().unwrap();
+        assert!(desc.contains("Explore"), "description missing Explore: {desc}");
     }
 }
