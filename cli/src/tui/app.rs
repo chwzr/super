@@ -580,13 +580,13 @@ impl App {
         f.render_widget(Paragraph::new(line), area);
     }
 
-    fn render(&self, f: &mut Frame) {
+    fn render(&mut self, f: &mut Frame) {
         let area = f.area();
 
         let activity_height = self.activity.height();
         let header_height   = MASCOT.len() as u16;
 
-        if let Some(ref modal) = self.modal {
+        if self.modal.is_some() {
             let modal_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -600,7 +600,10 @@ impl App {
             self.header.render(f, modal_layout[0]);
             self.scroll_area.render(f, modal_layout[2]);
             self.activity.render(f, modal_layout[3]);
-            modal.render(f, modal_layout[4]);
+            // Re-borrow modal immutably after mutable borrows are complete.
+            if let Some(ref modal) = self.modal {
+                modal.render(f, modal_layout[4]);
+            }
         } else {
             let entries = if self.slash_menu_open {
                 self.slash_menu.filter(&self.input.content)
