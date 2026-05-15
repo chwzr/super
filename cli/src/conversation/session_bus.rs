@@ -50,6 +50,7 @@ impl SessionBus {
         self.emit(BusMessage::SystemEvent {
             subtype,
             message: message.into(),
+            parent_tool_use_id: None,
             uuid: Uuid::new_v4(),
             session_id: self.session_id.clone(),
         });

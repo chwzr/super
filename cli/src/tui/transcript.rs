@@ -175,8 +175,9 @@ fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
         BusMessage::User { parent_tool_use_id, .. }
         | BusMessage::Assistant { parent_tool_use_id, .. }
         | BusMessage::StreamEvent { parent_tool_use_id, .. }
-        | BusMessage::ToolProgress { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
-        BusMessage::SystemEvent { .. } | BusMessage::Result { .. } => None,
+        | BusMessage::ToolProgress { parent_tool_use_id, .. }
+        | BusMessage::SystemEvent { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+        BusMessage::Result { .. } => None,
     };
     match filter {
         None => parent.is_none(),

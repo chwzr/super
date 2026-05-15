@@ -236,6 +236,8 @@ pub enum BusMessage {
     SystemEvent {
         subtype: SystemSubtype,
         message: String,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
         uuid: Uuid,
         session_id: String,
     },
@@ -275,6 +277,7 @@ pub enum SystemSubtype {
     ApiRetry,
     PermissionRequest,
     Notice,
+    AsyncAgentDone,
 }
 
 #[cfg(test)]
@@ -318,6 +321,28 @@ mod tests {
         let json = r#"{"type":"ping"}"#;
         let parsed: StreamEvent = serde_json::from_str(json).unwrap();
         assert!(matches!(parsed, StreamEvent::Ping));
+    }
+
+    #[test]
+    fn system_event_carries_parent_tool_use_id() {
+        let msg = BusMessage::SystemEvent {
+            subtype: SystemSubtype::AsyncAgentDone,
+            message: "agent-1 finished: ok".into(),
+            parent_tool_use_id: Some("tu_parent".into()),
+            uuid: Uuid::new_v4(),
+            session_id: "agent-1".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"parent_tool_use_id\":\"tu_parent\""));
+        assert!(json.contains("\"subtype\":\"async_agent_done\""));
+        let back: BusMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            BusMessage::SystemEvent { subtype, parent_tool_use_id, .. } => {
+                assert!(matches!(subtype, SystemSubtype::AsyncAgentDone));
+                assert_eq!(parent_tool_use_id.as_deref(), Some("tu_parent"));
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 
     #[test]
