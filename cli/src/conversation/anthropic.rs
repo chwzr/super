@@ -57,6 +57,7 @@ pub fn build_request_body(
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     User,
     Assistant,
@@ -118,5 +119,22 @@ mod tests {
         assert_eq!(tu["id"], "tu_1");
         assert_eq!(tu["name"], "Read");
         assert_eq!(tu["input"]["file_path"], "/tmp/x");
+    }
+
+    #[test]
+    fn role_serializes_lowercase() {
+        let entry = HistoryEntry {
+            role: Role::User,
+            content: vec![ContentBlockFinal::Text { text: "x".into() }],
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["role"], "user");
+
+        let entry2 = HistoryEntry {
+            role: Role::Assistant,
+            content: vec![ContentBlockFinal::Text { text: "y".into() }],
+        };
+        let json2 = serde_json::to_value(&entry2).unwrap();
+        assert_eq!(json2["role"], "assistant");
     }
 }
