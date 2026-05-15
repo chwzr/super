@@ -87,12 +87,13 @@ impl ConversationEngine {
         loop {
             num_turns += 1;
             if num_turns >= 50 {
-                self.bus
-                    .emit_system(SystemSubtype::Notice, "max turns (50) reached");
+                // Persist the trail of work before bailing, so /resume has something to load.
                 self.store.set_state(|s| {
                     s.history = history.clone();
                 });
-                return Ok(last_assistant_text);
+                self.bus
+                    .emit_system(SystemSubtype::Notice, "max turns (50) reached without end_turn");
+                return Err("max turns (50) reached without end_turn".to_string());
             }
 
             let body = build_request_body(
@@ -118,7 +119,7 @@ impl ConversationEngine {
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
-                return Err(format!("API error ({status}): {text}"));
+                return Err(format!("API error ({status}): {}", truncate_error_body(&text)));
             }
 
             // Per-turn fold state.
@@ -275,8 +276,10 @@ fn fold_event(
         StreamEvent::MessageStart { message } => {
             *message_id = message.id;
             *response_model = message.model;
+            // input_tokens is reported once on message_start. output_tokens here
+            // is typically 0; the cumulative final value arrives on message_delta,
+            // so we ignore it here to avoid double-counting.
             *in_tokens += message.usage.input_tokens;
-            *out_tokens += message.usage.output_tokens;
         }
         StreamEvent::ContentBlockStart { index, content_block } => {
             let idx = index as usize;
@@ -327,6 +330,34 @@ fn fold_event(
         }
         StreamEvent::MessageStop => {}
         StreamEvent::Ping => {}
+    }
+}
+
+/// Squash an API error body down to something a single TUI line can carry.
+/// Tries to surface `error.message` from a JSON-shaped error first; falls back
+/// to a hard byte truncation.
+fn truncate_error_body(body: &str) -> String {
+    const MAX_LEN: usize = 512;
+    // Anthropic / OpenRouter errors are usually `{"error":{"message":"..."}}`.
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(msg) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+            return clip(msg, MAX_LEN);
+        }
+        if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
+            return clip(msg, MAX_LEN);
+        }
+    }
+    clip(body.trim(), MAX_LEN)
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        // Avoid splitting in the middle of a UTF-8 sequence.
+        let mut end = max;
+        while !s.is_char_boundary(end) && end > 0 { end -= 1; }
+        format!("{}… ({} more bytes)", &s[..end], s.len() - end)
     }
 }
 
@@ -445,5 +476,26 @@ mod tests {
             }
             other => panic!("wrong: {other:?}"),
         }
+    }
+
+    #[test]
+    fn truncate_error_body_extracts_anthropic_error_message() {
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens too large"}}"#;
+        assert_eq!(truncate_error_body(body), "max_tokens too large");
+    }
+
+    #[test]
+    fn truncate_error_body_clips_long_strings() {
+        let big = "x".repeat(2_000);
+        let out = truncate_error_body(&big);
+        assert!(out.len() < big.len());
+        assert!(out.ends_with("more bytes)"));
+    }
+
+    #[test]
+    fn truncate_error_body_falls_back_to_raw_text() {
+        let body = "<html><body>502 Bad Gateway</body></html>";
+        let out = truncate_error_body(body);
+        assert!(out.contains("502"));
     }
 }
