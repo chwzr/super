@@ -10,12 +10,14 @@ pub fn config_path() -> PathBuf {
 
 pub fn load_config() -> CliConfig {
     let path = config_path();
-    if path.exists() {
+    let mut config = if path.exists() {
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         serde_json::from_str(&content).unwrap_or_default()
     } else {
         CliConfig::default()
-    }
+    };
+    config.model = crate::providers::resolve_slug(&config.provider, &config.model_class).to_string();
+    config
 }
 
 pub fn save_config(config: &CliConfig) {
