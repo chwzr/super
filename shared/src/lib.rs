@@ -47,6 +47,12 @@ pub struct CliConfig {
     pub permissions: serde_json::Value,
     #[serde(default)]
     pub settings: serde_json::Value,
+    #[serde(default = "default_messages_base_url")]
+    pub api_messages_base_url: String,
+}
+
+fn default_messages_base_url() -> String {
+    "https://openrouter.ai/api".to_string()
 }
 
 impl Default for CliConfig {
@@ -59,6 +65,7 @@ impl Default for CliConfig {
             model: "anthropic/claude-sonnet-4-6".to_string(),
             permissions: serde_json::json!({}),
             settings: serde_json::json!({}),
+            api_messages_base_url: default_messages_base_url(),
         }
     }
 }

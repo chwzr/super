@@ -6,6 +6,12 @@ use ratatui::{
     Frame,
 };
 
+use crate::sdk::protocol::{BusMessage, SystemSubtype};
+use crate::tui::transcript::{fold, TranscriptItem, ToolResultRender};
+
+/// Legacy in-TUI message type. Will be removed in Task 13 once every
+/// call site is on `push_event`. For now we keep it so commands/dispatch.rs,
+/// conversation/compaction.rs, and state/store.rs keep compiling.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum Message {
@@ -17,13 +23,15 @@ pub enum Message {
         result: Option<String>,
     },
     System(String),
-    /// Persisted activity trail rendered as `◆ Verb for Xs`.
     Trail(String),
     Thinking,
 }
 
 pub struct ScrollArea {
+    /// Legacy path — still used by some call sites until Task 10 lands.
     pub messages: Vec<Message>,
+    /// New path — bus events folded into TranscriptItems at render time.
+    pub events: Vec<BusMessage>,
     scroll_offset: u16,
 }
 
@@ -31,16 +39,28 @@ impl ScrollArea {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
+            events: Vec::new(),
             scroll_offset: 0,
         }
     }
 
+    /// Legacy push — pushes onto the `messages` vec rendered before the
+    /// fold-based transcript. Kept for back-compat; will be removed once
+    /// every call site is on `push_event`.
+    #[allow(dead_code)]
     pub fn push(&mut self, msg: Message) {
         self.messages.push(msg);
     }
 
+    /// New push — append a bus event. Rendering folds the whole event vec
+    /// into TranscriptItems at frame time.
+    pub fn push_event(&mut self, ev: BusMessage) {
+        self.events.push(ev);
+    }
+
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.events.clear();
         self.scroll_offset = 0;
     }
 
@@ -56,64 +76,45 @@ impl ScrollArea {
         if area.height == 0 {
             return;
         }
-        let user_prefix = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
-        let assistant_prefix = Style::default().fg(Color::Cyan);
-        let dim = Style::default().fg(Color::DarkGray);
+        let user_prefix_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+        let assistant_prefix_style = Style::default().fg(Color::Cyan);
         let body_style = Style::default().fg(Color::White);
+        let dim = Style::default().fg(Color::DarkGray);
+        let recap_style = Style::default().fg(Color::DarkGray);
+        let tool_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
         let mut lines: Vec<Line> = Vec::new();
 
-        for msg in &self.messages {
-            match msg {
+        // Render legacy messages first (chronological).
+        for m in &self.messages {
+            match m {
                 Message::User(text) => {
                     lines.push(Line::from(""));
                     for (i, body_line) in text.lines().enumerate() {
-                        if i == 0 {
-                            lines.push(Line::from(vec![
-                                Span::styled("❯ ", user_prefix),
-                                Span::styled(body_line.to_string(), body_style),
-                            ]));
-                        } else {
-                            lines.push(Line::from(vec![
-                                Span::raw("  "),
-                                Span::styled(body_line.to_string(), body_style),
-                            ]));
-                        }
+                        let prefix = if i == 0 { "❯ " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, user_prefix_style),
+                            Span::styled(body_line.to_string(), body_style),
+                        ]));
                     }
                 }
                 Message::Assistant(text) => {
                     lines.push(Line::from(""));
                     for (i, body_line) in text.lines().enumerate() {
-                        if i == 0 {
-                            lines.push(Line::from(vec![
-                                Span::styled("◆ ", assistant_prefix),
-                                Span::styled(body_line.to_string(), body_style),
-                            ]));
-                        } else {
-                            lines.push(Line::from(vec![
-                                Span::raw("  "),
-                                Span::styled(body_line.to_string(), body_style),
-                            ]));
-                        }
+                        let prefix = if i == 0 { "⏺ " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, assistant_prefix_style),
+                            Span::styled(body_line.to_string(), body_style),
+                        ]));
                     }
                 }
-                Message::ToolCall {
-                    name,
-                    input,
-                    result,
-                } => {
+                Message::ToolCall { name, input, result } => {
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
-                        Span::styled("◆ ", assistant_prefix),
-                        Span::styled(
-                            name.clone(),
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(format!("({})", input), dim),
+                        Span::styled("⏺ ", assistant_prefix_style),
+                        Span::styled(name.clone(), tool_style),
+                        Span::raw(" "),
+                        Span::styled(format!("({input})"), dim),
                     ]));
                     if let Some(r) = result {
                         for r_line in r.lines() {
@@ -136,28 +137,197 @@ impl ScrollArea {
                 Message::Trail(text) => {
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
-                        Span::styled("◈ ", Style::default().fg(Color::Cyan)),
+                        Span::styled("◈ ", assistant_prefix_style),
                         Span::styled(text.clone(), dim),
                     ]));
                 }
                 Message::Thinking => {
                     lines.push(Line::from(Span::styled(
                         "thinking…",
-                        Style::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::ITALIC),
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
                     )));
                 }
             }
         }
 
-        // Auto-tail: clamp scroll so the latest line is visible.
+        // Then render the folded transcript from bus events.
+        let items = fold(&self.events, None);
+        for item in items {
+            match item {
+                TranscriptItem::User { text } => {
+                    lines.push(Line::from(""));
+                    for (i, body_line) in text.lines().enumerate() {
+                        let prefix = if i == 0 { "❯ " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, user_prefix_style),
+                            Span::styled(body_line.to_string(), body_style),
+                        ]));
+                    }
+                }
+                TranscriptItem::AssistantText { text, .. } => {
+                    lines.push(Line::from(""));
+                    for (i, body_line) in text.lines().enumerate() {
+                        let prefix = if i == 0 { "⏺ " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, assistant_prefix_style),
+                            Span::styled(body_line.to_string(), body_style),
+                        ]));
+                    }
+                }
+                TranscriptItem::Thinking { text, collapsed, .. } => {
+                    lines.push(Line::from(""));
+                    if collapsed {
+                        lines.push(Line::from(Span::styled(
+                            "thinking…",
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                        )));
+                    } else {
+                        for body_line in text.lines() {
+                            lines.push(Line::from(Span::styled(body_line.to_string(), dim)));
+                        }
+                    }
+                }
+                TranscriptItem::ToolCall { name, input, result, .. } => {
+                    lines.push(Line::from(""));
+                    let summary = summarize_tool_call(&name, &input);
+                    lines.push(Line::from(vec![
+                        Span::styled("⏺ ", assistant_prefix_style),
+                        Span::styled(name.clone(), tool_style),
+                        Span::raw(" "),
+                        Span::styled(summary, dim),
+                    ]));
+                    if let Some(r) = result {
+                        render_tool_result(&mut lines, &r, &dim);
+                    }
+                }
+                TranscriptItem::System { subtype, message } => {
+                    lines.push(Line::from(""));
+                    let (prefix, style) = match subtype {
+                        SystemSubtype::PostTurnSummary => ("※ recap: ", recap_style),
+                        SystemSubtype::CompactBoundary => ("※ ", recap_style),
+                        _ => ("※ ", dim),
+                    };
+                    for (i, body_line) in message.lines().enumerate() {
+                        let p = if i == 0 { prefix } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(p, style),
+                            Span::styled(body_line.to_string(), dim),
+                        ]));
+                    }
+                }
+            }
+        }
+
         let height = area.height as usize;
         let total = lines.len();
         let max_offset = total.saturating_sub(height);
         let offset = (self.scroll_offset as usize).min(max_offset);
-
         let paragraph = Paragraph::new(lines).scroll((offset as u16, 0));
         f.render_widget(paragraph, area);
+    }
+}
+
+impl Default for ScrollArea {
+    fn default() -> Self { Self::new() }
+}
+
+fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
+    // Match Claude's "Read 1 file" style where it makes sense; otherwise show
+    // a single key argument.
+    match name {
+        "Read" => {
+            let p = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("({p})")
+        }
+        "Bash" => {
+            let c = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let trimmed: String = c.lines().next().unwrap_or("").chars().take(80).collect();
+            format!("({trimmed})")
+        }
+        "Edit" | "Write" => {
+            let p = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("({p})")
+        }
+        _ => {
+            if let Some((k, v)) = input.as_object().and_then(|o| o.iter().next()) {
+                let v_str = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                format!("({k}={})", v_str.chars().take(60).collect::<String>())
+            } else {
+                String::new()
+            }
+        }
+    }
+}
+
+fn render_tool_result(lines: &mut Vec<Line>, r: &ToolResultRender, dim: &Style) {
+    let max_lines = 20;
+    let body: Vec<&str> = r.content.lines().take(max_lines).collect();
+    let total = r.content.lines().count();
+    for line in body {
+        lines.push(Line::from(vec![
+            Span::styled("  ⎿  ", *dim),
+            Span::styled(line.to_string(), *dim),
+        ]));
+    }
+    if total > max_lines {
+        lines.push(Line::from(vec![
+            Span::styled("  ⎿  ", *dim),
+            Span::styled(format!("… {} more lines", total - max_lines), *dim),
+        ]));
+    }
+    if r.is_error {
+        lines.push(Line::from(vec![
+            Span::styled("  ⎿  ", *dim),
+            Span::styled("(error)".to_string(), Style::default().fg(Color::Red)),
+        ]));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdk::protocol::{ContentBlockFinal, UserPayload};
+    use uuid::Uuid;
+
+    #[test]
+    fn legacy_push_appends_to_messages() {
+        let mut sa = ScrollArea::new();
+        sa.push(Message::System("hi".into()));
+        assert_eq!(sa.messages.len(), 1);
+        assert_eq!(sa.events.len(), 0);
+    }
+
+    #[test]
+    fn push_event_appends_to_events() {
+        let mut sa = ScrollArea::new();
+        sa.push_event(BusMessage::User {
+            message: UserPayload {
+                role: "user".into(),
+                content: vec![ContentBlockFinal::Text { text: "hi".into() }],
+            },
+            parent_tool_use_id: None,
+            uuid: Uuid::new_v4(),
+            session_id: "s1".into(),
+        });
+        assert_eq!(sa.events.len(), 1);
+        assert_eq!(sa.messages.len(), 0);
+    }
+
+    #[test]
+    fn clear_wipes_both_paths() {
+        let mut sa = ScrollArea::new();
+        sa.push(Message::System("a".into()));
+        sa.push_event(BusMessage::Result {
+            stop_reason: None,
+            usage: crate::sdk::protocol::AnthropicUsage::default(),
+            total_cost_usd: 0.0, duration_ms: 0, num_turns: 0,
+            uuid: Uuid::new_v4(), session_id: "s1".into(),
+        });
+        sa.clear();
+        assert_eq!(sa.messages.len(), 0);
+        assert_eq!(sa.events.len(), 0);
     }
 }

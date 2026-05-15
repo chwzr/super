@@ -16,7 +16,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 dirs = "5"
 clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
@@ -34,3 +34,4 @@ thiserror = "1"
 webbrowser = "0.8"
 async-trait = "0.1"
 pathdiff = "0.2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }

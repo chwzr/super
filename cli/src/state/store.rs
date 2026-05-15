@@ -32,6 +32,7 @@ pub struct AppState {
     pub is_streaming: bool,
     pub should_compact: bool,
     pub tasks: HashMap<String, TaskRecord>,
+    pub history: Vec<crate::conversation::anthropic::HistoryEntry>,
 }
 
 #[derive(Clone, Default, PartialEq)]

@@ -13,6 +13,15 @@ pub struct ToolCallContext {
     pub cwd: std::path::PathBuf,
     pub permission_mode: crate::state::store::PermissionMode,
     pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+    /// When the tool is invoked from inside a subagent, this carries the
+    /// parent's invoking tool_use_id so emitted events can be demuxed by
+    /// consumers (TUI, server forwarder, sidechain transcript writer).
+    /// Always `None` in v1 — subagent execution is out of scope.
+    pub parent_tool_use_id: Option<String>,
+    /// Handle to the session bus, available to tools that need to emit
+    /// events (currently only AgentTool when subagents are wired up).
+    /// `None` v1.
+    pub bus: Option<std::sync::Arc<crate::conversation::session_bus::SessionBus>>,
 }
 
 #[async_trait::async_trait]

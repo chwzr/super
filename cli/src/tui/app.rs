@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -19,7 +19,9 @@ use super::scroll_area::{Message, ScrollArea};
 use super::slash_menu::SlashMenu;
 use super::splash::MASCOT;
 use crate::conversation::engine::ConversationEngine;
+use crate::conversation::session_bus::SessionBus;
 use crate::conversation::system_prompt::SystemPrompt;
+use crate::sdk::protocol::BusMessage;
 use crate::state::store::Store;
 use crate::tools::ToolRegistry;
 use crate::tui::modal::{Modal, ModalAction};
@@ -57,7 +59,11 @@ pub struct App {
     _config: CliConfig,
     store: Arc<Store>,
     engine: ConversationEngine,
-    _registry: Arc<ToolRegistry>,
+    /// Kept alive so the broadcast channel underlying `bus_rx` doesn't close
+    /// when the original Arc is dropped after `App::new` returns.
+    #[allow(dead_code)]
+    bus: Arc<SessionBus>,
+    bus_rx: broadcast::Receiver<BusMessage>,
     system_prompt: SystemPrompt,
     should_quit: bool,
     history: Vec<String>,
@@ -68,12 +74,23 @@ pub struct App {
     modal: Option<Modal>,
 }
 
+fn verb_for_tool(name: &str) -> String {
+    match name {
+        "Read" => "Reading".into(),
+        "Bash" => "Running".into(),
+        "Edit" | "Write" | "NotebookEdit" => "Editing".into(),
+        "Glob" | "Grep" | "ToolSearch" => "Searching".into(),
+        "WebFetch" | "WebSearch" => "Browsing".into(),
+        _ => format!("Running {}", name),
+    }
+}
+
 impl App {
     pub fn new(
         config: CliConfig,
         store: Arc<Store>,
         engine: ConversationEngine,
-        registry: Arc<ToolRegistry>,
+        bus: Arc<SessionBus>,
         system_prompt: SystemPrompt,
     ) -> Self {
         let cwd = std::env::current_dir()
@@ -91,6 +108,7 @@ impl App {
             "OpenRouter".to_string(),
             cwd,
         );
+        let bus_rx = bus.subscribe();
         Self {
             header,
             scroll_area: ScrollArea::new(),
@@ -101,7 +119,8 @@ impl App {
             _config: config,
             store,
             engine,
-            _registry: registry,
+            bus: bus.clone(),
+            bus_rx,
             system_prompt,
             should_quit: false,
             history: Vec::new(),
@@ -131,10 +150,6 @@ impl App {
                         self.scroll_area.clear();
                     }
                     CommandResult::Prompt(prompt_text) => {
-                        self.scroll_area.push(Message::User(text.clone()));
-                        self.store.set_state(|s| {
-                            s.messages.push(Message::User(prompt_text.clone()));
-                        });
                         self.spawn_engine(prompt_text);
                     }
                     CommandResult::Quit => {
@@ -161,11 +176,6 @@ impl App {
             }
             return;
         }
-        let msg = Message::User(text.clone());
-        self.scroll_area.push(msg);
-        self.store.set_state(|s| {
-            s.messages.push(Message::User(text.clone()));
-        });
         self.spawn_engine(text);
     }
 
@@ -175,10 +185,7 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let started = std::time::Instant::now();
-            let result = engine
-                .process_prompt(prompt, &sp)
-                .await
-                .map_err(|e| e.to_string());
+            let result = engine.process_prompt(prompt, &sp).await;
             let _ = tx.send(EngineEvent::Done {
                 result,
                 elapsed_secs: started.elapsed().as_secs(),
@@ -429,6 +436,43 @@ impl App {
     }
 
     fn process_pending(&mut self) {
+        // Drain any BusMessage events the engine has emitted since last tick.
+        loop {
+            match self.bus_rx.try_recv() {
+                Ok(msg) => {
+                    // Side effects driven by specific bus events.
+                    match &msg {
+                        BusMessage::ToolProgress { tool_name, elapsed_seconds, .. } => {
+                            // Update activity row to reflect the running tool.
+                            // Keep verb stable across rapid Tool emissions: only
+                            // recreate Activity if we were Idle or the verb changed.
+                            let want_verb = verb_for_tool(tool_name);
+                            let should_swap = match &self.activity {
+                                ActivityState::Idle => true,
+                                ActivityState::Active { verb, .. } => verb != &want_verb,
+                            };
+                            if should_swap {
+                                self.activity = ActivityState::active(&want_verb);
+                            }
+                            // The elapsed-seconds value is already reflected by
+                            // ActivityState::tick(); no extra wiring needed.
+                            let _ = elapsed_seconds;
+                        }
+                        BusMessage::Result { .. } => {
+                            self.activity = ActivityState::idle();
+                        }
+                        _ => {}
+                    }
+                    self.scroll_area.push_event(msg);
+                }
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(broadcast::error::TryRecvError::Closed) => break,
+                Err(broadcast::error::TryRecvError::Lagged(_n)) => {
+                    // Subscriber fell behind. Bus is sized for ~256 outstanding
+                    // events; reaching here means a long-stuck render. Resync silently.
+                }
+            }
+        }
         if let Some(rx) = self.status_fetch.as_mut() {
             match rx.try_recv() {
                 Ok(result) => {
@@ -469,7 +513,7 @@ impl App {
         };
         match rx.try_recv() {
             Ok(EngineEvent::Done {
-                result: Ok(response),
+                result: Ok(_response),
                 elapsed_secs,
             }) => {
                 let verb = self
@@ -477,7 +521,6 @@ impl App {
                     .verb()
                     .map(|v| past_tense(v))
                     .unwrap_or_else(|| "Cogitated".to_string());
-                self.scroll_area.push(Message::Assistant(response));
                 self.scroll_area
                     .push(Message::Trail(format!("{} for {}s", verb, elapsed_secs)));
                 self.activity = ActivityState::idle();
@@ -622,11 +665,12 @@ pub async fn run_with_engine(
     config: CliConfig,
     store: Arc<Store>,
     engine: ConversationEngine,
-    registry: Arc<ToolRegistry>,
+    _registry: Arc<ToolRegistry>,
+    bus: Arc<SessionBus>,
     system_prompt: SystemPrompt,
 ) {
     let terminal = ratatui::init();
-    let mut app = App::new(config, store, engine, registry, system_prompt);
+    let mut app = App::new(config, store, engine, bus, system_prompt);
     let _ = app.run(terminal);
     ratatui::restore();
 }
