@@ -56,7 +56,6 @@ use monitor::MonitorTool;
 use notebook_edit::NotebookEditTool;
 use read::ReadTool;
 use send_message::SendMessageTool;
-use skill::SkillTool;
 use sleep::SleepTool;
 use structured_output::StructuredOutputTool;
 use task_create::TaskCreateTool;
@@ -110,8 +109,9 @@ impl ToolRegistry {
         // Monitor (stub)
         tools.push(Arc::new(MonitorTool));
 
-        // Skill tool (empty skills vec for now)
-        tools.push(Arc::new(SkillTool { skills: Vec::new() }));
+        // SkillTool is registered later by bootstrap with the loaded skills;
+        // not registered here to avoid a duplicate `Skill` tool name in the
+        // request payload (rejected by Amazon Bedrock-routed providers).
 
         // ToolSearch
         tools.push(Arc::new(ToolSearchTool));
