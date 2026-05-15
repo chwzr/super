@@ -232,6 +232,9 @@ impl ConversationEngine {
                 permission_mode.clone(),
                 self.abort.clone(),
                 self.bus.clone(),
+                parent_tool_use_id.clone(),
+                session_id.clone(),
+                false, // root engines never auto-deny; AgentTool sets true on async children via the child engine's child registry
             )
             .await;
 
