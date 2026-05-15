@@ -2,13 +2,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use tokio::sync::{broadcast, mpsc};
 use ratatui::{
+    backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    DefaultTerminal, Frame,
+    Frame, Terminal, TerminalOptions, Viewport,
 };
 use shared::CliConfig;
 
@@ -549,7 +552,7 @@ impl App {
         }
     }
 
-    pub fn run(&mut self, mut terminal: DefaultTerminal) -> std::io::Result<()> {
+    pub fn run(&mut self, mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
         while !self.should_quit {
             self.activity.tick();
             terminal.draw(|f| self.render(f))?;
@@ -680,8 +683,17 @@ pub async fn run_with_engine(
     bus: Arc<SessionBus>,
     system_prompt: SystemPrompt,
 ) {
-    let terminal = ratatui::init();
-    let mut app = App::new(config, store, engine, bus, system_prompt);
-    let _ = app.run(terminal);
-    ratatui::restore();
+    let height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+    let _ = enable_raw_mode();
+    let backend = CrosstermBackend::new(std::io::stdout());
+    let terminal = Terminal::with_options(backend, TerminalOptions {
+        viewport: Viewport::Inline(height),
+    });
+    if let Ok(terminal) = terminal {
+        let mut app = App::new(config, store, engine, bus, system_prompt);
+        let _ = app.run(terminal);
+    }
+    let _ = disable_raw_mode();
+    let _ = execute!(std::io::stdout(), crossterm::cursor::Show);
+    println!();
 }
