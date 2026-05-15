@@ -330,10 +330,11 @@ fn render_child_indented<'a>(
             }
         }
         TranscriptItem::ToolCall { name, input, .. } => {
+            // summarize_tool_call already wraps its output in parens.
             let inner_summary = summarize_tool_call(name, input);
             lines.push(Line::from(vec![
                 Span::styled("  ⎿  ", dim),
-                Span::styled(format!("{name}({inner_summary})"), dim),
+                Span::styled(format!("{name}{inner_summary}"), dim),
             ]));
         }
         TranscriptItem::Thinking { text, .. } => {
