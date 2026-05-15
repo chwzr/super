@@ -235,6 +235,11 @@ fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
     // Match Claude's "Read 1 file" style where it makes sense; otherwise show
     // a single key argument.
     match name {
+        "Task" => {
+            let agent = input.get("subagent_type").and_then(|v| v.as_str()).unwrap_or("?");
+            let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            if desc.is_empty() { format!("({agent})") } else { format!("({agent}) {desc}") }
+        }
         "Read" => {
             let p = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
             format!("({p})")
@@ -314,6 +319,18 @@ mod tests {
         });
         assert_eq!(sa.events.len(), 1);
         assert_eq!(sa.messages.len(), 0);
+    }
+
+    #[test]
+    fn summarize_tool_call_task_shows_description() {
+        let input = serde_json::json!({
+            "description": "find auth code",
+            "prompt": "search the codebase for auth handlers",
+            "subagent_type": "Explore",
+        });
+        let summary = summarize_tool_call("Task", &input);
+        assert!(summary.contains("Explore"), "got: {summary}");
+        assert!(summary.contains("find auth code"), "got: {summary}");
     }
 
     #[test]
