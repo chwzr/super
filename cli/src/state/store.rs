@@ -35,7 +35,7 @@ pub struct AppState {
     pub history: Vec<crate::conversation::anthropic::HistoryEntry>,
 }
 
-#[derive(Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum PermissionMode {
     #[default]
     Default,
