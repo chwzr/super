@@ -41,6 +41,26 @@ impl ConversationEngine {
         Self { store, config, registry, bus, abort: None, session_id_override: None }
     }
 
+    /// Construct a child engine for subagent execution. Shares the parent's
+    /// bus and store, but stamps every emit with `agent_id` as the session_id.
+    pub fn new_child(
+        store: Arc<Store>,
+        config: CliConfig,
+        registry: Arc<ToolRegistry>,
+        bus: Arc<SessionBus>,
+        agent_id: String,
+        abort: Option<watch::Receiver<bool>>,
+    ) -> Self {
+        Self {
+            store,
+            config,
+            registry,
+            bus,
+            abort,
+            session_id_override: Some(agent_id),
+        }
+    }
+
     /// Effective session id for emits: override if set, else bus.session_id().
     pub fn effective_session_id(&self) -> String {
         self.session_id_override
@@ -552,5 +572,26 @@ mod tests {
             session_id_override: Some("agent-1".into()),
         };
         assert_eq!(engine.effective_session_id(), "agent-1");
+    }
+
+    #[test]
+    fn new_child_constructs_with_overrides() {
+        use crate::conversation::session_bus::SessionBus;
+        let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
+        let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new(
+            store.clone(),
+            shared::CliConfig::default(),
+        ));
+        let child = ConversationEngine::new_child(
+            store,
+            shared::CliConfig::default(),
+            registry,
+            bus,
+            "agent-xyz".into(),
+            None,
+        );
+        assert_eq!(child.effective_session_id(), "agent-xyz");
+        assert_eq!(child.session_id_override.as_deref(), Some("agent-xyz"));
     }
 }
