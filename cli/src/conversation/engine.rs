@@ -270,6 +270,7 @@ impl ConversationEngine {
                     total_cost_usd: 0.0,
                     duration_ms: started.elapsed().as_millis() as u64,
                     num_turns,
+                    parent_tool_use_id: parent_tool_use_id.clone(),
                     uuid: Uuid::new_v4(),
                     session_id: session_id.clone(),
                 });

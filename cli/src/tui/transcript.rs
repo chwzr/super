@@ -176,8 +176,8 @@ fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
         | BusMessage::Assistant { parent_tool_use_id, .. }
         | BusMessage::StreamEvent { parent_tool_use_id, .. }
         | BusMessage::ToolProgress { parent_tool_use_id, .. }
-        | BusMessage::SystemEvent { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
-        BusMessage::Result { .. } => None,
+        | BusMessage::SystemEvent { parent_tool_use_id, .. }
+        | BusMessage::Result { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
     };
     match filter {
         None => parent.is_none(),
@@ -286,6 +286,7 @@ mod tests {
             stop_reason: Some("end_turn".into()),
             usage: AnthropicUsage::default(),
             total_cost_usd: 0.0, duration_ms: 0, num_turns: 1,
+            parent_tool_use_id: None,
             uuid: Uuid::new_v4(), session_id: "s1".into(),
         }];
         let t = fold(&events, None);

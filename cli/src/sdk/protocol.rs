@@ -248,6 +248,8 @@ pub enum BusMessage {
         total_cost_usd: f64,
         duration_ms: u64,
         num_turns: u32,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
         uuid: Uuid,
         session_id: String,
     },
@@ -271,8 +273,8 @@ impl BusMessage {
             | BusMessage::Assistant { parent_tool_use_id, .. }
             | BusMessage::StreamEvent { parent_tool_use_id, .. }
             | BusMessage::ToolProgress { parent_tool_use_id, .. }
-            | BusMessage::SystemEvent { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
-            BusMessage::Result { .. } => None,
+            | BusMessage::SystemEvent { parent_tool_use_id, .. }
+            | BusMessage::Result { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
         }
     }
 }
@@ -375,6 +377,7 @@ mod tests {
             stop_reason: None,
             usage: AnthropicUsage::default(),
             total_cost_usd: 0.0, duration_ms: 0, num_turns: 1,
+            parent_tool_use_id: None,
             uuid: Uuid::new_v4(),
             session_id: "s-root".into(),
         };
@@ -390,6 +393,46 @@ mod tests {
         };
         assert_eq!(msg.session_id(), "s-child");
         assert_eq!(msg.parent_tool_use_id(), Some("tu_p"));
+    }
+
+    #[test]
+    fn result_message_carries_parent_tool_use_id() {
+        let msg = BusMessage::Result {
+            stop_reason: Some("end_turn".into()),
+            usage: AnthropicUsage::default(),
+            total_cost_usd: 0.01,
+            duration_ms: 1234,
+            num_turns: 3,
+            parent_tool_use_id: Some("tu_parent".into()),
+            uuid: Uuid::new_v4(),
+            session_id: "agent-1".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"parent_tool_use_id\":\"tu_parent\""));
+        let back: BusMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            BusMessage::Result { parent_tool_use_id, num_turns, .. } => {
+                assert_eq!(parent_tool_use_id.as_deref(), Some("tu_parent"));
+                assert_eq!(num_turns, 3);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn result_message_accessor_returns_parent_tool_use_id() {
+        let msg = BusMessage::Result {
+            stop_reason: None,
+            usage: AnthropicUsage::default(),
+            total_cost_usd: 0.0,
+            duration_ms: 0,
+            num_turns: 1,
+            parent_tool_use_id: Some("tu_x".into()),
+            uuid: Uuid::new_v4(),
+            session_id: "child".into(),
+        };
+        assert_eq!(msg.parent_tool_use_id(), Some("tu_x"));
+        assert_eq!(msg.session_id(), "child");
     }
 
     #[test]

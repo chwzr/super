@@ -72,6 +72,7 @@ mod tests {
             total_cost_usd: 0.0,
             duration_ms: 0,
             num_turns: 1,
+            parent_tool_use_id: None,
             uuid: Uuid::new_v4(),
             session_id: "s1".into(),
         });

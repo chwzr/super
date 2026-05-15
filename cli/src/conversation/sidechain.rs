@@ -114,6 +114,32 @@ mod tests {
         assert!(!contents.contains("\"msg_root\""), "root event must not appear");
     }
 
+    #[tokio::test]
+    async fn sidechain_captures_child_result_event() {
+        let tmp = tempfile_dir();
+        let bus = Arc::new(SessionBus::new("s-root".into()));
+        spawn_sidechain_writer(bus.clone(), tmp.clone());
+
+        bus.emit(BusMessage::Result {
+            stop_reason: Some("end_turn".into()),
+            usage: AnthropicUsage::default(),
+            total_cost_usd: 0.01,
+            duration_ms: 1234,
+            num_turns: 3,
+            parent_tool_use_id: Some("tu_parent".into()),
+            uuid: uuid::Uuid::new_v4(),
+            session_id: "agent-1".into(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let path = tmp.join("agent-1.jsonl");
+        assert!(path.exists(), "expected sidechain at {:?}", path);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("\"type\":\"result\""), "got: {contents}");
+        assert!(contents.contains("\"num_turns\":3"), "got: {contents}");
+    }
+
     fn tempfile_dir() -> PathBuf {
         let p = std::env::temp_dir().join(format!("super-sidechain-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&p).unwrap();
