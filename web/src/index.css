@@ -207,7 +207,15 @@
     z-index: 1;
   }
 
-  .mono {
+  /* Inter's identity features (cv01, ss03) get inherited onto Berkeley Mono
+     and cause unwanted glyph substitutions there. Reset them everywhere the
+     mono face is used. */
+  .mono,
+  code,
+  pre,
+  kbd,
+  samp {
     font-family: var(--font-mono);
+    font-feature-settings: normal;
   }
 }

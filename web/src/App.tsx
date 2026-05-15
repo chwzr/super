@@ -7,14 +7,16 @@ import { RedirectIfAuthed, RequireAuth } from "@/components/RequireAuth";
 import { HomePage } from "@/pages/HomePage";
 import { LoginPage } from "@/pages/LoginPage";
 import { RegisterPage } from "@/pages/RegisterPage";
+import { LandingPage } from "@/pages/landing/LandingPage";
 
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
+          <Route path="/" element={<LandingPage />} />
           <Route
-            path="/"
+            path="/app"
             element={
               <RequireAuth>
                 <HomePage />

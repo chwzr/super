@@ -27,7 +27,7 @@ export function RequireAuth({ children }: RequireAuthProps) {
 export function RedirectIfAuthed({ children }: RequireAuthProps) {
   const { status } = useAuth();
   if (status === "authenticated") {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/app" replace />;
   }
   return <>{children}</>;
 }
