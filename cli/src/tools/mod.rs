@@ -76,7 +76,11 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn new(store: Arc<Store>, config: shared::CliConfig) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        config: shared::CliConfig,
+        agent_registry: Arc<crate::agents::AgentRegistry>,
+    ) -> Arc<Self> {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
 
         // Standard tools
@@ -119,40 +123,46 @@ impl ToolRegistry {
         tools.push(Arc::new(EnterWorktreeTool));
         tools.push(Arc::new(ExitWorktreeTool));
 
-        // Agent and task management tools
-        tools.push(Arc::new(AgentTool {
+        let registry = Arc::new(Self { tools: Arc::new(RwLock::new(tools)) });
+
+        // Agent and task management tools.
+        // AgentTool needs an Arc<ToolRegistry> back-reference, so it goes
+        // through `registry.register(...)` instead of the local vec.
+        registry.register(Arc::new(AgentTool {
             store: store.clone(),
             config: config.clone(),
+            registry: agent_registry,
+            tool_registry: registry.clone(),
         }));
-        tools.push(Arc::new(TaskCreateTool {
+        registry.register(Arc::new(TaskCreateTool {
             store: store.clone(),
         }));
-        tools.push(Arc::new(TaskGetTool {
+        registry.register(Arc::new(TaskGetTool {
             store: store.clone(),
         }));
-        tools.push(Arc::new(TaskListTool {
+        registry.register(Arc::new(TaskListTool {
             store: store.clone(),
         }));
-        tools.push(Arc::new(TaskOutputTool {
+        registry.register(Arc::new(TaskOutputTool {
             store: store.clone(),
         }));
-        tools.push(Arc::new(TaskStopTool {
+        registry.register(Arc::new(TaskStopTool {
             store: store.clone(),
         }));
-        tools.push(Arc::new(TaskUpdateTool {
+        registry.register(Arc::new(TaskUpdateTool {
             store: store.clone(),
         }));
-        tools.push(Arc::new(TodoWriteTool));
-        tools.push(Arc::new(EnterPlanModeTool {
+        registry.register(Arc::new(TodoWriteTool));
+        registry.register(Arc::new(EnterPlanModeTool {
             store: store.clone(),
         }));
-        tools.push(Arc::new(ExitPlanModeTool {
+        registry.register(Arc::new(ExitPlanModeTool {
             store: store.clone(),
         }));
-        tools.push(Arc::new(SendMessageTool));
-        tools.push(Arc::new(AskUserQuestionTool));
+        registry.register(Arc::new(SendMessageTool));
+        registry.register(Arc::new(AskUserQuestionTool));
 
-        Self { tools: Arc::new(RwLock::new(tools)) }
+        registry
     }
 
     pub fn register(&self, tool: Arc<dyn Tool>) {
@@ -251,7 +261,11 @@ mod registry_tests {
     #[test]
     fn filter_star_keeps_all() {
         let store = std::sync::Arc::new(crate::state::store::Store::new());
-        let reg = ToolRegistry::new(store, shared::CliConfig::default());
+        let reg = ToolRegistry::new(
+            store,
+            shared::CliConfig::default(),
+            std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let all = reg.assemble_for_mode(&PermissionMode::Default).len();
         let filtered = reg.filter_for_agent(&agent(Some(vec!["*"]), vec![]));
         assert_eq!(filtered.assemble_for_mode(&PermissionMode::Default).len(), all);
@@ -260,7 +274,11 @@ mod registry_tests {
     #[test]
     fn filter_named_subset_keeps_only_listed() {
         let store = std::sync::Arc::new(crate::state::store::Store::new());
-        let reg = ToolRegistry::new(store, shared::CliConfig::default());
+        let reg = ToolRegistry::new(
+            store,
+            shared::CliConfig::default(),
+            std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let filtered = reg.filter_for_agent(&agent(Some(vec!["Read", "Grep"]), vec![]));
         let names: Vec<String> = filtered.list();
         assert!(names.contains(&"Read".to_string()));
@@ -271,7 +289,11 @@ mod registry_tests {
     #[test]
     fn filter_disallowed_removes_listed() {
         let store = std::sync::Arc::new(crate::state::store::Store::new());
-        let reg = ToolRegistry::new(store, shared::CliConfig::default());
+        let reg = ToolRegistry::new(
+            store,
+            shared::CliConfig::default(),
+            std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let filtered = reg.filter_for_agent(&agent(Some(vec!["*"]), vec!["Edit", "Write"]));
         let names: Vec<String> = filtered.list();
         assert!(!names.iter().any(|n| n == "Edit"));
@@ -281,7 +303,11 @@ mod registry_tests {
     #[test]
     fn filter_none_means_inherit_all() {
         let store = std::sync::Arc::new(crate::state::store::Store::new());
-        let reg = ToolRegistry::new(store, shared::CliConfig::default());
+        let reg = ToolRegistry::new(
+            store,
+            shared::CliConfig::default(),
+            std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let all = reg.assemble_for_mode(&PermissionMode::Default).len();
         let filtered = reg.filter_for_agent(&agent(None, vec![]));
         assert_eq!(filtered.assemble_for_mode(&PermissionMode::Default).len(), all);

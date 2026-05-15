@@ -543,15 +543,15 @@ mod tests {
         let engine = ConversationEngine {
             store: store_arc.clone(),
             config: shared::CliConfig::default(),
-            registry: std::sync::Arc::new(crate::tools::ToolRegistry::new(
+            registry: crate::tools::ToolRegistry::new(
                 store_arc.clone(),
                 shared::CliConfig::default(),
-            )),
+                agent_reg.clone(),
+            ),
             bus: bus.clone(),
             abort: None,
             session_id_override: None,
         };
-        let _ = agent_reg; // touch to silence unused
         assert_eq!(engine.effective_session_id(), "s-root");
     }
 
@@ -563,10 +563,11 @@ mod tests {
         let engine = ConversationEngine {
             store: store_arc.clone(),
             config: shared::CliConfig::default(),
-            registry: std::sync::Arc::new(crate::tools::ToolRegistry::new(
+            registry: crate::tools::ToolRegistry::new(
                 store_arc,
                 shared::CliConfig::default(),
-            )),
+                std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+            ),
             bus,
             abort: None,
             session_id_override: Some("agent-1".into()),
@@ -579,10 +580,11 @@ mod tests {
         use crate::conversation::session_bus::SessionBus;
         let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
         let store = std::sync::Arc::new(crate::state::store::Store::new());
-        let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new(
+        let registry = crate::tools::ToolRegistry::new(
             store.clone(),
             shared::CliConfig::default(),
-        ));
+            std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let child = ConversationEngine::new_child(
             store,
             shared::CliConfig::default(),

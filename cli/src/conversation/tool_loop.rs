@@ -240,7 +240,11 @@ mod tests {
     #[tokio::test]
     async fn unknown_tool_produces_error_result() {
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let bus = Arc::new(SessionBus::new("test".into()));
         let results = run_tool_uses(
             &registry,
@@ -268,7 +272,11 @@ mod tests {
     #[tokio::test]
     async fn read_tool_executes_against_real_file() {
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let tmpfile = std::env::temp_dir().join(format!(
             "super_tool_loop_test_{}.txt",
             uuid::Uuid::new_v4()
@@ -306,7 +314,11 @@ mod tests {
         // Read is concurrency-safe; Write is not. Verify both produce results
         // tagged with the right tool_use_id in original emission order.
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         let tmp_read = std::env::temp_dir().join(format!(
             "super_tool_loop_mix_read_{}.txt",
             uuid::Uuid::new_v4()
@@ -368,7 +380,11 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(None));
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         registry.register(Arc::new(CaptureTool { seen_parent: seen.clone() }));
 
         let bus = Arc::new(SessionBus::new("s-root".into()));
@@ -407,7 +423,11 @@ mod tests {
         }
 
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(store, CliConfig::default());
+        let registry = ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+        );
         registry.register(Arc::new(PanickingTool));
 
         let bus = Arc::new(SessionBus::new("test".into()));

@@ -18,10 +18,13 @@ pub async fn run() {
     }
 
     // Build tool registry with all tools.
-    let registry = Arc::new(crate::tools::ToolRegistry::new(
+    let cwd_for_agents = std::env::current_dir().unwrap_or_default();
+    let agent_registry = Arc::new(crate::agents::AgentRegistry::load(&cwd_for_agents));
+    let registry = crate::tools::ToolRegistry::new(
         store.clone(),
         config.clone(),
-    ));
+        agent_registry,
+    );
 
     // Load skills and (re-)register the SkillTool with loaded skills.
     let skills = crate::skills::loader::load_all_skills();
