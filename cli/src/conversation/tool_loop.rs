@@ -2,7 +2,8 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::sdk::protocol::ContentBlockFinal;
+use crate::conversation::session_bus::SessionBus;
+use crate::sdk::protocol::{BusMessage, ContentBlockFinal};
 use crate::state::store::PermissionMode;
 use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
 use crate::tools::ToolRegistry;
@@ -16,6 +17,7 @@ pub async fn run_tool_uses(
     cwd: std::path::PathBuf,
     permission_mode: PermissionMode,
     abort_signal: Option<watch::Receiver<bool>>,
+    bus: Arc<SessionBus>,
 ) -> Vec<ContentBlockFinal> {
     // Partition into safe (read-only / pure) and unsafe (writes, shell, network with side effects).
     // Preserve original order index so we can recombine into emission order at the end.
@@ -51,7 +53,32 @@ pub async fn run_tool_uses(
             parent_tool_use_id: None,
             bus: None,
         };
+        let bus_for_task = bus.clone();
+        let tool_name = tool.name().to_string();
         set.spawn(async move {
+            // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
+            // Aborted as soon as the inner call returns so the activity row
+            // can flip back to idle (or to the next tool) immediately.
+            let bus_for_tick = bus_for_task.clone();
+            let id_for_tick = id.clone();
+            let name_for_tick = tool_name.clone();
+            let ticker = tokio::spawn(async move {
+                let start = std::time::Instant::now();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                interval.tick().await; // first tick fires immediately; skip it
+                loop {
+                    interval.tick().await;
+                    bus_for_tick.emit(BusMessage::ToolProgress {
+                        tool_use_id: id_for_tick.clone(),
+                        tool_name: name_for_tick.clone(),
+                        elapsed_seconds: start.elapsed().as_secs_f32(),
+                        parent_tool_use_id: None,
+                        uuid: uuid::Uuid::new_v4(),
+                        session_id: bus_for_tick.session_id().to_string(),
+                    });
+                }
+            });
+
             // Catch panics from inside the tool so the parent loop can still
             // emit a ToolResult tagged with the original tool_use_id. We do
             // this by re-spawning the call as its own task: tokio's JoinSet
@@ -79,6 +106,7 @@ pub async fn run_tool_uses(
                     metadata: None,
                 },
             };
+            ticker.abort();
             (i, id, res)
         });
     }
@@ -116,7 +144,30 @@ pub async fn run_tool_uses(
             parent_tool_use_id: None,
             bus: None,
         };
+
+        // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
+        let bus_for_tick = bus.clone();
+        let id_for_tick = id.clone();
+        let name_for_tick = tool.name().to_string();
+        let ticker = tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            interval.tick().await; // first tick fires immediately; skip it
+            loop {
+                interval.tick().await;
+                bus_for_tick.emit(BusMessage::ToolProgress {
+                    tool_use_id: id_for_tick.clone(),
+                    tool_name: name_for_tick.clone(),
+                    elapsed_seconds: start.elapsed().as_secs_f32(),
+                    parent_tool_use_id: None,
+                    uuid: uuid::Uuid::new_v4(),
+                    session_id: bus_for_tick.session_id().to_string(),
+                });
+            }
+        });
+
         let res = tool.call(input, &ctx).await;
+        ticker.abort();
         unsafe_results.push((i, id, res));
     }
 
@@ -181,12 +232,14 @@ mod tests {
     async fn unknown_tool_produces_error_result() {
         let store = Arc::new(Store::new());
         let registry = ToolRegistry::new(store, CliConfig::default());
+        let bus = Arc::new(SessionBus::new("test".into()));
         let results = run_tool_uses(
             &registry,
             vec![("tu_1".into(), "DoesNotExist".into(), serde_json::json!({}))],
             std::env::current_dir().unwrap(),
             PermissionMode::Default,
             None,
+            bus,
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -210,12 +263,14 @@ mod tests {
         ));
         std::fs::write(&tmpfile, "hello\nworld\n").unwrap();
 
+        let bus = Arc::new(SessionBus::new("test".into()));
         let results = run_tool_uses(
             &registry,
             vec![("tu_2".into(), "Read".into(), serde_json::json!({"file_path": tmpfile.to_string_lossy()}))],
             std::env::current_dir().unwrap(),
             PermissionMode::Default,
             None,
+            bus,
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -247,6 +302,7 @@ mod tests {
         ));
         std::fs::write(&tmp_read, "read-me").unwrap();
 
+        let bus = Arc::new(SessionBus::new("test".into()));
         let results = run_tool_uses(
             &registry,
             vec![
@@ -257,6 +313,7 @@ mod tests {
             std::env::current_dir().unwrap(),
             PermissionMode::Default,
             None,
+            bus,
         )
         .await;
 
@@ -295,12 +352,14 @@ mod tests {
         let registry = ToolRegistry::new(store, CliConfig::default());
         registry.register(Arc::new(PanickingTool));
 
+        let bus = Arc::new(SessionBus::new("test".into()));
         let results = run_tool_uses(
             &registry,
             vec![("tu_panic".into(), "Panicker".into(), serde_json::json!({}))],
             std::env::current_dir().unwrap(),
             PermissionMode::Default,
             None,
+            bus,
         )
         .await;
 

@@ -71,6 +71,17 @@ pub struct App {
     modal: Option<Modal>,
 }
 
+fn verb_for_tool(name: &str) -> String {
+    match name {
+        "Read" => "Reading".into(),
+        "Bash" => "Running".into(),
+        "Edit" | "Write" | "NotebookEdit" => "Editing".into(),
+        "Glob" | "Grep" | "ToolSearch" => "Searching".into(),
+        "WebFetch" | "WebSearch" => "Browsing".into(),
+        _ => format!("Running {}", name),
+    }
+}
+
 impl App {
     pub fn new(
         config: CliConfig,
@@ -427,14 +438,37 @@ impl App {
         // Drain any BusMessage events the engine has emitted since last tick.
         loop {
             match self.bus_rx.try_recv() {
-                Ok(msg) => self.scroll_area.push_event(msg),
+                Ok(msg) => {
+                    // Side effects driven by specific bus events.
+                    match &msg {
+                        BusMessage::ToolProgress { tool_name, elapsed_seconds, .. } => {
+                            // Update activity row to reflect the running tool.
+                            // Keep verb stable across rapid Tool emissions: only
+                            // recreate Activity if we were Idle or the verb changed.
+                            let want_verb = verb_for_tool(tool_name);
+                            let should_swap = match &self.activity {
+                                ActivityState::Idle => true,
+                                ActivityState::Active { verb, .. } => verb != &want_verb,
+                            };
+                            if should_swap {
+                                self.activity = ActivityState::active(&want_verb);
+                            }
+                            // The elapsed-seconds value is already reflected by
+                            // ActivityState::tick(); no extra wiring needed.
+                            let _ = elapsed_seconds;
+                        }
+                        BusMessage::Result { .. } => {
+                            self.activity = ActivityState::idle();
+                        }
+                        _ => {}
+                    }
+                    self.scroll_area.push_event(msg);
+                }
                 Err(broadcast::error::TryRecvError::Empty) => break,
                 Err(broadcast::error::TryRecvError::Closed) => break,
-                Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                    // Subscriber fell behind by `n` events. Continue catching up.
-                    // The bus is sized for ~256 outstanding events; reaching here
-                    // means a long-stuck render. Log nothing visible — just resync.
-                    let _ = n;
+                Err(broadcast::error::TryRecvError::Lagged(_n)) => {
+                    // Subscriber fell behind. Bus is sized for ~256 outstanding
+                    // events; reaching here means a long-stuck render. Resync silently.
                 }
             }
         }

@@ -220,6 +220,7 @@ impl ConversationEngine {
                 cwd.clone(),
                 permission_mode.clone(),
                 self.abort.clone(),
+                self.bus.clone(),
             )
             .await;
 

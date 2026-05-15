@@ -65,9 +65,14 @@ impl ActivityState {
         Self::Idle
     }
 
-    pub fn active(_verb: &str) -> Self {
+    pub fn active(verb: &str) -> Self {
+        let verb = if verb.is_empty() {
+            pick(WORKING_VERBS).to_string()
+        } else {
+            verb.to_string()
+        };
         Self::Active {
-            verb: pick(WORKING_VERBS).to_string(),
+            verb,
             tip: pick(TIPS).to_string(),
             started: Instant::now(),
             tokens: 0,
