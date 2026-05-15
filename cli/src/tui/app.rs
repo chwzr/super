@@ -105,10 +105,11 @@ impl App {
             })
             .unwrap_or_else(|| ".".to_string());
         let model = friendly_model_name(&config.model);
+        let provider_label = crate::providers::provider_display_name(&config.provider).to_string();
         let header = Header::new(
             env!("CARGO_PKG_VERSION").to_string(),
             model,
-            "OpenRouter".to_string(),
+            provider_label,
             cwd,
         );
         let bus_rx = bus.subscribe();
@@ -289,8 +290,23 @@ impl App {
                     self.modal = None;
                     return Ok(());
                 }
-                ModalAction::SetModel(m) => {
-                    self.store.set_model(m);
+                ModalAction::SetClass(c) => {
+                    self.store.set_model_class(&c);
+                    self._config.model_class = c.clone();
+                    self._config.model = crate::providers::resolve_slug(
+                        &self._config.provider, &c
+                    ).to_string();
+                    crate::config::save_config(&self._config);
+                    self.modal = None;
+                    return Ok(());
+                }
+                ModalAction::SetProvider(p) => {
+                    self.store.set_provider(&p);
+                    self._config.provider = p.clone();
+                    self._config.model = crate::providers::resolve_slug(
+                        &p, &self._config.model_class
+                    ).to_string();
+                    crate::config::save_config(&self._config);
                     self.modal = None;
                     return Ok(());
                 }

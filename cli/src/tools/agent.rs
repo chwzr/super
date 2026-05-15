@@ -112,6 +112,7 @@ impl Tool for AgentTool {
         let child_model = resolve_model(
             model_override.as_deref().or(agent_def.model.as_deref()),
             &self.config.model,
+            &self.config.provider,
         );
         let mut child_config = self.config.clone();
         child_config.model = child_model;

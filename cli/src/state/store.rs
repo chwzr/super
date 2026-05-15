@@ -31,11 +31,12 @@ pub struct AsyncAgentHandle {
     pub started_at: std::time::Instant,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct AppState {
     pub messages: Vec<Message>,
     pub permission_mode: PermissionMode,
-    pub model: String,
+    pub provider: String,
+    pub model_class: String,
     pub thinking_enabled: bool,
     pub effort_level: Option<String>,
     pub is_streaming: bool,
@@ -43,6 +44,24 @@ pub struct AppState {
     pub tasks: HashMap<String, TaskRecord>,
     pub history: Vec<crate::conversation::anthropic::HistoryEntry>,
     pub async_agents: HashMap<String, AsyncAgentHandle>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            messages: Vec::new(),
+            permission_mode: PermissionMode::default(),
+            provider: "anthropic".to_string(),
+            model_class: "sonnet".to_string(),
+            thinking_enabled: false,
+            effort_level: None,
+            is_streaming: false,
+            should_compact: false,
+            tasks: HashMap::new(),
+            history: Vec::new(),
+            async_agents: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -104,8 +123,14 @@ impl Store {
         }
     }
 
-    pub fn set_model(&self, model: String) {
-        self.set_state(|s| s.model = model);
+    pub fn set_provider(&self, provider: &str) {
+        let p = provider.to_string();
+        self.set_state(|s| s.provider = p);
+    }
+
+    pub fn set_model_class(&self, class: &str) {
+        let c = class.to_string();
+        self.set_state(|s| s.model_class = c);
     }
 
     pub fn set_effort(&self, effort: String) {
@@ -163,6 +188,28 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_state_is_anthropic_sonnet() {
+        let store = Store::new();
+        let s = store.get_state();
+        assert_eq!(s.provider, "anthropic");
+        assert_eq!(s.model_class, "sonnet");
+    }
+
+    #[test]
+    fn set_provider_updates_state() {
+        let store = Store::new();
+        store.set_provider("z-ai");
+        assert_eq!(store.get_state().provider, "z-ai");
+    }
+
+    #[test]
+    fn set_model_class_updates_state() {
+        let store = Store::new();
+        store.set_model_class("haiku");
+        assert_eq!(store.get_state().model_class, "haiku");
+    }
 
     #[test]
     fn register_and_complete_async_agent() {

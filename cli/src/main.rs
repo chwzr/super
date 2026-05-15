@@ -10,6 +10,7 @@ mod mcp;
 mod commands;
 mod skills;
 mod sdk;
+mod providers;
 
 use clap::{Parser, Subcommand};
 

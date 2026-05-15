@@ -11,10 +11,14 @@ pub async fn run() {
     }
 
     let store = Arc::new(crate::state::store::Store::new());
-    // Seed the store's model from config so /status and /model see the correct value.
+    // Seed the store's provider and model_class from config.
     {
-        let model = config.model.clone();
-        store.set_state(|s| s.model = model);
+        let provider    = config.provider.clone();
+        let model_class = config.model_class.clone();
+        store.set_state(|s| {
+            s.provider    = provider;
+            s.model_class = model_class;
+        });
     }
 
     // Build tool registry with all tools.

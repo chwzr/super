@@ -33,13 +33,28 @@ mod tests {
     fn resolve_model_handles_aliases_and_inherit() {
         use super::model::resolve_model;
         let parent = "anthropic/claude-sonnet-4-6";
-        assert_eq!(resolve_model(Some("sonnet"), parent), "anthropic/claude-sonnet-4-6");
-        assert_eq!(resolve_model(Some("opus"), parent), "anthropic/claude-opus-4-7");
-        assert_eq!(resolve_model(Some("haiku"), parent), "anthropic/claude-haiku-4-5-20251001");
-        assert_eq!(resolve_model(Some("inherit"), parent), parent);
-        assert_eq!(resolve_model(None, parent), parent);
-        // Unknown -> pass through
-        assert_eq!(resolve_model(Some("anthropic/claude-something-else"), parent), "anthropic/claude-something-else");
+        assert_eq!(resolve_model(Some("sonnet"), parent, "anthropic"), "anthropic/claude-sonnet-4-6");
+        assert_eq!(resolve_model(Some("opus"),   parent, "anthropic"), "anthropic/claude-opus-4-7");
+        assert_eq!(resolve_model(Some("haiku"),  parent, "anthropic"), "anthropic/claude-haiku-4-5-20251001");
+        assert_eq!(resolve_model(Some("inherit"), parent, "anthropic"), parent);
+        assert_eq!(resolve_model(None,            parent, "anthropic"), parent);
+        assert_eq!(
+            resolve_model(Some("anthropic/claude-something-else"), parent, "anthropic"),
+            "anthropic/claude-something-else"
+        );
+    }
+
+    #[test]
+    fn resolve_model_class_uses_provider() {
+        use super::model::resolve_model;
+        assert_eq!(
+            resolve_model(Some("sonnet"), "anthropic/claude-sonnet-4-6", "z-ai"),
+            "z-ai/glm-5-turbo"
+        );
+        assert_eq!(
+            resolve_model(Some("haiku"), "anthropic/claude-sonnet-4-6", "deepseek"),
+            "deepseek/deepseek-v4-flash"
+        );
     }
 
     #[test]
