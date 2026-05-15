@@ -37,6 +37,11 @@ pub async fn run_tool_uses(
     }
 
     // Drive the safe set in parallel.
+    //
+    // Each spawned task captures its own (i, id) so that a panic inside a tool's
+    // .call() still produces a ToolResult with the correct tool_use_id — Anthropic
+    // rejects a turn if any prior tool_use_id lacks a matching tool_result, so we
+    // CANNOT lose the id on the panic path.
     let mut set: JoinSet<(usize, String, ToolResult)> = JoinSet::new();
     for (i, id, tool, input) in safe {
         let ctx = ToolCallContext {
@@ -47,7 +52,33 @@ pub async fn run_tool_uses(
             bus: None,
         };
         set.spawn(async move {
-            let res = tool.call(input, &ctx).await;
+            // Catch panics from inside the tool so the parent loop can still
+            // emit a ToolResult tagged with the original tool_use_id. We do
+            // this by re-spawning the call as its own task: tokio's JoinSet
+            // already catches panics on the outer task and turns them into a
+            // JoinError, but a JoinError doesn't carry our (i, id) tuple.
+            // Spawning *inside* the outer task lets us recover the panic
+            // payload here and rebuild a ToolResult tagged with the original
+            // tool_use_id.
+            let inner = tokio::task::spawn(async move {
+                tool.call(input, &ctx).await
+            });
+            let res = match inner.await {
+                Ok(r) => r,
+                Err(e) if e.is_panic() => ToolResult {
+                    content: format!(
+                        "Tool panicked: {}",
+                        downcast_panic(&e.into_panic())
+                    ),
+                    is_error: true,
+                    metadata: None,
+                },
+                Err(e) => ToolResult {
+                    content: format!("Tool task error: {e}"),
+                    is_error: true,
+                    metadata: None,
+                },
+            };
             (i, id, res)
         });
     }
@@ -56,10 +87,15 @@ pub async fn run_tool_uses(
         match joined {
             Ok(tuple) => safe_results.push(tuple),
             Err(e) => {
-                // Panic or cancellation inside the spawned task. Emit a synthetic error.
+                // The task was either cancelled or hit an unexpected join error
+                // *after* our inner catch_unwind. We cannot recover the (i, id)
+                // here, but in practice this path only fires on cancellation /
+                // runtime shutdown — at which point the surrounding engine loop
+                // is also tearing down. Surface a synthetic placeholder so the
+                // engine sees something rather than silently dropping work.
                 safe_results.push((
                     usize::MAX,
-                    String::new(),
+                    "__join_error__".to_string(),
                     ToolResult {
                         content: format!("Tool task join error: {e}"),
                         is_error: true,
@@ -91,25 +127,22 @@ pub async fn run_tool_uses(
 
     combined
         .into_iter()
-        .filter_map(|(i, id, res)| {
-            // Drop the synthetic join-error placeholders that have i == usize::MAX
-            // unless that's the only result — in which case still surface the error.
-            if i == usize::MAX && id.is_empty() {
-                // Emit it as an unattached tool_result with a sentinel id so the
-                // model at least sees that something went wrong.
-                return Some(ContentBlockFinal::ToolResult {
-                    tool_use_id: "join_error".to_string(),
-                    content: res.content,
-                    is_error: true,
-                });
-            }
-            Some(ContentBlockFinal::ToolResult {
-                tool_use_id: id,
-                content: res.content,
-                is_error: res.is_error,
-            })
+        .map(|(_i, id, res)| ContentBlockFinal::ToolResult {
+            tool_use_id: id,
+            content: res.content,
+            is_error: res.is_error,
         })
         .collect()
+}
+
+fn downcast_panic(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        return (*s).to_string();
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    "(non-string panic payload)".to_string()
 }
 
 /// Sentinel for unknown tool names — produces an error tool_result so the
@@ -171,7 +204,10 @@ mod tests {
     async fn read_tool_executes_against_real_file() {
         let store = Arc::new(Store::new());
         let registry = ToolRegistry::new(store, CliConfig::default());
-        let tmpfile = std::env::temp_dir().join("super_tool_loop_test.txt");
+        let tmpfile = std::env::temp_dir().join(format!(
+            "super_tool_loop_test_{}.txt",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::write(&tmpfile, "hello\nworld\n").unwrap();
 
         let results = run_tool_uses(
@@ -193,5 +229,89 @@ mod tests {
             other => panic!("wrong variant: {other:?}"),
         }
         std::fs::remove_file(&tmpfile).ok();
+    }
+
+    #[tokio::test]
+    async fn mixed_safe_and_sequential_preserve_emission_order() {
+        // Read is concurrency-safe; Write is not. Verify both produce results
+        // tagged with the right tool_use_id in original emission order.
+        let store = Arc::new(Store::new());
+        let registry = ToolRegistry::new(store, CliConfig::default());
+        let tmp_read = std::env::temp_dir().join(format!(
+            "super_tool_loop_mix_read_{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        let tmp_write = std::env::temp_dir().join(format!(
+            "super_tool_loop_mix_write_{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&tmp_read, "read-me").unwrap();
+
+        let results = run_tool_uses(
+            &registry,
+            vec![
+                ("tu_a".into(), "Read".into(), serde_json::json!({"file_path": tmp_read.to_string_lossy()})),
+                ("tu_b".into(), "Write".into(), serde_json::json!({"file_path": tmp_write.to_string_lossy(), "content": "wrote-me"})),
+                ("tu_c".into(), "Read".into(), serde_json::json!({"file_path": tmp_read.to_string_lossy()})),
+            ],
+            std::env::current_dir().unwrap(),
+            PermissionMode::Default,
+            None,
+        )
+        .await;
+
+        assert_eq!(results.len(), 3);
+        // Order must match input order regardless of which subset ran in parallel.
+        let ids: Vec<&str> = results.iter().filter_map(|b| match b {
+            ContentBlockFinal::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(ids, vec!["tu_a", "tu_b", "tu_c"]);
+
+        std::fs::remove_file(&tmp_read).ok();
+        std::fs::remove_file(&tmp_write).ok();
+    }
+
+    /// A panicking tool MUST still produce a ToolResult with the correct
+    /// tool_use_id. Anthropic rejects a turn if any prior tool_use_id lacks
+    /// a matching tool_result on the next user turn, so dropping the id on
+    /// panic is a Blocker.
+    #[tokio::test]
+    async fn panicking_tool_produces_error_result_with_correct_id() {
+        use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+        struct PanickingTool;
+        #[async_trait::async_trait]
+        impl Tool for PanickingTool {
+            fn name(&self) -> &str { "Panicker" }
+            fn description(&self) -> &str { "always panics" }
+            fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+            fn is_concurrency_safe(&self) -> bool { true }   // must go through the JoinSet path
+            async fn call(&self, _input: serde_json::Value, _ctx: &ToolCallContext) -> ToolResult {
+                panic!("boom");
+            }
+        }
+
+        let store = Arc::new(Store::new());
+        let registry = ToolRegistry::new(store, CliConfig::default());
+        registry.register(Arc::new(PanickingTool));
+
+        let results = run_tool_uses(
+            &registry,
+            vec![("tu_panic".into(), "Panicker".into(), serde_json::json!({}))],
+            std::env::current_dir().unwrap(),
+            PermissionMode::Default,
+            None,
+        )
+        .await;
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            ContentBlockFinal::ToolResult { tool_use_id, content, is_error } => {
+                assert_eq!(tool_use_id, "tu_panic", "panicked tool_use_id MUST survive panic");
+                assert!(*is_error);
+                assert!(content.contains("panic") || content.contains("boom"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }
