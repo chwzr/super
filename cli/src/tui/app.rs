@@ -17,6 +17,7 @@ use super::header::Header;
 use super::input_bar::InputBar;
 use super::scroll_area::{Message, ScrollArea};
 use super::slash_menu::SlashMenu;
+use super::splash::MASCOT;
 use crate::conversation::engine::ConversationEngine;
 use crate::conversation::system_prompt::SystemPrompt;
 use crate::state::store::Store;
@@ -532,7 +533,7 @@ impl App {
         let area = f.area();
 
         let activity_height = self.activity.height();
-        let header_height   = 3u16;
+        let header_height   = MASCOT.len() as u16;
 
         if let Some(ref modal) = self.modal {
             let modal_layout = Layout::default()
