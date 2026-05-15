@@ -114,4 +114,36 @@ mod tests {
             "using-superpowers should have user-invocable: false"
         );
     }
+
+    #[test]
+    fn extract_skill_is_idempotent() {
+        // Pick the first bundled skill and extract it twice into a tempdir.
+        // Second extraction must not error and must not duplicate files.
+        let def = BUNDLED_SKILLS.first().expect("BUNDLED_SKILLS empty");
+        let tmp = std::env::temp_dir().join(format!(
+            "super_extract_idemp_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let skill_dir = tmp.join(def.name);
+
+        extract_skill(def, &skill_dir).expect("first extraction failed");
+        let first_count: usize = walkdir::WalkDir::new(&skill_dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            .count();
+        assert!(first_count > 0, "no files extracted");
+
+        // Second call must succeed and not change the file count.
+        extract_skill(def, &skill_dir).expect("second extraction errored");
+        let second_count: usize = walkdir::WalkDir::new(&skill_dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            .count();
+        assert_eq!(first_count, second_count, "file count changed");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
