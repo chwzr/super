@@ -18,6 +18,7 @@ use super::input_bar::InputBar;
 use super::scroll_area::{Message, ScrollArea};
 use super::slash_menu::SlashMenu;
 use crate::conversation::engine::ConversationEngine;
+use crate::conversation::session_bus::SessionBus;
 use crate::conversation::system_prompt::SystemPrompt;
 use crate::state::store::Store;
 use crate::tools::ToolRegistry;
@@ -57,6 +58,7 @@ pub struct App {
     store: Arc<Store>,
     engine: ConversationEngine,
     _registry: Arc<ToolRegistry>,
+    _bus: Arc<SessionBus>,
     system_prompt: SystemPrompt,
     should_quit: bool,
     history: Vec<String>,
@@ -73,6 +75,7 @@ impl App {
         store: Arc<Store>,
         engine: ConversationEngine,
         registry: Arc<ToolRegistry>,
+        bus: Arc<SessionBus>,
         system_prompt: SystemPrompt,
     ) -> Self {
         let cwd = std::env::current_dir()
@@ -101,6 +104,7 @@ impl App {
             store,
             engine,
             _registry: registry,
+            _bus: bus,
             system_prompt,
             should_quit: false,
             history: Vec::new(),
@@ -174,10 +178,7 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let started = std::time::Instant::now();
-            let result = engine
-                .process_prompt(prompt, &sp)
-                .await
-                .map_err(|e| e.to_string());
+            let result = engine.process_prompt(prompt, &sp).await;
             let _ = tx.send(EngineEvent::Done {
                 result,
                 elapsed_secs: started.elapsed().as_secs(),
@@ -622,10 +623,11 @@ pub async fn run_with_engine(
     store: Arc<Store>,
     engine: ConversationEngine,
     registry: Arc<ToolRegistry>,
+    bus: Arc<SessionBus>,
     system_prompt: SystemPrompt,
 ) {
     let terminal = ratatui::init();
-    let mut app = App::new(config, store, engine, registry, system_prompt);
+    let mut app = App::new(config, store, engine, registry, bus, system_prompt);
     let _ = app.run(terminal);
     ratatui::restore();
 }

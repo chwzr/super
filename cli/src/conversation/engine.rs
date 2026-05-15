@@ -1,159 +1,449 @@
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
+
+use futures_util::StreamExt;
 use shared::CliConfig;
-use crate::state::store::Store;
-use crate::tui::scroll_area::Message;
+use tokio::sync::watch;
+use uuid::Uuid;
+
+use crate::conversation::anthropic::{build_request_body, HistoryEntry, Role};
+use crate::conversation::session_bus::SessionBus;
+use crate::conversation::sse::SseParser;
 use crate::conversation::system_prompt::SystemPrompt;
+use crate::conversation::tool_loop::run_tool_uses;
+use crate::sdk::protocol::{
+    AnthropicUsage, AssistantPayload, BlockDelta, BusMessage, ContentBlockFinal,
+    ContentBlockStream, StreamEvent, SystemSubtype, UserPayload,
+};
+use crate::state::store::Store;
+use crate::tools::ToolRegistry;
 
 #[derive(Clone)]
 pub struct ConversationEngine {
     pub store: Arc<Store>,
     pub config: CliConfig,
+    pub registry: Arc<ToolRegistry>,
+    pub bus: Arc<SessionBus>,
+    pub abort: Option<watch::Receiver<bool>>,
 }
 
 impl ConversationEngine {
-    pub fn new(store: Arc<Store>, config: CliConfig) -> Self {
-        Self { store, config }
+    pub fn new(
+        store: Arc<Store>,
+        config: CliConfig,
+        registry: Arc<ToolRegistry>,
+        bus: Arc<SessionBus>,
+    ) -> Self {
+        Self { store, config, registry, bus, abort: None }
     }
 
+    /// Drive one user turn end-to-end: emit the user message, loop on
+    /// (request → stream → tool execution) until the model returns
+    /// a terminal stop reason or there are no more tool_use blocks.
     pub async fn process_prompt(
         &self,
         user_input: String,
         system_prompt: &SystemPrompt,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        // Set streaming state
-        self.store.set_state(|s| {
-            s.is_streaming = true;
-        });
-
-        // Build the OpenRouter-compatible request body
-        let system_content = system_prompt.render();
-
-        // Convert conversation history into OpenAI chat message format
-        // Note: OpenRouter uses the same format as the OpenAI Chat Completions API.
-        let mut messages: Vec<serde_json::Value> = Vec::new();
-
-        // System prompt as the first message
-        messages.push(serde_json::json!({
-            "role": "system",
-            "content": system_content
-        }));
-
-        // Add conversation history from the store
-        let history = self.store.get_state().messages;
-        for msg in &history {
-            match msg {
-                Message::User(s) => {
-                    messages.push(serde_json::json!({
-                        "role": "user",
-                        "content": s
-                    }));
-                }
-                Message::Assistant(s) => {
-                    messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": s
-                    }));
-                }
-                Message::ToolCall { name, input, result } => {
-                    messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": format!("Tool [{name}]: input={input}"),
-                        "tool_call": { "name": name, "input": input }
-                    }));
-                    if let Some(r) = result {
-                        messages.push(serde_json::json!({
-                            "role": "tool",
-                            "tool_name": name,
-                            "content": r
-                        }));
-                    }
-                }
-                Message::System(s) => {
-                    messages.push(serde_json::json!({
-                        "role": "system",
-                        "content": s
-                    }));
-                }
-                Message::Trail(_) | Message::Thinking => {}
-            }
-        }
-
-        // Append the current user input
-        messages.push(serde_json::json!({
-            "role": "user",
-            "content": user_input
-        }));
-
-        // Add thinking indicator to scroll area
-        self.store.set_state(|s| {
-            s.messages.push(Message::Thinking);
-        });
-
-        // Build the request payload
-        let api_key = self.config.openrouter_api_key.as_ref()
-            .ok_or("no OpenRouter API key configured")?;
-
+    ) -> Result<String, String> {
+        let session_id = self.bus.session_id().to_string();
         let model = self.config.model.clone();
+        let base_url = self.config.api_messages_base_url.clone();
+        let api_key = self
+            .config
+            .openrouter_api_key
+            .clone()
+            .ok_or_else(|| "no OpenRouter API key configured".to_string())?;
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let permission_mode = self.store.get_state().permission_mode.clone();
+        let tools = self.registry.assemble_for_mode(&permission_mode);
 
-        let request_body = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "max_tokens": 4096
+        // Seed history from the store and append the new user message.
+        let mut history: Vec<HistoryEntry> = self.store.get_state().history.clone();
+        let user_block = ContentBlockFinal::Text { text: user_input.clone() };
+        history.push(HistoryEntry {
+            role: Role::User,
+            content: vec![user_block.clone()],
         });
 
-        // Send request to OpenRouter's OpenAI-compatible chat completions endpoint
+        self.bus.emit(BusMessage::User {
+            message: UserPayload {
+                role: "user".to_string(),
+                content: vec![user_block],
+            },
+            parent_tool_use_id: None,
+            uuid: Uuid::new_v4(),
+            session_id: session_id.clone(),
+        });
+
+        let started = Instant::now();
+        let mut total_input_tokens: u64 = 0;
+        let mut total_output_tokens: u64 = 0;
+        let mut last_assistant_text = String::new();
+        let mut num_turns: u32 = 0;
         let client = reqwest::Client::new();
-        let response = client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP request failed: {e}"))?;
+        let system_rendered = system_prompt.render();
 
-        let status = response.status();
-        let body = response.text().await
-            .map_err(|e| format!("Failed to read response body: {e}"))?;
-
-        if !status.is_success() {
-            return Err(format!("OpenRouter API error ({}): {}", status, body).into());
-        }
-
-        // Parse the response JSON
-        let parsed: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| format!("Failed to parse response: {e}"))?;
-
-        let response_text = parsed["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| "unexpected response format from OpenRouter".to_string())?
-            .to_string();
-
-        // Update state with the response
-        let response_text_clone = response_text.clone();
-        self.store.set_state(|s| {
-            // Remove thinking indicator
-            s.messages.retain(|m| !matches!(m, Message::Thinking));
-            // Add user message (if not already added) and assistant response
-            s.messages.push(Message::Assistant(response_text_clone));
-            s.is_streaming = false;
-
-            // Check if compaction is needed
-            if s.messages.len() > 100 {
-                s.should_compact = true;
+        loop {
+            num_turns += 1;
+            if num_turns >= 50 {
+                self.bus
+                    .emit_system(SystemSubtype::Notice, "max turns (50) reached");
+                self.store.set_state(|s| {
+                    s.history = history.clone();
+                });
+                return Ok(last_assistant_text);
             }
-        });
 
-        // Run compaction if needed
-        if self.store.get_state().should_compact {
-            let msgs = self.store.get_state().messages;
-            let compacted = crate::conversation::compaction::compact_messages(&msgs, 80_000);
-            self.store.set_state(|s| {
-                s.messages = compacted;
-                s.should_compact = false;
+            let body = build_request_body(
+                &model,
+                &system_rendered,
+                &history,
+                &tools,
+                8192,
+                true,
+            );
+
+            let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+            let response = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("Content-Type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                return Err(format!("API error ({status}): {text}"));
+            }
+
+            // Per-turn fold state.
+            let mut current_blocks: Vec<Option<PartialBlock>> = Vec::new();
+            let mut stop_reason: Option<String> = None;
+            let mut message_id = String::new();
+            let mut response_model = model.clone();
+
+            let mut parser = SseParser::new();
+            let mut byte_stream = response.bytes_stream();
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
+                for event in parser.feed(&chunk) {
+                    self.bus.emit(BusMessage::StreamEvent {
+                        event: event.clone(),
+                        parent_tool_use_id: None,
+                        uuid: Uuid::new_v4(),
+                        session_id: session_id.clone(),
+                    });
+                    fold_event(
+                        event,
+                        &mut current_blocks,
+                        &mut stop_reason,
+                        &mut message_id,
+                        &mut response_model,
+                        &mut total_input_tokens,
+                        &mut total_output_tokens,
+                    );
+                }
+            }
+
+            // Finalize this turn's assistant message.
+            let content: Vec<ContentBlockFinal> = current_blocks
+                .into_iter()
+                .flatten()
+                .map(|pb| pb.finalize())
+                .collect();
+
+            let usage = AnthropicUsage {
+                input_tokens: total_input_tokens,
+                output_tokens: total_output_tokens,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            };
+            let assistant_msg = AssistantPayload {
+                id: message_id.clone(),
+                model: response_model.clone(),
+                role: "assistant".to_string(),
+                content: content.clone(),
+                stop_reason: stop_reason.clone(),
+                usage: usage.clone(),
+            };
+            self.bus.emit(BusMessage::Assistant {
+                message: assistant_msg.clone(),
+                parent_tool_use_id: None,
+                uuid: Uuid::new_v4(),
+                session_id: session_id.clone(),
+            });
+            history.push(HistoryEntry {
+                role: Role::Assistant,
+                content: content.clone(),
+            });
+
+            // Pick out tool_use blocks and the trailing text.
+            let mut tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new();
+            for b in &content {
+                match b {
+                    ContentBlockFinal::ToolUse { id, name, input } => {
+                        tool_uses.push((id.clone(), name.clone(), input.clone()));
+                    }
+                    ContentBlockFinal::Text { text } => {
+                        last_assistant_text = text.clone();
+                    }
+                    _ => {}
+                }
+            }
+
+            if tool_uses.is_empty() {
+                self.bus.emit(BusMessage::Result {
+                    stop_reason: stop_reason.clone(),
+                    usage,
+                    total_cost_usd: 0.0,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    num_turns,
+                    uuid: Uuid::new_v4(),
+                    session_id: session_id.clone(),
+                });
+                self.store.set_state(|s| {
+                    s.history = history.clone();
+                });
+                return Ok(last_assistant_text);
+            }
+
+            // Execute the tools, emit the synthetic user turn, loop.
+            let tool_results = run_tool_uses(
+                &self.registry,
+                tool_uses,
+                cwd.clone(),
+                permission_mode.clone(),
+                self.abort.clone(),
+            )
+            .await;
+
+            self.bus.emit(BusMessage::User {
+                message: UserPayload {
+                    role: "user".to_string(),
+                    content: tool_results.clone(),
+                },
+                parent_tool_use_id: None,
+                uuid: Uuid::new_v4(),
+                session_id: session_id.clone(),
+            });
+            history.push(HistoryEntry {
+                role: Role::User,
+                content: tool_results,
             });
         }
+    }
+}
 
-        Ok(response_text)
+#[derive(Debug, Clone)]
+enum PartialBlock {
+    Text { text: String },
+    Thinking { thinking: String, signature: String },
+    ToolUse { id: String, name: String, input_json: String },
+}
+
+impl PartialBlock {
+    fn finalize(self) -> ContentBlockFinal {
+        match self {
+            PartialBlock::Text { text } => ContentBlockFinal::Text { text },
+            PartialBlock::Thinking { thinking, signature } => {
+                ContentBlockFinal::Thinking { thinking, signature }
+            }
+            PartialBlock::ToolUse { id, name, input_json } => {
+                let input: serde_json::Value =
+                    serde_json::from_str(&input_json).unwrap_or(serde_json::json!({}));
+                ContentBlockFinal::ToolUse { id, name, input }
+            }
+        }
+    }
+}
+
+fn fold_event(
+    event: StreamEvent,
+    blocks: &mut Vec<Option<PartialBlock>>,
+    stop_reason: &mut Option<String>,
+    message_id: &mut String,
+    response_model: &mut String,
+    in_tokens: &mut u64,
+    out_tokens: &mut u64,
+) {
+    match event {
+        StreamEvent::MessageStart { message } => {
+            *message_id = message.id;
+            *response_model = message.model;
+            *in_tokens += message.usage.input_tokens;
+            *out_tokens += message.usage.output_tokens;
+        }
+        StreamEvent::ContentBlockStart { index, content_block } => {
+            let idx = index as usize;
+            while blocks.len() <= idx {
+                blocks.push(None);
+            }
+            blocks[idx] = Some(match content_block {
+                ContentBlockStream::Text { text } => PartialBlock::Text { text },
+                ContentBlockStream::Thinking { thinking, signature } => {
+                    PartialBlock::Thinking { thinking, signature }
+                }
+                ContentBlockStream::ToolUse { id, name, .. } => PartialBlock::ToolUse {
+                    id,
+                    name,
+                    input_json: String::new(),
+                },
+            });
+        }
+        StreamEvent::ContentBlockDelta { index, delta } => {
+            let idx = index as usize;
+            if let Some(Some(pb)) = blocks.get_mut(idx) {
+                match (pb, delta) {
+                    (PartialBlock::Text { text }, BlockDelta::TextDelta { text: d }) => {
+                        text.push_str(&d)
+                    }
+                    (
+                        PartialBlock::Thinking { thinking, .. },
+                        BlockDelta::ThinkingDelta { thinking: d },
+                    ) => thinking.push_str(&d),
+                    (
+                        PartialBlock::Thinking { signature, .. },
+                        BlockDelta::SignatureDelta { signature: s },
+                    ) => *signature = s,
+                    (
+                        PartialBlock::ToolUse { input_json, .. },
+                        BlockDelta::InputJsonDelta { partial_json },
+                    ) => input_json.push_str(&partial_json),
+                    _ => {} // mismatched delta type — skip
+                }
+            }
+        }
+        StreamEvent::ContentBlockStop { .. } => {}
+        StreamEvent::MessageDelta { delta, usage } => {
+            if let Some(sr) = delta.stop_reason {
+                *stop_reason = Some(sr);
+            }
+            *out_tokens += usage.output_tokens;
+        }
+        StreamEvent::MessageStop => {}
+        StreamEvent::Ping => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fold_accumulates_text_deltas() {
+        let mut blocks: Vec<Option<PartialBlock>> = Vec::new();
+        let mut sr = None;
+        let mut id = String::new();
+        let mut model = String::new();
+        let mut in_t = 0u64;
+        let mut out_t = 0u64;
+        fold_event(
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::Text { text: String::new() },
+            },
+            &mut blocks,
+            &mut sr,
+            &mut id,
+            &mut model,
+            &mut in_t,
+            &mut out_t,
+        );
+        fold_event(
+            StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: BlockDelta::TextDelta { text: "hel".into() },
+            },
+            &mut blocks,
+            &mut sr,
+            &mut id,
+            &mut model,
+            &mut in_t,
+            &mut out_t,
+        );
+        fold_event(
+            StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: BlockDelta::TextDelta { text: "lo".into() },
+            },
+            &mut blocks,
+            &mut sr,
+            &mut id,
+            &mut model,
+            &mut in_t,
+            &mut out_t,
+        );
+        let final_block = blocks.into_iter().flatten().next().unwrap().finalize();
+        match final_block {
+            ContentBlockFinal::Text { text } => assert_eq!(text, "hello"),
+            other => panic!("wrong: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fold_accumulates_tool_use_input_json() {
+        let mut blocks: Vec<Option<PartialBlock>> = Vec::new();
+        let mut sr = None;
+        let mut id = String::new();
+        let mut model = String::new();
+        let mut in_t = 0u64;
+        let mut out_t = 0u64;
+        fold_event(
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::ToolUse {
+                    id: "tu_1".into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({}),
+                },
+            },
+            &mut blocks,
+            &mut sr,
+            &mut id,
+            &mut model,
+            &mut in_t,
+            &mut out_t,
+        );
+        fold_event(
+            StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: BlockDelta::InputJsonDelta {
+                    partial_json: r#"{"file_path":"#.into(),
+                },
+            },
+            &mut blocks,
+            &mut sr,
+            &mut id,
+            &mut model,
+            &mut in_t,
+            &mut out_t,
+        );
+        fold_event(
+            StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: BlockDelta::InputJsonDelta {
+                    partial_json: r#""PLAN.md"}"#.into(),
+                },
+            },
+            &mut blocks,
+            &mut sr,
+            &mut id,
+            &mut model,
+            &mut in_t,
+            &mut out_t,
+        );
+        let final_block = blocks.into_iter().flatten().next().unwrap().finalize();
+        match final_block {
+            ContentBlockFinal::ToolUse { name, input, .. } => {
+                assert_eq!(name, "Read");
+                assert_eq!(input["file_path"], "PLAN.md");
+            }
+            other => panic!("wrong: {other:?}"),
+        }
     }
 }
