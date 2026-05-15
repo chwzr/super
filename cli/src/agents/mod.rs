@@ -1,5 +1,6 @@
 pub mod built_in;
 pub mod definition;
+pub mod loader;
 pub mod model;
 pub mod permission;
 
@@ -67,6 +68,48 @@ mod tests {
         use crate::state::store::PermissionMode;
         let out = resolve_permission_mode(&PermissionMode::Default, None, false);
         assert!(matches!(out, PermissionMode::Default));
+    }
+
+    #[test]
+    fn loader_parses_full_frontmatter() {
+        use super::loader::parse_agent_md;
+        use super::definition::AgentSource;
+        let src = "---\ndescription: An explorer\ntools: [Read, Grep]\ndisallowedTools: [Edit]\nmodel: haiku\npermissionMode: plan\nmaxTurns: 8\n---\nYou are an explorer.\nUse the tools.\n";
+        let def = parse_agent_md("Explore.md", src, AgentSource::Project)
+            .expect("parses");
+        assert_eq!(def.agent_type, "Explore");
+        assert_eq!(def.description, "An explorer");
+        assert_eq!(def.tools.as_ref().unwrap(), &vec!["Read".to_string(), "Grep".to_string()]);
+        assert_eq!(def.disallowed_tools, vec!["Edit".to_string()]);
+        assert_eq!(def.model.as_deref(), Some("haiku"));
+        assert_eq!(def.max_turns, Some(8));
+        assert!(def.system_prompt.contains("You are an explorer"));
+        assert!(matches!(def.source, AgentSource::Project));
+    }
+
+    #[test]
+    fn loader_rejects_missing_frontmatter() {
+        use super::loader::parse_agent_md;
+        use super::definition::AgentSource;
+        let src = "no frontmatter here\n";
+        assert!(parse_agent_md("foo.md", src, AgentSource::User).is_err());
+    }
+
+    #[test]
+    fn loader_rejects_empty_description() {
+        use super::loader::parse_agent_md;
+        use super::definition::AgentSource;
+        let src = "---\ndescription: \"\"\n---\nbody\n";
+        assert!(parse_agent_md("foo.md", src, AgentSource::User).is_err());
+    }
+
+    #[test]
+    fn loader_strips_md_suffix_for_agent_type() {
+        use super::loader::parse_agent_md;
+        use super::definition::AgentSource;
+        let src = "---\ndescription: x\n---\nbody";
+        let def = parse_agent_md("my-agent.md", src, AgentSource::Project).unwrap();
+        assert_eq!(def.agent_type, "my-agent");
     }
 
     #[test]
