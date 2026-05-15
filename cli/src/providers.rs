@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub struct ProviderEntry {
     pub id: &'static str,
     pub display_name: &'static str,
@@ -110,7 +111,21 @@ mod tests {
     }
 
     #[test]
-    fn provider_display_name_unknown_returns_id() {
+    fn provider_display_name_unknown_returns_default() {
         assert_eq!(provider_display_name("custom"), "Anthropic");
+    }
+
+    #[test]
+    fn resolve_slug_deepseek() {
+        assert_eq!(resolve_slug("deepseek", "haiku"),  "deepseek/deepseek-v4-flash");
+        assert_eq!(resolve_slug("deepseek", "sonnet"), "deepseek/deepseek-v4-flash");
+        assert_eq!(resolve_slug("deepseek", "opus"),   "deepseek/deepseek-v4-pro");
+    }
+
+    #[test]
+    fn resolve_slug_free() {
+        assert_eq!(resolve_slug("free", "haiku"),  "openrouter/free");
+        assert_eq!(resolve_slug("free", "sonnet"), "openrouter/free");
+        assert_eq!(resolve_slug("free", "opus"),   "openrouter/free");
     }
 }
