@@ -52,6 +52,7 @@ pub async fn run_tool_uses(
             abort_signal: abort_signal.clone(),
             parent_tool_use_id: None,
             bus: None,
+            auto_deny_prompts: false,
         };
         let bus_for_task = bus.clone();
         let tool_name = tool.name().to_string();
@@ -143,6 +144,7 @@ pub async fn run_tool_uses(
             abort_signal: abort_signal.clone(),
             parent_tool_use_id: None,
             bus: None,
+            auto_deny_prompts: false,
         };
 
         // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
