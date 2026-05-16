@@ -44,7 +44,7 @@ pub fn parse_agent_md(
         None => None,
         Some("default") => Some(PermissionMode::Default),
         Some("acceptEdits") => Some(PermissionMode::AcceptEdits),
-        Some("bypassPermissions") => Some(PermissionMode::Bypass),
+        Some("bypassPermissions") => Some(PermissionMode::BypassPermissions),
         Some("plan") => Some(PermissionMode::Plan),
         Some(other) => return Err(format!("{filename}: unknown permissionMode '{other}'")),
     };

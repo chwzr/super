@@ -178,7 +178,9 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    #[allow(deprecated)]
     fn check_permission(&self, _input: &serde_json::Value) -> crate::tools::permission::Decision {
+        #[allow(deprecated)]
         crate::tools::permission::Decision::Ask
     }
 }
