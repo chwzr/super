@@ -666,7 +666,8 @@ impl App {
                     .get(&self.next_flush_idx)
                     .copied()
                     .unwrap_or(0);
-                let lines = item_to_lines(item, already);
+                let detailed = self.scroll_area.is_detailed_transcript();
+                let lines = item_to_lines(item, already, detailed);
                 self.insert_lines(terminal, lines, width)?;
                 self.flushed_chars_per_block.remove(&self.next_flush_idx);
                 self.next_flush_idx += 1;
@@ -688,7 +689,8 @@ impl App {
                         text: text[..until].to_string(),
                         complete: false,
                     };
-                    let lines = item_to_lines(&chunk_item, already);
+                    let detailed = self.scroll_area.is_detailed_transcript();
+                    let lines = item_to_lines(&chunk_item, already, detailed);
                     self.insert_lines(terminal, lines, width)?;
                     self.flushed_chars_per_block.insert(self.next_flush_idx, until);
                 }
@@ -747,7 +749,7 @@ impl App {
                 Span::styled("  ↑↓ select · enter to run · esc to dismiss", dim),
             ])
         } else if self.scroll_area.is_detailed_transcript() {
-            Line::from(vec![Span::styled("  Showing detailed transcript · ctrl+o to toggle", dim)])
+            Line::from(vec![Span::styled("  Showing detailed transcript · ctrl+o to collapse", dim)])
         } else if matches!(self.activity, ActivityState::Active { .. }) {
             Line::from(vec![Span::styled("  esc to interrupt · ? for shortcuts", dim)])
         } else {
@@ -768,7 +770,7 @@ impl App {
                 .get(&i)
                 .copied()
                 .unwrap_or(0);
-            lines.extend(item_to_lines(item, already));
+            lines.extend(item_to_lines(item, already, self.scroll_area.is_detailed_transcript()));
         }
         if lines.is_empty() {
             return;

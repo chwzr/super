@@ -102,7 +102,7 @@ pub fn message_to_lines(m: &Message) -> Vec<Line<'static>> {
 /// the rendering includes the leading prefix glyph (e.g. `⏺ `); otherwise the
 /// continuation rows use indentation only (no glyph) so the visual prefix in
 /// scrollback isn't duplicated in the live region.
-pub fn item_to_lines(item: &TranscriptItem, text_offset: usize) -> Vec<Line<'static>> {
+pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) -> Vec<Line<'static>> {
     let dim = dim_style();
     let mut lines: Vec<Line<'static>> = Vec::new();
     match item {
@@ -185,26 +185,44 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize) -> Vec<Line<'sta
             }
         }
         TranscriptItem::ToolBatch { calls } => {
-            use crate::tui::render::tool_family::batch_fragment;
-            // Group calls by their tool name in insertion order so we can emit
-            // one fragment per kind.
-            let mut order: Vec<String> = Vec::new();
-            let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-            for c in calls {
-                if !counts.contains_key(&c.name) {
-                    order.push(c.name.clone());
+            if detailed {
+                // Render each call as its own dim-gray per-call block.
+                for call in calls {
+                    let display = tool_display_name(&call.name, &call.input);
+                    let summary = summarize_tool_call(&call.name, &call.input);
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled("  ", dim),
+                        Span::styled(display, Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+                        Span::raw(" "),
+                        Span::styled(summary, dim),
+                    ]));
+                    if let Some(r) = &call.result {
+                        render_tool_result_for(&call.name, &call.input, &mut lines, r, &dim);
+                    }
                 }
-                *counts.entry(c.name.clone()).or_insert(0) += 1;
+            } else {
+                use crate::tui::render::tool_family::batch_fragment;
+                // Group calls by their tool name in insertion order so we can emit
+                // one fragment per kind.
+                let mut order: Vec<String> = Vec::new();
+                let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                for c in calls {
+                    if !counts.contains_key(&c.name) {
+                        order.push(c.name.clone());
+                    }
+                    *counts.entry(c.name.clone()).or_insert(0) += 1;
+                }
+                let fragments: Vec<String> = order.iter()
+                    .filter_map(|n| batch_fragment(n, counts[n]).or_else(|| Some(format!("{n} x{}", counts[n]))))
+                    .collect();
+                let summary = format!("{} (ctrl+o to expand)", fragments.join(", "));
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(summary, dim),
+                ]));
             }
-            let fragments: Vec<String> = order.iter()
-                .filter_map(|n| batch_fragment(n, counts[n]).or_else(|| Some(format!("{n} x{}", counts[n]))))
-                .collect();
-            let summary = format!("{} (ctrl+o to expand)", fragments.join(", "));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(summary, dim),
-            ]));
         }
     }
     lines
@@ -449,7 +467,7 @@ mod tests {
             text: "first line\nsecond line".into(),
             complete: true,
         };
-        let lines = item_to_lines(&item, 0);
+        let lines = item_to_lines(&item, 0, false);
         let body = rendered_text(&lines);
         // Leading blank, prefix on first body row, indent continuation.
         assert!(body.contains("⏺ first line"), "got: {body:?}");
@@ -463,7 +481,7 @@ mod tests {
             complete: true,
         };
         // Pretend "first line\n" (11 chars) was already flushed.
-        let lines = item_to_lines(&item, "first line\n".len());
+        let lines = item_to_lines(&item, "first line\n".len(), false);
         let body = rendered_text(&lines);
         assert!(!body.contains("⏺"), "continuation should not have ⏺ prefix: {body:?}");
         // No leading blank line on a continuation.
@@ -479,7 +497,7 @@ mod tests {
             elapsed_ms: 0,
             complete: true,
         };
-        let lines = item_to_lines(&item, 0);
+        let lines = item_to_lines(&item, 0, false);
         let body = rendered_text(&lines);
         assert!(body.contains("thinking…"), "got: {body:?}");
         assert!(!body.contains("long chain"), "raw thinking text must not leak: {body:?}");
@@ -491,7 +509,7 @@ mod tests {
             subtype: SystemSubtype::PostTurnSummary,
             message: "summary of prior turn".into(),
         };
-        let lines = item_to_lines(&item, 0);
+        let lines = item_to_lines(&item, 0, false);
         let body = rendered_text(&lines);
         assert!(body.contains("※ recap: summary of prior turn"), "got: {body:?}");
     }
@@ -550,7 +568,7 @@ mod tests {
             text: "hello".into(),
             complete: true,
         };
-        let lines = item_to_lines(&item, 0);
+        let lines = item_to_lines(&item, 0, false);
         // 1 blank + 1 body = 2 rows at width 80.
         assert_eq!(lines_height(&lines, 80), 2);
     }
@@ -570,7 +588,7 @@ mod tests {
             result: Some(ToolResultRender { content: "hi".into(), is_error: false }),
             elapsed_ms: 0,
         };
-        let lines = item_to_lines(&item, 0);
+        let lines = item_to_lines(&item, 0, false);
         // Find the line whose first span is the `⏺ ` prefix.
         let prefix = lines.iter().find(|l| l.spans.first().map(|s| s.content.contains('⏺')).unwrap_or(false)).expect("⏺ prefix line");
         assert_eq!(first_span_color(prefix), Some(CC_GREEN));
@@ -585,7 +603,7 @@ mod tests {
             result: Some(ToolResultRender { content: "Error: Exit code 1".into(), is_error: true }),
             elapsed_ms: 0,
         };
-        let lines = item_to_lines(&item, 0);
+        let lines = item_to_lines(&item, 0, false);
         let prefix = lines.iter().find(|l| l.spans.first().map(|s| s.content.contains('⏺')).unwrap_or(false)).expect("⏺ prefix line");
         assert_eq!(first_span_color(prefix), Some(CC_ORANGE));
     }
@@ -614,7 +632,7 @@ mod tests {
         let item = TranscriptItem::ToolBatch {
             calls: vec![batch_call("Read", "1"), batch_call("Read", "2"), batch_call("Read", "3")],
         };
-        let body = rendered_text(&item_to_lines(&item, 0));
+        let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("  Read 3 files (ctrl+o to expand)"), "got: {body:?}");
         assert!(!body.contains("⏺"), "no ⏺ glyph on collapsed batch: {body:?}");
     }
@@ -622,7 +640,7 @@ mod tests {
     #[test]
     fn toolbatch_collapsed_for_single_read_uses_singular_form() {
         let item = TranscriptItem::ToolBatch { calls: vec![batch_call("Read", "1")] };
-        let body = rendered_text(&item_to_lines(&item, 0));
+        let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("  Read 1 file (ctrl+o to expand)"), "got: {body:?}");
     }
 
@@ -631,7 +649,7 @@ mod tests {
         let item = TranscriptItem::ToolBatch {
             calls: vec![batch_call("Grep", "1"), batch_call("Glob", "2")],
         };
-        let body = rendered_text(&item_to_lines(&item, 0));
+        let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(
             body.contains("Searched for 1 pattern, listed 1 directory (ctrl+o to expand)"),
             "got: {body:?}"
@@ -659,7 +677,7 @@ mod tests {
             }),
             elapsed_ms: 0,
         };
-        let lines = item_to_lines(&item, 0);
+        let lines = item_to_lines(&item, 0, false);
         let body = rendered_text(&lines);
         assert!(body.contains("  ⎿  1"), "first output line under corner: {body:?}");
         assert!(body.contains("     2"), "second line aligned: {body:?}");
@@ -680,7 +698,7 @@ mod tests {
             }),
             elapsed_ms: 0,
         };
-        let body = rendered_text(&item_to_lines(&item, 0));
+        let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("  ⎿  1"));
         assert!(body.contains("     2"));
         assert!(body.contains("     3"));
@@ -703,7 +721,7 @@ mod tests {
             }),
             elapsed_ms: 0,
         };
-        let body = rendered_text(&item_to_lines(&item, 0));
+        let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Update"), "display name: {body:?}");
         assert!(body.contains("Added 1 line, removed 1 line"), "summary: {body:?}");
         assert!(body.contains(" 1 -hello"), "removed hunk: {body:?}");
@@ -726,7 +744,7 @@ mod tests {
             }),
             elapsed_ms: 0,
         };
-        let body = rendered_text(&item_to_lines(&item, 0));
+        let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Write"), "display name: {body:?}");
         assert!(body.contains("Wrote 3 lines to /tmp/notes.txt"), "summary: {body:?}");
         assert!(body.contains(" 1 alpha"), "numbered line 1: {body:?}");
@@ -748,9 +766,22 @@ mod tests {
             result: Some(ToolResultRender { content: "ok".into(), is_error: false }),
             elapsed_ms: 0,
         };
-        let body = rendered_text(&item_to_lines(&item, 0));
+        let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Create"), "display name: {body:?}");
         assert!(body.contains("Added 2 lines"), "summary: {body:?}");
         assert!(!body.contains("removed"), "no removed phrase when no removals: {body:?}");
+    }
+
+    #[test]
+    fn toolbatch_detailed_expands_into_per_call_blocks() {
+        let item = TranscriptItem::ToolBatch {
+            calls: vec![batch_call("Read", "1"), batch_call("Read", "2")],
+        };
+        let body = rendered_text(&item_to_lines(&item, 0, true));
+        // No collapsed summary line.
+        assert!(!body.contains("Read 2 files (ctrl+o"), "should not show collapsed line: {body:?}");
+        // Two Read entries are rendered.
+        let occurrences = body.matches("Read ").count();
+        assert!(occurrences >= 2, "expected >=2 'Read ' occurrences, got {occurrences} in: {body:?}");
     }
 }
