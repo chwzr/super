@@ -4,6 +4,7 @@
 //! Used by both the live region (in-flight items) and the scrollback writer
 //! (completed items pushed via `Terminal::insert_before`).
 
+pub mod diff;
 pub mod tool_family;
 
 use ratatui::{
@@ -164,7 +165,7 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize) -> Vec<Line<'sta
                 Span::styled(summary, dim),
             ]));
             if let Some(r) = result {
-                render_tool_result_for(name, &mut lines, r, &dim);
+                render_tool_result_for(name, input, &mut lines, r, &dim);
             }
         }
         TranscriptItem::System { subtype, message } => {
@@ -254,15 +255,35 @@ pub fn osc8_link(path: &str, label: &str) -> String {
 
 fn render_tool_result_for(
     tool_name: &str,
+    input: &serde_json::Value,
     lines: &mut Vec<Line<'static>>,
     r: &ToolResultRender,
     dim: &Style,
 ) {
     match tool_name {
         "Bash" => render_bash_result(lines, r, dim),
-        // Future: "Edit"/"Write" get dedicated renderers in later tasks.
+        "Edit" => render_edit_result(lines, input, r, dim),
         _ => render_generic_result(lines, r, dim),
     }
+}
+
+fn render_edit_result(
+    lines: &mut Vec<Line<'static>>,
+    input: &serde_json::Value,
+    _r: &ToolResultRender,
+    dim: &Style,
+) {
+    let old = input.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+    let new = input.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+    let counts = diff::count_changes(old, new);
+
+    // Summary row: `  ⎿  Added N line[s], removed M line[s]`
+    let mut summary: Vec<Span<'static>> = vec![Span::styled("  ⎿  ", *dim)];
+    summary.extend(diff::summary_spans(counts));
+    lines.push(Line::from(summary));
+
+    // Hunk rows.
+    lines.extend(diff::render_hunks(old, new));
 }
 
 /// Generic fallback: behaves like the prior renderer (cap at 20 lines).
@@ -563,5 +584,48 @@ mod tests {
         assert!(body.contains("     2"));
         assert!(body.contains("     3"));
         assert!(!body.contains("ctrl+o"), "no expand hint when nothing truncated: {body:?}");
+    }
+
+    #[test]
+    fn edit_result_summary_uses_added_removed_phrasing() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Edit".into(),
+            input: serde_json::json!({
+                "file_path": "/tmp/a.txt",
+                "old_string": "hello\n",
+                "new_string": "hi\n",
+            }),
+            result: Some(ToolResultRender {
+                content: "Successfully replaced 1 occurrence(s) in /tmp/a.txt".into(),
+                is_error: false,
+            }),
+            elapsed_ms: 0,
+        };
+        let body = rendered_text(&item_to_lines(&item, 0));
+        assert!(body.contains("Update"), "display name: {body:?}");
+        assert!(body.contains("Added 1 line, removed 1 line"), "summary: {body:?}");
+        assert!(body.contains(" 1 -hello"), "removed hunk: {body:?}");
+        assert!(body.contains(" 1 +hi"), "added hunk: {body:?}");
+        assert!(!body.contains("Successfully replaced"), "raw result text should not leak: {body:?}");
+    }
+
+    #[test]
+    fn create_result_renders_only_additions() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Edit".into(),
+            input: serde_json::json!({
+                "file_path": "/tmp/new.txt",
+                "old_string": "",
+                "new_string": "first line\nsecond line\n",
+            }),
+            result: Some(ToolResultRender { content: "ok".into(), is_error: false }),
+            elapsed_ms: 0,
+        };
+        let body = rendered_text(&item_to_lines(&item, 0));
+        assert!(body.contains("Create"), "display name: {body:?}");
+        assert!(body.contains("Added 2 lines"), "summary: {body:?}");
+        assert!(!body.contains("removed"), "no removed phrase when no removals: {body:?}");
     }
 }
