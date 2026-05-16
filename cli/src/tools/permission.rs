@@ -50,17 +50,6 @@ pub enum RuleBehavior {
     Ask,
 }
 
-// ── Legacy types (deprecated) ────────────────────────────────────────────
-
-#[deprecated(note = "Use PermissionResult instead. To be removed once all tools migrate.")]
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-pub enum Decision {
-    Allow,
-    Deny,
-    Ask,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionRule {
     pub tool_name: String,
@@ -119,84 +108,84 @@ impl PermissionSystem {
         self.rules.push(rule);
     }
 
-    #[allow(deprecated)]
-    pub fn evaluate_legacy(&self, tool_name: &str, _input: &serde_json::Value) -> Decision {
-        // Mode-based shortcuts
-        match self.mode {
-            PermissionMode::BypassPermissions => return Decision::Allow,
-            PermissionMode::Auto => {
-                // Auto: auto-deny anything that would normally ask
-            }
-            _ => {}
-        }
-
-        // Sort rules by priority (highest first)
-        let mut rules = self.rules.clone();
-        rules.sort_by_key(|r| -(r.source.priority() as i32));
-
-        for rule in &rules {
-            if rule.tool_name == tool_name {
-                return match rule.behavior {
-                    RuleBehavior::Allow => Decision::Allow,
-                    RuleBehavior::Deny => Decision::Deny,
-                    RuleBehavior::Ask => Decision::Ask,
-                };
-            }
-        }
-
-        // No matching rule: ask user
-        Decision::Ask
-    }
-
-    /// Input-aware evaluation. Returns Claude-shaped PermissionResult.
-    /// Stub during Batch 1: defers to evaluate_legacy and lifts Decision
-    /// to PermissionResult. The full input-aware path (rule pattern
-    /// matching via prepare_permission_matcher) is wired in Task D.4.
     pub async fn evaluate(
         &self,
         tool: &dyn crate::tools::contract::Tool,
         input: &serde_json::Value,
-        _ctx: &crate::tools::contract::ToolCallContext,
+        ctx: &crate::tools::contract::ToolCallContext,
     ) -> PermissionResult {
-        // Mode-based shortcuts
+        // 1. Mode shortcuts.
         match self.mode {
             PermissionMode::BypassPermissions => {
                 return PermissionResult::Allow {
                     updated_input: None,
-                    decision_reason: Some(DecisionReason::Mode {
-                        mode: self.mode,
-                    }),
+                    decision_reason: Some(DecisionReason::Mode { mode: self.mode }),
                 };
             }
-            PermissionMode::Plan => {
-                if !tool.is_read_only(input) {
-                    return PermissionResult::Deny {
-                        reason: "Plan mode: only read-only tools are allowed".into(),
-                        decision_reason: Some(DecisionReason::Mode {
-                            mode: self.mode,
-                        }),
-                    };
-                }
-                return PermissionResult::Allow {
-                    updated_input: None,
-                    decision_reason: Some(DecisionReason::Mode {
-                        mode: self.mode,
-                    }),
+            PermissionMode::Plan if !tool.is_read_only(input) => {
+                return PermissionResult::Deny {
+                    reason: "Plan mode allows read-only tools only.".into(),
+                    decision_reason: Some(DecisionReason::Mode { mode: self.mode }),
                 };
             }
             _ => {}
         }
 
-        // No matching rule: defer to the tool's own check.
-        // Full rule-matching path is wired in Task D.4.
-        let tool_result = tool.check_permissions(input, _ctx).await;
-        match tool_result {
-            PermissionResult::Allow { .. } => PermissionResult::Allow {
-                updated_input: None,
-                decision_reason: Some(DecisionReason::ToolDefault),
-            },
-            other => other,
+        // 2. Rule matching with input-aware patterns.
+        let tool_name = tool.name();
+        let matcher = tool.prepare_permission_matcher(input).await;
+        let mut sorted_rules = self.rules.clone();
+        sorted_rules.sort_by_key(|r| -(r.source.priority() as i32));
+
+        for rule in &sorted_rules {
+            if rule.tool_name != tool_name {
+                continue;
+            }
+            let matches = match (&rule.content, &matcher) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(pat), Some(m)) => m(pat),
+            };
+            if !matches {
+                continue;
+            }
+            let reason = Some(DecisionReason::Rule {
+                source: rule.source,
+                pattern: rule.content.clone().unwrap_or_else(|| tool_name.into()),
+            });
+            return match rule.behavior {
+                RuleBehavior::Allow => PermissionResult::Allow {
+                    updated_input: None,
+                    decision_reason: reason,
+                },
+                RuleBehavior::Deny => PermissionResult::Deny {
+                    reason: format!("Denied by {:?} rule.", rule.source),
+                    decision_reason: reason,
+                },
+                RuleBehavior::Ask if ctx.auto_deny_prompts => PermissionResult::Deny {
+                    reason: "Permission denied: async subagents cannot prompt the user.".into(),
+                    decision_reason: reason,
+                },
+                RuleBehavior::Ask => PermissionResult::Ask {
+                    updated_input: None,
+                    rule_suggestions: vec![],
+                },
+            };
         }
+
+        // 3. Auto mode (was DontAsk): anything that would normally Ask is auto-denied.
+        if matches!(self.mode, PermissionMode::Auto) && matches!(
+            tool.check_permissions(input, ctx).await,
+            PermissionResult::Ask { .. }
+        ) {
+            return PermissionResult::Deny {
+                reason: "Auto mode: prompts are auto-denied.".into(),
+                decision_reason: Some(DecisionReason::Mode { mode: self.mode }),
+            };
+        }
+
+        // 4. Defer to the tool's own check.
+        tool.check_permissions(input, ctx).await
     }
 }
 
@@ -327,6 +316,110 @@ mod evaluate_v2_tests {
         let tool = DummyTool { name: "W", read_only: false };
         let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
         assert!(matches!(result, PermissionResult::Allow { decision_reason: Some(DecisionReason::ToolDefault), .. }));
+    }
+
+    fn dummy_ctx() -> ToolCallContext {
+        ToolCallContext {
+            cwd: std::env::current_dir().unwrap(),
+            permission_mode: PermissionMode::Default,
+            abort_signal: None,
+            parent_tool_use_id: None,
+            bus: None,
+            auto_deny_prompts: false,
+            tool_use_id: "tu_test".into(),
+            progress_sink: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod matcher_tests {
+    use super::*;
+    use crate::state::store::PermissionMode;
+    use crate::tools::contract::{
+        DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult,
+    };
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    /// Stand-in for a Bash-style tool whose permission rules match on
+    /// the `command` field rather than the tool name.
+    struct CommandTool;
+
+    #[async_trait]
+    impl Tool for CommandTool {
+        fn name(&self) -> &str { "Bash" }
+        fn description(&self, _input: Option<&Value>, _ctx: &DescriptionCtx) -> String {
+            "Bash test stand-in".into()
+        }
+        fn prompt(&self, _ctx: &PromptCtx) -> String { String::new() }
+        fn input_schema(&self) -> Value { json!({"type":"object"}) }
+
+        async fn prepare_permission_matcher(
+            &self,
+            input: &Value,
+        ) -> Option<Box<dyn Fn(&str) -> bool + Send + Sync>> {
+            let command = input.get("command").and_then(|v| v.as_str())?.to_string();
+            Some(Box::new(move |pattern: &str| {
+                let cmd = command.as_str();
+                let first = cmd.split_whitespace().next().unwrap_or("");
+                match pattern.split_once(' ') {
+                    None => first == pattern,
+                    Some((stem, "*")) => first == stem,
+                    Some(_) => cmd == pattern,
+                }
+            }))
+        }
+
+        async fn call(
+            &self,
+            _input: Value,
+            _ctx: &ToolCallContext,
+            _on_progress: Option<ProgressSink>,
+        ) -> ToolResult {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn rule_with_input_pattern_matches_command_stem() {
+        let mut sys = PermissionSystem::new(PermissionMode::Default);
+        sys.add_rule(PermissionRule {
+            tool_name: "Bash".into(),
+            content: Some("git *".into()),
+            behavior: RuleBehavior::Allow,
+            source: RuleSource::User,
+        });
+        let tool = CommandTool;
+        let result = sys
+            .evaluate(&tool, &json!({"command": "git status"}), &dummy_ctx())
+            .await;
+        match result {
+            PermissionResult::Allow { decision_reason: Some(DecisionReason::Rule { pattern, .. }), .. } => {
+                assert_eq!(pattern, "git *");
+            }
+            other => panic!("expected Allow via Rule(git *), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rule_with_input_pattern_does_not_match_other_command() {
+        let mut sys = PermissionSystem::new(PermissionMode::Default);
+        sys.add_rule(PermissionRule {
+            tool_name: "Bash".into(),
+            content: Some("git *".into()),
+            behavior: RuleBehavior::Allow,
+            source: RuleSource::User,
+        });
+        let tool = CommandTool;
+        let result = sys
+            .evaluate(&tool, &json!({"command": "rm -rf /tmp/x"}), &dummy_ctx())
+            .await;
+        // Falls through to the tool's check_permissions (default: Allow ToolDefault).
+        assert!(matches!(
+            result,
+            PermissionResult::Allow { decision_reason: Some(DecisionReason::ToolDefault), .. }
+        ));
     }
 
     fn dummy_ctx() -> ToolCallContext {
