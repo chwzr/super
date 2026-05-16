@@ -79,6 +79,11 @@ pub struct App {
     history: Vec<String>,
     history_idx: Option<usize>,
     inflight: Option<mpsc::UnboundedReceiver<EngineEvent>>,
+    /// Abort handle for the in-flight engine task. ESC uses this to actually
+    /// stop processing — the engine has no cooperative cancellation point in
+    /// its turn/SSE loop, so aborting the JoinHandle is what reliably halts
+    /// further tool calls and bus emits.
+    inflight_abort: Option<tokio::task::AbortHandle>,
     /// Prompts the user submitted while an engine call was in flight. Spawned
     /// FIFO when the current call ends, so a second prompt isn't dropped and
     /// doesn't race the first one's history write-back.
@@ -167,6 +172,7 @@ impl App {
             history: Vec::new(),
             history_idx: None,
             inflight: None,
+            inflight_abort: None,
             queued_prompts: VecDeque::new(),
             auth_inflight: None,
             status_fetch: None,
@@ -247,7 +253,7 @@ impl App {
         let engine = self.engine.clone();
         let sp = self.system_prompt.clone();
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let started = std::time::Instant::now();
             let result = engine.process_prompt(prompt, &sp, None).await;
             let _ = tx.send(EngineEvent::Done {
@@ -255,6 +261,7 @@ impl App {
                 elapsed_secs: started.elapsed().as_secs(),
             });
         });
+        self.inflight_abort = Some(handle.abort_handle());
         self.inflight = Some(rx);
         self.activity = ActivityState::active("Thinking");
     }
@@ -510,9 +517,21 @@ impl App {
                 } else if !self.input.content.is_empty() {
                     self.input.clear();
                 } else if self.inflight.is_some() {
-                    // best-effort interrupt indicator; engine doesn't yet support cancellation
+                    if let Some(h) = self.inflight_abort.take() {
+                        h.abort();
+                    }
                     self.inflight = None;
+                    self.queued_prompts.clear();
                     self.activity = ActivityState::idle();
+                    self.scroll_area
+                        .push(Message::Trail("Interrupted by user".to_string()));
+                    if let Some(last) = self.history.last().cloned() {
+                        self.input.clear();
+                        for c in last.chars() {
+                            self.input.push_char(c);
+                        }
+                        self.history_idx = None;
+                    }
                 }
             }
             _ => {}
@@ -603,6 +622,7 @@ impl App {
                     .push(Message::Trail(format!("{} for {}s", verb, elapsed_secs)));
                 self.activity = ActivityState::idle();
                 self.inflight = None;
+                self.inflight_abort = None;
                 self.dispatch_next_queued();
             }
             Ok(EngineEvent::Done {
@@ -615,12 +635,14 @@ impl App {
                     .push(Message::Trail(format!("Failed after {}s", elapsed_secs)));
                 self.activity = ActivityState::idle();
                 self.inflight = None;
+                self.inflight_abort = None;
                 self.dispatch_next_queued();
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 self.activity = ActivityState::idle();
                 self.inflight = None;
+                self.inflight_abort = None;
                 self.dispatch_next_queued();
             }
         }
