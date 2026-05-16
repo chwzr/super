@@ -35,3 +35,4 @@ webbrowser = "0.8"
 async-trait = "0.1"
 pathdiff = "0.2"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+similar = "2"
