@@ -41,7 +41,7 @@ jobs:
           cache: false  # we use sccache instead
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -72,7 +72,7 @@ jobs:
           cache: false
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -100,7 +100,7 @@ jobs:
           cache: false
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Cache cargo registry
         uses: actions/cache@v4
