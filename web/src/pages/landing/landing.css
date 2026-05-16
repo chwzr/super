@@ -45,8 +45,6 @@
 .landing-root .eyebrow,
 .landing-root .hero-tagline,
 .landing-root .h2-eyebrow,
-.landing-root .phase-num,
-.landing-root .phase .pin,
 .landing-root .install,
 .landing-root .terminal,
 .landing-root .terminal *,
@@ -443,100 +441,6 @@
   letter-spacing: -0.01em;
 }
 
-/* ──────────────────────────────────────────────  PHASES  ── */
-.landing-root .phases {
-  list-style: none;
-  padding: 0;
-  margin: 8px 0 0;
-  position: relative;
-}
-
-.landing-root .phases::before {
-  content: "";
-  position: absolute;
-  left: 38px;
-  top: 36px;
-  bottom: 36px;
-  width: 1px;
-  background: linear-gradient(
-    to bottom,
-    transparent 0%,
-    rgba(0, 113, 227, 0.25) 12%,
-    var(--border) 50%,
-    rgba(0, 113, 227, 0.25) 88%,
-    transparent 100%
-  );
-}
-
-.landing-root .phase {
-  display: grid;
-  grid-template-columns: 80px 1fr;
-  gap: 32px;
-  padding: 26px 0;
-  border-bottom: 1px solid var(--border-subtle);
-  position: relative;
-}
-
-.landing-root .phase:last-child {
-  border-bottom: 0;
-}
-
-.landing-root .phase-num {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--apple-blue-hi);
-  letter-spacing: 0.1em;
-  padding-top: 6px;
-  position: relative;
-  z-index: 1;
-  user-select: none;
-}
-
-.landing-root .phase-num::after {
-  content: "";
-  position: absolute;
-  left: 24px;
-  top: 9px;
-  width: 9px;
-  height: 9px;
-  background: var(--bg);
-  border: 1px solid var(--apple-blue);
-  border-radius: 50%;
-  box-shadow:
-    0 0 0 4px var(--bg),
-    0 0 14px rgba(0, 113, 227, 0.55);
-}
-
-.landing-root .phase-title {
-  font-size: 22px;
-  font-weight: 590;
-  letter-spacing: -0.022em;
-  color: var(--text);
-  margin-bottom: 8px;
-}
-
-.landing-root .phase p {
-  font-size: 16px;
-  color: var(--text-3);
-  line-height: 1.6;
-  letter-spacing: -0.01em;
-  max-width: 620px;
-}
-
-.landing-root .phase .pin {
-  display: inline-block;
-  margin-left: 10px;
-  padding: 2px 8px;
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border);
-  border-radius: 980px;
-  vertical-align: 3px;
-}
 
 /* ──────────────────────────────────────────────  EXPLAIN  ── */
 .landing-root .explain-grid {
@@ -831,25 +735,3 @@
   }
 }
 
-@media (max-width: 640px) {
-  .landing-root .phase {
-    grid-template-columns: 56px 1fr;
-    gap: 16px;
-    padding: 22px 0;
-  }
-  .landing-root .phase-num {
-    font-size: 11px;
-  }
-  .landing-root .phase-num::after {
-    left: 18px;
-  }
-  .landing-root .phases::before {
-    left: 28px;
-  }
-  .landing-root .phase-title {
-    font-size: 18px;
-  }
-  .landing-root .phase p {
-    font-size: 15px;
-  }
-}

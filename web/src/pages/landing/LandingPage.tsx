@@ -7,7 +7,6 @@ import { Explain } from "./components/Explain";
 import { Footer } from "./components/Footer";
 import { Hero } from "./components/Hero";
 import { Nav } from "./components/Nav";
-import { Phases } from "./components/Phases";
 import { Workflow } from "./components/Workflow";
 
 export function LandingPage() {
@@ -16,7 +15,6 @@ export function LandingPage() {
       <Nav />
       <DiamondStage />
       <Hero />
-      <Phases />
       <Workflow />
       <Explain />
       <Depth />
