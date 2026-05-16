@@ -1,17 +1,3 @@
-mod agents;
-mod auth;
-mod bootstrap;
-mod config;
-mod conversation;
-mod state;
-mod tools;
-mod tui;
-mod mcp;
-mod commands;
-mod skills;
-mod sdk;
-mod providers;
-
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -34,15 +20,15 @@ async fn main() {
 
     match cli.command {
         Some(Commands::Login) => {
-            let config = config::load_config();
-            let auth_client = auth::AuthClient::new(config.api_base_url.clone());
+            let config = super_cli::config::load_config();
+            let auth_client = super_cli::auth::AuthClient::new(config.api_base_url.clone());
             match auth_client.login_flow().await {
                 Ok(_) => println!("Logged in successfully."),
                 Err(e) => eprintln!("Login failed: {e}"),
             }
         }
         None => {
-            bootstrap::run().await;
+            super_cli::bootstrap::run().await;
         }
     }
 }

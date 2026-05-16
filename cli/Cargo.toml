@@ -3,6 +3,10 @@ name = "super-cli"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "super_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "super"
 path = "src/main.rs"
