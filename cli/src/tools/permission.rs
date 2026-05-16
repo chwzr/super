@@ -120,7 +120,7 @@ impl PermissionSystem {
     }
 
     #[allow(deprecated)]
-    pub fn evaluate(&self, tool_name: &str, _input: &serde_json::Value) -> Decision {
+    pub fn evaluate_legacy(&self, tool_name: &str, _input: &serde_json::Value) -> Decision {
         // Mode-based shortcuts
         match self.mode {
             PermissionMode::BypassPermissions => return Decision::Allow,
@@ -146,6 +146,24 @@ impl PermissionSystem {
 
         // No matching rule: ask user
         Decision::Ask
+    }
+
+    /// Input-aware evaluation. Returns Claude-shaped PermissionResult.
+    /// Stub during Batch 1: defers to evaluate_legacy and lifts Decision
+    /// to PermissionResult. The full input-aware path (rule pattern
+    /// matching via prepare_permission_matcher) is wired in Task D.4.
+    pub async fn evaluate(
+        &self,
+        _tool: &dyn crate::tools::contract::Tool,
+        _input: &serde_json::Value,
+        _ctx: &crate::tools::contract::ToolCallContext,
+    ) -> PermissionResult {
+        // Defer to the tool's own check for now.
+        // Full mode/rule logic comes in Task D.4.
+        PermissionResult::Allow {
+            updated_input: None,
+            decision_reason: Some(DecisionReason::ToolDefault),
+        }
     }
 }
 
@@ -187,3 +205,114 @@ mod permission_result_tests {
         assert!(s.contains(r#""rule_suggestions":[]"#));
     }
 }
+
+// Uncomment in Task D.3 after Tool trait migration is complete.
+/*
+#[cfg(test)]
+mod evaluate_v2_tests {
+    use super::*;
+    use crate::state::store::PermissionMode;
+    use crate::tools::contract::{Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, DescriptionCtx, PromptCtx, ProgressSink};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct DummyTool {
+        name: &'static str,
+        read_only: bool,
+    }
+
+    #[async_trait]
+    impl Tool for DummyTool {
+        fn name(&self) -> &str { self.name }
+        fn description(&self, _input: Option<&Value>, _ctx: &DescriptionCtx) -> String {
+            "test".into()
+        }
+        fn prompt(&self, _ctx: &PromptCtx) -> String { "".into() }
+        fn input_schema(&self) -> Value { json!({"type":"object"}) }
+        fn is_read_only(&self, _input: &Value) -> bool { self.read_only }
+        async fn check_permissions(&self, _input: &Value, _ctx: &ToolCallContext) -> PermissionResult {
+            PermissionResult::Allow { updated_input: None, decision_reason: Some(DecisionReason::ToolDefault) }
+        }
+        async fn call(
+            &self,
+            _input: Value,
+            _ctx: &ToolCallContext,
+            _progress: Option<ProgressSink>,
+        ) -> ToolResult {
+            unreachable!("not called in this test")
+        }
+        fn render_tool_use_message(
+            &self,
+            _input: &Value,
+            _opts: &crate::tools::contract::RenderOpts,
+        ) -> shared::RenderSpec {
+            shared::RenderSpec::Nothing
+        }
+        fn map_tool_result_to_block(
+            &self,
+            _output: &Value,
+            tool_use_id: &str,
+        ) -> ToolResultBlock {
+            ToolResultBlock {
+                tool_use_id: tool_use_id.into(),
+                content: ToolResultContent::Text("ok".into()),
+                is_error: false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "blocked on Task C.5: Tool trait extension"]
+    async fn bypass_mode_returns_allow_with_mode_reason() {
+        let sys = PermissionSystem::new(PermissionMode::BypassPermissions);
+        let tool = DummyTool { name: "X", read_only: false };
+        let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
+        match result {
+            PermissionResult::Allow { decision_reason: Some(DecisionReason::Mode { mode }), .. } => {
+                assert_eq!(mode, PermissionMode::BypassPermissions);
+            }
+            other => panic!("expected Allow via Mode reason, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "blocked on Task C.5: Tool trait extension"]
+    async fn plan_mode_denies_non_read_only_tool() {
+        let sys = PermissionSystem::new(PermissionMode::Plan);
+        let tool = DummyTool { name: "Y", read_only: false };
+        let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
+        assert!(matches!(result, PermissionResult::Deny { .. }));
+    }
+
+    #[tokio::test]
+    #[ignore = "blocked on Task C.5: Tool trait extension"]
+    async fn plan_mode_allows_read_only_tool() {
+        let sys = PermissionSystem::new(PermissionMode::Plan);
+        let tool = DummyTool { name: "Z", read_only: true };
+        let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
+        assert!(matches!(result, PermissionResult::Allow { .. }));
+    }
+
+    #[tokio::test]
+    #[ignore = "blocked on Task C.5: Tool trait extension"]
+    async fn defaults_to_tool_check_when_no_rules_match() {
+        let sys = PermissionSystem::new(PermissionMode::Default);
+        let tool = DummyTool { name: "W", read_only: false };
+        let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
+        assert!(matches!(result, PermissionResult::Allow { decision_reason: Some(DecisionReason::ToolDefault), .. }));
+    }
+
+    fn dummy_ctx() -> ToolCallContext {
+        ToolCallContext {
+            cwd: std::env::current_dir().unwrap(),
+            permission_mode: PermissionMode::Default,
+            abort_signal: None,
+            parent_tool_use_id: None,
+            bus: None,
+            auto_deny_prompts: false,
+            tool_use_id: "tu_test".into(),
+            progress_sink: None,
+        }
+    }
+}
+*/
