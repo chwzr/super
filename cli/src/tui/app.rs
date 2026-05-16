@@ -29,7 +29,7 @@ use crate::state::store::Store;
 use crate::tools::ToolRegistry;
 use crate::tui::modal::{Modal, ModalAction};
 use crate::tui::render::{item_to_lines, lines_height, message_to_lines};
-use crate::tui::transcript::{fold, TranscriptItem};
+use crate::tui::transcript::{fold, group_tool_batches, TranscriptItem};
 
 const SHORTCUTS_HELP: &str = "Shortcuts\n\
     enter        submit prompt\n\
@@ -120,6 +120,7 @@ fn is_stable(item: &TranscriptItem) -> bool {
         TranscriptItem::AssistantText { complete, .. } => *complete,
         TranscriptItem::Thinking { complete, .. } => *complete,
         TranscriptItem::ToolCall { result, .. } => result.is_some(),
+        TranscriptItem::ToolBatch { calls } => calls.iter().all(|c| c.result.is_some()),
         TranscriptItem::System { .. } => true,
     }
 }
@@ -656,7 +657,7 @@ impl App {
         // before any engine activity, so they flush in earlier ticks
         // before any items exist — the ordering is preserved across ticks
         // even with items-first within a single tick.
-        let items = fold(&self.scroll_area.events, None);
+        let items = group_tool_batches(fold(&self.scroll_area.events, None));
         loop {
             let Some(item) = items.get(self.next_flush_idx) else { break };
             if is_stable(item) {
@@ -665,7 +666,8 @@ impl App {
                     .get(&self.next_flush_idx)
                     .copied()
                     .unwrap_or(0);
-                let lines = item_to_lines(item, already);
+                let detailed = self.scroll_area.is_detailed_transcript();
+                let lines = item_to_lines(item, already, detailed);
                 self.insert_lines(terminal, lines, width)?;
                 self.flushed_chars_per_block.remove(&self.next_flush_idx);
                 self.next_flush_idx += 1;
@@ -687,7 +689,8 @@ impl App {
                         text: text[..until].to_string(),
                         complete: false,
                     };
-                    let lines = item_to_lines(&chunk_item, already);
+                    let detailed = self.scroll_area.is_detailed_transcript();
+                    let lines = item_to_lines(&chunk_item, already, detailed);
                     self.insert_lines(terminal, lines, width)?;
                     self.flushed_chars_per_block.insert(self.next_flush_idx, until);
                 }
@@ -746,7 +749,7 @@ impl App {
                 Span::styled("  ↑↓ select · enter to run · esc to dismiss", dim),
             ])
         } else if self.scroll_area.is_detailed_transcript() {
-            Line::from(vec![Span::styled("  Showing detailed transcript · ctrl+o to toggle", dim)])
+            Line::from(vec![Span::styled("  Showing detailed transcript · ctrl+o to collapse", dim)])
         } else if matches!(self.activity, ActivityState::Active { .. }) {
             Line::from(vec![Span::styled("  esc to interrupt · ? for shortcuts", dim)])
         } else {
@@ -759,7 +762,7 @@ impl App {
         if area.height == 0 {
             return;
         }
-        let items = fold(&self.scroll_area.events, None);
+        let items = group_tool_batches(fold(&self.scroll_area.events, None));
         let mut lines: Vec<Line<'static>> = Vec::new();
         for (i, item) in items.iter().enumerate().skip(self.next_flush_idx) {
             let already = self
@@ -767,7 +770,7 @@ impl App {
                 .get(&i)
                 .copied()
                 .unwrap_or(0);
-            lines.extend(item_to_lines(item, already));
+            lines.extend(item_to_lines(item, already, self.scroll_area.is_detailed_transcript()));
         }
         if lines.is_empty() {
             return;
@@ -898,6 +901,23 @@ mod tests {
             subtype: SystemSubtype::Notice,
             message: "x".into(),
         }));
+    }
+
+    #[test]
+    fn is_stable_toolbatch_requires_all_results() {
+        use crate::tui::transcript::BatchCall;
+        let mk = |has_result: bool| TranscriptItem::ToolBatch {
+            calls: vec![BatchCall {
+                tool_use_id: "1".into(),
+                name: "Read".into(),
+                input: serde_json::json!({}),
+                result: if has_result {
+                    Some(crate::tui::transcript::ToolResultRender { content: "ok".into(), is_error: false })
+                } else { None },
+            }],
+        };
+        assert!(is_stable(&mk(true)));
+        assert!(!is_stable(&mk(false)));
     }
 
     /// Mirrors the line-level streaming logic in `flush_to_scrollback`:
