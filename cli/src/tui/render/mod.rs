@@ -216,6 +216,25 @@ pub fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
     }
 }
 
+/// Claude Code's `userFacingName` aliasing. The underlying tool ID is unchanged;
+/// only the rendered label differs. See cli/docs/tool-call-render-spec.md
+/// "Per-tool display names".
+pub fn tool_display_name(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        "Edit" => {
+            let old = input.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+            if old.is_empty() {
+                "Create".to_string()
+            } else {
+                "Update".to_string()
+            }
+        }
+        // Future: detect plan-files dir → "Updated plan". The plans dir lives
+        // outside super's purview today; revisit when /plan lands.
+        _ => name.to_string(),
+    }
+}
+
 fn render_tool_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
     let max_lines = 20;
     let body: Vec<&str> = r.content.lines().take(max_lines).collect();
@@ -341,6 +360,45 @@ mod tests {
         let lines = message_to_lines(&Message::System("hello".into()));
         let body = rendered_text(&lines);
         assert!(body.contains("※ hello"), "got: {body:?}");
+    }
+
+    #[test]
+    fn display_name_edit_with_empty_old_string_is_create() {
+        let input = serde_json::json!({
+            "file_path": "/x/new.txt",
+            "old_string": "",
+            "new_string": "hello",
+        });
+        assert_eq!(tool_display_name("Edit", &input), "Create");
+    }
+
+    #[test]
+    fn display_name_edit_normal_is_update() {
+        let input = serde_json::json!({
+            "file_path": "/x/notes.md",
+            "old_string": "foo",
+            "new_string": "bar",
+        });
+        assert_eq!(tool_display_name("Edit", &input), "Update");
+    }
+
+    #[test]
+    fn display_name_write_is_write() {
+        let input = serde_json::json!({"file_path": "/x/notes.md", "content": "hi"});
+        assert_eq!(tool_display_name("Write", &input), "Write");
+    }
+
+    #[test]
+    fn display_name_bash_is_bash() {
+        let input = serde_json::json!({"command": "echo hi"});
+        assert_eq!(tool_display_name("Bash", &input), "Bash");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_tool_name() {
+        let input = serde_json::json!({});
+        assert_eq!(tool_display_name("Grep", &input), "Grep");
+        assert_eq!(tool_display_name("SomeMcpTool", &input), "SomeMcpTool");
     }
 
     #[test]
