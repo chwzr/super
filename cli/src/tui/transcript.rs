@@ -198,6 +198,10 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
             BusMessage::Result { .. } => {
                 // Renderers may show usage in the header; no transcript item.
             }
+            BusMessage::RenderEvent { .. } => {
+                // RenderSpec events are consumed by the TUI render dispatcher;
+                // no transcript item needed.
+            }
         }
     }
 
@@ -277,7 +281,8 @@ fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
         | BusMessage::StreamEvent { parent_tool_use_id, .. }
         | BusMessage::ToolProgress { parent_tool_use_id, .. }
         | BusMessage::SystemEvent { parent_tool_use_id, .. }
-        | BusMessage::Result { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+        | BusMessage::Result { parent_tool_use_id, .. }
+        | BusMessage::RenderEvent { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
     };
     match filter {
         None => parent.is_none(),

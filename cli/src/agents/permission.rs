@@ -16,7 +16,7 @@ pub fn resolve_permission_mode(
     _is_async: bool,
 ) -> PermissionMode {
     match parent {
-        PermissionMode::Bypass | PermissionMode::AcceptEdits => parent.clone(),
+        PermissionMode::BypassPermissions | PermissionMode::AcceptEdits => parent.clone(),
         _ => match agent {
             Some(m) => m.clone(),
             None => parent.clone(),

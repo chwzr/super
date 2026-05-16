@@ -1,0 +1,2 @@
+TODO(parity:batch-4): port the TaskGetTool prompt from
+claude-code-src/tools/TaskGetTool/prompt.ts (PROMPT export).

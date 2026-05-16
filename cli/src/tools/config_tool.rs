@@ -1,4 +1,4 @@
-use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 use async_trait::async_trait;
 
 #[derive(Default)]
@@ -10,8 +10,12 @@ impl Tool for ConfigTool {
         "Config"
     }
 
-    fn description(&self) -> &str {
-        "Reads and writes configuration settings."
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
+        "Reads and writes configuration settings.".into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/config_tool.txt").into()
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -30,22 +34,25 @@ impl Tool for ConfigTool {
         })
     }
 
-    fn is_concurrency_safe(&self) -> bool {
+    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
         true
     }
 
-    fn is_read_only(&self) -> bool {
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
         true
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let key = match input.get("key").and_then(|v| v.as_str()) {
             Some(k) => k,
             None => {
                 return ToolResult {
                     content: "Missing required parameter: key".to_string(),
                     is_error: true,
-                    ..Default::default()
+                    inject_messages: Vec::new(),
+                    metadata: None,
+                    mcp_meta: None,
+                    new_messages: Vec::new(),
                 };
             }
         };
@@ -60,11 +67,13 @@ impl Tool for ConfigTool {
             });
 
             if settings_map.is_none() {
-                // settings is not an object, can't set nested values
                 return ToolResult {
                     content: "Cannot set configuration: settings is not an object".to_string(),
                     is_error: true,
-                    ..Default::default()
+                    inject_messages: Vec::new(),
+                    metadata: None,
+                    mcp_meta: None,
+                    new_messages: Vec::new(),
                 };
             }
 
@@ -75,7 +84,10 @@ impl Tool for ConfigTool {
             ToolResult {
                 content: format!("Set configuration key '{}'", key),
                 is_error: false,
-                ..Default::default()
+                inject_messages: Vec::new(),
+                metadata: None,
+                mcp_meta: None,
+                new_messages: Vec::new(),
             }
         } else {
             // Read mode: get the value
@@ -86,7 +98,10 @@ impl Tool for ConfigTool {
                     return ToolResult {
                         content: format!("Key '{}': settings is not an object", key),
                         is_error: true,
-                        ..Default::default()
+                        inject_messages: Vec::new(),
+                        metadata: None,
+                        mcp_meta: None,
+                        new_messages: Vec::new(),
                     };
                 }
             };
@@ -96,31 +111,52 @@ impl Tool for ConfigTool {
                     ToolResult {
                         content: format!("{}: {}", key, serde_json::to_string_pretty(val).unwrap_or_default()),
                         is_error: false,
-                        ..Default::default()
+                        inject_messages: Vec::new(),
+                        metadata: None,
+                        mcp_meta: None,
+                        new_messages: Vec::new(),
                     }
                 }
                 None => {
-                    // Check top-level config fields too
                     let config_val = get_config_field(&config, key);
                     match config_val {
                         Some(val) => ToolResult {
                             content: format!("{}: {}", key, serde_json::to_string_pretty(&val).unwrap_or_default()),
                             is_error: false,
-                            ..Default::default()
+                            inject_messages: Vec::new(),
+                            metadata: None,
+                            mcp_meta: None,
+                            new_messages: Vec::new(),
                         },
                         None => ToolResult {
                             content: format!("Key '{}' not found in configuration", key),
                             is_error: true,
-                            ..Default::default()
+                            inject_messages: Vec::new(),
+                            metadata: None,
+                            mcp_meta: None,
+                            new_messages: Vec::new(),
                         },
                     }
                 }
             }
         }
     }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
+        }
+    }
 }
 
-/// Navigate a nested object using dot notation and return the value
 fn get_nested<'a>(obj: &'a serde_json::Map<String, serde_json::Value>, key: &str) -> Option<&'a serde_json::Value> {
     let parts: Vec<&str> = key.split('.').collect();
 
@@ -139,7 +175,6 @@ fn get_nested<'a>(obj: &'a serde_json::Map<String, serde_json::Value>, key: &str
     None
 }
 
-/// Set a value in a nested object using dot notation
 fn set_nested(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -147,17 +182,14 @@ fn set_nested(
 ) {
     let parts: Vec<&str> = key.split('.').collect();
 
-    // For the simple case (single key), avoid the complex borrow dance
     if parts.len() == 1 {
         obj.insert(parts[0].to_string(), value);
         return;
     }
 
-    // Walk the path, creating intermediate objects as needed
     let mut current: *mut serde_json::Map<String, serde_json::Value> = obj;
     for (i, part) in parts.iter().enumerate() {
         if i == parts.len() - 1 {
-            // Safety: we know `current` is a valid pointer to the map we own
             unsafe {
                 (*current).insert(part.to_string(), value.clone());
             }
@@ -166,7 +198,6 @@ fn set_nested(
             match entry {
                 serde_json::map::Entry::Occupied(o) => {
                     if !o.get().is_object() {
-                        // Replace with an empty object
                         o.into_mut();
                         unsafe {
                             (*current).insert(part.to_string(), serde_json::Value::Object(serde_json::Map::new()));
@@ -177,7 +208,6 @@ fn set_nested(
                     v.insert(serde_json::Value::Object(serde_json::Map::new()));
                 }
             }
-            // Get mutable ref to the nested object
             if let Some(serde_json::Value::Object(ref mut next)) = unsafe { (*current).get_mut(*part) } {
                 current = next;
             }
@@ -185,7 +215,6 @@ fn set_nested(
     }
 }
 
-/// Get a top-level config field value by key name
 fn get_config_field(config: &shared::CliConfig, key: &str) -> Option<serde_json::Value> {
     match key {
         "access_token" => config.access_token.as_ref().map(|v| serde_json::Value::String(v.clone())),

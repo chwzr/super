@@ -61,8 +61,8 @@ mod tests {
     fn permission_overlay_parent_bypass_wins() {
         use super::permission::resolve_permission_mode;
         use crate::state::store::PermissionMode;
-        let out = resolve_permission_mode(&PermissionMode::Bypass, Some(&PermissionMode::Plan), false);
-        assert!(matches!(out, PermissionMode::Bypass));
+        let out = resolve_permission_mode(&PermissionMode::BypassPermissions, Some(&PermissionMode::Plan), false);
+        assert!(matches!(out, PermissionMode::BypassPermissions));
     }
 
     #[test]

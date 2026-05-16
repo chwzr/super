@@ -1,0 +1,2 @@
+TODO(parity:batch-5): port the CronCreate prompt from
+claude-code-src/tools/CronCreate/prompt.ts (PROMPT export).

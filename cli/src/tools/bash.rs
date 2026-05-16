@@ -1,17 +1,22 @@
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::process::Command;
-use super::contract::{Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 
 pub struct BashTool;
 
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str { "Bash" }
-    fn description(&self) -> &str {
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Executes a bash command. Commands run in the current working directory. \
          Set 'run_in_background' for long-running commands. \
          Set 'timeout' in milliseconds (default 120000ms, max 600000ms)."
+            .into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/bash.txt").into()
     }
     fn input_schema(&self) -> serde_json::Value {
         json!({
@@ -25,9 +30,9 @@ impl Tool for BashTool {
             "required": ["command"]
         })
     }
-    fn is_destructive(&self) -> bool { true }
+    fn is_destructive(&self, _input: &serde_json::Value) -> bool { true }
 
-    async fn call(&self, input: serde_json::Value, context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let command_str = input["command"].as_str().unwrap_or("");
         let timeout_ms = input["timeout"].as_u64().unwrap_or(120_000);
         let run_in_bg = input["run_in_background"].as_bool().unwrap_or(false);
@@ -95,6 +100,20 @@ impl Tool for BashTool {
             }
         }
     }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -112,13 +131,14 @@ mod tests {
             bus: None,
             auto_deny_prompts: true,
             tool_use_id: String::new(),
+            progress_sink: None,
         }
     }
 
     #[tokio::test]
     async fn bash_error_content_starts_with_exit_code_header() {
         let t = BashTool;
-        let out = t.call(serde_json::json!({"command": "bash -c 'echo ohno >&2; exit 2'"}), &ctx()).await;
+        let out = t.call(serde_json::json!({"command": "bash -c 'echo ohno >&2; exit 2'"}), &ctx(), None).await;
         assert!(out.is_error, "expected error");
         assert!(out.content.starts_with("Error: Exit code 2"), "got: {:?}", out.content);
         assert!(out.content.contains("ohno"), "stderr preserved: {:?}", out.content);
@@ -127,7 +147,7 @@ mod tests {
     #[tokio::test]
     async fn bash_success_content_does_not_prepend_exit_header() {
         let t = BashTool;
-        let out = t.call(serde_json::json!({"command": "echo hello"}), &ctx()).await;
+        let out = t.call(serde_json::json!({"command": "echo hello"}), &ctx(), None).await;
         assert!(!out.is_error);
         assert!(!out.content.starts_with("Error:"), "got: {:?}", out.content);
         assert!(out.content.trim() == "hello");

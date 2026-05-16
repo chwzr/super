@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{Tool, ToolCallContext, ToolResult};
+use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct SkillTool {
     pub skills: Vec<crate::skills::loader::Skill>,
@@ -10,10 +10,15 @@ pub struct SkillTool {
 impl Tool for SkillTool {
     fn name(&self) -> &str { "Skill" }
 
-    fn description(&self) -> &str {
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Execute a skill within the main conversation. \
          Skills provide specialized capabilities and domain knowledge. \
          When users reference a slash command (/<name>), use this tool."
+            .into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/skill.txt").into()
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -33,13 +38,16 @@ impl Tool for SkillTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let skill_name = input["skill"].as_str().unwrap_or("").trim().to_string();
         if skill_name.is_empty() {
             return ToolResult {
                 content: "No skill name provided.".into(),
                 is_error: true,
-                ..Default::default()
+                inject_messages: Vec::new(),
+                metadata: None,
+                mcp_meta: None,
+                new_messages: Vec::new(),
             };
         }
         let args = input["args"].as_str().unwrap_or("");
@@ -58,7 +66,10 @@ impl Tool for SkillTool {
                         if available.is_empty() { "none loaded".into() } else { available.join(", ") }
                     ),
                     is_error: true,
-                    ..Default::default()
+                    inject_messages: Vec::new(),
+                    metadata: None,
+                    mcp_meta: None,
+                    new_messages: Vec::new(),
                 }
             }
             Some(s) => {
@@ -81,9 +92,25 @@ impl Tool for SkillTool {
                     content: format!("Launching skill: {}", s.name),
                     is_error: false,
                     inject_messages: vec![inject_content],
-                    ..Default::default()
+                    metadata: None,
+                    mcp_meta: None,
+                    new_messages: Vec::new(),
                 }
             }
+        }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
         }
     }
 }
@@ -138,13 +165,14 @@ mod tests {
             bus: None,
             auto_deny_prompts: false,
             tool_use_id: "tu_test".into(),
+            progress_sink: None,
         }
     }
 
     #[tokio::test]
     async fn returns_launching_skill_content() {
         let tool = make_tool(vec![make_skill("brainstorming", false, None)]);
-        let result = tool.call(json!({"skill": "brainstorming"}), &ctx()).await;
+        let result = tool.call(json!({"skill": "brainstorming"}), &ctx(), None).await;
         assert_eq!(result.content, "Launching skill: brainstorming");
         assert!(!result.is_error);
     }
@@ -152,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn injects_skill_body_without_base_dir() {
         let tool = make_tool(vec![make_skill("brainstorming", false, None)]);
-        let result = tool.call(json!({"skill": "brainstorming"}), &ctx()).await;
+        let result = tool.call(json!({"skill": "brainstorming"}), &ctx(), None).await;
         assert_eq!(result.inject_messages.len(), 1);
         assert!(result.inject_messages[0].contains("Content of brainstorming"));
         assert!(!result.inject_messages[0].contains("Base directory"));
@@ -162,7 +190,7 @@ mod tests {
     async fn injects_base_dir_header_when_present() {
         let dir = PathBuf::from("/home/user/.super/plugins/superpowers/brainstorming");
         let tool = make_tool(vec![make_skill("brainstorming", false, Some(dir.clone()))]);
-        let result = tool.call(json!({"skill": "brainstorming"}), &ctx()).await;
+        let result = tool.call(json!({"skill": "brainstorming"}), &ctx(), None).await;
         assert!(result.inject_messages[0].starts_with("Base directory for this skill:"));
         assert!(result.inject_messages[0].contains(dir.to_str().unwrap()));
     }
@@ -170,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn strips_leading_slash_from_skill_name() {
         let tool = make_tool(vec![make_skill("commit", true, None)]);
-        let result = tool.call(json!({"skill": "/commit"}), &ctx()).await;
+        let result = tool.call(json!({"skill": "/commit"}), &ctx(), None).await;
         assert_eq!(result.content, "Launching skill: commit");
         assert!(!result.is_error);
     }
@@ -178,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_skill_returns_error() {
         let tool = make_tool(vec![make_skill("commit", true, None)]);
-        let result = tool.call(json!({"skill": "nonexistent"}), &ctx()).await;
+        let result = tool.call(json!({"skill": "nonexistent"}), &ctx(), None).await;
         assert!(result.is_error);
         assert!(result.inject_messages.is_empty());
     }
@@ -187,7 +215,7 @@ mod tests {
     async fn args_appended_to_inject_content() {
         let tool = make_tool(vec![make_skill("compact", true, None)]);
         let result = tool
-            .call(json!({"skill": "compact", "args": "focus on recent changes"}), &ctx())
+            .call(json!({"skill": "compact", "args": "focus on recent changes"}), &ctx(), None)
             .await;
         assert!(result.inject_messages[0].contains("focus on recent changes"));
     }

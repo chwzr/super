@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::sdk::protocol::ContentBlockFinal;
-use crate::tools::contract::Tool;
+use crate::tools::contract::{DescriptionCtx, Tool};
 
 /// Build an Anthropic-shaped `/v1/messages` request body.
 ///
@@ -27,7 +27,7 @@ pub fn build_request_body(
         .map(|t| {
             json!({
                 "name": t.name(),
-                "description": t.description(),
+                "description": t.description(None, &DescriptionCtx::default()),
                 "input_schema": t.input_schema(),
             })
         })

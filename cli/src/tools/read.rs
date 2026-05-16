@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 use async_trait::async_trait;
 
 const DANGEROUS_PATHS: &[&str] = &[
@@ -22,8 +22,12 @@ impl Tool for ReadTool {
         "Read"
     }
 
-    fn description(&self) -> &str {
-        "Reads a file from the local filesystem. Supports text, images, PDFs, and Jupyter notebooks."
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
+        "Reads a file from the local filesystem. Supports text, images, PDFs, and Jupyter notebooks.".into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/read.txt").into()
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -49,15 +53,15 @@ impl Tool for ReadTool {
         })
     }
 
-    fn is_concurrency_safe(&self) -> bool {
+    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
         true
     }
 
-    fn is_read_only(&self) -> bool {
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
         true
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let file_path = match input.get("file_path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -136,6 +140,8 @@ impl Tool for ReadTool {
                 is_error: false,
                 metadata: Some(meta),
                 inject_messages: Vec::new(),
+                mcp_meta: None,
+                new_messages: Vec::new(),
             };
         }
 
@@ -151,6 +157,20 @@ impl Tool for ReadTool {
             .map(|v| v as usize);
 
         self.read_text(path, file_path, offset, limit)
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
+        }
     }
 }
 
@@ -216,6 +236,8 @@ impl ReadTool {
             is_error: false,
             metadata: Some(meta),
             inject_messages: Vec::new(),
+            mcp_meta: None,
+            new_messages: Vec::new(),
         }
     }
 
@@ -284,6 +306,8 @@ impl ReadTool {
                     is_error: false,
                     metadata: Some(meta),
                     inject_messages: Vec::new(),
+                    mcp_meta: None,
+                    new_messages: Vec::new(),
                 }
             }
             Err(e) => ToolResult {
@@ -327,6 +351,8 @@ impl ReadTool {
             is_error: false,
             metadata: Some(meta),
             inject_messages: Vec::new(),
+            mcp_meta: None,
+            new_messages: Vec::new(),
         }
     }
 }

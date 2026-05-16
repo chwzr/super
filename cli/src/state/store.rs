@@ -1,5 +1,6 @@
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 use crate::tui::scroll_area::Message;
 
 #[derive(Clone, Default)]
@@ -64,14 +65,17 @@ impl Default for AppState {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
     #[default]
     Default,
     AcceptEdits,
-    Bypass,
+    /// Was `Bypass`. Renamed to match Claude Code's `bypassPermissions`.
+    BypassPermissions,
     Plan,
-    DontAsk,
+    /// Was both `DontAsk` and `Auto`. Today's semantics: anything that
+    /// would Ask is auto-Denied. A future spec wires the classifier in.
     Auto,
 }
 

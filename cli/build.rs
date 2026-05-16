@@ -55,7 +55,7 @@ fn collect_rel_paths(base: &Path, current: &Path, out: &mut Vec<String>) {
     for entry in fs::read_dir(current).unwrap().flatten() {
         let path = entry.path();
         // Use file_type() (no symlink follow) to avoid symlink cycle panics.
-        if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+        if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
             collect_rel_paths(base, &path, out);
         } else {
             let rel = path.strip_prefix(base).unwrap();

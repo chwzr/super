@@ -560,6 +560,11 @@ impl App {
                         BusMessage::Result { .. } => {
                             self.activity = ActivityState::idle();
                         }
+                        BusMessage::RenderEvent { .. } => {
+                            // Batch 1: tools only emit RenderSpec::Nothing,
+                            // which renders to nothing. Batches 2-5 wire this
+                            // into the scrollback / live region.
+                        }
                         _ => {}
                     }
                     self.scroll_area.push_event(msg);

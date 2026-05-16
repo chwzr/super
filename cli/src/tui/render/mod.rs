@@ -429,6 +429,19 @@ fn visual_rows(line: &Line, width: u16) -> u16 {
     ((char_count + width as usize - 1) / width as usize) as u16
 }
 
+/// Stub dispatcher: turns a `RenderSpec` into TUI lines. Batch 1 only
+/// handles `Nothing`; every other variant produces a one-line dim
+/// placeholder. Batches 2-5 fill in real renderers per variant.
+pub fn render_spec(spec: &shared::RenderSpec) -> Vec<Line<'static>> {
+    match spec {
+        shared::RenderSpec::Nothing => Vec::new(),
+        other => vec![Line::from(Span::styled(
+            format!("[render_spec stub: {:?}]", std::mem::discriminant(other)),
+            dim_style(),
+        ))],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,5 +805,30 @@ mod tests {
         // Two Read entries are rendered (label "Read" followed immediately by "(path)").
         let occurrences = body.matches("Read(").count();
         assert!(occurrences >= 2, "expected >=2 'Read(' occurrences, got {occurrences} in: {body:?}");
+    }
+}
+
+#[cfg(test)]
+mod render_spec_tests {
+    use super::*;
+    use shared::RenderSpec;
+
+    #[test]
+    fn nothing_renders_empty_vec() {
+        let lines = render_spec(&RenderSpec::Nothing);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn unhandled_variant_renders_placeholder() {
+        let spec = RenderSpec::Header {
+            verb: "Reading".into(),
+            target: Some("src/foo.rs".into()),
+            tag: None,
+        };
+        let lines = render_spec(&spec);
+        // Batch 1 stub: any non-Nothing variant produces a one-line
+        // dim placeholder. Batches 2-5 add real renderers.
+        assert_eq!(lines.len(), 1);
     }
 }

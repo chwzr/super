@@ -1,0 +1,2 @@
+TODO(parity:batch-5): port the CronDelete prompt from
+claude-code-src/tools/CronDelete/prompt.ts (PROMPT export).

@@ -1,0 +1,2 @@
+TODO(parity:batch-3): port the Write prompt from
+claude-code-src/tools/Write/prompt.ts (PROMPT export).

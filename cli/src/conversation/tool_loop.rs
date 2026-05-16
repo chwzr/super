@@ -5,7 +5,7 @@ use tokio::task::JoinSet;
 use crate::conversation::session_bus::SessionBus;
 use crate::sdk::protocol::{BusMessage, ContentBlockFinal};
 use crate::state::store::PermissionMode;
-use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult};
 use crate::tools::ToolRegistry;
 
 /// Execute all tool_use blocks from one assistant turn, returning the
@@ -28,7 +28,7 @@ pub async fn run_tool_uses(
     let mut unsafe_: Vec<(usize, String, Arc<dyn Tool>, serde_json::Value)> = Vec::new();
     for (i, (id, name, input)) in tool_uses.into_iter().enumerate() {
         match registry.get(&name) {
-            Some(tool) if tool.is_concurrency_safe() => {
+            Some(tool) if tool.is_concurrency_safe(&input) => {
                 safe.push((i, id, tool, input));
             }
             Some(tool) => {
@@ -57,6 +57,7 @@ pub async fn run_tool_uses(
             bus: Some(bus.clone()),
             auto_deny_prompts,
             tool_use_id: id.clone(),
+            progress_sink: None,
         };
         let bus_for_task = bus.clone();
         let tool_name = tool.name().to_string();
@@ -95,7 +96,7 @@ pub async fn run_tool_uses(
             // payload here and rebuild a ToolResult tagged with the original
             // tool_use_id.
             let inner = tokio::task::spawn(async move {
-                tool.call(input, &ctx).await
+                tool.call(input, &ctx, None).await
             });
             let res = match inner.await {
                 Ok(r) => r,
@@ -152,6 +153,7 @@ pub async fn run_tool_uses(
             bus: Some(bus.clone()),
             auto_deny_prompts,
             tool_use_id: id.clone(),
+            progress_sink: None,
         };
 
         // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
@@ -177,7 +179,7 @@ pub async fn run_tool_uses(
             }
         });
 
-        let res = tool.call(input, &ctx).await;
+        let res = tool.call(input, &ctx, None).await;
         ticker.abort();
         unsafe_results.push((i, id, res));
     }
@@ -222,13 +224,16 @@ impl Tool for MissingTool {
     fn name(&self) -> &str {
         &self.name
     }
-    fn description(&self) -> &str {
-        "missing"
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
+        "missing".into()
+    }
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        String::new()
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({})
     }
-    async fn call(&self, _input: serde_json::Value, _ctx: &ToolCallContext) -> ToolResult {
+    async fn call(&self, _input: serde_json::Value, _ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         ToolResult {
             content: format!("Unknown tool: {}", self.name),
             is_error: true,
@@ -376,9 +381,10 @@ mod tests {
         #[async_trait::async_trait]
         impl Tool for CaptureTool {
             fn name(&self) -> &str { "Capture" }
-            fn description(&self) -> &str { "capture" }
+            fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String { "capture".into() }
+            fn prompt(&self, _ctx: &PromptCtx) -> String { String::new() }
             fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
-            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext) -> ToolResult {
+            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
                 *self.seen_parent.lock().unwrap() = ctx.parent_tool_use_id.clone();
                 ToolResult { content: "ok".into(), is_error: false, ..Default::default() }
             }
@@ -418,9 +424,10 @@ mod tests {
         #[async_trait::async_trait]
         impl Tool for CaptureTool {
             fn name(&self) -> &str { "Capture2" }
-            fn description(&self) -> &str { "capture" }
+            fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String { "capture".into() }
+            fn prompt(&self, _ctx: &PromptCtx) -> String { String::new() }
             fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
-            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext) -> ToolResult {
+            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
                 *self.seen.lock().unwrap() = Some(ctx.tool_use_id.clone());
                 ToolResult { content: "ok".into(), is_error: false, ..Default::default() }
             }
@@ -459,10 +466,11 @@ mod tests {
         #[async_trait::async_trait]
         impl Tool for PanickingTool {
             fn name(&self) -> &str { "Panicker" }
-            fn description(&self) -> &str { "always panics" }
+            fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String { "always panics".into() }
+            fn prompt(&self, _ctx: &PromptCtx) -> String { String::new() }
             fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
-            fn is_concurrency_safe(&self) -> bool { true }   // must go through the JoinSet path
-            async fn call(&self, _input: serde_json::Value, _ctx: &ToolCallContext) -> ToolResult {
+            fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool { true }   // must go through the JoinSet path
+            async fn call(&self, _input: serde_json::Value, _ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
                 panic!("boom");
             }
         }
