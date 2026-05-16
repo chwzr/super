@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Widget, Wrap},
     Frame, Terminal, TerminalOptions, Viewport,
 };
 use shared::CliConfig;
@@ -18,7 +19,7 @@ use shared::CliConfig;
 use super::activity::ActivityState;
 use super::header::Header;
 use super::input_bar::InputBar;
-use super::scroll_area::{Message, ScrollArea};
+use super::scroll_area::{lines_height, Message, ScrollArea};
 use super::slash_menu::SlashMenu;
 use super::splash::MASCOT;
 use crate::conversation::engine::ConversationEngine;
@@ -72,6 +73,15 @@ pub struct App {
     history: Vec<String>,
     history_idx: Option<usize>,
     inflight: Option<mpsc::UnboundedReceiver<EngineEvent>>,
+    /// Prompts the user submitted while an engine call was in flight. Spawned
+    /// FIFO when the current call ends, so a second prompt isn't dropped and
+    /// doesn't race the first one's history write-back.
+    queued_prompts: VecDeque<String>,
+    /// Set when a root-level `Result` bus event arrives. The run loop flushes
+    /// any rendered transcript content above the inline viewport via
+    /// `terminal.insert_before`, so completed turns live in the terminal's
+    /// native scrollback and the live region stays bounded.
+    flush_to_scrollback: bool,
     auth_inflight: Option<mpsc::UnboundedReceiver<AuthEvent>>,
     status_fetch: Option<tokio::sync::mpsc::UnboundedReceiver<Result<(f64, f64), String>>>,
     modal: Option<Modal>,
@@ -130,6 +140,8 @@ impl App {
             history: Vec::new(),
             history_idx: None,
             inflight: None,
+            queued_prompts: VecDeque::new(),
+            flush_to_scrollback: false,
             auth_inflight: None,
             status_fetch: None,
             modal: None,
@@ -184,6 +196,14 @@ impl App {
     }
 
     fn spawn_engine(&mut self, prompt: String) {
+        // Don't run two engines concurrently: they race on the shared history
+        // store (engine 2 reads stale state, then overwrites engine 1's
+        // write-back on completion). Queue and dispatch in process_pending
+        // when the in-flight call finishes.
+        if self.inflight.is_some() {
+            self.queued_prompts.push_back(prompt);
+            return;
+        }
         let engine = self.engine.clone();
         let sp = self.system_prompt.clone();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -481,6 +501,13 @@ impl App {
                             // ActivityState::tick(); no extra wiring needed.
                             let _ = elapsed_seconds;
                         }
+                        BusMessage::Result { parent_tool_use_id: None, .. } => {
+                            self.activity = ActivityState::idle();
+                            // Root-level Result marks the end of a turn. The
+                            // run loop will flush the current transcript to
+                            // terminal scrollback on the next iteration.
+                            self.flush_to_scrollback = true;
+                        }
                         BusMessage::Result { .. } => {
                             self.activity = ActivityState::idle();
                         }
@@ -548,6 +575,7 @@ impl App {
                     .push(Message::Trail(format!("{} for {}s", verb, elapsed_secs)));
                 self.activity = ActivityState::idle();
                 self.inflight = None;
+                self.dispatch_next_queued();
             }
             Ok(EngineEvent::Done {
                 result: Err(e),
@@ -559,18 +587,50 @@ impl App {
                     .push(Message::Trail(format!("Failed after {}s", elapsed_secs)));
                 self.activity = ActivityState::idle();
                 self.inflight = None;
+                self.dispatch_next_queued();
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 self.activity = ActivityState::idle();
                 self.inflight = None;
+                self.dispatch_next_queued();
             }
+        }
+    }
+
+    /// Pull the next queued prompt (if any) and spawn an engine for it. Called
+    /// after each inflight completion so user-queued prompts run FIFO.
+    fn dispatch_next_queued(&mut self) {
+        if let Some(next) = self.queued_prompts.pop_front() {
+            self.spawn_engine(next);
         }
     }
 
     pub fn run(&mut self, mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
         while !self.should_quit {
             self.activity.tick();
+            // Flush completed turns into the terminal's native scrollback so
+            // the inline live region stays bounded and the user can scroll up
+            // in the terminal to see history.
+            if self.flush_to_scrollback {
+                self.flush_to_scrollback = false;
+                let width = terminal.size().map(|s| s.width).unwrap_or(80);
+                let lines = self.scroll_area.drain_to_lines();
+                let height = lines_height(&lines, width);
+                if height > 0 {
+                    // Redraw the viewport WITHOUT the drained content first so
+                    // the on-screen viewport reflects the post-drain state. If
+                    // we skip this, ratatui's insert_before scrolls the pre-
+                    // drain viewport (which still contains the turn) up into
+                    // scrollback alongside the flushed lines — duplicating the
+                    // content.
+                    terminal.draw(|f| self.render(f))?;
+                    terminal.insert_before(height, |buf| {
+                        let area = buf.area;
+                        Paragraph::new(lines).wrap(Wrap { trim: false }).render(area, buf);
+                    })?;
+                }
+            }
             terminal.draw(|f| self.render(f))?;
             self.handle_event()?;
             self.process_pending();

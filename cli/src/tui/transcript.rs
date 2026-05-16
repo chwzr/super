@@ -42,9 +42,22 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
         if !matches_filter(ev, filter) { continue; }
         match ev {
             BusMessage::User { message, .. } => {
+                // A user message that contains any ToolResult is the synthetic
+                // tool-results turn emitted after a model turn. Any sibling Text
+                // blocks in that message are tool inject_messages (e.g. the
+                // SkillTool's full skill body, sent to the model only) — never
+                // user input. Matches Claude Code's `isMeta` skip in
+                // VirtualMessageList.tsx.
+                let is_tool_results_turn = message.content.iter().any(|b| {
+                    matches!(b, ContentBlockFinal::ToolResult { .. })
+                });
                 for block in &message.content {
                     match block {
                         ContentBlockFinal::Text { text } => {
+                            if is_tool_results_turn {
+                                // Inject_messages — sent to the model, hidden from the screen.
+                                continue;
+                            }
                             let stripped = strip_system_reminders(text);
                             if !stripped.is_empty() {
                                 out.push(TranscriptItem::User { text: stripped });
@@ -255,6 +268,54 @@ mod tests {
     fn strip_system_reminders_handles_multiple_blocks() {
         let s = "<system-reminder>a</system-reminder>middle<system-reminder>b</system-reminder>tail";
         assert_eq!(strip_system_reminders(s), "middletail");
+    }
+
+    #[test]
+    fn inject_messages_in_tool_results_turn_are_hidden() {
+        // Simulate the engine's tool-results emission: a User message with
+        // a ToolResult plus a sibling Text block (the SkillTool's body).
+        let events = vec![
+            // First: the tool_use (so tool_use_idx is populated).
+            env(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::ToolUse {
+                    id: "tu_skill".into(),
+                    name: "Skill".into(),
+                    input: serde_json::json!({"skill": "brainstorming"}),
+                },
+            }),
+            env(StreamEvent::ContentBlockStop { index: 0 }),
+            // Then: the synthetic user turn with the result + injected body.
+            BusMessage::User {
+                message: UserPayload {
+                    role: "user".into(),
+                    content: vec![
+                        ContentBlockFinal::ToolResult {
+                            tool_use_id: "tu_skill".into(),
+                            content: "Launching skill: brainstorming".into(),
+                            is_error: false,
+                        },
+                        ContentBlockFinal::Text {
+                            text: "# brainstorming\n\nFull skill body here".into(),
+                        },
+                    ],
+                },
+                parent_tool_use_id: None,
+                uuid: Uuid::new_v4(),
+                session_id: "s1".into(),
+            },
+        ];
+        let t = fold(&events, None);
+        // Exactly the ToolCall — no leaked User entry for the skill body.
+        assert_eq!(t.len(), 1);
+        match &t[0] {
+            TranscriptItem::ToolCall { name, result, .. } => {
+                assert_eq!(name, "Skill");
+                let r = result.as_ref().expect("tool result attached");
+                assert_eq!(r.content, "Launching skill: brainstorming");
+            }
+            other => panic!("wrong: {other:?}"),
+        }
     }
 
     #[test]

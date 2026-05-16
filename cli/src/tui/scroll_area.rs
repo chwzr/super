@@ -103,7 +103,20 @@ impl ScrollArea {
         lines.iter().map(|l| visual_rows(l, width)).sum()
     }
 
-    fn build_lines(&self) -> Vec<Line<'static>> {
+    /// Render all currently-held content as lines, then drop it. Used by the
+    /// run loop to push completed turns into the terminal's native scrollback
+    /// via `Terminal::insert_before`, so the inline live region stays bounded
+    /// and the terminal's own scroll-up shows the historical conversation.
+    pub fn drain_to_lines(&mut self) -> Vec<Line<'static>> {
+        let lines = self.build_lines();
+        self.messages.clear();
+        self.events.clear();
+        self.scroll_offset = 0;
+        self.stick_to_bottom = true;
+        lines
+    }
+
+    pub fn build_lines(&self) -> Vec<Line<'static>> {
         let user_prefix_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
         let assistant_prefix_style = Style::default().fg(Color::Cyan);
         let body_style = Style::default().fg(Color::White);
@@ -424,6 +437,11 @@ fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
             }
         }
     }
+}
+
+/// Total visual rows a slice of lines occupies when wrapped at `width` columns.
+pub fn lines_height(lines: &[Line], width: u16) -> u16 {
+    lines.iter().map(|l| visual_rows(l, width)).sum()
 }
 
 /// Compute how many terminal rows a single `Line` occupies when wrapped at `width` columns.
