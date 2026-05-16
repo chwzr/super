@@ -50,10 +50,11 @@ pub fn message_to_lines(m: &Message) -> Vec<Line<'static>> {
             }
         }
         Message::ToolCall { name, input, result } => {
+            use crate::tui::colors::CC_GREEN;
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("⏺ ", assistant_prefix_style()),
-                Span::styled(name.clone(), tool_style()),
+                Span::styled("⏺ ", Style::default().fg(CC_GREEN)),
+                Span::styled(name.clone(), Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
                 Span::styled(format!("({input})"), dim_style()),
             ]));
@@ -149,11 +150,16 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize) -> Vec<Line<'sta
             )));
         }
         TranscriptItem::ToolCall { name, input, result, .. } => {
-            lines.push(Line::from(""));
+            use crate::tui::colors::{CC_GREEN, CC_ORANGE};
+            let is_error = result.as_ref().map(|r| r.is_error).unwrap_or(false);
+            let prefix_color = if is_error { CC_ORANGE } else { CC_GREEN };
+            let display = tool_display_name(name, input);
             let summary = summarize_tool_call(name, input);
+
+            lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("⏺ ", assistant_prefix_style()),
-                Span::styled(name.clone(), tool_style()),
+                Span::styled("⏺ ", Style::default().fg(prefix_color)),
+                Span::styled(display, Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
                 Span::styled(summary, dim),
             ]));
@@ -412,5 +418,40 @@ mod tests {
         let lines = item_to_lines(&item, 0);
         // 1 blank + 1 body = 2 rows at width 80.
         assert_eq!(lines_height(&lines, 80), 2);
+    }
+
+    use crate::tui::colors::{CC_GREEN, CC_ORANGE};
+
+    fn first_span_color(line: &Line) -> Option<ratatui::style::Color> {
+        line.spans.first().and_then(|s| s.style.fg)
+    }
+
+    #[test]
+    fn tool_call_prefix_is_green_on_success() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "echo hi"}),
+            result: Some(ToolResultRender { content: "hi".into(), is_error: false }),
+            elapsed_ms: 0,
+        };
+        let lines = item_to_lines(&item, 0);
+        // Find the line whose first span is the `⏺ ` prefix.
+        let prefix = lines.iter().find(|l| l.spans.first().map(|s| s.content.contains('⏺')).unwrap_or(false)).expect("⏺ prefix line");
+        assert_eq!(first_span_color(prefix), Some(CC_GREEN));
+    }
+
+    #[test]
+    fn tool_call_prefix_is_orange_on_error() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "false"}),
+            result: Some(ToolResultRender { content: "Error: Exit code 1".into(), is_error: true }),
+            elapsed_ms: 0,
+        };
+        let lines = item_to_lines(&item, 0);
+        let prefix = lines.iter().find(|l| l.spans.first().map(|s| s.content.contains('⏺')).unwrap_or(false)).expect("⏺ prefix line");
+        assert_eq!(first_span_color(prefix), Some(CC_ORANGE));
     }
 }
