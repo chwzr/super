@@ -1,0 +1,2 @@
+TODO(parity:batch-3): port the BashTool prompt from
+claude-code-src/tools/BashTool/prompt.ts (PROMPT export).

@@ -1,0 +1,2 @@
+TODO(parity:batch-4): port the WebSearchTool prompt from
+claude-code-src/tools/WebSearchTool/prompt.ts (PROMPT export).

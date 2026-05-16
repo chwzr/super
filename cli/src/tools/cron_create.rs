@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use super::contract::{Tool, ToolCallContext, ToolResult};
+use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct CronJob {
     pub cron: String,
@@ -18,9 +18,13 @@ pub struct CronCreateTool {
 #[async_trait]
 impl Tool for CronCreateTool {
     fn name(&self) -> &str { "CronCreate" }
-    fn description(&self) -> &str {
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Schedule a prompt to be enqueued at a future time via a cron expression. \
-         Supports recurring and one-shot schedules."
+         Supports recurring and one-shot schedules.".into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/cron_create.txt").into()
     }
     fn input_schema(&self) -> serde_json::Value {
         json!({
@@ -35,7 +39,7 @@ impl Tool for CronCreateTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let cron = input["cron"].as_str().unwrap_or("").to_string();
         let prompt = input["prompt"].as_str().unwrap_or("").to_string();
         let recurring = input.get("recurring").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -47,7 +51,10 @@ impl Tool for CronCreateTool {
             return ToolResult {
                 content: "Invalid cron expression: must have exactly 5 space-separated fields (minute hour day-of-month month day-of-week)".into(),
                 is_error: true,
-                ..Default::default()
+                inject_messages: Vec::new(),
+                metadata: None,
+                mcp_meta: None,
+                new_messages: Vec::new(),
             };
         }
 
@@ -60,7 +67,24 @@ impl Tool for CronCreateTool {
         ToolResult {
             content: format!("Cron job created with ID: {id} — \"{cron}\" (recurring: {recurring}, durable: {durable})"),
             is_error: false,
-            ..Default::default()
+            inject_messages: Vec::new(),
+            metadata: None,
+            mcp_meta: None,
+            new_messages: Vec::new(),
+        }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
         }
     }
 }

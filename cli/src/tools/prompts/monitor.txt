@@ -1,0 +1,2 @@
+TODO(parity:batch-5): port the Monitor prompt from
+claude-code-src/tools/Monitor/prompt.ts (PROMPT export).

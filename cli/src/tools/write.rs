@@ -1,4 +1,4 @@
-use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 use async_trait::async_trait;
 
 #[derive(Default)]
@@ -10,8 +10,12 @@ impl Tool for WriteTool {
         "Write"
     }
 
-    fn description(&self) -> &str {
-        "Creates or overwrites a file with the given content."
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
+        "Creates or overwrites a file with the given content.".into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/write.txt").into()
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -31,11 +35,11 @@ impl Tool for WriteTool {
         })
     }
 
-    fn is_destructive(&self) -> bool {
+    fn is_destructive(&self, _input: &serde_json::Value) -> bool {
         true
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let file_path = match input.get("file_path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -86,6 +90,8 @@ impl Tool for WriteTool {
                     is_error: false,
                     metadata: Some(meta),
                     inject_messages: Vec::new(),
+                    mcp_meta: None,
+                    new_messages: Vec::new(),
                 }
             }
             Err(e) => ToolResult {
@@ -93,6 +99,20 @@ impl Tool for WriteTool {
                 is_error: true,
                 ..Default::default()
             },
+        }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
         }
     }
 }

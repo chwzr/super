@@ -1,0 +1,2 @@
+TODO(parity:batch-4): port the WebFetchTool prompt from
+claude-code-src/tools/WebFetchTool/prompt.ts (PROMPT export).

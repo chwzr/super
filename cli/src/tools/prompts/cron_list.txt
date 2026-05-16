@@ -1,0 +1,2 @@
+TODO(parity:batch-5): port the CronList prompt from
+claude-code-src/tools/CronList/prompt.ts (PROMPT export).

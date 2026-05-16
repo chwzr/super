@@ -1,0 +1,2 @@
+TODO(parity:batch-2): port the ExitPlanMode prompt from
+claude-code-src/tools/ExitPlanMode/prompt.ts (PROMPT export).

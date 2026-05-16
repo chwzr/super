@@ -5,7 +5,7 @@ use serde_json::json;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::contract::{Tool, ToolCallContext, ToolResult};
+use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 use crate::agents::definition::AgentDefinition;
 use crate::agents::model::resolve_model;
 use crate::agents::permission::resolve_permission_mode;
@@ -30,10 +30,15 @@ impl Tool for AgentTool {
         "Task"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Launches a sub-agent to handle a focused task. \
          subagent_type selects the agent definition. \
          Set run_in_background to spawn an async agent."
+            .into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/agent.txt").into()
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -66,7 +71,7 @@ impl Tool for AgentTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, ctx: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         // 1. Validate input
         let description = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
         let prompt = match input.get("prompt").and_then(|v| v.as_str()) {
@@ -144,6 +149,8 @@ impl Tool for AgentTool {
                         m
                     }),
                     inject_messages: Vec::new(),
+                    mcp_meta: None,
+                    new_messages: Vec::new(),
                 },
                 Err(e) => err(&format!("Agent failed: {e}")),
             };
@@ -205,12 +212,28 @@ impl Tool for AgentTool {
                 m
             }),
             inject_messages: Vec::new(),
+            mcp_meta: None,
+            new_messages: Vec::new(),
+        }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
         }
     }
 }
 
 fn err(msg: &str) -> ToolResult {
-    ToolResult { content: msg.to_string(), is_error: true, ..Default::default() }
+    ToolResult { content: msg.to_string(), is_error: true, inject_messages: Vec::new(), metadata: None, mcp_meta: None, new_messages: Vec::new() }
 }
 
 fn build_child_system_prompt(agent: &AgentDefinition) -> SystemPrompt {
@@ -245,13 +268,14 @@ mod tests {
             bus: Some(bus),
             auto_deny_prompts: false,
             tool_use_id: String::new(),
+            progress_sink: None,
         };
         let input = serde_json::json!({
             "description": "do thing",
             "prompt": "thing prompt",
             "subagent_type": "does-not-exist",
         });
-        let result = tool.call(input, &ctx).await;
+        let result = tool.call(input, &ctx, None).await;
         assert!(result.is_error);
         assert!(result.content.contains("unknown subagent"), "got: {}", result.content);
     }

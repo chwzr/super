@@ -1,13 +1,19 @@
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{Tool, ToolCallContext, ToolResult};
+use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct LspTool;
 
 #[async_trait]
 impl Tool for LspTool {
     fn name(&self) -> &str { "LSP" }
-    fn description(&self) -> &str { "Language server protocol operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation." }
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
+        "Language server protocol operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation.".into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/lsp.txt").into()
+    }
     fn input_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
@@ -20,11 +26,25 @@ impl Tool for LspTool {
             "required": ["operation", "filePath", "line", "character"]
         })
     }
-    fn is_read_only(&self) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let operation = input["operation"].as_str().unwrap_or("");
         let file_path = input["filePath"].as_str().unwrap_or("");
-        ToolResult { content: format!("LSP {operation} on {file_path} — LSP server integration not yet implemented"), is_error: false, ..Default::default() }
+        ToolResult { content: format!("LSP {operation} on {file_path} — LSP server integration not yet implemented"), is_error: false, inject_messages: Vec::new(), metadata: None, mcp_meta: None, new_messages: Vec::new() }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
+        }
     }
 }

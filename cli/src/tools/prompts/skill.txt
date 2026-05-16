@@ -1,0 +1,2 @@
+TODO(parity:batch-4): port the Skill prompt from
+claude-code-src/tools/Skill/prompt.ts (PROMPT export).

@@ -1,4 +1,4 @@
-use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 use async_trait::async_trait;
 
 #[derive(Default)]
@@ -10,8 +10,12 @@ impl Tool for GrepTool {
         "Grep"
     }
 
-    fn description(&self) -> &str {
-        "Searches file contents using regex patterns."
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
+        "Searches file contents using regex patterns.".into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/grep.txt").into()
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -40,15 +44,15 @@ impl Tool for GrepTool {
         })
     }
 
-    fn is_concurrency_safe(&self) -> bool {
+    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
         true
     }
 
-    fn is_read_only(&self) -> bool {
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
         true
     }
 
-    async fn call(&self, input: serde_json::Value, context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let pattern_str = match input.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -217,6 +221,22 @@ impl Tool for GrepTool {
             is_error: false,
             metadata: Some(meta),
             inject_messages: Vec::new(),
+            mcp_meta: None,
+            new_messages: Vec::new(),
+        }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
         }
     }
 }

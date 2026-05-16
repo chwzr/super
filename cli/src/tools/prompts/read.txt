@@ -1,0 +1,2 @@
+TODO(parity:batch-3): port the FileReadTool prompt from
+claude-code-src/tools/FileReadTool/prompt.ts (PROMPT export).

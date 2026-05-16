@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod defaults;
 pub mod ask_user_question;
 pub mod bash;
 pub mod config_tool;
@@ -35,7 +36,7 @@ pub mod web_search;
 pub mod write;
 
 use std::sync::{Arc, RwLock};
-use contract::{Tool, ToolCallContext, ToolResult};
+use contract::{DescriptionCtx, Tool, ToolCallContext, ToolResult};
 use crate::state::store::{PermissionMode, Store};
 use agent::AgentTool;
 use ask_user_question::AskUserQuestionTool;
@@ -182,7 +183,7 @@ impl ToolRegistry {
         let mut pool: Vec<Arc<dyn Tool>> = tools
             .iter()
             .filter(|t| match mode {
-                PermissionMode::Plan => t.is_read_only(),
+                PermissionMode::Plan => t.is_read_only(&serde_json::Value::Null),
                 _ => true,
             })
             .cloned()
@@ -212,7 +213,7 @@ impl ToolRegistry {
     pub fn tool_descriptions(&self, mode: &PermissionMode) -> String {
         let pool = self.assemble_for_mode(mode);
         pool.iter()
-            .map(|t| format!("- **{}**: {}", t.name(), t.description()))
+            .map(|t| format!("- **{}**: {}", t.name(), t.description(None, &DescriptionCtx::default())))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -226,7 +227,7 @@ impl ToolRegistry {
         let tool = self
             .get(name)
             .ok_or_else(|| format!("unknown tool: {name}"))?;
-        Ok(tool.call(input, context).await)
+        Ok(tool.call(input, context, None).await)
     }
 }
 

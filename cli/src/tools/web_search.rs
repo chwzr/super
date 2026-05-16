@@ -1,6 +1,6 @@
+use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{Tool, ToolCallContext, ToolResult};
 
 pub struct WebSearchTool;
 
@@ -15,10 +15,15 @@ fn url_encode(s: &str) -> String {
 #[async_trait]
 impl Tool for WebSearchTool {
     fn name(&self) -> &str { "WebSearch" }
-    fn description(&self) -> &str {
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Performs a web search. Returns search results with titles and URLs. \
          Use 'allowed_domains' to restrict to specific domains, \
          'blocked_domains' to exclude domains."
+            .into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/web_search.txt").into()
     }
     fn input_schema(&self) -> serde_json::Value {
         json!({
@@ -31,9 +36,9 @@ impl Tool for WebSearchTool {
             "required": ["query"]
         })
     }
-    fn is_read_only(&self) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let query = input["query"].as_str().unwrap_or("");
         let mut _blocked = input["blocked_domains"].as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>())
@@ -102,6 +107,20 @@ impl Tool for WebSearchTool {
                 Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, ..Default::default() },
             },
             Err(e) => ToolResult { content: format!("Search failed: {e}"), is_error: true, ..Default::default() },
+        }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
         }
     }
 }

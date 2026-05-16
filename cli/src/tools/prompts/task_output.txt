@@ -1,0 +1,2 @@
+TODO(parity:batch-4): port the TaskOutputTool prompt from
+claude-code-src/tools/TaskOutputTool/prompt.ts (PROMPT export).

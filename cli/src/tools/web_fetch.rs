@@ -1,15 +1,20 @@
+use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{Tool, ToolCallContext, ToolResult};
 
 pub struct WebFetchTool;
 
 #[async_trait]
 impl Tool for WebFetchTool {
     fn name(&self) -> &str { "WebFetch" }
-    fn description(&self) -> &str {
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Fetches content from a URL and processes it. \
          HTTP URLs are upgraded to HTTPS. Returns the page content as text."
+            .into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/web_fetch.txt").into()
     }
     fn input_schema(&self) -> serde_json::Value {
         json!({
@@ -21,9 +26,9 @@ impl Tool for WebFetchTool {
             "required": ["url", "prompt"]
         })
     }
-    fn is_read_only(&self) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let url = input["url"].as_str().unwrap_or("");
         let _prompt = input["prompt"].as_str().unwrap_or("");
 
@@ -62,6 +67,20 @@ impl Tool for WebFetchTool {
                 Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, ..Default::default() },
             },
             Err(e) => ToolResult { content: format!("Failed to fetch {url}: {e}"), is_error: true, ..Default::default() },
+        }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
         }
     }
 }

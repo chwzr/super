@@ -1,0 +1,2 @@
+TODO(parity:batch-4): port the TaskCreateTool prompt from
+claude-code-src/tools/TaskCreateTool/prompt.ts (PROMPT export).

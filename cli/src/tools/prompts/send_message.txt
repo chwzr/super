@@ -1,0 +1,2 @@
+TODO(parity:batch-2): port the SendMessage prompt from
+claude-code-src/tools/SendMessage/prompt.ts (PROMPT export).

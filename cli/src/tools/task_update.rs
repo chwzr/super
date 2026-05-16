@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 use crate::state::store::TaskStatus;
 
 pub struct TaskUpdateTool {
@@ -11,8 +11,13 @@ pub struct TaskUpdateTool {
 #[async_trait]
 impl Tool for TaskUpdateTool {
     fn name(&self) -> &str { "TaskUpdate" }
-    fn description(&self) -> &str {
+    fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Updates a task's status. Status: pending, in_progress, completed, failed, deleted."
+            .into()
+    }
+
+    fn prompt(&self, _ctx: &PromptCtx) -> String {
+        include_str!("prompts/task_update.txt").into()
     }
     fn input_schema(&self) -> serde_json::Value {
         json!({
@@ -28,7 +33,7 @@ impl Tool for TaskUpdateTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let task_id = input["taskId"].as_str().unwrap_or("");
         let status_str = input["status"].as_str().unwrap_or("");
         let status = match status_str {
@@ -63,6 +68,20 @@ impl Tool for TaskUpdateTool {
             content: format!("Task {task_id} updated to {status_str}"),
             is_error: false,
             ..Default::default()
+        }
+    }
+
+    fn map_tool_result_to_block(
+        &self,
+        output: &serde_json::Value,
+        tool_use_id: &str,
+    ) -> ToolResultBlock {
+        ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::Text(
+                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+            ),
+            is_error: false,
         }
     }
 }

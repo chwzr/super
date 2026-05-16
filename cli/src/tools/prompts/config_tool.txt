@@ -1,0 +1,2 @@
+TODO(parity:batch-5): port the Config prompt from
+claude-code-src/tools/Config/prompt.ts (PROMPT export).

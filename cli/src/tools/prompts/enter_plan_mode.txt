@@ -1,0 +1,2 @@
+TODO(parity:batch-2): port the EnterPlanMode prompt from
+claude-code-src/tools/EnterPlanMode/prompt.ts (PROMPT export).
