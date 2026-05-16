@@ -6,6 +6,13 @@
 //! - `Subagent` — `Task`/`Agent` calls; rendered per-call for now (Claude's
 //!   grouped subagent render is a separate follow-up).
 
+use ratatui::{
+    style::{Modifier, Style},
+    text::Span,
+};
+
+use crate::tui::colors::CC_DIM;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolFamily {
     ReadSearch,
@@ -23,43 +30,69 @@ pub fn classify(name: &str) -> ToolFamily {
     }
 }
 
-/// Per-spec phrasing for the collapsed-batch summary line. Returns a fragment
-/// (e.g. "Read 3 files", "Searched for 2 patterns") suitable for joining with
-/// commas. Returns None for unsupported names — caller falls back to the tool
-/// name.
-pub fn batch_fragment(name: &str, count: usize) -> Option<String> {
-    let (sing, plur) = match name {
-        "Read" => ("Read 1 file", "Read N files"),
-        "Grep" => ("Searched for 1 pattern", "Searched for N patterns"),
-        "Glob" => ("listed 1 directory", "listed N directories"),
-        "LSP"  => ("queried 1 symbol", "queried N symbols"),
-        _ => return None,
+/// Spans for the collapsed-batch summary fragment (e.g. `Read 3 files`).
+/// The count is rendered bold while keeping the dim foreground (matches
+/// Claude Code's `Read **N** files`). Unknown tool names fall back to
+/// `<Name> x<count>` so the line is still informative.
+pub fn batch_fragment(name: &str, count: usize) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(CC_DIM);
+    let bold = dim.add_modifier(Modifier::BOLD);
+    let (prefix, sing_suffix, plur_suffix) = match name {
+        "Read" => ("Read ", " file", " files"),
+        "Grep" => ("Searched for ", " pattern", " patterns"),
+        "Glob" => ("listed ", " directory", " directories"),
+        "LSP"  => ("queried ", " symbol", " symbols"),
+        _ => {
+            return vec![
+                Span::styled(format!("{name} x"), dim),
+                Span::styled(count.to_string(), bold),
+            ];
+        }
     };
-    let s = if count == 1 { sing.to_string() } else { plur.replace("N", &count.to_string()) };
-    Some(s)
+    let suffix = if count == 1 { sing_suffix } else { plur_suffix };
+    vec![
+        Span::styled(prefix.to_string(), dim),
+        Span::styled(count.to_string(), bold),
+        Span::styled(suffix.to_string(), dim),
+    ]
 }
 
 #[cfg(test)]
 mod fragment_tests {
     use super::*;
 
+    fn flat(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn bold_count(spans: &[Span<'_>]) -> usize {
+        spans.iter().filter(|s| s.style.add_modifier.contains(Modifier::BOLD)).count()
+    }
+
     #[test]
     fn read_fragment_singular_and_plural() {
-        assert_eq!(batch_fragment("Read", 1).unwrap(), "Read 1 file");
-        assert_eq!(batch_fragment("Read", 5).unwrap(), "Read 5 files");
+        assert_eq!(flat(&batch_fragment("Read", 1)), "Read 1 file");
+        assert_eq!(flat(&batch_fragment("Read", 5)), "Read 5 files");
     }
 
     #[test]
     fn grep_glob_fragments() {
-        assert_eq!(batch_fragment("Grep", 1).unwrap(), "Searched for 1 pattern");
-        assert_eq!(batch_fragment("Grep", 2).unwrap(), "Searched for 2 patterns");
-        assert_eq!(batch_fragment("Glob", 1).unwrap(), "listed 1 directory");
-        assert_eq!(batch_fragment("Glob", 4).unwrap(), "listed 4 directories");
+        assert_eq!(flat(&batch_fragment("Grep", 1)), "Searched for 1 pattern");
+        assert_eq!(flat(&batch_fragment("Grep", 2)), "Searched for 2 patterns");
+        assert_eq!(flat(&batch_fragment("Glob", 1)), "listed 1 directory");
+        assert_eq!(flat(&batch_fragment("Glob", 4)), "listed 4 directories");
     }
 
     #[test]
-    fn unknown_tool_returns_none() {
-        assert!(batch_fragment("Mystery", 3).is_none());
+    fn unknown_tool_falls_back_to_name_x_count() {
+        assert_eq!(flat(&batch_fragment("Mystery", 3)), "Mystery x3");
+    }
+
+    #[test]
+    fn count_span_is_bold() {
+        assert_eq!(bold_count(&batch_fragment("Read", 5)), 1);
+        assert_eq!(bold_count(&batch_fragment("Grep", 2)), 1);
+        assert_eq!(bold_count(&batch_fragment("Mystery", 3)), 1);
     }
 }
 

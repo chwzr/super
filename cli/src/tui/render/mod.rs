@@ -20,7 +20,6 @@ fn user_prefix_style()      -> Style { Style::default().fg(Color::White).add_mod
 fn assistant_prefix_style() -> Style { Style::default().fg(Color::Cyan) }
 fn body_style()             -> Style { Style::default().fg(Color::White) }
 fn dim_style()              -> Style { Style::default().fg(Color::DarkGray) }
-fn tool_style()             -> Style { Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD) }
 
 /// Render a legacy `Message` to lines.
 ///
@@ -183,6 +182,7 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
             }
         }
         TranscriptItem::ToolBatch { calls } => {
+            use crate::tui::render::tool_family::batch_fragment;
             if detailed {
                 // Render each call as its own dim-gray per-call block.
                 for call in calls {
@@ -198,8 +198,12 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
                         render_tool_result_for(&call.name, &call.input, &mut lines, r, &dim);
                     }
                 }
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("(ctrl+o to collapse)".to_string(), dim),
+                ]));
             } else {
-                use crate::tui::render::tool_family::batch_fragment;
                 // Group calls by their tool name in insertion order so we can emit
                 // one fragment per kind.
                 let mut order: Vec<String> = Vec::new();
@@ -210,15 +214,16 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
                     }
                     *counts.entry(c.name.clone()).or_insert(0) += 1;
                 }
-                let fragments: Vec<String> = order.iter()
-                    .filter_map(|n| batch_fragment(n, counts[n]).or_else(|| Some(format!("{n} x{}", counts[n]))))
-                    .collect();
-                let summary = format!("{} (ctrl+o to expand)", fragments.join(", "));
+                let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+                for (i, name) in order.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled(", ".to_string(), dim));
+                    }
+                    spans.extend(batch_fragment(name, counts[name]));
+                }
+                spans.push(Span::styled(" (ctrl+o to expand)".to_string(), dim));
                 lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(summary, dim),
-                ]));
+                lines.push(Line::from(spans));
             }
         }
     }
@@ -280,14 +285,11 @@ pub fn tool_display_name(name: &str, input: &serde_json::Value) -> String {
 }
 
 /// Wrap `label` in an OSC8 terminal hyperlink pointing at `path`. Terminals
-/// that don't support OSC8 render the label without the underline.
+/// that don't support OSC8 render the label without the underline. Relative
+/// paths still get a `file://` URI prefix — modern terminals resolve them
+/// against their own cwd.
 pub fn osc8_link(path: &str, label: &str) -> String {
-    let uri = if path.starts_with('/') {
-        format!("file://{path}")
-    } else {
-        format!("file://{path}")
-    };
-    format!("\x1b]8;;{uri}\x1b\\{label}\x1b]8;;\x1b\\")
+    format!("\x1b]8;;file://{path}\x1b\\{label}\x1b]8;;\x1b\\")
 }
 
 fn render_tool_result_for(
