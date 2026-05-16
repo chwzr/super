@@ -184,8 +184,27 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize) -> Vec<Line<'sta
                 ]));
             }
         }
-        TranscriptItem::ToolBatch { .. } => {
-            // Real rendering wired in Task 13.
+        TranscriptItem::ToolBatch { calls } => {
+            use crate::tui::render::tool_family::batch_fragment;
+            // Group calls by their tool name in insertion order so we can emit
+            // one fragment per kind.
+            let mut order: Vec<String> = Vec::new();
+            let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for c in calls {
+                if !counts.contains_key(&c.name) {
+                    order.push(c.name.clone());
+                }
+                *counts.entry(c.name.clone()).or_insert(0) += 1;
+            }
+            let fragments: Vec<String> = order.iter()
+                .filter_map(|n| batch_fragment(n, counts[n]).or_else(|| Some(format!("{n} x{}", counts[n]))))
+                .collect();
+            let summary = format!("{} (ctrl+o to expand)", fragments.join(", "));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(summary, dim),
+            ]));
         }
     }
     lines
@@ -577,6 +596,46 @@ mod tests {
         assert!(s.contains("\x1b]8;;file:///abs/path.txt\x1b\\"), "got: {s:?}");
         assert!(s.contains("path.txt"));
         assert!(s.ends_with("\x1b]8;;\x1b\\"));
+    }
+
+    use crate::tui::transcript::BatchCall;
+
+    fn batch_call(name: &str, id: &str) -> BatchCall {
+        BatchCall {
+            tool_use_id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({"file_path": "/x"}),
+            result: Some(ToolResultRender { content: "ok".into(), is_error: false }),
+        }
+    }
+
+    #[test]
+    fn toolbatch_renders_collapsed_summary_for_reads() {
+        let item = TranscriptItem::ToolBatch {
+            calls: vec![batch_call("Read", "1"), batch_call("Read", "2"), batch_call("Read", "3")],
+        };
+        let body = rendered_text(&item_to_lines(&item, 0));
+        assert!(body.contains("  Read 3 files (ctrl+o to expand)"), "got: {body:?}");
+        assert!(!body.contains("⏺"), "no ⏺ glyph on collapsed batch: {body:?}");
+    }
+
+    #[test]
+    fn toolbatch_collapsed_for_single_read_uses_singular_form() {
+        let item = TranscriptItem::ToolBatch { calls: vec![batch_call("Read", "1")] };
+        let body = rendered_text(&item_to_lines(&item, 0));
+        assert!(body.contains("  Read 1 file (ctrl+o to expand)"), "got: {body:?}");
+    }
+
+    #[test]
+    fn toolbatch_mixed_grep_glob_joins_fragments_with_comma() {
+        let item = TranscriptItem::ToolBatch {
+            calls: vec![batch_call("Grep", "1"), batch_call("Glob", "2")],
+        };
+        let body = rendered_text(&item_to_lines(&item, 0));
+        assert!(
+            body.contains("Searched for 1 pattern, listed 1 directory (ctrl+o to expand)"),
+            "got: {body:?}"
+        );
     }
 
     #[test]
