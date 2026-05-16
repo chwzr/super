@@ -238,7 +238,7 @@ pub fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
         }
         "Read" => {
             let p = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("({p})")
+            format!("({})", osc8_link(p, p))
         }
         "Bash" => {
             let c = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
@@ -247,7 +247,7 @@ pub fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
         }
         "Edit" | "Write" => {
             let p = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("({p})")
+            format!("({})", osc8_link(p, p))
         }
         _ => {
             if let Some((k, v)) = input.as_object().and_then(|o| o.iter().next()) {
@@ -458,7 +458,17 @@ mod tests {
     #[test]
     fn summarize_tool_call_read_shows_file_path() {
         let input = serde_json::json!({"file_path": "/tmp/notes.txt"});
-        assert_eq!(summarize_tool_call("Read", &input), "(/tmp/notes.txt)");
+        let summary = summarize_tool_call("Read", &input);
+        assert!(summary.contains("/tmp/notes.txt"), "got: {summary:?}");
+    }
+
+    #[test]
+    fn summarize_tool_call_read_wraps_path_in_osc8_link() {
+        let input = serde_json::json!({"file_path": "/tmp/notes.txt"});
+        let summary = summarize_tool_call("Read", &input);
+        assert!(summary.contains("\x1b]8;;file:///tmp/notes.txt"), "OSC8 open: {summary:?}");
+        assert!(summary.contains("/tmp/notes.txt"), "label present: {summary:?}");
+        assert!(summary.contains("\x1b]8;;\x1b\\"), "OSC8 close: {summary:?}");
     }
 
     #[test]
