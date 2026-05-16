@@ -10,11 +10,11 @@ export function Hero() {
           The Agent CLI that respects your{" "}
           <span className="accent">Brain&apos;s Context Window.</span>
         </h1>
-        <p className="hero-tagline mono">Software Engineering, baked in.</p>
+        <p className="hero-tagline mono">Software engineering in the age of AI.</p>
         <p className="lede">
-          A coding agent built for engineers who want to think about what their tools produce. Every
-          action recorded as a discrete step. Every decision explainable in plain English. Every
-          phase ending in a checkpoint you can actually read.
+          Super is a coding agent harness that brainstorms with you, then turns your vision into a
+          sequence of small presentations — design specs, implementation plans, steps — asks for
+          each one for your sign-off, then builds exactly what you approved.
         </p>
         <div className="hero-actions">
           <a href="/register" className="btn btn-primary btn-lg">
