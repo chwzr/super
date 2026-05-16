@@ -164,7 +164,7 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize) -> Vec<Line<'sta
                 Span::styled(summary, dim),
             ]));
             if let Some(r) = result {
-                render_tool_result(&mut lines, r, &dim);
+                render_tool_result_for(name, &mut lines, r, &dim);
             }
         }
         TranscriptItem::System { subtype, message } => {
@@ -252,26 +252,68 @@ pub fn osc8_link(path: &str, label: &str) -> String {
     format!("\x1b]8;;{uri}\x1b\\{label}\x1b]8;;\x1b\\")
 }
 
-fn render_tool_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
+fn render_tool_result_for(
+    tool_name: &str,
+    lines: &mut Vec<Line<'static>>,
+    r: &ToolResultRender,
+    dim: &Style,
+) {
+    match tool_name {
+        "Bash" => render_bash_result(lines, r, dim),
+        // Future: "Edit"/"Write" get dedicated renderers in later tasks.
+        _ => render_generic_result(lines, r, dim),
+    }
+}
+
+/// Generic fallback: behaves like the prior renderer (cap at 20 lines).
+fn render_generic_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
     let max_lines = 20;
     let body: Vec<&str> = r.content.lines().take(max_lines).collect();
     let total = r.content.lines().count();
+    let mut first = true;
     for line in body {
+        let prefix = if first { "  ⎿  " } else { "     " };
+        first = false;
         lines.push(Line::from(vec![
-            Span::styled("  ⎿  ", *dim),
+            Span::styled(prefix, *dim),
             Span::styled(line.to_string(), *dim),
         ]));
     }
     if total > max_lines {
         lines.push(Line::from(vec![
-            Span::styled("  ⎿  ", *dim),
-            Span::styled(format!("… {} more lines", total - max_lines), *dim),
+            Span::styled("     ", *dim),
+            Span::styled(
+                format!("… +{} lines (ctrl+o to expand)", total - max_lines),
+                Style::default().add_modifier(Modifier::DIM),
+            ),
         ]));
     }
-    if r.is_error {
+}
+
+/// Bash-specific: 3-line truncation, `… +K lines (ctrl+o to expand)` suffix.
+/// Errors render in orange.
+fn render_bash_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
+    use crate::tui::colors::CC_ORANGE;
+    const MAX: usize = 3;
+    let body_color = if r.is_error { Style::default().fg(CC_ORANGE) } else { Style::default() };
+    let all: Vec<&str> = r.content.lines().collect();
+    let total = all.len();
+
+    for (i, line) in all.iter().take(MAX).enumerate() {
+        let prefix = if i == 0 { "  ⎿  " } else { "     " };
         lines.push(Line::from(vec![
-            Span::styled("  ⎿  ", *dim),
-            Span::styled("(error)".to_string(), Style::default().fg(Color::Red)),
+            Span::styled(prefix, *dim),
+            Span::styled(line.to_string(), body_color),
+        ]));
+    }
+    if total > MAX {
+        let remaining = total - MAX;
+        lines.push(Line::from(vec![
+            Span::styled("     ", *dim),
+            Span::styled(
+                format!("… +{remaining} lines (ctrl+o to expand)"),
+                Style::default().add_modifier(Modifier::DIM),
+            ),
         ]));
     }
 }
@@ -481,5 +523,45 @@ mod tests {
         // against their own cwd. The label is what the user clicks on.
         assert!(s.contains("file://"));
         assert!(s.contains("note.md"));
+    }
+
+    #[test]
+    fn bash_result_renders_at_most_3_output_lines_then_ellipsis() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "seq 1 8"}),
+            result: Some(ToolResultRender {
+                content: "1\n2\n3\n4\n5\n6\n7\n8".into(),
+                is_error: false,
+            }),
+            elapsed_ms: 0,
+        };
+        let lines = item_to_lines(&item, 0);
+        let body = rendered_text(&lines);
+        assert!(body.contains("  ⎿  1"), "first output line under corner: {body:?}");
+        assert!(body.contains("     2"), "second line aligned: {body:?}");
+        assert!(body.contains("     3"), "third line aligned: {body:?}");
+        assert!(body.contains("… +5 lines (ctrl+o to expand)"), "ellipsis present: {body:?}");
+        assert!(!body.contains("\n4\n") && !body.contains("     4"), "line 4 must be hidden: {body:?}");
+    }
+
+    #[test]
+    fn bash_result_with_3_or_fewer_lines_shows_no_ellipsis() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "seq 1 3"}),
+            result: Some(ToolResultRender {
+                content: "1\n2\n3".into(),
+                is_error: false,
+            }),
+            elapsed_ms: 0,
+        };
+        let body = rendered_text(&item_to_lines(&item, 0));
+        assert!(body.contains("  ⎿  1"));
+        assert!(body.contains("     2"));
+        assert!(body.contains("     3"));
+        assert!(!body.contains("ctrl+o"), "no expand hint when nothing truncated: {body:?}");
     }
 }
