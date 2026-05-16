@@ -4,6 +4,8 @@
 //! Used by both the live region (in-flight items) and the scrollback writer
 //! (completed items pushed via `Terminal::insert_before`).
 
+pub mod tool_family;
+
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
