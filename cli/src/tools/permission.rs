@@ -154,15 +154,48 @@ impl PermissionSystem {
     /// matching via prepare_permission_matcher) is wired in Task D.4.
     pub async fn evaluate(
         &self,
-        _tool: &dyn crate::tools::contract::Tool,
-        _input: &serde_json::Value,
+        tool: &dyn crate::tools::contract::Tool,
+        input: &serde_json::Value,
         _ctx: &crate::tools::contract::ToolCallContext,
     ) -> PermissionResult {
-        // Defer to the tool's own check for now.
-        // Full mode/rule logic comes in Task D.4.
-        PermissionResult::Allow {
-            updated_input: None,
-            decision_reason: Some(DecisionReason::ToolDefault),
+        // Mode-based shortcuts
+        match self.mode {
+            PermissionMode::BypassPermissions => {
+                return PermissionResult::Allow {
+                    updated_input: None,
+                    decision_reason: Some(DecisionReason::Mode {
+                        mode: self.mode,
+                    }),
+                };
+            }
+            PermissionMode::Plan => {
+                if !tool.is_read_only(input) {
+                    return PermissionResult::Deny {
+                        reason: "Plan mode: only read-only tools are allowed".into(),
+                        decision_reason: Some(DecisionReason::Mode {
+                            mode: self.mode,
+                        }),
+                    };
+                }
+                return PermissionResult::Allow {
+                    updated_input: None,
+                    decision_reason: Some(DecisionReason::Mode {
+                        mode: self.mode,
+                    }),
+                };
+            }
+            _ => {}
+        }
+
+        // No matching rule: defer to the tool's own check.
+        // Full rule-matching path is wired in Task D.4.
+        let tool_result = tool.check_permissions(input, _ctx).await;
+        match tool_result {
+            PermissionResult::Allow { .. } => PermissionResult::Allow {
+                updated_input: None,
+                decision_reason: Some(DecisionReason::ToolDefault),
+            },
+            other => other,
         }
     }
 }
@@ -206,8 +239,6 @@ mod permission_result_tests {
     }
 }
 
-// Uncomment in Task D.3 after Tool trait migration is complete.
-/*
 #[cfg(test)]
 mod evaluate_v2_tests {
     use super::*;
@@ -262,7 +293,6 @@ mod evaluate_v2_tests {
     }
 
     #[tokio::test]
-    #[ignore = "blocked on Task C.5: Tool trait extension"]
     async fn bypass_mode_returns_allow_with_mode_reason() {
         let sys = PermissionSystem::new(PermissionMode::BypassPermissions);
         let tool = DummyTool { name: "X", read_only: false };
@@ -276,7 +306,6 @@ mod evaluate_v2_tests {
     }
 
     #[tokio::test]
-    #[ignore = "blocked on Task C.5: Tool trait extension"]
     async fn plan_mode_denies_non_read_only_tool() {
         let sys = PermissionSystem::new(PermissionMode::Plan);
         let tool = DummyTool { name: "Y", read_only: false };
@@ -285,7 +314,6 @@ mod evaluate_v2_tests {
     }
 
     #[tokio::test]
-    #[ignore = "blocked on Task C.5: Tool trait extension"]
     async fn plan_mode_allows_read_only_tool() {
         let sys = PermissionSystem::new(PermissionMode::Plan);
         let tool = DummyTool { name: "Z", read_only: true };
@@ -294,7 +322,6 @@ mod evaluate_v2_tests {
     }
 
     #[tokio::test]
-    #[ignore = "blocked on Task C.5: Tool trait extension"]
     async fn defaults_to_tool_check_when_no_rules_match() {
         let sys = PermissionSystem::new(PermissionMode::Default);
         let tool = DummyTool { name: "W", read_only: false };
@@ -315,4 +342,3 @@ mod evaluate_v2_tests {
         }
     }
 }
-*/
