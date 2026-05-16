@@ -241,6 +241,17 @@ pub fn tool_display_name(name: &str, input: &serde_json::Value) -> String {
     }
 }
 
+/// Wrap `label` in an OSC8 terminal hyperlink pointing at `path`. Terminals
+/// that don't support OSC8 render the label without the underline.
+pub fn osc8_link(path: &str, label: &str) -> String {
+    let uri = if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file://{path}")
+    };
+    format!("\x1b]8;;{uri}\x1b\\{label}\x1b]8;;\x1b\\")
+}
+
 fn render_tool_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
     let max_lines = 20;
     let body: Vec<&str> = r.content.lines().take(max_lines).collect();
@@ -453,5 +464,22 @@ mod tests {
         let lines = item_to_lines(&item, 0);
         let prefix = lines.iter().find(|l| l.spans.first().map(|s| s.content.contains('⏺')).unwrap_or(false)).expect("⏺ prefix line");
         assert_eq!(first_span_color(prefix), Some(CC_ORANGE));
+    }
+
+    #[test]
+    fn osc8_link_wraps_label_with_escape_sequence() {
+        let s = osc8_link("/abs/path.txt", "path.txt");
+        assert!(s.contains("\x1b]8;;file:///abs/path.txt\x1b\\"), "got: {s:?}");
+        assert!(s.contains("path.txt"));
+        assert!(s.ends_with("\x1b]8;;\x1b\\"));
+    }
+
+    #[test]
+    fn osc8_link_handles_relative_path_by_prefixing_file_uri() {
+        let s = osc8_link("relative/note.md", "note.md");
+        // Even a relative path gets a file:// URI; modern terminals resolve
+        // against their own cwd. The label is what the user clicks on.
+        assert!(s.contains("file://"));
+        assert!(s.contains("note.md"));
     }
 }
