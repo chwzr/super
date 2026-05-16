@@ -93,10 +93,12 @@ mod tests {
 
     #[test]
     fn config_round_trip_persists_provider_and_class() {
-        let mut c = CliConfig::default();
-        c.provider = "z-ai".to_string();
-        c.model_class = "haiku".to_string();
-        c.model = "z-ai/glm-4.7-flash".to_string();
+        let c = CliConfig {
+            provider: "z-ai".to_string(),
+            model_class: "haiku".to_string(),
+            model: "z-ai/glm-4.7-flash".to_string(),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&c).unwrap();
         // model field must NOT appear in the JSON output
         assert!(!json.contains("\"model\":"), "model field must not be serialized; json was: {json}");
