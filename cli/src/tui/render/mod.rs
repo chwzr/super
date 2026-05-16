@@ -56,7 +56,6 @@ pub fn message_to_lines(m: &Message) -> Vec<Line<'static>> {
             lines.push(Line::from(vec![
                 Span::styled("⏺ ", Style::default().fg(CC_GREEN)),
                 Span::styled(name.clone(), Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
                 Span::styled(format!("({input})"), dim_style()),
             ]));
             if let Some(r) = result {
@@ -161,7 +160,6 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
             lines.push(Line::from(vec![
                 Span::styled("⏺ ", Style::default().fg(prefix_color)),
                 Span::styled(display, Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
                 Span::styled(summary, dim),
             ]));
             if let Some(r) = result {
@@ -194,7 +192,6 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
                     lines.push(Line::from(vec![
                         Span::styled("  ", dim),
                         Span::styled(display, Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
-                        Span::raw(" "),
                         Span::styled(summary, dim),
                     ]));
                     if let Some(r) = &call.result {
@@ -790,8 +787,8 @@ mod tests {
         let body = rendered_text(&item_to_lines(&item, 0, true));
         // No collapsed summary line.
         assert!(!body.contains("Read 2 files (ctrl+o"), "should not show collapsed line: {body:?}");
-        // Two Read entries are rendered.
-        let occurrences = body.matches("Read ").count();
-        assert!(occurrences >= 2, "expected >=2 'Read ' occurrences, got {occurrences} in: {body:?}");
+        // Two Read entries are rendered (label "Read" followed immediately by "(path)").
+        let occurrences = body.matches("Read(").count();
+        assert!(occurrences >= 2, "expected >=2 'Read(' occurrences, got {occurrences} in: {body:?}");
     }
 }
