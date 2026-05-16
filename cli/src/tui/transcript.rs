@@ -8,7 +8,7 @@ use crate::sdk::protocol::{
 pub enum TranscriptItem {
     User { text: String },
     AssistantText { text: String, complete: bool },
-    Thinking { text: String, collapsed: bool, elapsed_ms: u64 },
+    Thinking { text: String, collapsed: bool, elapsed_ms: u64, complete: bool },
     ToolCall {
         tool_use_id: String,
         name: String,
@@ -98,6 +98,7 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                             let pos = out.len();
                             out.push(TranscriptItem::Thinking {
                                 text: thinking.clone(), collapsed: true, elapsed_ms: 0,
+                                complete: false,
                             });
                             block_to_idx.insert(*index, pos);
                         }
@@ -150,6 +151,9 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                     let Some(&pos) = block_to_idx.get(index) else { continue };
                     match &mut out[pos] {
                         TranscriptItem::AssistantText { complete, .. } => {
+                            *complete = true;
+                        }
+                        TranscriptItem::Thinking { complete, .. } => {
                             *complete = true;
                         }
                         TranscriptItem::ToolCall { input, .. } => {

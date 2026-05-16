@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,11 +17,10 @@ use ratatui::{
 use shared::CliConfig;
 
 use super::activity::ActivityState;
-use super::header::Header;
 use super::input_bar::InputBar;
-use super::scroll_area::{lines_height, Message, ScrollArea};
+use super::scroll_area::{Message, ScrollArea};
 use super::slash_menu::SlashMenu;
-use super::splash::MASCOT;
+use super::splash;
 use crate::conversation::engine::ConversationEngine;
 use crate::conversation::session_bus::SessionBus;
 use crate::conversation::system_prompt::SystemPrompt;
@@ -29,6 +28,8 @@ use crate::sdk::protocol::BusMessage;
 use crate::state::store::Store;
 use crate::tools::ToolRegistry;
 use crate::tui::modal::{Modal, ModalAction};
+use crate::tui::render::{item_to_lines, lines_height, message_to_lines};
+use crate::tui::transcript::{fold, TranscriptItem};
 
 const SHORTCUTS_HELP: &str = "Shortcuts\n\
     enter        submit prompt\n\
@@ -37,10 +38,16 @@ const SHORTCUTS_HELP: &str = "Shortcuts\n\
     tab          autocomplete selected command\n\
     esc          dismiss menu · interrupt response · clear input\n\
     ctrl+c       clear input · exit when empty\n\
-    ctrl+l       clear scrollback\n\
+    ctrl+l       clear the terminal screen\n\
     ctrl+a/e     move cursor to start/end\n\
-    page up/dn   scroll history\n\
     ?            show this help";
+
+/// Fixed height of the inline viewport. Reserves enough rows at the bottom of
+/// the terminal for: input bar (3) + hint (1) + activity (≤2) + slash menu
+/// (≤8) + a small in-flight tail (≈3 rows). The rest of the terminal scrolls
+/// normally — completed transcript items are written into that scrollback via
+/// `Terminal::insert_before`.
+const VIEWPORT_HEIGHT: u16 = 14;
 
 enum EngineEvent {
     Done {
@@ -54,7 +61,6 @@ enum AuthEvent {
 }
 
 pub struct App {
-    header: Header,
     scroll_area: ScrollArea,
     activity: ActivityState,
     input: InputBar,
@@ -77,14 +83,22 @@ pub struct App {
     /// FIFO when the current call ends, so a second prompt isn't dropped and
     /// doesn't race the first one's history write-back.
     queued_prompts: VecDeque<String>,
-    /// Set when a root-level `Result` bus event arrives. The run loop flushes
-    /// any rendered transcript content above the inline viewport via
-    /// `terminal.insert_before`, so completed turns live in the terminal's
-    /// native scrollback and the live region stays bounded.
-    flush_to_scrollback: bool,
     auth_inflight: Option<mpsc::UnboundedReceiver<AuthEvent>>,
     status_fetch: Option<tokio::sync::mpsc::UnboundedReceiver<Result<(f64, f64), String>>>,
     modal: Option<Modal>,
+    /// Splash banner lines written to scrollback once on first tick.
+    /// `Some` until flushed, then `None`.
+    splash_pending: Option<Vec<Line<'static>>>,
+    /// Number of `scroll_area.messages` entries already pushed to scrollback.
+    flushed_message_count: usize,
+    /// Number of folded transcript items already pushed to scrollback (i.e.
+    /// items 0..next_flush_idx are in scrollback). Items at or after this
+    /// index are in flight and render in the live tail of the viewport.
+    next_flush_idx: usize,
+    /// For in-flight `AssistantText` items at `next_flush_idx`: number of
+    /// leading chars already flushed to scrollback line-by-line. The live
+    /// tail renders only `text[chars..]`.
+    flushed_chars_per_block: HashMap<usize, usize>,
 }
 
 fn verb_for_tool(name: &str) -> String {
@@ -95,6 +109,18 @@ fn verb_for_tool(name: &str) -> String {
         "Glob" | "Grep" | "ToolSearch" => "Searching".into(),
         "WebFetch" | "WebSearch" => "Browsing".into(),
         _ => format!("Running {}", name),
+    }
+}
+
+/// An item is "stable" once we know its rendering will not change again, so
+/// it can be safely pushed to terminal scrollback as a complete unit.
+fn is_stable(item: &TranscriptItem) -> bool {
+    match item {
+        TranscriptItem::User { .. } => true,
+        TranscriptItem::AssistantText { complete, .. } => *complete,
+        TranscriptItem::Thinking { complete, .. } => *complete,
+        TranscriptItem::ToolCall { result, .. } => result.is_some(),
+        TranscriptItem::System { .. } => true,
     }
 }
 
@@ -116,15 +142,15 @@ impl App {
             .unwrap_or_else(|| ".".to_string());
         let model = friendly_model_name(&config.model);
         let provider_label = crate::providers::provider_display_name(&config.provider).to_string();
-        let header = Header::new(
-            env!("CARGO_PKG_VERSION").to_string(),
-            model,
-            provider_label,
-            cwd,
+        let splash_lines = splash::banner_lines(
+            env!("CARGO_PKG_VERSION"),
+            &model,
+            &provider_label,
+            "super",
+            &cwd,
         );
         let bus_rx = bus.subscribe();
         Self {
-            header,
             scroll_area: ScrollArea::new(),
             activity: ActivityState::idle(),
             input: InputBar::new(),
@@ -141,10 +167,13 @@ impl App {
             history_idx: None,
             inflight: None,
             queued_prompts: VecDeque::new(),
-            flush_to_scrollback: false,
             auth_inflight: None,
             status_fetch: None,
             modal: None,
+            splash_pending: Some(splash_lines),
+            flushed_message_count: 0,
+            next_flush_idx: 0,
+            flushed_chars_per_block: HashMap::new(),
         }
     }
 
@@ -163,7 +192,7 @@ impl App {
                         self.scroll_area.push(Message::System(output));
                     }
                     CommandResult::Cleared => {
-                        self.scroll_area.clear();
+                        self.reset_scrollback_state();
                     }
                     CommandResult::Prompt(prompt_text) => {
                         self.spawn_engine(prompt_text);
@@ -193,6 +222,16 @@ impl App {
             return;
         }
         self.spawn_engine(text);
+    }
+
+    /// Wipe accumulated transcript state and reset flush counters. Used by
+    /// `/clear` — the next render cycle will clear the live tail; terminal
+    /// scrollback is cleared separately via Ctrl+L.
+    fn reset_scrollback_state(&mut self) {
+        self.scroll_area.clear();
+        self.flushed_message_count = 0;
+        self.next_flush_idx = 0;
+        self.flushed_chars_per_block.clear();
     }
 
     fn spawn_engine(&mut self, prompt: String) {
@@ -292,7 +331,7 @@ impl App {
         self.status_fetch = Some(rx);
     }
 
-    fn handle_event(&mut self) -> std::io::Result<()> {
+    fn handle_event(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
         if !event::poll(Duration::from_millis(50))? {
             return Ok(());
         }
@@ -357,7 +396,11 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('l') => {
-                    self.scroll_area.clear();
+                    // Clear the terminal screen (chrome + scrollback). Keeps
+                    // conversation state intact, but freshly-arrived content
+                    // is the only thing that will re-appear. Use `/clear` to
+                    // also wipe history.
+                    let _ = terminal.clear();
                     return Ok(());
                 }
                 KeyCode::Char('a') => {
@@ -450,8 +493,6 @@ impl App {
                     }
                 }
             }
-            KeyCode::PageUp => self.scroll_area.scroll_up(),
-            KeyCode::PageDown => self.scroll_area.scroll_down(),
             KeyCode::Tab => {
                 if self.slash_menu_open {
                     if let Some(entry) = entries.get(self.slash_menu.selected) {
@@ -486,9 +527,6 @@ impl App {
                     // Side effects driven by specific bus events.
                     match &msg {
                         BusMessage::ToolProgress { tool_name, elapsed_seconds, .. } => {
-                            // Update activity row to reflect the running tool.
-                            // Keep verb stable across rapid Tool emissions: only
-                            // recreate Activity if we were Idle or the verb changed.
                             let want_verb = verb_for_tool(tool_name);
                             let should_swap = match &self.activity {
                                 ActivityState::Idle => true,
@@ -497,16 +535,7 @@ impl App {
                             if should_swap {
                                 self.activity = ActivityState::active(&want_verb);
                             }
-                            // The elapsed-seconds value is already reflected by
-                            // ActivityState::tick(); no extra wiring needed.
                             let _ = elapsed_seconds;
-                        }
-                        BusMessage::Result { parent_tool_use_id: None, .. } => {
-                            self.activity = ActivityState::idle();
-                            // Root-level Result marks the end of a turn. The
-                            // run loop will flush the current transcript to
-                            // terminal scrollback on the next iteration.
-                            self.flush_to_scrollback = true;
                         }
                         BusMessage::Result { .. } => {
                             self.activity = ActivityState::idle();
@@ -518,8 +547,7 @@ impl App {
                 Err(broadcast::error::TryRecvError::Empty) => break,
                 Err(broadcast::error::TryRecvError::Closed) => break,
                 Err(broadcast::error::TryRecvError::Lagged(_n)) => {
-                    // Subscriber fell behind. Bus is sized for ~256 outstanding
-                    // events; reaching here means a long-stuck render. Resync silently.
+                    // Resync silently — see SessionBus comment on capacity.
                 }
             }
         }
@@ -537,7 +565,6 @@ impl App {
                 }
             }
         }
-        // Auth flow result first — it's small and orthogonal to engine events.
         if let Some(rx) = self.auth_inflight.as_mut() {
             match rx.try_recv() {
                 Ok(AuthEvent::LoginDone(Ok(msg))) => {
@@ -598,41 +625,110 @@ impl App {
         }
     }
 
-    /// Pull the next queued prompt (if any) and spawn an engine for it. Called
-    /// after each inflight completion so user-queued prompts run FIFO.
     fn dispatch_next_queued(&mut self) {
         if let Some(next) = self.queued_prompts.pop_front() {
             self.spawn_engine(next);
         }
     }
 
+    /// Push newly-finalized items (legacy `Message`s and `TranscriptItem`s
+    /// folded from bus events) into the terminal's native scroll buffer via
+    /// `Terminal::insert_before`. Runs once per loop iteration before draw.
+    ///
+    /// For an in-flight `AssistantText` at `next_flush_idx`, this also pushes
+    /// any newly-complete lines (up to the last `\n`) so streaming text moves
+    /// into scrollback line-by-line — matches Claude Code's behaviour.
+    fn flush_to_scrollback(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> std::io::Result<()> {
+        let width = terminal.size().map(|s| s.width).unwrap_or(80);
+
+        if let Some(lines) = self.splash_pending.take() {
+            self.insert_lines(terminal, lines, width)?;
+        }
+
+        // Flush folded items first, then legacy messages. The engine's
+        // post-turn Trail line (`Message::Trail("Cogitated for Ns")`) is
+        // pushed in the same tick as the final bus events are drained, so
+        // items-first ensures Trail lands AFTER the conversation in
+        // scrollback. Slash-command outputs (`Message::System`) are pushed
+        // before any engine activity, so they flush in earlier ticks
+        // before any items exist — the ordering is preserved across ticks
+        // even with items-first within a single tick.
+        let items = fold(&self.scroll_area.events, None);
+        loop {
+            let Some(item) = items.get(self.next_flush_idx) else { break };
+            if is_stable(item) {
+                let already = self
+                    .flushed_chars_per_block
+                    .get(&self.next_flush_idx)
+                    .copied()
+                    .unwrap_or(0);
+                let lines = item_to_lines(item, already);
+                self.insert_lines(terminal, lines, width)?;
+                self.flushed_chars_per_block.remove(&self.next_flush_idx);
+                self.next_flush_idx += 1;
+                continue;
+            }
+
+            // In-flight item. For streaming assistant text, push completed
+            // lines (everything up to and including the last `\n`) and leave
+            // the trailing partial line in the live tail.
+            if let TranscriptItem::AssistantText { text, .. } = item {
+                let already = self
+                    .flushed_chars_per_block
+                    .get(&self.next_flush_idx)
+                    .copied()
+                    .unwrap_or(0);
+                if let Some(rel_nl) = text[already..].rfind('\n') {
+                    let until = already + rel_nl + 1;
+                    let chunk_item = TranscriptItem::AssistantText {
+                        text: text[..until].to_string(),
+                        complete: false,
+                    };
+                    let lines = item_to_lines(&chunk_item, already);
+                    self.insert_lines(terminal, lines, width)?;
+                    self.flushed_chars_per_block.insert(self.next_flush_idx, until);
+                }
+            }
+            break;
+        }
+
+        while self.flushed_message_count < self.scroll_area.messages.len() {
+            let msg = self.scroll_area.messages[self.flushed_message_count].clone();
+            let lines = message_to_lines(&msg);
+            self.insert_lines(terminal, lines, width)?;
+            self.flushed_message_count += 1;
+        }
+
+        Ok(())
+    }
+
+    fn insert_lines(
+        &self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+        lines: Vec<Line<'static>>,
+        width: u16,
+    ) -> std::io::Result<()> {
+        let h = lines_height(&lines, width);
+        if h == 0 {
+            return Ok(());
+        }
+        terminal.insert_before(h, |buf| {
+            let area = buf.area;
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .render(area, buf);
+        })
+    }
+
     pub fn run(&mut self, mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
         while !self.should_quit {
             self.activity.tick();
-            // Flush completed turns into the terminal's native scrollback so
-            // the inline live region stays bounded and the user can scroll up
-            // in the terminal to see history.
-            if self.flush_to_scrollback {
-                self.flush_to_scrollback = false;
-                let width = terminal.size().map(|s| s.width).unwrap_or(80);
-                let lines = self.scroll_area.drain_to_lines();
-                let height = lines_height(&lines, width);
-                if height > 0 {
-                    // Redraw the viewport WITHOUT the drained content first so
-                    // the on-screen viewport reflects the post-drain state. If
-                    // we skip this, ratatui's insert_before scrolls the pre-
-                    // drain viewport (which still contains the turn) up into
-                    // scrollback alongside the flushed lines — duplicating the
-                    // content.
-                    terminal.draw(|f| self.render(f))?;
-                    terminal.insert_before(height, |buf| {
-                        let area = buf.area;
-                        Paragraph::new(lines).wrap(Wrap { trim: false }).render(area, buf);
-                    })?;
-                }
-            }
+            self.flush_to_scrollback(&mut terminal)?;
             terminal.draw(|f| self.render(f))?;
-            self.handle_event()?;
+            self.handle_event(&mut terminal)?;
             self.process_pending();
         }
         // Best-effort cleanup of any async subagents still running.
@@ -659,75 +755,80 @@ impl App {
         f.render_widget(Paragraph::new(line), area);
     }
 
+    fn render_live_tail(&self, f: &mut Frame, area: Rect) {
+        if area.height == 0 {
+            return;
+        }
+        let items = fold(&self.scroll_area.events, None);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for (i, item) in items.iter().enumerate().skip(self.next_flush_idx) {
+            let already = self
+                .flushed_chars_per_block
+                .get(&i)
+                .copied()
+                .unwrap_or(0);
+            lines.extend(item_to_lines(item, already));
+        }
+        if lines.is_empty() {
+            return;
+        }
+        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+        f.render_widget(para, area);
+    }
+
     fn render(&mut self, f: &mut Frame) {
         let area = f.area();
 
-        let activity_height = self.activity.height();
-        let header_height   = MASCOT.len() as u16;
-
         if self.modal.is_some() {
+            // Modal occupies the live area; chrome shrinks away.
             let modal_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(header_height),
-                    Constraint::Length(1),      // spacer
-                    Constraint::Min(1),         // scroll area
-                    Constraint::Length(activity_height),
-                    Constraint::Min(4),         // modal area
-                ])
-                .split(area);
-            self.header.render(f, modal_layout[0]);
-            self.scroll_area.render(f, modal_layout[2]);
-            self.activity.render(f, modal_layout[3]);
-            // Re-borrow modal immutably after mutable borrows are complete.
-            if let Some(ref modal) = self.modal {
-                modal.render(f, modal_layout[4]);
-            }
-        } else {
-            let entries = if self.slash_menu_open {
-                self.slash_menu.filter(&self.input.content)
-            } else {
-                Vec::new()
-            };
-            let menu_height = if self.slash_menu_open {
-                SlashMenu::height(&entries)
-            } else {
-                0
-            };
-            let input_height = 3u16;
-            let hint_height  = 1u16;
-            let fixed = header_height + 1 + menu_height + activity_height + input_height + hint_height;
-            let available_for_scroll = area.height.saturating_sub(fixed);
-            let scroll_height = self.scroll_area
-                .content_height(area.width)
-                .min(available_for_scroll);
-
-            let layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(header_height),
+                    Constraint::Min(4),
                     Constraint::Length(1),
-                    Constraint::Length(scroll_height),
-                    Constraint::Length(menu_height),
-                    Constraint::Length(activity_height),
-                    Constraint::Length(input_height),
-                    Constraint::Length(hint_height),
                 ])
                 .split(area);
-
-            self.header.render(f, layout[0]);
-            self.scroll_area.render(f, layout[2]);
-            if self.slash_menu_open {
-                self.slash_menu.render(f, layout[3], &entries);
+            if let Some(ref modal) = self.modal {
+                modal.render(f, modal_layout[0]);
             }
-            self.activity.render(f, layout[4]);
-            self.input.render(f, layout[5]);
-            self.render_hint(f, layout[6]);
+            return;
         }
+
+        let entries = if self.slash_menu_open {
+            self.slash_menu.filter(&self.input.content)
+        } else {
+            Vec::new()
+        };
+        let menu_height = if self.slash_menu_open {
+            SlashMenu::height(&entries)
+        } else {
+            0
+        };
+        let input_height = 3u16;
+        let hint_height = 1u16;
+        let activity_height = self.activity.height();
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(menu_height),
+                Constraint::Length(activity_height),
+                Constraint::Length(input_height),
+                Constraint::Length(hint_height),
+            ])
+            .split(area);
+
+        self.render_live_tail(f, layout[0]);
+        if self.slash_menu_open {
+            self.slash_menu.render(f, layout[1], &entries);
+        }
+        self.activity.render(f, layout[2]);
+        self.input.render(f, layout[3]);
+        self.render_hint(f, layout[4]);
     }
 }
 
-/// Maps a present-participle working verb to past tense for the trail line.
 fn past_tense(verb: &str) -> String {
     match verb {
         "Thinking" => "Thought".to_string(),
@@ -756,6 +857,92 @@ fn friendly_model_name(slug: &str) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdk::protocol::SystemSubtype;
+
+    fn user_item(text: &str) -> TranscriptItem {
+        TranscriptItem::User { text: text.into() }
+    }
+    fn assistant(text: &str, complete: bool) -> TranscriptItem {
+        TranscriptItem::AssistantText { text: text.into(), complete }
+    }
+    fn thinking(complete: bool) -> TranscriptItem {
+        TranscriptItem::Thinking {
+            text: "x".into(), collapsed: true, elapsed_ms: 0, complete,
+        }
+    }
+    fn tool_call(result: Option<&str>) -> TranscriptItem {
+        TranscriptItem::ToolCall {
+            tool_use_id: "tu_1".into(),
+            name: "Read".into(),
+            input: serde_json::json!({"file_path": "/x"}),
+            result: result.map(|c| crate::tui::transcript::ToolResultRender {
+                content: c.into(), is_error: false,
+            }),
+            elapsed_ms: 0,
+        }
+    }
+
+    #[test]
+    fn is_stable_classifies_each_variant() {
+        assert!(is_stable(&user_item("hi")));
+        assert!(is_stable(&assistant("done", true)));
+        assert!(!is_stable(&assistant("partial", false)));
+        assert!(is_stable(&thinking(true)));
+        assert!(!is_stable(&thinking(false)));
+        assert!(is_stable(&tool_call(Some("ok"))));
+        assert!(!is_stable(&tool_call(None)));
+        assert!(is_stable(&TranscriptItem::System {
+            subtype: SystemSubtype::Notice,
+            message: "x".into(),
+        }));
+    }
+
+    /// Mirrors the line-level streaming logic in `flush_to_scrollback`:
+    /// given the in-flight text and how many leading chars have already been
+    /// pushed to scrollback, return the chunk (if any) that should be pushed
+    /// next, and the new cursor position.
+    fn next_flush_chunk(text: &str, already: usize) -> Option<(String, usize)> {
+        let tail = &text[already..];
+        let rel_nl = tail.rfind('\n')?;
+        let until = already + rel_nl + 1;
+        Some((text[already..until].to_string(), until))
+    }
+
+    #[test]
+    fn streaming_flush_pushes_completed_lines_only() {
+        let text = "first line\nsecond line\npartial";
+        // No flush yet; rfind('\n') finds the \n after "second line"
+        // → flush "first line\nsecond line\n" (23 chars).
+        let (chunk, cursor) = next_flush_chunk(text, 0).expect("has a complete line");
+        assert_eq!(chunk, "first line\nsecond line\n");
+        assert_eq!(cursor, 23);
+        // Now from cursor=23, tail is "partial" — no newline, nothing to flush.
+        assert!(next_flush_chunk(text, cursor).is_none());
+    }
+
+    #[test]
+    fn streaming_flush_pushes_nothing_when_no_newline_yet() {
+        // The model has begun streaming but no newline has arrived: keep the
+        // whole text in the live tail; push nothing.
+        let text = "still streaming partial line";
+        assert!(next_flush_chunk(text, 0).is_none());
+    }
+
+    #[test]
+    fn streaming_flush_advances_past_blank_lines() {
+        let text = "para 1\n\npara 2\n";
+        let (chunk, cursor) = next_flush_chunk(text, 0).unwrap();
+        // rfind walks back to the last \n, which is at position 14.
+        // Flush everything up to and including it.
+        assert_eq!(chunk, "para 1\n\npara 2\n");
+        assert_eq!(cursor, text.len());
+        assert!(next_flush_chunk(text, cursor).is_none());
+    }
+}
+
 pub async fn run_with_engine(
     config: CliConfig,
     store: Arc<Store>,
@@ -764,11 +951,12 @@ pub async fn run_with_engine(
     bus: Arc<SessionBus>,
     system_prompt: SystemPrompt,
 ) {
-    let height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+    let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+    let viewport_height = VIEWPORT_HEIGHT.min(term_height);
     let _ = enable_raw_mode();
     let backend = CrosstermBackend::new(std::io::stdout());
     let terminal = Terminal::with_options(backend, TerminalOptions {
-        viewport: Viewport::Inline(height),
+        viewport: Viewport::Inline(viewport_height),
     });
     if let Ok(terminal) = terminal {
         let mut app = App::new(config, store, engine, bus, system_prompt);
