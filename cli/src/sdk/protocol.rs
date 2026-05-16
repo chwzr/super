@@ -253,6 +253,14 @@ pub enum BusMessage {
         uuid: Uuid,
         session_id: String,
     },
+    #[serde(rename = "render_event")]
+    RenderEvent {
+        tool_use_id: String,
+        spec: shared::RenderSpec,
+        parent_tool_use_id: Option<String>,
+        uuid: Uuid,
+        session_id: String,
+    },
 }
 
 impl BusMessage {
@@ -263,7 +271,8 @@ impl BusMessage {
             | BusMessage::StreamEvent { session_id, .. }
             | BusMessage::ToolProgress { session_id, .. }
             | BusMessage::SystemEvent { session_id, .. }
-            | BusMessage::Result { session_id, .. } => session_id.as_str(),
+            | BusMessage::Result { session_id, .. }
+            | BusMessage::RenderEvent { session_id, .. } => session_id.as_str(),
         }
     }
 
@@ -274,7 +283,8 @@ impl BusMessage {
             | BusMessage::StreamEvent { parent_tool_use_id, .. }
             | BusMessage::ToolProgress { parent_tool_use_id, .. }
             | BusMessage::SystemEvent { parent_tool_use_id, .. }
-            | BusMessage::Result { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+            | BusMessage::Result { parent_tool_use_id, .. }
+            | BusMessage::RenderEvent { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
         }
     }
 }
@@ -460,5 +470,43 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod render_event_tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn render_event_serializes_with_type_tag() {
+        let msg = BusMessage::RenderEvent {
+            tool_use_id: "tu_1".into(),
+            spec: shared::RenderSpec::Nothing,
+            parent_tool_use_id: None,
+            uuid: Uuid::new_v4(),
+            session_id: "s1".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"render_event""#));
+        assert!(json.contains(r#""tool_use_id":"tu_1""#));
+        assert!(json.contains(r#""kind":"nothing""#));
+    }
+
+    #[test]
+    fn render_event_round_trips() {
+        let msg = BusMessage::RenderEvent {
+            tool_use_id: "tu_2".into(),
+            spec: shared::RenderSpec::Status {
+                state: shared::StatusState::Success,
+                message: Some("done".into()),
+            },
+            parent_tool_use_id: None,
+            uuid: Uuid::new_v4(),
+            session_id: "s1".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: BusMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, BusMessage::RenderEvent { .. }));
     }
 }
