@@ -263,6 +263,7 @@ fn render_tool_result_for(
     match tool_name {
         "Bash" => render_bash_result(lines, r, dim),
         "Edit" => render_edit_result(lines, input, r, dim),
+        "Write" => render_write_result(lines, input, dim),
         _ => render_generic_result(lines, r, dim),
     }
 }
@@ -284,6 +285,44 @@ fn render_edit_result(
 
     // Hunk rows.
     lines.extend(diff::render_hunks(old, new));
+}
+
+fn render_write_result(
+    lines: &mut Vec<Line<'static>>,
+    input: &serde_json::Value,
+    dim: &Style,
+) {
+    let path = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+    let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let total_lines = content.lines().count();
+    let plural = if total_lines == 1 { "line" } else { "lines" };
+
+    let mut summary: Vec<Span<'static>> = vec![Span::styled("  ⎿  ", *dim)];
+    summary.push(Span::raw("Wrote "));
+    summary.push(Span::styled(total_lines.to_string(), Style::default().add_modifier(Modifier::BOLD)));
+    summary.push(Span::raw(format!(" {plural} to {path}")));
+    lines.push(Line::from(summary));
+
+    const MAX: usize = 10;
+    let lineno_width = total_lines.to_string().len().max(2);
+    for (i, line) in content.lines().take(MAX).enumerate() {
+        let lineno = i + 1;
+        let body = format!(" {:>width$} {}", lineno, line, width = lineno_width);
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(body, *dim),
+        ]));
+    }
+    if total_lines > MAX {
+        let remaining = total_lines - MAX;
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("… +{remaining} lines (ctrl+o to expand)"),
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+        ]));
+    }
 }
 
 /// Generic fallback: behaves like the prior renderer (cap at 20 lines).
@@ -608,6 +647,30 @@ mod tests {
         assert!(body.contains(" 1 -hello"), "removed hunk: {body:?}");
         assert!(body.contains(" 1 +hi"), "added hunk: {body:?}");
         assert!(!body.contains("Successfully replaced"), "raw result text should not leak: {body:?}");
+    }
+
+    #[test]
+    fn write_result_renders_wrote_n_lines_with_numbered_content() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Write".into(),
+            input: serde_json::json!({
+                "file_path": "/tmp/notes.txt",
+                "content": "alpha\nbeta\ngamma\n",
+            }),
+            result: Some(ToolResultRender {
+                content: "Successfully wrote 18 bytes to /tmp/notes.txt".into(),
+                is_error: false,
+            }),
+            elapsed_ms: 0,
+        };
+        let body = rendered_text(&item_to_lines(&item, 0));
+        assert!(body.contains("Write"), "display name: {body:?}");
+        assert!(body.contains("Wrote 3 lines to /tmp/notes.txt"), "summary: {body:?}");
+        assert!(body.contains(" 1 alpha"), "numbered line 1: {body:?}");
+        assert!(body.contains(" 2 beta"),  "numbered line 2: {body:?}");
+        assert!(body.contains(" 3 gamma"), "numbered line 3: {body:?}");
+        assert!(!body.contains("Successfully wrote"), "raw result text should not leak: {body:?}");
     }
 
     #[test]
