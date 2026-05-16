@@ -184,6 +184,9 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize) -> Vec<Line<'sta
                 ]));
             }
         }
+        TranscriptItem::ToolBatch { .. } => {
+            // Real rendering wired in Task 13.
+        }
     }
     lines
 }

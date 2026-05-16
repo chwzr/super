@@ -17,12 +17,26 @@ pub enum TranscriptItem {
         elapsed_ms: u64,
     },
     System { subtype: SystemSubtype, message: String },
+    /// One or more consecutive read/search tool calls within an assistant turn.
+    /// Renders as a single dim-gray summary line by default (e.g. "Read 3 files
+    /// (ctrl+o to expand)"); when the global `show_detailed_transcript` flag is
+    /// on, each call renders as an individual block. See
+    /// cli/docs/tool-call-render-spec.md "Render mode 1".
+    ToolBatch { calls: Vec<BatchCall> },
 }
 
 #[derive(Debug, Clone)]
 pub struct ToolResultRender {
     pub content: String,
     pub is_error: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchCall {
+    pub tool_use_id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+    pub result: Option<ToolResultRender>,
 }
 
 /// Pure fold from a slice of bus events to a transcript.

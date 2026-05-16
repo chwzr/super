@@ -121,6 +121,7 @@ fn is_stable(item: &TranscriptItem) -> bool {
         TranscriptItem::Thinking { complete, .. } => *complete,
         TranscriptItem::ToolCall { result, .. } => result.is_some(),
         TranscriptItem::System { .. } => true,
+        TranscriptItem::ToolBatch { .. } => true,
     }
 }
 
