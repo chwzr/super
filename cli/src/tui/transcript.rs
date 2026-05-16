@@ -238,6 +238,38 @@ pub(crate) fn strip_system_reminders(text: &str) -> String {
     out.trim().to_string()
 }
 
+/// Post-fold transformation: collapse consecutive read/search tool calls into
+/// a single `ToolBatch`. Mirrors Claude Code's `collapseReadSearch` pass.
+pub fn group_tool_batches(items: Vec<TranscriptItem>) -> Vec<TranscriptItem> {
+    use crate::tui::render::tool_family::{classify, ToolFamily};
+
+    let mut out: Vec<TranscriptItem> = Vec::with_capacity(items.len());
+    let mut pending: Vec<BatchCall> = Vec::new();
+
+    fn flush(out: &mut Vec<TranscriptItem>, pending: &mut Vec<BatchCall>) {
+        if !pending.is_empty() {
+            let calls = std::mem::take(pending);
+            out.push(TranscriptItem::ToolBatch { calls });
+        }
+    }
+
+    for item in items {
+        match item {
+            TranscriptItem::ToolCall { tool_use_id, name, input, result, .. }
+                if classify(&name) == ToolFamily::ReadSearch =>
+            {
+                pending.push(BatchCall { tool_use_id, name, input, result });
+            }
+            other => {
+                flush(&mut out, &mut pending);
+                out.push(other);
+            }
+        }
+    }
+    flush(&mut out, &mut pending);
+    out
+}
+
 fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
     let parent = match ev {
         BusMessage::User { parent_tool_use_id, .. }
@@ -260,6 +292,91 @@ mod tests {
         AnthropicUsage, AssistantPayload, MessageMeta, UserPayload,
     };
     use uuid::Uuid;
+
+    fn tc(name: &str, id: &str) -> TranscriptItem {
+        TranscriptItem::ToolCall {
+            tool_use_id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({}),
+            result: Some(ToolResultRender { content: "ok".into(), is_error: false }),
+            elapsed_ms: 0,
+        }
+    }
+
+    #[test]
+    fn group_collapses_consecutive_reads_into_one_batch() {
+        let items = vec![tc("Read", "1"), tc("Read", "2"), tc("Read", "3")];
+        let g = group_tool_batches(items);
+        assert_eq!(g.len(), 1);
+        match &g[0] {
+            TranscriptItem::ToolBatch { calls } => assert_eq!(calls.len(), 3),
+            other => panic!("expected ToolBatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn group_does_not_collapse_a_single_mutating_tool() {
+        let items = vec![tc("Bash", "1")];
+        let g = group_tool_batches(items);
+        assert_eq!(g.len(), 1);
+        assert!(matches!(g[0], TranscriptItem::ToolCall { .. }));
+    }
+
+    #[test]
+    fn group_collapses_single_read_into_a_one_call_batch() {
+        // Per spec: even N=1 read collapses into "Read 1 file (ctrl+o to expand)".
+        let items = vec![tc("Read", "1")];
+        let g = group_tool_batches(items);
+        assert_eq!(g.len(), 1);
+        match &g[0] {
+            TranscriptItem::ToolBatch { calls } => assert_eq!(calls.len(), 1),
+            other => panic!("expected ToolBatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn group_breaks_at_mutating_tool() {
+        let items = vec![
+            tc("Read", "1"),
+            tc("Read", "2"),
+            tc("Bash", "3"),
+            tc("Read", "4"),
+        ];
+        let g = group_tool_batches(items);
+        assert_eq!(g.len(), 3);
+        assert!(matches!(&g[0], TranscriptItem::ToolBatch { calls } if calls.len() == 2));
+        assert!(matches!(&g[1], TranscriptItem::ToolCall { name, .. } if name == "Bash"));
+        assert!(matches!(&g[2], TranscriptItem::ToolBatch { calls } if calls.len() == 1));
+    }
+
+    #[test]
+    fn group_breaks_at_user_or_assistant_text() {
+        let items = vec![
+            tc("Read", "1"),
+            TranscriptItem::AssistantText { text: "thinking".into(), complete: true },
+            tc("Read", "2"),
+        ];
+        let g = group_tool_batches(items);
+        assert_eq!(g.len(), 3);
+        assert!(matches!(&g[0], TranscriptItem::ToolBatch { .. }));
+        assert!(matches!(&g[1], TranscriptItem::AssistantText { .. }));
+        assert!(matches!(&g[2], TranscriptItem::ToolBatch { .. }));
+    }
+
+    #[test]
+    fn group_mixes_grep_and_glob_into_one_batch() {
+        let items = vec![tc("Grep", "1"), tc("Glob", "2")];
+        let g = group_tool_batches(items);
+        assert_eq!(g.len(), 1);
+        match &g[0] {
+            TranscriptItem::ToolBatch { calls } => {
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].name, "Grep");
+                assert_eq!(calls[1].name, "Glob");
+            }
+            other => panic!("expected ToolBatch, got {other:?}"),
+        }
+    }
 
     fn env(event: StreamEvent) -> BusMessage {
         BusMessage::StreamEvent {
