@@ -58,14 +58,79 @@ impl Tool for BashTool {
                 Ok(Ok(out)) => {
                     let stdout = String::from_utf8_lossy(&out.stdout);
                     let stderr = String::from_utf8_lossy(&out.stderr);
-                    let content = if stderr.is_empty() { stdout.to_string() } else { format!("stdout:\n{stdout}\nstderr:\n{stderr}") };
-                    let truncated = if content.len() > 50000 { format!("{}...\n[output truncated]", &content[..50000]) } else { content };
-                    ToolResult { content: truncated, is_error: !out.status.success(), ..Default::default() }
+                    let success = out.status.success();
+                    let content = if success {
+                        if stderr.is_empty() {
+                            stdout.to_string()
+                        } else {
+                            format!("stdout:\n{stdout}\nstderr:\n{stderr}")
+                        }
+                    } else {
+                        let code = out.status.code().unwrap_or(-1);
+                        // Match Claude's format: header line followed by
+                        // captured output (stderr first, then stdout if any).
+                        let mut body = String::new();
+                        if !stderr.is_empty() {
+                            body.push_str(stderr.trim_end_matches('\n'));
+                        }
+                        if !stdout.is_empty() {
+                            if !body.is_empty() { body.push('\n'); }
+                            body.push_str(stdout.trim_end_matches('\n'));
+                        }
+                        if body.is_empty() {
+                            format!("Error: Exit code {code}")
+                        } else {
+                            format!("Error: Exit code {code}\n{body}")
+                        }
+                    };
+                    let truncated = if content.len() > 50000 {
+                        format!("{}...\n[output truncated]", &content[..50000])
+                    } else {
+                        content
+                    };
+                    ToolResult { content: truncated, is_error: !success, ..Default::default() }
                 }
                 Ok(Err(e)) => ToolResult { content: format!("Command failed: {e}"), is_error: true, ..Default::default() },
                 Err(_) => ToolResult { content: "Command timed out".into(), is_error: true, ..Default::default() },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::store::PermissionMode;
+    use crate::tools::contract::{Tool, ToolCallContext};
+
+    fn ctx() -> ToolCallContext {
+        ToolCallContext {
+            cwd: std::env::temp_dir(),
+            permission_mode: PermissionMode::default(),
+            abort_signal: None,
+            parent_tool_use_id: None,
+            bus: None,
+            auto_deny_prompts: true,
+            tool_use_id: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_error_content_starts_with_exit_code_header() {
+        let t = BashTool;
+        let out = t.call(serde_json::json!({"command": "bash -c 'echo ohno >&2; exit 2'"}), &ctx()).await;
+        assert!(out.is_error, "expected error");
+        assert!(out.content.starts_with("Error: Exit code 2"), "got: {:?}", out.content);
+        assert!(out.content.contains("ohno"), "stderr preserved: {:?}", out.content);
+    }
+
+    #[tokio::test]
+    async fn bash_success_content_does_not_prepend_exit_header() {
+        let t = BashTool;
+        let out = t.call(serde_json::json!({"command": "echo hello"}), &ctx()).await;
+        assert!(!out.is_error);
+        assert!(!out.content.starts_with("Error:"), "got: {:?}", out.content);
+        assert!(out.content.trim() == "hello");
     }
 }
 
