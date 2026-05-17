@@ -8,9 +8,12 @@ pub struct TaskRecord {
     pub id: String,
     pub subject: String,
     pub description: String,
+    pub active_form: Option<String>,
     pub status: TaskStatus,
+    pub owner: Option<String>,
     pub blocks: Vec<String>,
     pub blocked_by: Vec<String>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
