@@ -35,6 +35,36 @@ impl Tool for WriteTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file_path": { "type": "string" },
+                "bytes_written": { "type": "integer" },
+                "overwritten": { "type": "boolean" }
+            }
+        }))
+    }
+
+    fn get_path(&self, input: &serde_json::Value) -> Option<std::path::PathBuf> {
+        input.get("file_path").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+    }
+
+    fn get_activity_description(&self, input: &serde_json::Value) -> Option<String> {
+        input.get("file_path").and_then(|v| v.as_str()).map(|p| format!("Writing {}", p))
+    }
+
+    fn to_auto_classifier_input(&self, input: &serde_json::Value) -> serde_json::Value {
+        let path = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let preview = if content.len() > 200 {
+            format!("{}...", &content[..200])
+        } else {
+            content.to_string()
+        };
+        serde_json::Value::String(format!("{}: {}", path, preview))
+    }
+
     fn is_destructive(&self, _input: &serde_json::Value) -> bool {
         true
     }
@@ -77,21 +107,23 @@ impl Tool for WriteTool {
             }
         }
 
+        let existed_before = path.exists();
         match std::fs::write(path, content) {
             Ok(()) => {
                 let mut meta = std::collections::HashMap::new();
                 meta.insert("bytes_written".to_string(), content.len().to_string());
+                meta.insert("overwritten".to_string(), existed_before.to_string());
                 ToolResult {
                     content: format!(
-                        "Successfully wrote {} bytes to {}",
+                        "Successfully {} {} bytes to {}{}",
+                        if existed_before { "overwrote" } else { "wrote" },
                         content.len(),
-                        file_path
+                        file_path,
+                        if existed_before { " (file was overwritten)" } else { "" }
                     ),
                     is_error: false,
                     metadata: Some(meta),
-                    inject_messages: Vec::new(),
-                    mcp_meta: None,
-                    new_messages: Vec::new(),
+                    ..Default::default()
                 }
             }
             Err(e) => ToolResult {
