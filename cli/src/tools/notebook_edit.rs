@@ -49,6 +49,24 @@ impl Tool for NotebookEditTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "notebook_path": { "type": "string" },
+                "edit_mode": { "type": "string", "enum": ["replace", "insert", "delete"] },
+                "cell_id": { "type": "string" },
+                "cell_type": { "type": "string", "enum": ["code", "markdown"] },
+                "new_source": { "type": "string" },
+                "language": { "type": "string" },
+                "cell_count": { "type": "integer" },
+                "original_notebook": { "type": "object", "description": "Full notebook JSON before edit" },
+                "updated_notebook": { "type": "object", "description": "Full notebook JSON after edit" },
+                "error": { "type": "string" }
+            }
+        }))
+    }
+
     fn is_destructive(&self, _input: &serde_json::Value) -> bool {
         true
     }
@@ -116,6 +134,8 @@ impl Tool for NotebookEditTool {
                 };
             }
         };
+
+        let original_notebook = notebook.clone();
 
         let cells = notebook
             .get_mut("cells")
@@ -226,20 +246,30 @@ impl Tool for NotebookEditTool {
 
         match std::fs::write(path, &json_str) {
             Ok(()) => {
+                let result_json = serde_json::json!({
+                    "notebook_path": notebook_path,
+                    "edit_mode": edit_mode,
+                    "cell_id": cell_id,
+                    "cell_type": cell_type,
+                    "new_source": new_source,
+                    "language": notebook.get("metadata")
+                        .and_then(|m| m.get("kernelspec"))
+                        .and_then(|k| k.get("language"))
+                        .and_then(|v| v.as_str()),
+                    "cell_count": cell_count,
+                    "original_notebook": original_notebook,
+                    "updated_notebook": notebook
+                });
+
                 let mut meta = std::collections::HashMap::new();
                 meta.insert("edit_mode".to_string(), edit_mode.to_string());
                 meta.insert("cell_count".to_string(), cell_count.to_string());
 
                 ToolResult {
-                    content: format!(
-                        "Successfully performed '{}' on notebook {} ({} cells)",
-                        edit_mode, notebook_path, cell_count
-                    ),
+                    content: result_json.to_string(),
                     is_error: false,
                     metadata: Some(meta),
-                    inject_messages: Vec::new(),
-                    mcp_meta: None,
-                    new_messages: Vec::new(),
+                    ..Default::default()
                 }
             }
             Err(e) => ToolResult {
@@ -257,9 +287,7 @@ impl Tool for NotebookEditTool {
     ) -> ToolResultBlock {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
-            content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
-            ),
+            content: ToolResultContent::Text(output.to_string()),
             is_error: false,
         }
     }

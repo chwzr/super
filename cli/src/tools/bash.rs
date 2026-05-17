@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::process::Command;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 
 pub struct BashTool;
 
@@ -22,20 +22,98 @@ impl Tool for BashTool {
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string"},
-                "description": {"type": "string"},
-                "timeout": {"type": "integer"},
-                "run_in_background": {"type": "boolean"}
+                "command": {
+                    "type": "string",
+                    "description": "The command to execute"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Clear, concise description of what this command does in active voice. For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words). For commands that are harder to parse at a glance (piped commands, obscure flags, etc.), add enough context to clarify what it does."
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Optional timeout in milliseconds (max 600000)",
+                    "minimum": 0,
+                    "maximum": 600000
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Set to true to run this command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter."
+                },
+                "dangerouslyDisableSandbox": {
+                    "type": "boolean",
+                    "description": "Set this to true to dangerously override sandbox mode and run commands without sandboxing."
+                }
             },
             "required": ["command"]
         })
     }
+
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "stdout": { "type": "string" },
+                "stderr": { "type": "string" },
+                "exit_code": { "type": "integer" },
+                "timed_out": { "type": "boolean" },
+                "background": { "type": "boolean" }
+            }
+        }))
+    }
+
+    fn get_activity_description(&self, input: &serde_json::Value) -> Option<String> {
+        input.get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| {
+                input.get("command")
+                    .and_then(|v| v.as_str())
+                    .map(|c| {
+                        if c.len() > 80 {
+                            format!("{}...", &c[..77])
+                        } else {
+                            c.to_string()
+                        }
+                    })
+            })
+    }
+    async fn prepare_permission_matcher(
+        &self,
+        input: &serde_json::Value,
+    ) -> Option<Box<dyn Fn(&str) -> bool + Send + Sync>> {
+        let command_stem = input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|c| {
+                c.trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            })?;
+
+        if command_stem.is_empty() {
+            return None;
+        }
+
+        Some(Box::new(move |rule_content: &str| -> bool {
+            let rule_stem = rule_content.trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            rule_stem == command_stem || rule_content == "*"
+        }))
+    }
+
     fn is_destructive(&self, _input: &serde_json::Value) -> bool { true }
 
     async fn call(&self, input: serde_json::Value, context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let command_str = input["command"].as_str().unwrap_or("");
         let timeout_ms = input["timeout"].as_u64().unwrap_or(120_000);
         let run_in_bg = input["run_in_background"].as_bool().unwrap_or(false);
+        let dangerously_disable_sandbox = input["dangerouslyDisableSandbox"].as_bool().unwrap_or(false);
+        let _ = dangerously_disable_sandbox; // Read but not yet enforced (no sandbox implementation)
 
         // Block dangerous patterns
         if let Some(reason) = security_check(command_str) {
@@ -151,6 +229,33 @@ mod tests {
         assert!(!out.is_error);
         assert!(!out.content.starts_with("Error:"), "got: {:?}", out.content);
         assert!(out.content.trim() == "hello");
+    }
+
+    #[tokio::test]
+    async fn permission_matcher_matches_command_stem() {
+        let t = BashTool;
+        let input = serde_json::json!({"command": "git status"});
+        let matcher = t.prepare_permission_matcher(&input).await.expect("should return matcher");
+        assert!(matcher("git *"), "git * should match git status");
+        assert!(matcher("git diff"), "git diff should match git status (stem check only)");
+        assert!(!matcher("ls *"), "ls * should not match git status");
+        assert!(matcher("*"), "wildcard should match anything");
+    }
+
+    #[tokio::test]
+    async fn permission_matcher_handles_no_command() {
+        let t = BashTool;
+        let input = serde_json::json!({});
+        let matcher = t.prepare_permission_matcher(&input).await;
+        assert!(matcher.is_none(), "no command = no matcher");
+    }
+
+    #[tokio::test]
+    async fn permission_matcher_handles_whitespace_command() {
+        let t = BashTool;
+        let input = serde_json::json!({"command": "   echo hello"});
+        let matcher = t.prepare_permission_matcher(&input).await.expect("should return matcher");
+        assert!(matcher("echo *"), "should trim command");
     }
 }
 

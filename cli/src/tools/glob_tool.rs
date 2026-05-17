@@ -1,5 +1,6 @@
 use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 use async_trait::async_trait;
+use shared;
 
 #[derive(Default)]
 pub struct GlobTool;
@@ -35,6 +36,61 @@ impl Tool for GlobTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "durationMs": { "type": "number", "description": "Time the search took in milliseconds" },
+                "numFiles": { "type": "integer", "description": "Number of matching files found" },
+                "filenames": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Matching file paths"
+                },
+                "truncated": { "type": "boolean", "description": "True when results exceed the limit" }
+            }
+        }))
+    }
+
+    fn render_tool_result_message(
+        &self,
+        output: &serde_json::Value,
+        _progress: &[crate::tools::contract::ProgressEvent],
+        _opts: &crate::tools::contract::RenderOpts,
+    ) -> Option<shared::RenderSpec> {
+        let filenames: Vec<shared::PathEntry> = output["filenames"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| shared::PathEntry {
+                        path: std::path::PathBuf::from(s),
+                        line: None,
+                        preview: None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let num_files = output["numFiles"].as_u64().unwrap_or(filenames.len() as u64) as usize;
+        let truncated = output["truncated"].as_bool().unwrap_or(false);
+
+        Some(shared::RenderSpec::PathList {
+            entries: filenames,
+            total: num_files,
+            truncated,
+        })
+    }
+
+    fn extract_search_text(&self, output: &serde_json::Value) -> Option<String> {
+        output["filenames"].as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    }
+
     fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
         true
     }
@@ -44,6 +100,8 @@ impl Tool for GlobTool {
     }
 
     async fn call(&self, input: serde_json::Value, context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+        let start = std::time::Instant::now();
+
         let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -144,23 +202,26 @@ impl Tool for GlobTool {
             })
             .collect();
 
-        let result = if result_lines.is_empty() {
-            format!("No files matching pattern '{}' found in {}", pattern, base_path.display())
-        } else {
-            result_lines.join("\n")
-        };
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let num_files = total;
+        let truncated = total > 100;
+
+        let result_json = serde_json::json!({
+            "durationMs": duration_ms,
+            "numFiles": num_files,
+            "filenames": result_lines,
+            "truncated": truncated
+        });
 
         let mut meta = std::collections::HashMap::new();
         meta.insert("total".to_string(), total.to_string());
         meta.insert("returned".to_string(), limited.len().to_string());
 
         ToolResult {
-            content: result,
+            content: result_json.to_string(),
             is_error: false,
             metadata: Some(meta),
-            inject_messages: Vec::new(),
-            mcp_meta: None,
-            new_messages: Vec::new(),
+            ..Default::default()
         }
     }
 

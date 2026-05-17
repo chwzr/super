@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::tools::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, ProgressSink, SearchReadKind, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 use async_trait::async_trait;
 
 const DANGEROUS_PATHS: &[&str] = &[
@@ -46,11 +46,71 @@ impl Tool for ReadTool {
                 "limit": {
                     "type": "integer",
                     "description": "The number of lines to read",
-                    "minimum": 1
+                    "exclusiveMinimum": 0,
+                    "maximum": 2000
+                },
+                "pages": {
+                    "type": "string",
+                    "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request."
                 }
             },
             "required": ["file_path"]
         })
+    }
+
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "anyOf": [
+                {
+                    "type": "object",
+                    "description": "Text file output with line-numbered content",
+                    "properties": {
+                        "content": { "type": "string" },
+                        "total_lines": { "type": "integer" },
+                        "offset": { "type": "integer" }
+                    }
+                },
+                {
+                    "type": "object",
+                    "description": "Image file output",
+                    "properties": {
+                        "file_path": { "type": "string" },
+                        "file_size": { "type": "string" },
+                        "file_type": { "const": "image" }
+                    }
+                },
+                {
+                    "type": "object",
+                    "description": "PDF file output",
+                    "properties": {
+                        "file_path": { "type": "string" },
+                        "file_size": { "type": "integer" },
+                        "file_type": { "const": "pdf" },
+                        "pages": { "type": "string" }
+                    }
+                },
+                {
+                    "type": "object",
+                    "description": "Jupyter notebook output with cells",
+                    "properties": {
+                        "file_path": { "type": "string" },
+                        "cell_count": { "type": "integer" },
+                        "file_type": { "const": "ipynb" },
+                        "cells": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "index": { "type": "integer" },
+                                    "cell_type": { "type": "string" },
+                                    "source": { "type": "string" }
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        }))
     }
 
     fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
@@ -59,6 +119,26 @@ impl Tool for ReadTool {
 
     fn is_read_only(&self, _input: &serde_json::Value) -> bool {
         true
+    }
+
+    fn get_path(&self, input: &serde_json::Value) -> Option<std::path::PathBuf> {
+        input.get("file_path").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+    }
+
+    fn get_activity_description(&self, input: &serde_json::Value) -> Option<String> {
+        input.get("file_path").and_then(|v| v.as_str()).map(|p| format!("Reading {}", p))
+    }
+
+    fn is_search_or_read_command(&self, _input: &serde_json::Value) -> SearchReadKind {
+        SearchReadKind { is_read: true, ..Default::default() }
+    }
+
+    fn extract_search_text(&self, output: &serde_json::Value) -> Option<String> {
+        output.as_str().map(String::from)
+    }
+
+    fn max_result_size_chars(&self) -> usize {
+        500_000
     }
 
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
@@ -127,21 +207,23 @@ impl Tool for ReadTool {
 
         // Check for PDF
         if ext.as_deref() == Some("pdf") {
-            // For PDF, return the file path info — actual PDF reading would need a PDF crate
+            let pages = input.get("pages").and_then(|v| v.as_str());
             let metadata = std::fs::metadata(path).ok();
             let size = metadata.map(|m| m.len()).unwrap_or(0);
             let mut meta = HashMap::new();
-        meta.insert("file_type".to_string(), "pdf".to_string());
-        return ToolResult {
+            meta.insert("file_type".to_string(), "pdf".to_string());
+            if let Some(p) = pages {
+                meta.insert("pages".to_string(), p.to_string());
+            }
+            return ToolResult {
                 content: format!(
-                    "PDF file: {}\nSize: {} bytes\nTo read the PDF content, provide the 'pages' parameter (e.g., pages=\"1-5\").",
-                    file_path, size
+                    "PDF file: {}\nSize: {} bytes{}",
+                    file_path, size,
+                    pages.map(|p| format!("\nPages requested: {}", p)).unwrap_or_default()
                 ),
                 is_error: false,
                 metadata: Some(meta),
-                inject_messages: Vec::new(),
-                mcp_meta: None,
-                new_messages: Vec::new(),
+                ..Default::default()
             };
         }
 
