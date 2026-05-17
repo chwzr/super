@@ -78,6 +78,34 @@ impl Tool for BashTool {
                     })
             })
     }
+    async fn prepare_permission_matcher(
+        &self,
+        input: &serde_json::Value,
+    ) -> Option<Box<dyn Fn(&str) -> bool + Send + Sync>> {
+        let command_stem = input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|c| {
+                c.trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            })?;
+
+        if command_stem.is_empty() {
+            return None;
+        }
+
+        Some(Box::new(move |rule_content: &str| -> bool {
+            let rule_stem = rule_content.trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            rule_stem == command_stem || rule_content == "*"
+        }))
+    }
+
     fn is_destructive(&self, _input: &serde_json::Value) -> bool { true }
 
     async fn call(&self, input: serde_json::Value, context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
@@ -201,6 +229,33 @@ mod tests {
         assert!(!out.is_error);
         assert!(!out.content.starts_with("Error:"), "got: {:?}", out.content);
         assert!(out.content.trim() == "hello");
+    }
+
+    #[tokio::test]
+    async fn permission_matcher_matches_command_stem() {
+        let t = BashTool;
+        let input = serde_json::json!({"command": "git status"});
+        let matcher = t.prepare_permission_matcher(&input).await.expect("should return matcher");
+        assert!(matcher("git *"), "git * should match git status");
+        assert!(matcher("git diff"), "git diff should match git status (stem check only)");
+        assert!(!matcher("ls *"), "ls * should not match git status");
+        assert!(matcher("*"), "wildcard should match anything");
+    }
+
+    #[tokio::test]
+    async fn permission_matcher_handles_no_command() {
+        let t = BashTool;
+        let input = serde_json::json!({});
+        let matcher = t.prepare_permission_matcher(&input).await;
+        assert!(matcher.is_none(), "no command = no matcher");
+    }
+
+    #[tokio::test]
+    async fn permission_matcher_handles_whitespace_command() {
+        let t = BashTool;
+        let input = serde_json::json!({"command": "   echo hello"});
+        let matcher = t.prepare_permission_matcher(&input).await.expect("should return matcher");
+        assert!(matcher("echo *"), "should trim command");
     }
 }
 
