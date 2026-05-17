@@ -29,6 +29,17 @@ impl Tool for CronDeleteTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "ID of the deleted job"}
+            }
+        }))
+    }
+
+    fn should_defer(&self) -> bool { true }
+
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let id = input["id"].as_str().unwrap_or("").to_string();
         let mut jobs = self.jobs.lock().unwrap();

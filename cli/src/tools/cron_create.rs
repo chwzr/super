@@ -39,23 +39,69 @@ impl Tool for CronCreateTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Unique job ID"},
+                "cron": {"type": "string", "description": "The cron expression"},
+                "humanSchedule": {"type": "string", "description": "Human-readable schedule description"},
+                "recurring": {"type": "boolean"},
+                "durable": {"type": "boolean"}
+            }
+        }))
+    }
+
+    fn should_defer(&self) -> bool { true }
+
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let cron = input["cron"].as_str().unwrap_or("").to_string();
         let prompt = input["prompt"].as_str().unwrap_or("").to_string();
         let recurring = input.get("recurring").and_then(|v| v.as_bool()).unwrap_or(true);
         let durable = input.get("durable").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        // Validate 5-field cron expression
+        // Validate 5-field cron expression with per-field constraints
         let fields: Vec<&str> = cron.split_whitespace().collect();
         if fields.len() != 5 {
             return ToolResult {
                 content: "Invalid cron expression: must have exactly 5 space-separated fields (minute hour day-of-month month day-of-week)".into(),
                 is_error: true,
-                inject_messages: Vec::new(),
-                metadata: None,
-                mcp_meta: None,
-                new_messages: Vec::new(),
+                ..Default::default()
             };
+        }
+
+        // Validate each field's domain
+        fn valid_field(field: &str, min: i32, max: i32) -> bool {
+            if field == "*" { return true; }
+            for part in field.split(',') {
+                let (part, _step) = match part.split_once('/') {
+                    Some((p, s)) => (p, Some(s)),
+                    None => (part, None),
+                };
+                let (lo, hi) = match part.split_once('-') {
+                    Some((l, h)) => (l, h),
+                    None => (part, part),
+                };
+                for val in [lo, hi] {
+                    if let Ok(n) = val.parse::<i32>() {
+                        if n < min || n > max { return false; }
+                    }
+                }
+            }
+            true
+        }
+
+        let field_constraints = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)];
+        let field_names = ["minute", "hour", "day-of-month", "month", "day-of-week"];
+        for (i, field) in fields.iter().enumerate() {
+            let (min, max) = field_constraints[i];
+            if !valid_field(field, min, max) {
+                return ToolResult {
+                    content: format!("Invalid cron field '{}': {} must be in range {}-{}", field_names[i], field, min, max),
+                    is_error: true,
+                    ..Default::default()
+                };
+            }
         }
 
         let id = uuid::Uuid::new_v4().to_string();
@@ -64,13 +110,18 @@ impl Tool for CronCreateTool {
         let mut jobs = self.jobs.lock().unwrap();
         jobs.insert(id.clone(), job);
 
+        let human = format!("cron: {cron} recurring: {recurring} durable: {durable}");
+
         ToolResult {
-            content: format!("Cron job created with ID: {id} — \"{cron}\" (recurring: {recurring}, durable: {durable})"),
+            content: json!({
+                "id": id,
+                "cron": cron,
+                "humanSchedule": human,
+                "recurring": recurring,
+                "durable": durable
+            }).to_string(),
             is_error: false,
-            inject_messages: Vec::new(),
-            metadata: None,
-            mcp_meta: None,
-            new_messages: Vec::new(),
+            ..Default::default()
         }
     }
 
