@@ -29,6 +29,18 @@ impl Tool for MonitorTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "acknowledged": {"type": "boolean"},
+                "message": {"type": "string"}
+            }
+        }))
+    }
+
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+
     async fn call(&self, _input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         ToolResult {
             content: "Monitor tool — file/process watching is not yet implemented in this CLI. \
