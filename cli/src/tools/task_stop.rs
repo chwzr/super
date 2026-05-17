@@ -22,14 +22,28 @@ impl Tool for TaskStopTool {
         json!({
             "type": "object",
             "properties": {
-                "task_id": {"type": "string"}
-            },
-            "required": ["task_id"]
+                "task_id": {"type": "string", "description": "The ID of the background task to stop"},
+                "shell_id": {"type": "string", "description": "Deprecated: use task_id instead"}
+            }
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "message": {"type": "string"},
+                "task_id": {"type": "string"},
+                "task_type": {"type": "string"}
+            }
+        }))
+    }
+
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
-        let task_id = input["task_id"].as_str().unwrap_or("");
+        let task_id = input.get("task_id")
+            .or_else(|| input.get("shell_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let tid = task_id.to_string();
 
         let found = self.store.get_state().tasks.contains_key(&tid);
