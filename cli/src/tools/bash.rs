@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::process::Command;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 
 pub struct BashTool;
 
@@ -22,13 +22,61 @@ impl Tool for BashTool {
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string"},
-                "description": {"type": "string"},
-                "timeout": {"type": "integer"},
-                "run_in_background": {"type": "boolean"}
+                "command": {
+                    "type": "string",
+                    "description": "The command to execute"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Clear, concise description of what this command does in active voice. For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words). For commands that are harder to parse at a glance (piped commands, obscure flags, etc.), add enough context to clarify what it does."
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Optional timeout in milliseconds (max 600000)",
+                    "minimum": 0,
+                    "maximum": 600000
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Set to true to run this command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter."
+                },
+                "dangerouslyDisableSandbox": {
+                    "type": "boolean",
+                    "description": "Set this to true to dangerously override sandbox mode and run commands without sandboxing."
+                }
             },
             "required": ["command"]
         })
+    }
+
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "stdout": { "type": "string" },
+                "stderr": { "type": "string" },
+                "exit_code": { "type": "integer" },
+                "timed_out": { "type": "boolean" },
+                "background": { "type": "boolean" }
+            }
+        }))
+    }
+
+    fn get_activity_description(&self, input: &serde_json::Value) -> Option<String> {
+        input.get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| {
+                input.get("command")
+                    .and_then(|v| v.as_str())
+                    .map(|c| {
+                        if c.len() > 80 {
+                            format!("{}...", &c[..77])
+                        } else {
+                            c.to_string()
+                        }
+                    })
+            })
     }
     fn is_destructive(&self, _input: &serde_json::Value) -> bool { true }
 
@@ -36,6 +84,8 @@ impl Tool for BashTool {
         let command_str = input["command"].as_str().unwrap_or("");
         let timeout_ms = input["timeout"].as_u64().unwrap_or(120_000);
         let run_in_bg = input["run_in_background"].as_bool().unwrap_or(false);
+        let dangerously_disable_sandbox = input["dangerouslyDisableSandbox"].as_bool().unwrap_or(false);
+        let _ = dangerously_disable_sandbox; // Read but not yet enforced (no sandbox implementation)
 
         // Block dangerous patterns
         if let Some(reason) = security_check(command_str) {
