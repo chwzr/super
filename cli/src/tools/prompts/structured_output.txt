@@ -1,2 +1,1 @@
-TODO(parity:batch-5): port the StructuredOutput prompt from
-claude-code-src/tools/StructuredOutput/prompt.ts (PROMPT export).
+Use this tool to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response to provide the structured output.
