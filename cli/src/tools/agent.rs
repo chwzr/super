@@ -41,6 +41,34 @@ impl Tool for AgentTool {
         include_str!("prompts/agent.txt").into()
     }
 
+    fn search_hint(&self) -> Option<&'static str> {
+        Some("launch a new agent to handle complex, multi-step tasks autonomously")
+    }
+
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "status": {"const": "completed"},
+                        "prompt": {"type": "string"}
+                    },
+                    "required": ["status", "prompt"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "status": {"const": "async_launched"},
+                        "agentId": {"type": "string"},
+                        "prompt": {"type": "string"}
+                    },
+                    "required": ["status", "agentId", "prompt"]
+                }
+            ]
+        }))
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         let agents = self.registry.list();
         let agent_types: Vec<String> = agents.iter()
