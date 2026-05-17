@@ -202,6 +202,12 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                 // RenderSpec events are consumed by the TUI render dispatcher;
                 // no transcript item needed.
             }
+            BusMessage::InteractionRequested { .. }
+            | BusMessage::InteractionResponse { .. }
+            | BusMessage::InteractionDenied { .. } => {
+                // Interaction lifecycle events are consumed by the interactive
+                // executor module; no transcript item needed.
+            }
         }
     }
 
@@ -282,7 +288,10 @@ fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
         | BusMessage::ToolProgress { parent_tool_use_id, .. }
         | BusMessage::SystemEvent { parent_tool_use_id, .. }
         | BusMessage::Result { parent_tool_use_id, .. }
-        | BusMessage::RenderEvent { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+        | BusMessage::RenderEvent { parent_tool_use_id, .. }
+        | BusMessage::InteractionRequested { parent_tool_use_id, .. }
+        | BusMessage::InteractionResponse { parent_tool_use_id, .. }
+        | BusMessage::InteractionDenied { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
     };
     match filter {
         None => parent.is_none(),

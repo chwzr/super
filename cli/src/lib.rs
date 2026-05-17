@@ -7,6 +7,7 @@ pub mod bootstrap;
 pub mod commands;
 pub mod config;
 pub mod conversation;
+pub mod executor;
 pub mod mcp;
 pub mod providers;
 pub mod sdk;

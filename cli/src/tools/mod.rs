@@ -153,7 +153,9 @@ impl ToolRegistry {
         registry.register(Arc::new(TaskUpdateTool {
             store: store.clone(),
         }));
-        registry.register(Arc::new(TodoWriteTool));
+        registry.register(Arc::new(TodoWriteTool {
+            store: store.clone(),
+        }));
         registry.register(Arc::new(EnterPlanModeTool {
             store: store.clone(),
         }));
