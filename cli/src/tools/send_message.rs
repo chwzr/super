@@ -1,43 +1,172 @@
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
+use shared::RenderSpec;
+use super::contract::{
+    DescriptionCtx, PromptCtx, ProgressSink, RenderOpts, Tool, ToolCallContext, ToolResult,
+    ToolResultBlock, ToolResultContent,
+};
 
 pub struct SendMessageTool;
 
 #[async_trait]
 impl Tool for SendMessageTool {
-    fn name(&self) -> &str { "SendMessage" }
+    fn name(&self) -> &str {
+        "SendMessage"
+    }
+
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
-        "Sends a message to be routed to the appropriate handler.".into()
+        "Sends a message to be routed to the appropriate handler (peer agent, sub-agent, user, or frontend)."
+            .into()
     }
 
     fn prompt(&self, _ctx: &PromptCtx) -> String {
         include_str!("prompts/send_message.txt").into()
     }
+
     fn input_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "message": {"type": "string"},
-                "channel": {"type": "string"}
+                "to": {
+                    "type": "string",
+                    "description": "The recipient of the message: 'user', a sub-agent name, or a channel identifier."
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Optional one-line summary shown in the UI while the message is being sent."
+                },
+                "message": {
+                    "oneOf": [
+                        {
+                            "type": "string",
+                            "description": "Plain-text message body."
+                        },
+                        {
+                            "type": "object",
+                            "description": "Structured message payload.",
+                            "properties": {
+                                "shutdown_request": {
+                                    "type": "object",
+                                    "properties": {
+                                        "reason": { "type": "string" }
+                                    },
+                                    "required": ["reason"]
+                                },
+                                "shutdown_response": {
+                                    "type": "object",
+                                    "properties": {
+                                        "acknowledged": { "type": "boolean" }
+                                    },
+                                    "required": ["acknowledged"]
+                                },
+                                "plan_approval_response": {
+                                    "type": "object",
+                                    "properties": {
+                                        "approved": { "type": "boolean" },
+                                        "feedback": { "type": "string" }
+                                    },
+                                    "required": ["approved"]
+                                }
+                            }
+                        }
+                    ]
+                }
             },
-            "required": ["message"]
+            "required": ["to", "message"]
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
-        let message = input["message"].as_str().unwrap_or("");
-        let channel = input["channel"].as_str().unwrap_or("default");
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "success": { "type": "boolean" },
+                "message": { "type": "string" },
+                "routing": {
+                    "type": "object",
+                    "properties": {
+                        "sender": { "type": "string" },
+                        "target": { "type": "string" },
+                        "content": { "type": "string" }
+                    },
+                    "required": ["sender", "target", "content"]
+                }
+            },
+            "required": ["success", "message", "routing"]
+        }))
+    }
+
+    fn should_defer(&self) -> bool {
+        true
+    }
+
+    fn search_hint(&self) -> Option<&'static str> {
+        Some("sends a message to a peer agent, sub-agent, user, or frontend")
+    }
+
+    fn render_tool_use_message(
+        &self,
+        input: &serde_json::Value,
+        _opts: &RenderOpts,
+    ) -> RenderSpec {
+        let to = input["to"].as_str().unwrap_or("unknown");
+        let summary = input["summary"]
+            .as_str()
+            .map(|s| format!(": {s}"))
+            .unwrap_or_default();
+        RenderSpec::Header {
+            verb: format!("Sending message to {to}{summary}"),
+            target: None,
+            tag: None,
+        }
+    }
+
+    fn render_tool_result_message(
+        &self,
+        output: &serde_json::Value,
+        _progress: &[super::contract::ProgressEvent],
+        _opts: &RenderOpts,
+    ) -> Option<RenderSpec> {
+        let msg = output["message"]
+            .as_str()
+            .unwrap_or("Message sent.");
+        Some(RenderSpec::Text {
+            body: msg.to_string(),
+            dim: false,
+        })
+    }
+
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
+        let to = input["to"].as_str().unwrap_or("unknown");
+        let message_value = &input["message"];
+
+        let content_str = if let Some(s) = message_value.as_str() {
+            s.to_string()
+        } else {
+            message_value.to_string()
+        };
+
+        let routing = json!({
+            "sender": "assistant",
+            "target": to,
+            "content": content_str
+        });
+
+        let output = json!({
+            "success": true,
+            "message": format!("Message routed to '{to}'"),
+            "routing": routing
+        });
+
         ToolResult {
-            content: format!("Message routed to '{channel}': {message}"),
+            content: output.to_string(),
             is_error: false,
-            metadata: Some([
-                ("channel".into(), channel.into()),
-                ("message_length".into(), message.len().to_string()),
-            ].into()),
-            inject_messages: Vec::new(),
-            mcp_meta: None,
-            new_messages: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -46,11 +175,13 @@ impl Tool for SendMessageTool {
         output: &serde_json::Value,
         tool_use_id: &str,
     ) -> ToolResultBlock {
+        let text = output["message"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| output.to_string());
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
-            content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
-            ),
+            content: ToolResultContent::Text(text),
             is_error: false,
         }
     }

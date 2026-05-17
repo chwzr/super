@@ -261,6 +261,30 @@ pub enum BusMessage {
         uuid: Uuid,
         session_id: String,
     },
+    #[serde(rename = "interaction_requested")]
+    InteractionRequested {
+        tool_use_id: String,
+        spec: shared::RenderSpec,
+        response_schema: serde_json::Value,
+        parent_tool_use_id: Option<String>,
+        uuid: Uuid,
+        session_id: String,
+    },
+    #[serde(rename = "interaction_response")]
+    InteractionResponse {
+        tool_use_id: String,
+        payload: serde_json::Value,
+        parent_tool_use_id: Option<String>,
+        uuid: Uuid,
+        session_id: String,
+    },
+    #[serde(rename = "interaction_denied")]
+    InteractionDenied {
+        tool_use_id: String,
+        parent_tool_use_id: Option<String>,
+        uuid: Uuid,
+        session_id: String,
+    },
 }
 
 impl BusMessage {
@@ -272,7 +296,10 @@ impl BusMessage {
             | BusMessage::ToolProgress { session_id, .. }
             | BusMessage::SystemEvent { session_id, .. }
             | BusMessage::Result { session_id, .. }
-            | BusMessage::RenderEvent { session_id, .. } => session_id.as_str(),
+            | BusMessage::RenderEvent { session_id, .. }
+            | BusMessage::InteractionRequested { session_id, .. }
+            | BusMessage::InteractionResponse { session_id, .. }
+            | BusMessage::InteractionDenied { session_id, .. } => session_id.as_str(),
         }
     }
 
@@ -284,7 +311,10 @@ impl BusMessage {
             | BusMessage::ToolProgress { parent_tool_use_id, .. }
             | BusMessage::SystemEvent { parent_tool_use_id, .. }
             | BusMessage::Result { parent_tool_use_id, .. }
-            | BusMessage::RenderEvent { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+            | BusMessage::RenderEvent { parent_tool_use_id, .. }
+            | BusMessage::InteractionRequested { parent_tool_use_id, .. }
+            | BusMessage::InteractionResponse { parent_tool_use_id, .. }
+            | BusMessage::InteractionDenied { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
         }
     }
 }
