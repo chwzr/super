@@ -21,15 +21,30 @@ impl Tool for TaskOutputTool {
         json!({
             "type": "object",
             "properties": {
-                "taskId": {"type": "string"}
+                "task_id": {"type": "string", "description": "The task ID to get output from"},
+                "block": {"type": "boolean", "default": true, "description": "Whether to wait for completion"},
+                "timeout": {"type": "integer", "minimum": 0, "maximum": 600000, "default": 30000, "description": "Max wait time in ms"}
             },
-            "required": ["taskId"]
+            "required": ["task_id", "block", "timeout"]
         })
+    }
+
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "status": {"type": "string"},
+                "output": {"type": "string"}
+            }
+        }))
     }
     fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
 
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
-        let task_id = input["taskId"].as_str().unwrap_or("");
+        let task_id = input["task_id"].as_str().unwrap_or("");
+        let block = input["block"].as_bool().unwrap_or(true);
+        let timeout = input["timeout"].as_i64().unwrap_or(30000);
         let tasks = self.store.get_state().tasks;
         match tasks.get(task_id) {
             Some(task) => {
@@ -37,13 +52,16 @@ impl Tool for TaskOutputTool {
                     "Task: {}\n  ID:     {}\n  Status: {:?}\n  Desc:   {}",
                     task.subject, task.id, task.status, task.description
                 );
+                let metadata_map: std::collections::HashMap<String, String> = [
+                    ("task_id".into(), task.id.clone()),
+                    ("status".into(), format!("{:?}", task.status)),
+                    ("block".into(), block.to_string()),
+                    ("timeout".into(), timeout.to_string()),
+                ].into();
                 ToolResult {
                     content: info,
                     is_error: false,
-                    metadata: Some([
-                        ("task_id".into(), task.id.clone()),
-                        ("status".into(), format!("{:?}", task.status)),
-                    ].into()),
+                    metadata: Some(metadata_map),
                     inject_messages: Vec::new(),
                     mcp_meta: None,
                     new_messages: Vec::new(),

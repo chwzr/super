@@ -38,6 +38,29 @@ impl Tool for SkillTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "inline": {"type": "boolean", "const": true},
+                        "message": {"type": "string"}
+                    },
+                    "required": ["inline", "message"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "forked": {"type": "boolean", "const": true},
+                        "message": {"type": "string"}
+                    },
+                    "required": ["forked", "message"]
+                }
+            ]
+        }))
+    }
+
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let skill_name = input["skill"].as_str().unwrap_or("").trim().to_string();
         if skill_name.is_empty() {

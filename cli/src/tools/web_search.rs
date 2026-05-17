@@ -1,4 +1,4 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ProgressSink};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -36,20 +36,34 @@ impl Tool for WebSearchTool {
             "required": ["query"]
         })
     }
+
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "url": {"type": "string"},
+                            "snippet": {"type": "string"}
+                        }
+                    }
+                },
+                "durationMs": {"type": "number"}
+            },
+            "required": ["query", "results"]
+        }))
+    }
+
     fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
 
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+        let start = std::time::Instant::now();
         let query = input["query"].as_str().unwrap_or("");
-        let mut _blocked = input["blocked_domains"].as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let _allowed = input["allowed_domains"].as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        if !_blocked.is_empty() && !_allowed.is_empty() {
-            return ToolResult { content: "Cannot specify both allowed_domains and blocked_domains".into(), is_error: true, ..Default::default() };
-        }
 
         // Use DuckDuckGo Instant Answer API as a simple web search fallback
         let url = format!("https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
@@ -65,44 +79,67 @@ impl Tool for WebSearchTool {
             Ok(resp) => match resp.text().await {
                 Ok(body) => {
                     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-                    let mut results = String::new();
-                    results.push_str(&format!("Search results for: {query}\n\n"));
 
-                    // Extract Abstract
+                    // Parse results into structured items
+                    let mut items: Vec<serde_json::Value> = Vec::new();
                     if let Some(abstract_text) = v["AbstractText"].as_str() {
                         if !abstract_text.is_empty() {
-                            results.push_str(&format!("{abstract_text}\n\n"));
-                        }
-                        if let Some(source) = v["AbstractURL"].as_str() {
-                            if !source.is_empty() {
-                                results.push_str(&format!("Source: {source}\n"));
-                            }
+                            items.push(json!({
+                                "title": "Abstract",
+                                "url": v["AbstractURL"].as_str().unwrap_or(""),
+                                "snippet": abstract_text
+                            }));
                         }
                     }
-
-                    // Extract RelatedTopics
                     if let Some(topics) = v["RelatedTopics"].as_array() {
-                        for topic in topics.iter().take(10) {
+                        for topic in topics.iter().take(20) {
                             if let Some(text) = topic["Text"].as_str() {
                                 if !text.is_empty() {
-                                    results.push_str(&format!("- {text}\n"));
-                                    if let Some(url) = topic["FirstURL"].as_str() {
-                                        results.push_str(&format!("  {url}\n"));
-                                    }
+                                    items.push(json!({
+                                        "title": text.split(" - ").next().unwrap_or(text),
+                                        "url": topic["FirstURL"].as_str().unwrap_or(""),
+                                        "snippet": text
+                                    }));
                                 }
                             }
                         }
                     }
 
-                    if results.is_empty() || results == format!("Search results for: {query}\n\n") {
-                        results.push_str("No results found.");
+                    // Apply domain filtering
+                    let allowed: Option<Vec<String>> = input.get("allowed_domains")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+
+                    let blocked: Option<Vec<String>> = input.get("blocked_domains")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+
+                    let items: Vec<_> = items.into_iter().filter(|item| {
+                        let item_url = item["url"].as_str().unwrap_or("");
+                        if let Some(ref allow) = allowed {
+                            if !allow.iter().any(|domain| item_url.contains(domain)) {
+                                return false;
+                            }
+                        }
+                        if let Some(ref block) = blocked {
+                            if block.iter().any(|domain| item_url.contains(domain)) {
+                                return false;
+                            }
+                        }
+                        true
+                    }).collect();
+
+                    let duration_ms = start.elapsed().as_millis() as f64;
+
+                    ToolResult {
+                        content: json!({
+                            "query": query,
+                            "results": items,
+                            "durationMs": duration_ms
+                        }).to_string(),
+                        is_error: false,
+                        ..Default::default()
                     }
-
-                    results.push_str("\nSources:\n- [DuckDuckGo](https://duckduckgo.com/?q=");
-                    results.push_str(&url_encode(query));
-                    results.push_str(")");
-
-                    ToolResult { content: results, is_error: false, ..Default::default() }
                 }
                 Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, ..Default::default() },
             },
@@ -114,10 +151,10 @@ impl Tool for WebSearchTool {
         &self,
         output: &serde_json::Value,
         tool_use_id: &str,
-    ) -> ToolResultBlock {
-        ToolResultBlock {
+    ) -> crate::tools::contract::ToolResultBlock {
+        crate::tools::contract::ToolResultBlock {
             tool_use_id: tool_use_id.into(),
-            content: ToolResultContent::Text(
+            content: crate::tools::contract::ToolResultContent::Text(
                 output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,

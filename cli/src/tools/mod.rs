@@ -32,6 +32,7 @@ pub mod task_update;
 pub mod todo_write;
 pub mod tool_search;
 pub mod web_fetch;
+pub mod web_fetch_preapproved;
 pub mod web_search;
 pub mod write;
 

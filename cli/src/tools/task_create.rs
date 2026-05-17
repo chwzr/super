@@ -23,31 +23,66 @@ impl Tool for TaskCreateTool {
         json!({
             "type": "object",
             "properties": {
-                "subject": {"type": "string"},
-                "description": {"type": "string"},
-                "activeForm": {"type": "string"}
+                "subject": {
+                    "type": "string",
+                    "description": "A brief, actionable title in imperative form (e.g., \"Fix authentication bug in login flow\")"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What needs to be done"
+                },
+                "activeForm": {
+                    "type": "string",
+                    "description": "Present continuous form shown in the spinner when the task is in_progress (e.g., \"Fixing authentication bug\"). If omitted, the spinner shows the subject instead."
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Arbitrary metadata to attach to the task"
+                }
             },
             "required": ["subject", "description"]
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "subject": {"type": "string"}
+                    }
+                }
+            },
+            "required": ["task"]
+        }))
+    }
+
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
-        let subject = input["subject"].as_str().unwrap_or("");
-        let description = input["description"].as_str().unwrap_or("");
+        let subject = input["subject"].as_str().unwrap_or("").to_string();
+        let description = input["description"].as_str().unwrap_or("").to_string();
+        let active_form = input["activeForm"].as_str().map(|s| s.to_string());
+        let metadata = input.get("metadata").cloned();
         let id = Uuid::new_v4().to_string();
+        let output = json!({"task": {"id": id.clone(), "subject": subject.clone()}}).to_string();
         let task = TaskRecord {
             id: id.clone(),
-            subject: subject.to_string(),
-            description: description.to_string(),
+            subject,
+            description,
+            active_form,
             status: TaskStatus::Pending,
+            owner: None,
             blocks: vec![],
             blocked_by: vec![],
+            metadata,
         };
         self.store.set_state(move |s| {
-            s.tasks.insert(id.clone(), task);
+            s.tasks.insert(id, task);
         });
         ToolResult {
-            content: format!("Task created: {subject}"),
+            content: output,
             is_error: false,
             ..Default::default()
         }

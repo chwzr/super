@@ -1,4 +1,4 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -28,16 +28,53 @@ impl Tool for WebFetchTool {
     }
     fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "bytes": {"type": "integer"},
+                "code": {"type": "integer"},
+                "codeText": {"type": "string"},
+                "result": {"type": "string", "description": "AI-processed result of the fetch"},
+                "durationMs": {"type": "number"},
+                "url": {"type": "string"}
+            },
+            "required": ["bytes", "code", "result", "durationMs", "url"]
+        }))
+    }
+
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let url = input["url"].as_str().unwrap_or("");
-        let _prompt = input["prompt"].as_str().unwrap_or("");
+        let prompt = input["prompt"].as_str().unwrap_or("");
 
         // Validate URL
         if url.len() > 2000 {
-            return ToolResult { content: "URL exceeds 2000 character limit".into(), is_error: true, ..Default::default() };
+            return ToolResult {
+                content: json!({
+                    "url": url,
+                    "bytes": 0,
+                    "code": 400,
+                    "codeText": "Bad Request",
+                    "result": "URL exceeds 2000 character limit",
+                    "durationMs": 0
+                }).to_string(),
+                is_error: true,
+                ..Default::default()
+            };
         }
         if url.contains('@') {
-            return ToolResult { content: "URLs with credentials are not supported".into(), is_error: true, ..Default::default() };
+            return ToolResult {
+                content: json!({
+                    "url": url,
+                    "bytes": 0,
+                    "code": 400,
+                    "codeText": "Bad Request",
+                    "result": "URLs with credentials are not supported",
+                    "durationMs": 0
+                }).to_string(),
+                is_error: true,
+                ..Default::default()
+            };
         }
 
         // Upgrade HTTP to HTTPS
@@ -47,26 +84,67 @@ impl Tool for WebFetchTool {
             url.to_string()
         };
 
-        // Fetch
+        // Fetch with timing
+        let start = std::time::Instant::now();
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap();
         match client.get(&url).send().await {
-            Ok(resp) => match resp.text().await {
-                Ok(body) => {
-                    // Simple HTML-to-text: strip tags
-                    let text = strip_html(&body);
-                    let truncated = if text.len() > 100000 { format!("{}...\n[content truncated]", &text[..100000]) } else { text };
-                    ToolResult {
-                        content: format!("Content from {url}:\n\n{truncated}\n\nSources:\n- [{url}]({url})"),
-                        is_error: false,
-                        ..Default::default()
+            Ok(resp) => {
+                let status = resp.status();
+                match resp.text().await {
+                    Ok(body) => {
+                        // Simple HTML-to-text: strip tags
+                        let text = strip_html(&body);
+                        let _truncated = if text.len() > 100000 { format!("{}...\n[content truncated]", &text[..100000]) } else { text };
+                        let byte_count = body.len();
+                        let duration_ms = start.elapsed().as_millis() as f64;
+                        ToolResult {
+                            content: json!({
+                                "url": url,
+                                "bytes": byte_count,
+                                "code": status.as_u16(),
+                                "codeText": status.canonical_reason().unwrap_or("OK"),
+                                "result": format!("Content fetched ({} bytes). Prompt '{}' will be processed in a follow-up.", byte_count, prompt),
+                                "durationMs": duration_ms
+                            }).to_string(),
+                            is_error: false,
+                            ..Default::default()
+                        }
+                    }
+                    Err(e) => {
+                        let duration_ms = start.elapsed().as_millis() as f64;
+                        ToolResult {
+                            content: json!({
+                                "url": url,
+                                "bytes": 0,
+                                "code": status.as_u16(),
+                                "codeText": status.canonical_reason().unwrap_or("Error"),
+                                "result": format!("Failed to read response: {}", e),
+                                "durationMs": duration_ms
+                            }).to_string(),
+                            is_error: true,
+                            ..Default::default()
+                        }
                     }
                 }
-                Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, ..Default::default() },
             },
-            Err(e) => ToolResult { content: format!("Failed to fetch {url}: {e}"), is_error: true, ..Default::default() },
+            Err(e) => {
+                let duration_ms = start.elapsed().as_millis() as f64;
+                ToolResult {
+                    content: json!({
+                        "url": url,
+                        "bytes": 0,
+                        "code": 0,
+                        "codeText": "Connection Error",
+                        "result": format!("Failed to fetch {}: {}", url, e),
+                        "durationMs": duration_ms
+                    }).to_string(),
+                    is_error: true,
+                    ..Default::default()
+                }
+            },
         }
     }
 

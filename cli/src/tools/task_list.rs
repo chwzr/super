@@ -17,6 +17,21 @@ impl Tool for TaskListTool {
     fn prompt(&self, _ctx: &PromptCtx) -> String {
         include_str!("prompts/task_list.txt").into()
     }
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "status": {"type": "string"},
+                    "owner": {"type": "string"},
+                    "blockedBy": {"type": "array", "items": {"type": "string"}}
+                }
+            }
+        }))
+    }
     fn input_schema(&self) -> serde_json::Value {
         json!({"type": "object", "properties": {}})
     }

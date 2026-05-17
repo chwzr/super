@@ -27,6 +27,19 @@ impl Tool for TaskGetTool {
         })
     }
     fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": ["object", "null"],
+            "properties": {
+                "id": {"type": "string"},
+                "subject": {"type": "string"},
+                "description": {"type": "string"},
+                "status": {"type": "string"},
+                "blocks": {"type": "array", "items": {"type": "string"}},
+                "blockedBy": {"type": "array", "items": {"type": "string"}}
+            }
+        }))
+    }
 
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
         let task_id = input["taskId"].as_str().unwrap_or("");

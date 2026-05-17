@@ -238,9 +238,12 @@ impl Tool for TodoWriteTool {
                         id,
                         subject: active_form,
                         description: content,
+                        active_form: None,
                         status: status_str_to_task_status(status_str),
+                        owner: None,
                         blocks: vec![],
                         blocked_by: vec![],
+                        metadata: None,
                     },
                 );
             }
