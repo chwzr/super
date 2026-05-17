@@ -1,2 +1,27 @@
-TODO(parity:batch-5): port the Config prompt from
-claude-code-src/tools/Config/prompt.ts (PROMPT export).
+Get or set Claude Code configuration settings.
+
+View or change Claude Code settings. Use when the user requests configuration changes, asks about current settings, or when adjusting a setting would benefit them.
+
+## Usage
+- **Get current value:** Omit the "value" parameter
+- **Set new value:** Include the "value" parameter
+
+## Configurable settings list
+The following settings are available for you to change:
+
+### Global Settings (stored in ~/.claude.json)
+- theme: "light", "dark" - Color theme for the terminal UI
+- editorMode: "normal", "vim" - Editor keybinding mode
+- verbose: true/false - Show detailed debug information
+- statusLine: true/false - Show the status line
+
+### Project Settings (stored in settings.json)
+- model - Override the default model
+- permissions - Permission configuration
+
+## Examples
+- Get theme: { "key": "theme" }
+- Set dark theme: { "key": "theme", "value": "dark" }
+- Enable vim mode: { "key": "editorMode", "value": "vim" }
+- Enable verbose: { "key": "verbose", "value": true }
+- Change model: { "key": "model", "value": "opus" }

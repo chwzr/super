@@ -8,7 +8,7 @@ pub struct LspTool;
 impl Tool for LspTool {
     fn name(&self) -> &str { "LSP" }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
-        "Language server protocol operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation.".into()
+        "Interact with Language Server Protocol (LSP) servers to get code intelligence features.".into()
     }
 
     fn prompt(&self, _ctx: &PromptCtx) -> String {
@@ -18,7 +18,11 @@ impl Tool for LspTool {
         json!({
             "type": "object",
             "properties": {
-                "operation": {"type": "string", "enum": ["goToDefinition", "findReferences", "hover", "documentSymbol", "workspaceSymbol", "goToImplementation"]},
+                "operation": {"type": "string", "enum": [
+                    "goToDefinition", "findReferences", "hover",
+                    "documentSymbol", "workspaceSymbol", "goToImplementation",
+                    "prepareCallHierarchy", "incomingCalls", "outgoingCalls"
+                ]},
                 "filePath": {"type": "string"},
                 "line": {"type": "integer"},
                 "character": {"type": "integer"}
@@ -26,6 +30,16 @@ impl Tool for LspTool {
             "required": ["operation", "filePath", "line", "character"]
         })
     }
+
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "result": {"description": "LSP operation result"}
+            }
+        }))
+    }
+
     fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
 
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
