@@ -83,8 +83,7 @@ impl QuestionModal {
 
             KeyCode::Tab => {
                 if self.questions.len() > 1 {
-                    self.focused_question =
-                        (self.focused_question + 1) % self.questions.len();
+                    self.focused_question = (self.focused_question + 1) % self.questions.len();
                 }
             }
             KeyCode::BackTab => {
@@ -178,12 +177,14 @@ impl QuestionModal {
             } else {
                 Style::default().fg(CC_DIM)
             };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} {}:", if is_focused { "❯" } else { " " }, question.header),
-                    header_style,
+            lines.push(Line::from(vec![Span::styled(
+                format!(
+                    "{} {}:",
+                    if is_focused { "❯" } else { " " },
+                    question.header
                 ),
-            ]));
+                header_style,
+            )]));
             lines.push(Line::from(vec![Span::styled(
                 format!("  {}", question.question),
                 Style::default().fg(CC_DIM),
@@ -199,14 +200,9 @@ impl QuestionModal {
 
             for (oi, opt) in question.options.iter().enumerate() {
                 let is_cursor = is_focused && oi == self.cursors[qi];
-                let is_selected = question.multi_select
-                    && self.selections[qi].contains(&oi);
+                let is_selected = question.multi_select && self.selections[qi].contains(&oi);
 
-                let prefix = if is_cursor {
-                    "❯ "
-                } else {
-                    "  "
-                };
+                let prefix = if is_cursor { "❯ " } else { "  " };
                 let number = format!("{}. ", oi + 1);
 
                 let cursor_style = if is_cursor {
@@ -230,10 +226,7 @@ impl QuestionModal {
                 lines.push(Line::from(vec![
                     Span::raw(prefix),
                     Span::styled(number, cursor_style),
-                    Span::styled(
-                        format!("{}{}", opt.label, marker),
-                        cursor_style,
-                    ),
+                    Span::styled(format!("{}{}", opt.label, marker), cursor_style),
                     Span::styled(
                         format!("  {}", opt.description),
                         Style::default().fg(CC_DIM),
@@ -281,52 +274,48 @@ mod tests {
     use super::*;
 
     fn sample_questions() -> Vec<Question> {
-        vec![
-            Question {
-                question: "What language?".into(),
-                header: "Language".into(),
-                multi_select: false,
-                options: vec![
-                    shared::QuestionOption {
-                        label: "Rust".into(),
-                        description: "Systems programming".into(),
-                        preview: None,
-                    },
-                    shared::QuestionOption {
-                        label: "TypeScript".into(),
-                        description: "Web development".into(),
-                        preview: None,
-                    },
-                ],
-            },
-        ]
+        vec![Question {
+            question: "What language?".into(),
+            header: "Language".into(),
+            multi_select: false,
+            options: vec![
+                shared::QuestionOption {
+                    label: "Rust".into(),
+                    description: "Systems programming".into(),
+                    preview: None,
+                },
+                shared::QuestionOption {
+                    label: "TypeScript".into(),
+                    description: "Web development".into(),
+                    preview: None,
+                },
+            ],
+        }]
     }
 
     fn multi_select_questions() -> Vec<Question> {
-        vec![
-            Question {
-                question: "Pick features".into(),
-                header: "Features".into(),
-                multi_select: true,
-                options: vec![
-                    shared::QuestionOption {
-                        label: "Auth".into(),
-                        description: "Authentication".into(),
-                        preview: None,
-                    },
-                    shared::QuestionOption {
-                        label: "API".into(),
-                        description: "REST API".into(),
-                        preview: None,
-                    },
-                    shared::QuestionOption {
-                        label: "UI".into(),
-                        description: "User interface".into(),
-                        preview: None,
-                    },
-                ],
-            },
-        ]
+        vec![Question {
+            question: "Pick features".into(),
+            header: "Features".into(),
+            multi_select: true,
+            options: vec![
+                shared::QuestionOption {
+                    label: "Auth".into(),
+                    description: "Authentication".into(),
+                    preview: None,
+                },
+                shared::QuestionOption {
+                    label: "API".into(),
+                    description: "REST API".into(),
+                    preview: None,
+                },
+                shared::QuestionOption {
+                    label: "UI".into(),
+                    description: "User interface".into(),
+                    preview: None,
+                },
+            ],
+        }]
     }
 
     #[test]
@@ -347,9 +336,9 @@ mod tests {
     fn up_wraps_at_top() {
         let mut modal = QuestionModal::new(sample_questions());
         modal.handle_key(KeyEvent::from(KeyCode::Down)); // 0→1
-        modal.handle_key(KeyEvent::from(KeyCode::Up));   // 1→0
+        modal.handle_key(KeyEvent::from(KeyCode::Up)); // 1→0
         assert_eq!(modal.cursors[0], 0);
-        modal.handle_key(KeyEvent::from(KeyCode::Up));   // stays at 0
+        modal.handle_key(KeyEvent::from(KeyCode::Up)); // stays at 0
         assert_eq!(modal.cursors[0], 0);
     }
 
@@ -389,10 +378,7 @@ mod tests {
 
     #[test]
     fn tab_moves_between_questions() {
-        let questions = vec![
-            sample_questions()[0].clone(),
-            sample_questions()[0].clone(),
-        ];
+        let questions = vec![sample_questions()[0].clone(), sample_questions()[0].clone()];
         let mut modal = QuestionModal::new(questions);
         assert_eq!(modal.focused_question, 0);
         modal.handle_key(KeyEvent::from(KeyCode::Tab));

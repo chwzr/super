@@ -1,13 +1,13 @@
-use std::sync::Arc;
 use axum::{
-    Json, Router,
     extract::State,
     http::StatusCode,
     response::Html,
     routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use shared::{AuthorizeRequest, RefreshRequest, RegisterRequest, TokenResponse, UserProfile};
+use std::sync::Arc;
 
 use crate::domain::auth::service::AuthService;
 
@@ -59,7 +59,10 @@ async fn authorize(
         .await
         .map(Json)
         .map_err(|e| {
-            if matches!(e, shared::AuthError::InvalidToken | shared::AuthError::TokenExpired) {
+            if matches!(
+                e,
+                shared::AuthError::InvalidToken | shared::AuthError::TokenExpired
+            ) {
                 (StatusCode::UNAUTHORIZED, e.to_string())
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -77,7 +80,10 @@ async fn refresh(
         .await
         .map(Json)
         .map_err(|e| {
-            if matches!(e, shared::AuthError::InvalidToken | shared::AuthError::TokenExpired) {
+            if matches!(
+                e,
+                shared::AuthError::InvalidToken | shared::AuthError::TokenExpired
+            ) {
                 (StatusCode::UNAUTHORIZED, e.to_string())
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -93,14 +99,22 @@ async fn me(
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or((StatusCode::UNAUTHORIZED, "missing authorization header".into()))?;
-    state.service.get_profile(token).await.map(Json).map_err(|e| {
-        if matches!(e, shared::AuthError::InvalidToken) {
-            (StatusCode::UNAUTHORIZED, e.to_string())
-        } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        }
-    })
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "missing authorization header".into(),
+        ))?;
+    state
+        .service
+        .get_profile(token)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            if matches!(e, shared::AuthError::InvalidToken) {
+                (StatusCode::UNAUTHORIZED, e.to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })
 }
 
 async fn rotate_key(
@@ -111,7 +125,10 @@ async fn rotate_key(
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or((StatusCode::UNAUTHORIZED, "missing authorization header".into()))?;
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "missing authorization header".into(),
+        ))?;
     state
         .service
         .rotate_key(token)
@@ -128,19 +145,24 @@ async fn usage(
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or((StatusCode::UNAUTHORIZED, "missing authorization header".into()))?;
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "missing authorization header".into(),
+        ))?;
 
-    let (used, limit, remaining) = state
-        .service
-        .get_key_usage(token)
-        .await
-        .map_err(|e| {
-            if matches!(e, shared::AuthError::InvalidToken | shared::AuthError::TokenExpired) {
-                (StatusCode::UNAUTHORIZED, e.to_string())
-            } else {
-                (StatusCode::BAD_GATEWAY, "upstream usage fetch failed".into())
-            }
-        })?;
+    let (used, limit, remaining) = state.service.get_key_usage(token).await.map_err(|e| {
+        if matches!(
+            e,
+            shared::AuthError::InvalidToken | shared::AuthError::TokenExpired
+        ) {
+            (StatusCode::UNAUTHORIZED, e.to_string())
+        } else {
+            (
+                StatusCode::BAD_GATEWAY,
+                "upstream usage fetch failed".into(),
+            )
+        }
+    })?;
 
     Ok(Json(UsageResponse {
         used_usd: used,

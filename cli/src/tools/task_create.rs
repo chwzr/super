@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use crate::state::store::{TaskRecord, TaskStatus};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::Arc;
 use uuid::Uuid;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
-use crate::state::store::{TaskRecord, TaskStatus};
 
 pub struct TaskCreateTool {
     pub store: Arc<crate::state::store::Store>,
@@ -11,7 +14,9 @@ pub struct TaskCreateTool {
 
 #[async_trait]
 impl Tool for TaskCreateTool {
-    fn name(&self) -> &str { "TaskCreate" }
+    fn name(&self) -> &str {
+        "TaskCreate"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Creates a new task for tracking complex work.".into()
     }
@@ -60,7 +65,12 @@ impl Tool for TaskCreateTool {
         }))
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let subject = input["subject"].as_str().unwrap_or("").to_string();
         let description = input["description"].as_str().unwrap_or("").to_string();
         let active_form = input["activeForm"].as_str().map(|s| s.to_string());
@@ -96,7 +106,10 @@ impl Tool for TaskCreateTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

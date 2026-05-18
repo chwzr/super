@@ -42,7 +42,13 @@ impl CommandRegistry {
         // excluded from super are recorded in PLAN.md under "Feature
         // Blacklist (slash commands, 2026-05-14)".
         // Tuple layout: (name, aliases, description, argument_hint, kind)
-        type BuiltinDef<'a> = (&'a str, &'a [&'a str], &'a str, Option<&'static str>, CommandKind);
+        type BuiltinDef<'a> = (
+            &'a str,
+            &'a [&'a str],
+            &'a str,
+            Option<&'static str>,
+            CommandKind,
+        );
         let builtins: Vec<BuiltinDef> = vec![
             // ----- Local commands -----
             ("/help",        &[] as &[&str],              "Show help and available commands",                                                                None,                              CommandKind::Local),
@@ -92,15 +98,11 @@ impl CommandRegistry {
 
     /// Resolve `/<name>` or any alias to the canonical command.
     pub fn resolve(&self, input: &str) -> Option<&Command> {
-        let name = input
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
+        let name = input.split_whitespace().next().unwrap_or("").to_lowercase();
         self.commands.get(&name).or_else(|| {
-            self.commands.values().find(|c| {
-                c.aliases.iter().any(|a| a.to_lowercase() == name)
-            })
+            self.commands
+                .values()
+                .find(|c| c.aliases.iter().any(|a| a.to_lowercase() == name))
         })
     }
 

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use futures_util::StreamExt;
@@ -154,7 +154,9 @@ impl ConversationEngine {
             user_content.push(ContentBlockFinal::Text { text: listing });
         }
 
-        let user_block = ContentBlockFinal::Text { text: user_input.clone() };
+        let user_block = ContentBlockFinal::Text {
+            text: user_input.clone(),
+        };
         user_content.push(user_block);
 
         history.push(HistoryEntry {
@@ -190,19 +192,14 @@ impl ConversationEngine {
                         s.history = history.clone();
                     });
                 }
-                self.bus
-                    .emit_system(SystemSubtype::Notice, "max turns (50) reached without end_turn");
+                self.bus.emit_system(
+                    SystemSubtype::Notice,
+                    "max turns (50) reached without end_turn",
+                );
                 return Err("max turns (50) reached without end_turn".to_string());
             }
 
-            let body = build_request_body(
-                &model,
-                &system_rendered,
-                &history,
-                &tools,
-                8192,
-                true,
-            );
+            let body = build_request_body(&model, &system_rendered, &history, &tools, 8192, true);
 
             let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
             let response = client
@@ -218,7 +215,10 @@ impl ConversationEngine {
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
-                return Err(format!("API error ({status}): {}", truncate_error_body(&text)));
+                return Err(format!(
+                    "API error ({status}): {}",
+                    truncate_error_body(&text)
+                ));
             }
 
             // Per-turn fold state.
@@ -349,19 +349,36 @@ impl ConversationEngine {
 
 #[derive(Debug, Clone)]
 enum PartialBlock {
-    Text { text: String },
-    Thinking { thinking: String, signature: String },
-    ToolUse { id: String, name: String, input_json: String },
+    Text {
+        text: String,
+    },
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input_json: String,
+    },
 }
 
 impl PartialBlock {
     fn finalize(self) -> ContentBlockFinal {
         match self {
             PartialBlock::Text { text } => ContentBlockFinal::Text { text },
-            PartialBlock::Thinking { thinking, signature } => {
-                ContentBlockFinal::Thinking { thinking, signature }
-            }
-            PartialBlock::ToolUse { id, name, input_json } => {
+            PartialBlock::Thinking {
+                thinking,
+                signature,
+            } => ContentBlockFinal::Thinking {
+                thinking,
+                signature,
+            },
+            PartialBlock::ToolUse {
+                id,
+                name,
+                input_json,
+            } => {
                 let input: serde_json::Value =
                     serde_json::from_str(&input_json).unwrap_or(serde_json::json!({}));
                 ContentBlockFinal::ToolUse { id, name, input }
@@ -388,16 +405,23 @@ fn fold_event(
             // so we ignore it here to avoid double-counting.
             *in_tokens += message.usage.input_tokens;
         }
-        StreamEvent::ContentBlockStart { index, content_block } => {
+        StreamEvent::ContentBlockStart {
+            index,
+            content_block,
+        } => {
             let idx = index as usize;
             while blocks.len() <= idx {
                 blocks.push(None);
             }
             blocks[idx] = Some(match content_block {
                 ContentBlockStream::Text { text } => PartialBlock::Text { text },
-                ContentBlockStream::Thinking { thinking, signature } => {
-                    PartialBlock::Thinking { thinking, signature }
-                }
+                ContentBlockStream::Thinking {
+                    thinking,
+                    signature,
+                } => PartialBlock::Thinking {
+                    thinking,
+                    signature,
+                },
                 ContentBlockStream::ToolUse { id, name, .. } => PartialBlock::ToolUse {
                     id,
                     name,
@@ -447,7 +471,11 @@ fn truncate_error_body(body: &str) -> String {
     const MAX_LEN: usize = 512;
     // Anthropic / OpenRouter errors are usually `{"error":{"message":"..."}}`.
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(msg) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+        if let Some(msg) = json
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
             return clip(msg, MAX_LEN);
         }
         if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
@@ -463,7 +491,9 @@ fn clip(s: &str, max: usize) -> String {
     } else {
         // Avoid splitting in the middle of a UTF-8 sequence.
         let mut end = max;
-        while !s.is_char_boundary(end) && end > 0 { end -= 1; }
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
         format!("{}… ({} more bytes)", &s[..end], s.len() - end)
     }
 }
@@ -476,7 +506,9 @@ fn build_skill_listing(skills: &[crate::skills::loader::Skill]) -> String {
     model_only.sort_by(|a, b| a.name.cmp(&b.name));
     user_facing.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut out = String::from("<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n");
+    let mut out = String::from(
+        "<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n",
+    );
 
     for s in &model_only {
         out.push_str(&format!("- {}\n", format_skill_entry(s)));
@@ -500,7 +532,7 @@ fn format_skill_entry(skill: &crate::skills::loader::Skill) -> String {
     const MAX: usize = 250;
     let full = match &skill.when_to_use {
         Some(w) => format!("{}: {} — {}", skill.name, skill.description, w),
-        None    => format!("{}: {}", skill.name, skill.description),
+        None => format!("{}: {}", skill.name, skill.description),
     };
     if full.chars().count() > MAX {
         let truncated: String = full.chars().take(MAX - 1).collect();
@@ -525,7 +557,9 @@ mod tests {
         fold_event(
             StreamEvent::ContentBlockStart {
                 index: 0,
-                content_block: ContentBlockStream::Text { text: String::new() },
+                content_block: ContentBlockStream::Text {
+                    text: String::new(),
+                },
             },
             &mut blocks,
             &mut sr,
@@ -746,7 +780,10 @@ mod tests {
             false,
         );
         assert_eq!(child.history_override.as_ref().map(|v| v.len()), Some(0));
-        assert!(matches!(child.permission_mode_override, Some(PermissionMode::Plan)));
+        assert!(matches!(
+            child.permission_mode_override,
+            Some(PermissionMode::Plan)
+        ));
     }
 
     #[test]

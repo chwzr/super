@@ -1,5 +1,4 @@
 pub mod agent;
-pub mod defaults;
 pub mod ask_user_question;
 pub mod bash;
 pub mod config_tool;
@@ -7,6 +6,7 @@ pub mod contract;
 pub mod cron_create;
 pub mod cron_delete;
 pub mod cron_list;
+pub mod defaults;
 pub mod edit;
 pub mod enter_plan_mode;
 pub mod enter_worktree;
@@ -36,13 +36,12 @@ pub mod web_fetch_preapproved;
 pub mod web_search;
 pub mod write;
 
-use std::sync::{Arc, RwLock};
-use contract::{DescriptionCtx, Tool, ToolCallContext, ToolResult};
 use crate::state::store::{PermissionMode, Store};
 use agent::AgentTool;
 use ask_user_question::AskUserQuestionTool;
 use bash::BashTool;
 use config_tool::ConfigTool;
+use contract::{DescriptionCtx, Tool, ToolCallContext, ToolResult};
 use cron_create::CronCreateTool;
 use cron_delete::CronDeleteTool;
 use cron_list::CronListTool;
@@ -59,6 +58,7 @@ use notebook_edit::NotebookEditTool;
 use read::ReadTool;
 use send_message::SendMessageTool;
 use sleep::SleepTool;
+use std::sync::{Arc, RwLock};
 use structured_output::StructuredOutputTool;
 use task_create::TaskCreateTool;
 use task_get::TaskGetTool;
@@ -95,9 +95,15 @@ impl ToolRegistry {
             Arc::new(WebFetchTool),
             Arc::new(WebSearchTool),
             Arc::new(LspTool),
-            Arc::new(CronCreateTool { jobs: cron_jobs.clone() }),
-            Arc::new(CronDeleteTool { jobs: cron_jobs.clone() }),
-            Arc::new(CronListTool { jobs: cron_jobs.clone() }),
+            Arc::new(CronCreateTool {
+                jobs: cron_jobs.clone(),
+            }),
+            Arc::new(CronDeleteTool {
+                jobs: cron_jobs.clone(),
+            }),
+            Arc::new(CronListTool {
+                jobs: cron_jobs.clone(),
+            }),
             Arc::new(SleepTool),
             Arc::new(MonitorTool),
             Arc::new(StructuredOutputTool),
@@ -105,7 +111,9 @@ impl ToolRegistry {
             Arc::new(ExitWorktreeTool),
         ];
 
-        let registry = Arc::new(Self { tools: Arc::new(RwLock::new(tools)) });
+        let registry = Arc::new(Self {
+            tools: Arc::new(RwLock::new(tools)),
+        });
 
         // ToolSearch — registers after the Arc exists so it can hold a
         // back-reference for searching the full tool list.
@@ -160,11 +168,21 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.read().unwrap().iter().find(|t| t.name() == name).cloned()
+        self.tools
+            .read()
+            .unwrap()
+            .iter()
+            .find(|t| t.name() == name)
+            .cloned()
     }
 
     pub fn list(&self) -> Vec<String> {
-        self.tools.read().unwrap().iter().map(|t| t.name().to_string()).collect()
+        self.tools
+            .read()
+            .unwrap()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect()
     }
 
     pub fn assemble_for_mode(&self, mode: &PermissionMode) -> Vec<Arc<dyn Tool>> {
@@ -181,9 +199,13 @@ impl ToolRegistry {
         pool
     }
 
-    pub fn filter_for_agent(&self, agent: &crate::agents::definition::AgentDefinition) -> ToolRegistry {
+    pub fn filter_for_agent(
+        &self,
+        agent: &crate::agents::definition::AgentDefinition,
+    ) -> ToolRegistry {
         let pool = self.tools.read().unwrap();
-        let filtered: Vec<Arc<dyn Tool>> = pool.iter()
+        let filtered: Vec<Arc<dyn Tool>> = pool
+            .iter()
             .filter(|t| {
                 let name = t.name();
                 let in_allowed = match &agent.tools {
@@ -196,13 +218,21 @@ impl ToolRegistry {
             })
             .cloned()
             .collect();
-        ToolRegistry { tools: Arc::new(RwLock::new(filtered)) }
+        ToolRegistry {
+            tools: Arc::new(RwLock::new(filtered)),
+        }
     }
 
     pub fn tool_descriptions(&self, mode: &PermissionMode) -> String {
         let pool = self.assemble_for_mode(mode);
         pool.iter()
-            .map(|t| format!("- **{}**: {}", t.name(), t.description(None, &DescriptionCtx::default())))
+            .map(|t| {
+                format!(
+                    "- **{}**: {}",
+                    t.name(),
+                    t.description(None, &DescriptionCtx::default())
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -258,7 +288,10 @@ mod registry_tests {
         );
         let all = reg.assemble_for_mode(&PermissionMode::Default).len();
         let filtered = reg.filter_for_agent(&agent(Some(vec!["*"]), vec![]));
-        assert_eq!(filtered.assemble_for_mode(&PermissionMode::Default).len(), all);
+        assert_eq!(
+            filtered.assemble_for_mode(&PermissionMode::Default).len(),
+            all
+        );
     }
 
     #[test]
@@ -300,6 +333,9 @@ mod registry_tests {
         );
         let all = reg.assemble_for_mode(&PermissionMode::Default).len();
         let filtered = reg.filter_for_agent(&agent(None, vec![]));
-        assert_eq!(filtered.assemble_for_mode(&PermissionMode::Default).len(), all);
+        assert_eq!(
+            filtered.assemble_for_mode(&PermissionMode::Default).len(),
+            all
+        );
     }
 }

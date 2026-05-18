@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use std::sync::Arc;
 
 pub struct TaskOutputTool {
     pub store: Arc<crate::state::store::Store>,
@@ -9,7 +12,9 @@ pub struct TaskOutputTool {
 
 #[async_trait]
 impl Tool for TaskOutputTool {
-    fn name(&self) -> &str { "TaskOutput" }
+    fn name(&self) -> &str {
+        "TaskOutput"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Returns output/info for a task by its ID.".into()
     }
@@ -39,9 +44,16 @@ impl Tool for TaskOutputTool {
             }
         }))
     }
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let task_id = input["task_id"].as_str().unwrap_or("");
         let block = input["block"].as_bool().unwrap_or(true);
         let timeout = input["timeout"].as_i64().unwrap_or(30000);
@@ -57,7 +69,8 @@ impl Tool for TaskOutputTool {
                     ("status".into(), format!("{:?}", task.status)),
                     ("block".into(), block.to_string()),
                     ("timeout".into(), timeout.to_string()),
-                ].into();
+                ]
+                .into();
                 ToolResult {
                     content: info,
                     is_error: false,
@@ -83,7 +96,10 @@ impl Tool for TaskOutputTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

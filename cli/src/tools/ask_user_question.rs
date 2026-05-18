@@ -1,10 +1,10 @@
-use async_trait::async_trait;
-use serde_json::json;
 use super::contract::{
-    ColorHint, DescriptionCtx, InterruptBehavior, PromptCtx, ProgressSink, RenderOpts, Tool,
+    ColorHint, DescriptionCtx, InterruptBehavior, ProgressSink, PromptCtx, RenderOpts, Tool,
     ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent,
 };
 use crate::tools::permission::PermissionResult;
+use async_trait::async_trait;
+use serde_json::json;
 use shared::{InteractiveWidget, Question, QuestionOption, RenderSpec};
 
 pub struct AskUserQuestionTool;
@@ -148,11 +148,7 @@ impl Tool for AskUserQuestionTool {
     fn to_auto_classifier_input(&self, input: &serde_json::Value) -> serde_json::Value {
         let question_texts: Vec<&str> = input["questions"]
             .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|q| q["question"].as_str())
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|q| q["question"].as_str()).collect())
             .unwrap_or_default();
         serde_json::Value::String(question_texts.join(" | "))
     }
@@ -172,8 +168,14 @@ impl Tool for AskUserQuestionTool {
         }
 
         let questions = &input["questions"];
-        let answers = input.get("answers").cloned().unwrap_or(serde_json::Value::Null);
-        let annotations = input.get("annotations").cloned().unwrap_or(serde_json::Value::Null);
+        let answers = input
+            .get("answers")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let annotations = input
+            .get("annotations")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
 
         ToolResult {
             content: json!({
@@ -183,21 +185,12 @@ impl Tool for AskUserQuestionTool {
             })
             .to_string(),
             is_error: false,
-            metadata: Some(
-                [
-                    ("needs_response".into(), "true".into()),
-                ]
-                .into(),
-            ),
+            metadata: Some([("needs_response".into(), "true".into())].into()),
             ..Default::default()
         }
     }
 
-    fn render_tool_use_message(
-        &self,
-        input: &serde_json::Value,
-        _opts: &RenderOpts,
-    ) -> RenderSpec {
+    fn render_tool_use_message(&self, input: &serde_json::Value, _opts: &RenderOpts) -> RenderSpec {
         let questions: Vec<Question> = input["questions"]
             .as_array()
             .map(|arr| {
@@ -262,19 +255,13 @@ impl Tool for AskUserQuestionTool {
         }
 
         let body = if parts.is_empty() {
-            output
-                .as_str()
-                .unwrap_or("Questions answered")
-                .to_string()
+            output.as_str().unwrap_or("Questions answered").to_string()
         } else {
             parts.join("\n")
         };
 
         Some(RenderSpec::Group {
-            children: vec![RenderSpec::Text {
-                body,
-                dim: false,
-            }],
+            children: vec![RenderSpec::Text { body, dim: false }],
         })
     }
 

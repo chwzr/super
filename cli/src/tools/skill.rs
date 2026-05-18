@@ -1,6 +1,9 @@
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct SkillTool {
     pub skills: Vec<crate::skills::loader::Skill>,
@@ -8,7 +11,9 @@ pub struct SkillTool {
 
 #[async_trait]
 impl Tool for SkillTool {
-    fn name(&self) -> &str { "Skill" }
+    fn name(&self) -> &str {
+        "Skill"
+    }
 
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Execute a skill within the main conversation. \
@@ -61,7 +66,12 @@ impl Tool for SkillTool {
         }))
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let skill_name = input["skill"].as_str().unwrap_or("").trim().to_string();
         if skill_name.is_empty() {
             return ToolResult {
@@ -86,7 +96,11 @@ impl Tool for SkillTool {
                     content: format!(
                         "Skill '{}' not found. Available skills: {}",
                         normalized,
-                        if available.is_empty() { "none loaded".into() } else { available.join(", ") }
+                        if available.is_empty() {
+                            "none loaded".into()
+                        } else {
+                            available.join(", ")
+                        }
                     ),
                     is_error: true,
                     inject_messages: Vec::new(),
@@ -131,7 +145,10 @@ impl Tool for SkillTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }
@@ -195,7 +212,9 @@ mod tests {
     #[tokio::test]
     async fn returns_launching_skill_content() {
         let tool = make_tool(vec![make_skill("brainstorming", false, None)]);
-        let result = tool.call(json!({"skill": "brainstorming"}), &ctx(), None).await;
+        let result = tool
+            .call(json!({"skill": "brainstorming"}), &ctx(), None)
+            .await;
         assert_eq!(result.content, "Launching skill: brainstorming");
         assert!(!result.is_error);
     }
@@ -203,7 +222,9 @@ mod tests {
     #[tokio::test]
     async fn injects_skill_body_without_base_dir() {
         let tool = make_tool(vec![make_skill("brainstorming", false, None)]);
-        let result = tool.call(json!({"skill": "brainstorming"}), &ctx(), None).await;
+        let result = tool
+            .call(json!({"skill": "brainstorming"}), &ctx(), None)
+            .await;
         assert_eq!(result.inject_messages.len(), 1);
         assert!(result.inject_messages[0].contains("Content of brainstorming"));
         assert!(!result.inject_messages[0].contains("Base directory"));
@@ -213,7 +234,9 @@ mod tests {
     async fn injects_base_dir_header_when_present() {
         let dir = PathBuf::from("/home/user/.super/plugins/superpowers/brainstorming");
         let tool = make_tool(vec![make_skill("brainstorming", false, Some(dir.clone()))]);
-        let result = tool.call(json!({"skill": "brainstorming"}), &ctx(), None).await;
+        let result = tool
+            .call(json!({"skill": "brainstorming"}), &ctx(), None)
+            .await;
         assert!(result.inject_messages[0].starts_with("Base directory for this skill:"));
         assert!(result.inject_messages[0].contains(dir.to_str().unwrap()));
     }
@@ -229,7 +252,9 @@ mod tests {
     #[tokio::test]
     async fn unknown_skill_returns_error() {
         let tool = make_tool(vec![make_skill("commit", true, None)]);
-        let result = tool.call(json!({"skill": "nonexistent"}), &ctx(), None).await;
+        let result = tool
+            .call(json!({"skill": "nonexistent"}), &ctx(), None)
+            .await;
         assert!(result.is_error);
         assert!(result.inject_messages.is_empty());
     }
@@ -238,7 +263,11 @@ mod tests {
     async fn args_appended_to_inject_content() {
         let tool = make_tool(vec![make_skill("compact", true, None)]);
         let result = tool
-            .call(json!({"skill": "compact", "args": "focus on recent changes"}), &ctx(), None)
+            .call(
+                json!({"skill": "compact", "args": "focus on recent changes"}),
+                &ctx(),
+                None,
+            )
             .await;
         assert!(result.inject_messages[0].contains("focus on recent changes"));
     }

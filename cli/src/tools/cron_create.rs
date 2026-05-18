@@ -1,8 +1,11 @@
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct CronJob {
     pub cron: String,
@@ -17,10 +20,13 @@ pub struct CronCreateTool {
 
 #[async_trait]
 impl Tool for CronCreateTool {
-    fn name(&self) -> &str { "CronCreate" }
+    fn name(&self) -> &str {
+        "CronCreate"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Schedule a prompt to be enqueued at a future time via a cron expression. \
-         Supports recurring and one-shot schedules.".into()
+         Supports recurring and one-shot schedules."
+            .into()
     }
 
     fn prompt(&self, _ctx: &PromptCtx) -> String {
@@ -52,13 +58,26 @@ impl Tool for CronCreateTool {
         }))
     }
 
-    fn should_defer(&self) -> bool { true }
+    fn should_defer(&self) -> bool {
+        true
+    }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let cron = input["cron"].as_str().unwrap_or("").to_string();
         let prompt = input["prompt"].as_str().unwrap_or("").to_string();
-        let recurring = input.get("recurring").and_then(|v| v.as_bool()).unwrap_or(true);
-        let durable = input.get("durable").and_then(|v| v.as_bool()).unwrap_or(false);
+        let recurring = input
+            .get("recurring")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let durable = input
+            .get("durable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         // Validate 5-field cron expression with per-field constraints
         let fields: Vec<&str> = cron.split_whitespace().collect();
@@ -72,7 +91,9 @@ impl Tool for CronCreateTool {
 
         // Validate each field's domain
         fn valid_field(field: &str, min: i32, max: i32) -> bool {
-            if field == "*" { return true; }
+            if field == "*" {
+                return true;
+            }
             for part in field.split(',') {
                 let (part, _step) = match part.split_once('/') {
                     Some((p, s)) => (p, Some(s)),
@@ -84,7 +105,9 @@ impl Tool for CronCreateTool {
                 };
                 for val in [lo, hi] {
                     if let Ok(n) = val.parse::<i32>() {
-                        if n < min || n > max { return false; }
+                        if n < min || n > max {
+                            return false;
+                        }
                     }
                 }
             }
@@ -97,7 +120,10 @@ impl Tool for CronCreateTool {
             let (min, max) = field_constraints[i];
             if !valid_field(field, min, max) {
                 return ToolResult {
-                    content: format!("Invalid cron field '{}': {} must be in range {}-{}", field_names[i], field, min, max),
+                    content: format!(
+                        "Invalid cron field '{}': {} must be in range {}-{}",
+                        field_names[i], field, min, max
+                    ),
                     is_error: true,
                     ..Default::default()
                 };
@@ -105,7 +131,12 @@ impl Tool for CronCreateTool {
         }
 
         let id = uuid::Uuid::new_v4().to_string();
-        let job = CronJob { cron: cron.clone(), prompt, recurring, durable };
+        let job = CronJob {
+            cron: cron.clone(),
+            prompt,
+            recurring,
+            durable,
+        };
 
         let mut jobs = self.jobs.lock().unwrap();
         jobs.insert(id.clone(), job);
@@ -119,7 +150,8 @@ impl Tool for CronCreateTool {
                 "humanSchedule": human,
                 "recurring": recurring,
                 "durable": durable
-            }).to_string(),
+            })
+            .to_string(),
             is_error: false,
             ..Default::default()
         }
@@ -133,7 +165,10 @@ impl Tool for CronCreateTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

@@ -7,8 +7,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::colors::{CC_BLUE, CC_DIM, CC_GREEN};
 use crate::providers::PROVIDERS;
+use crate::tui::colors::{CC_BLUE, CC_DIM, CC_GREEN};
 
 pub struct ProviderPicker {
     pub cursor: usize,
@@ -21,26 +21,35 @@ impl ProviderPicker {
             .iter()
             .position(|p| p.id == current_provider)
             .unwrap_or(0);
-        Self { cursor, current_provider }
+        Self {
+            cursor,
+            current_provider,
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ProviderAction {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.cursor > 0 { self.cursor -= 1; }
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                }
                 ProviderAction::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.cursor + 1 < PROVIDERS.len() { self.cursor += 1; }
+                if self.cursor + 1 < PROVIDERS.len() {
+                    self.cursor += 1;
+                }
                 ProviderAction::Continue
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 let idx = (c as usize).wrapping_sub('1' as usize);
-                if idx < PROVIDERS.len() { self.cursor = idx; }
+                if idx < PROVIDERS.len() {
+                    self.cursor = idx;
+                }
                 ProviderAction::Continue
             }
             KeyCode::Enter => ProviderAction::Select(PROVIDERS[self.cursor].id),
-            KeyCode::Esc   => ProviderAction::Cancel,
+            KeyCode::Esc => ProviderAction::Cancel,
             _ => ProviderAction::Continue,
         }
     }
@@ -57,7 +66,7 @@ impl ProviderPicker {
         let mut lines: Vec<Line> = Vec::new();
 
         for (i, entry) in PROVIDERS.iter().enumerate() {
-            let is_cursor  = i == self.cursor;
+            let is_cursor = i == self.cursor;
             let is_current = entry.id == self.current_provider;
 
             let prefix = if is_cursor { "❯ " } else { "  " };
@@ -69,8 +78,8 @@ impl ProviderPicker {
                 Style::default().fg(CC_DIM)
             };
             let check_style = Style::default().fg(CC_GREEN);
-            let desc_style  = Style::default().fg(CC_DIM);
-            let checkmark   = if is_current { " ✔" } else { "" };
+            let desc_style = Style::default().fg(CC_DIM);
+            let checkmark = if is_current { " ✔" } else { "" };
             let desc = descriptions.get(i).copied().unwrap_or("");
 
             lines.push(Line::from(vec![

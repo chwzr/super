@@ -32,8 +32,10 @@ pub fn banner_lines(
     cwd: &str,
 ) -> Vec<Line<'static>> {
     let mascot_style = Style::default().fg(Color::Cyan);
-    let title_style  = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
-    let meta_style   = Style::default().fg(Color::Gray);
+    let title_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let meta_style = Style::default().fg(Color::Gray);
     let gap = "   ";
 
     vec![
@@ -46,18 +48,12 @@ pub fn banner_lines(
         Line::from(vec![
             Span::styled(MASCOT[2], mascot_style),
             Span::raw(gap),
-            Span::styled(
-                format!("{model_label} · {provider_label}"),
-                meta_style,
-            ),
+            Span::styled(format!("{model_label} · {provider_label}"), meta_style),
         ]),
         Line::from(vec![
             Span::styled(MASCOT[3], mascot_style),
             Span::raw(gap),
-            Span::styled(
-                format!("@{user_handle} · {cwd}"),
-                meta_style,
-            ),
+            Span::styled(format!("@{user_handle} · {cwd}"), meta_style),
         ]),
         Line::from(Span::styled(MASCOT[4], mascot_style)),
         Line::from(Span::styled(MASCOT[5], mascot_style)),

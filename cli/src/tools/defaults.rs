@@ -14,10 +14,18 @@
 #[macro_export]
 macro_rules! tool_read_only_defaults {
     () => {
-        fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
-        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool { true }
-        fn is_destructive(&self, _input: &serde_json::Value) -> bool { false }
-        fn is_open_world(&self, _input: &serde_json::Value) -> bool { false }
+        fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn is_destructive(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn is_open_world(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
     };
 }
 
@@ -25,9 +33,17 @@ macro_rules! tool_read_only_defaults {
 #[macro_export]
 macro_rules! tool_write_defaults {
     () => {
-        fn is_read_only(&self, _input: &serde_json::Value) -> bool { false }
-        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool { false }
-        fn is_destructive(&self, _input: &serde_json::Value) -> bool { true }
-        fn is_open_world(&self, _input: &serde_json::Value) -> bool { false }
+        fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn is_destructive(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn is_open_world(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
     };
 }

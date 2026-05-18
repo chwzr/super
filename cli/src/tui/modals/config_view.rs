@@ -31,7 +31,11 @@ impl Default for ConfigView {
 impl ConfigView {
     pub fn new() -> Self {
         let entries = Self::load_entries();
-        Self { query: String::new(), entries, scroll: 0 }
+        Self {
+            query: String::new(),
+            entries,
+            scroll: 0,
+        }
     }
 
     fn load_entries() -> Vec<ConfigEntry> {
@@ -39,17 +43,39 @@ impl ConfigView {
         let mut entries = Vec::new();
 
         let mut push = |key: &str, val: String| {
-            let display = if SENSITIVE_KEYS.contains(&key) && !val.is_empty() && val != "(not set)" {
+            let display = if SENSITIVE_KEYS.contains(&key) && !val.is_empty() && val != "(not set)"
+            {
                 "••••••••".to_string()
             } else {
                 val
             };
-            entries.push(ConfigEntry { key: key.to_string(), value: display });
+            entries.push(ConfigEntry {
+                key: key.to_string(),
+                value: display,
+            });
         };
 
-        push("access_token", cfg.access_token.as_deref().unwrap_or("(not set)").to_string());
-        push("refresh_token", cfg.refresh_token.as_deref().unwrap_or("(not set)").to_string());
-        push("openrouter_api_key", cfg.openrouter_api_key.as_deref().unwrap_or("(not set)").to_string());
+        push(
+            "access_token",
+            cfg.access_token
+                .as_deref()
+                .unwrap_or("(not set)")
+                .to_string(),
+        );
+        push(
+            "refresh_token",
+            cfg.refresh_token
+                .as_deref()
+                .unwrap_or("(not set)")
+                .to_string(),
+        );
+        push(
+            "openrouter_api_key",
+            cfg.openrouter_api_key
+                .as_deref()
+                .unwrap_or("(not set)")
+                .to_string(),
+        );
         push("api_base_url", cfg.api_base_url.clone());
         push("model", cfg.model.clone());
         push("permissions", cfg.permissions.to_string());
@@ -127,7 +153,10 @@ impl ConfigView {
         }
 
         if filtered.is_empty() {
-            lines.push(Line::from(Span::styled("  (no matching keys)", Style::default().fg(CC_DIM))));
+            lines.push(Line::from(Span::styled(
+                "  (no matching keys)",
+                Style::default().fg(CC_DIM),
+            )));
         }
 
         lines.push(Line::raw(""));

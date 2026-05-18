@@ -1,4 +1,7 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use shared;
 
@@ -72,7 +75,9 @@ impl Tool for GlobTool {
             })
             .unwrap_or_default();
 
-        let num_files = output["numFiles"].as_u64().unwrap_or(filenames.len() as u64) as usize;
+        let num_files = output["numFiles"]
+            .as_u64()
+            .unwrap_or(filenames.len() as u64) as usize;
         let truncated = output["truncated"].as_bool().unwrap_or(false);
 
         Some(shared::RenderSpec::PathList {
@@ -99,7 +104,12 @@ impl Tool for GlobTool {
         true
     }
 
-    async fn call(&self, input: serde_json::Value, context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let start = std::time::Instant::now();
 
         let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
@@ -233,7 +243,10 @@ impl Tool for GlobTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use std::sync::Arc;
 
 pub struct TaskGetTool {
     pub store: Arc<crate::state::store::Store>,
@@ -9,7 +12,9 @@ pub struct TaskGetTool {
 
 #[async_trait]
 impl Tool for TaskGetTool {
-    fn name(&self) -> &str { "TaskGet" }
+    fn name(&self) -> &str {
+        "TaskGet"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Retrieves a task by its ID.".into()
     }
@@ -26,7 +31,9 @@ impl Tool for TaskGetTool {
             "required": ["taskId"]
         })
     }
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
     fn output_schema(&self) -> Option<serde_json::Value> {
         Some(json!({
             "type": ["object", "null"],
@@ -41,7 +48,12 @@ impl Tool for TaskGetTool {
         }))
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let task_id = input["taskId"].as_str().unwrap_or("");
         let tasks = self.store.get_state().tasks;
         match tasks.get(task_id) {
@@ -72,7 +84,10 @@ impl Tool for TaskGetTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

@@ -1,8 +1,11 @@
-use std::sync::Arc;
+use crate::state::store::TaskStatus;
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
-use crate::state::store::TaskStatus;
+use std::sync::Arc;
 
 pub struct TaskStopTool {
     pub store: Arc<crate::state::store::Store>,
@@ -10,7 +13,9 @@ pub struct TaskStopTool {
 
 #[async_trait]
 impl Tool for TaskStopTool {
-    fn name(&self) -> &str { "TaskStop" }
+    fn name(&self) -> &str {
+        "TaskStop"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Stops a running task and marks it as failed.".into()
     }
@@ -39,8 +44,14 @@ impl Tool for TaskStopTool {
         }))
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
-        let task_id = input.get("task_id")
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
+        let task_id = input
+            .get("task_id")
             .or_else(|| input.get("shell_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
@@ -76,7 +87,10 @@ impl Tool for TaskStopTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

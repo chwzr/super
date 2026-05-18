@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::tools::contract::{DescriptionCtx, PromptCtx, ProgressSink, SearchReadKind, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, SearchReadKind, Tool, ToolCallContext, ToolResult,
+    ToolResultBlock, ToolResultContent,
+};
 use async_trait::async_trait;
 
 const DANGEROUS_PATHS: &[&str] = &[
@@ -122,15 +125,24 @@ impl Tool for ReadTool {
     }
 
     fn get_path(&self, input: &serde_json::Value) -> Option<std::path::PathBuf> {
-        input.get("file_path").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+        input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(std::path::PathBuf::from)
     }
 
     fn get_activity_description(&self, input: &serde_json::Value) -> Option<String> {
-        input.get("file_path").and_then(|v| v.as_str()).map(|p| format!("Reading {}", p))
+        input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("Reading {}", p))
     }
 
     fn is_search_or_read_command(&self, _input: &serde_json::Value) -> SearchReadKind {
-        SearchReadKind { is_read: true, ..Default::default() }
+        SearchReadKind {
+            is_read: true,
+            ..Default::default()
+        }
     }
 
     fn extract_search_text(&self, output: &serde_json::Value) -> Option<String> {
@@ -141,7 +153,12 @@ impl Tool for ReadTool {
         500_000
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let file_path = match input.get("file_path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -218,8 +235,11 @@ impl Tool for ReadTool {
             return ToolResult {
                 content: format!(
                     "PDF file: {}\nSize: {} bytes{}",
-                    file_path, size,
-                    pages.map(|p| format!("\nPages requested: {}", p)).unwrap_or_default()
+                    file_path,
+                    size,
+                    pages
+                        .map(|p| format!("\nPages requested: {}", p))
+                        .unwrap_or_default()
                 ),
                 is_error: false,
                 metadata: Some(meta),
@@ -249,7 +269,10 @@ impl Tool for ReadTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }
@@ -307,10 +330,7 @@ impl ReadTool {
         let mut meta = HashMap::new();
         meta.insert("total_lines".to_string(), total_lines.to_string());
         if limit.is_some() {
-            meta.insert(
-                "returned_lines".to_string(),
-                (end - start).to_string(),
-            );
+            meta.insert("returned_lines".to_string(), (end - start).to_string());
         }
 
         ToolResult {
@@ -372,10 +392,7 @@ impl ReadTool {
                             source.clone()
                         };
 
-                        result.push_str(&format!(
-                            "Cell {} [{}]:\n{}\n\n",
-                            i, cell_type, preview
-                        ));
+                        result.push_str(&format!("Cell {} [{}]:\n{}\n\n", i, cell_type, preview));
                     }
                 }
 

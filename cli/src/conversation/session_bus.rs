@@ -19,7 +19,10 @@ pub struct SessionBus {
 impl SessionBus {
     pub fn new(session_id: String) -> Self {
         let (sender, _) = broadcast::channel(BUS_CAPACITY);
-        Self { sender: Arc::new(sender), session_id }
+        Self {
+            sender: Arc::new(sender),
+            session_id,
+        }
     }
 
     /// Subscribe to the bus.
@@ -92,7 +95,13 @@ mod tests {
         let mut rx1 = bus.subscribe();
         let mut rx2 = bus.subscribe();
         bus.emit_system(SystemSubtype::Notice, "hello");
-        assert!(matches!(rx1.recv().await.unwrap(), BusMessage::SystemEvent { .. }));
-        assert!(matches!(rx2.recv().await.unwrap(), BusMessage::SystemEvent { .. }));
+        assert!(matches!(
+            rx1.recv().await.unwrap(),
+            BusMessage::SystemEvent { .. }
+        ));
+        assert!(matches!(
+            rx2.recv().await.unwrap(),
+            BusMessage::SystemEvent { .. }
+        ));
     }
 }

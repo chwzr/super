@@ -36,8 +36,12 @@ pub struct UserProfile {
 }
 
 // CLI config
-fn default_provider() -> String { "anthropic".to_string() }
-fn default_model_class() -> String { "sonnet".to_string() }
+fn default_provider() -> String {
+    "anthropic".to_string()
+}
+fn default_model_class() -> String {
+    "sonnet".to_string()
+}
 fn default_messages_base_url() -> String {
     "https://openrouter.ai/api".to_string()
 }
@@ -101,7 +105,10 @@ mod tests {
         };
         let json = serde_json::to_string(&c).unwrap();
         // model field must NOT appear in the JSON output
-        assert!(!json.contains("\"model\":"), "model field must not be serialized; json was: {json}");
+        assert!(
+            !json.contains("\"model\":"),
+            "model field must not be serialized; json was: {json}"
+        );
         assert!(json.contains("\"provider\":\"z-ai\""));
         assert!(json.contains("\"model_class\":\"haiku\""));
         // Deserialize back

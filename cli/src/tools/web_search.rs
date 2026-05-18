@@ -1,20 +1,26 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ProgressSink};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult,
+};
 use async_trait::async_trait;
 use serde_json::json;
 
 pub struct WebSearchTool;
 
 fn url_encode(s: &str) -> String {
-    s.chars().map(|c| match c {
-        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-        ' ' => "+".to_string(),
-        c => format!("%{:02X}", c as u8),
-    }).collect()
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "+".to_string(),
+            c => format!("%{:02X}", c as u8),
+        })
+        .collect()
 }
 
 #[async_trait]
 impl Tool for WebSearchTool {
-    fn name(&self) -> &str { "WebSearch" }
+    fn name(&self) -> &str {
+        "WebSearch"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Performs a web search. Returns search results with titles and URLs. \
          Use 'allowed_domains' to restrict to specific domains, \
@@ -59,14 +65,22 @@ impl Tool for WebSearchTool {
         }))
     }
 
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let start = std::time::Instant::now();
         let query = input["query"].as_str().unwrap_or("");
 
         // Use DuckDuckGo Instant Answer API as a simple web search fallback
-        let url = format!("https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
+        let url = format!(
+            "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
             url_encode(query)
         );
 
@@ -106,28 +120,41 @@ impl Tool for WebSearchTool {
                     }
 
                     // Apply domain filtering
-                    let allowed: Option<Vec<String>> = input.get("allowed_domains")
+                    let allowed: Option<Vec<String>> = input
+                        .get("allowed_domains")
                         .and_then(|v| v.as_array())
-                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        });
 
-                    let blocked: Option<Vec<String>> = input.get("blocked_domains")
+                    let blocked: Option<Vec<String>> = input
+                        .get("blocked_domains")
                         .and_then(|v| v.as_array())
-                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        });
 
-                    let items: Vec<_> = items.into_iter().filter(|item| {
-                        let item_url = item["url"].as_str().unwrap_or("");
-                        if let Some(ref allow) = allowed {
-                            if !allow.iter().any(|domain| item_url.contains(domain)) {
-                                return false;
+                    let items: Vec<_> = items
+                        .into_iter()
+                        .filter(|item| {
+                            let item_url = item["url"].as_str().unwrap_or("");
+                            if let Some(ref allow) = allowed {
+                                if !allow.iter().any(|domain| item_url.contains(domain)) {
+                                    return false;
+                                }
                             }
-                        }
-                        if let Some(ref block) = blocked {
-                            if block.iter().any(|domain| item_url.contains(domain)) {
-                                return false;
+                            if let Some(ref block) = blocked {
+                                if block.iter().any(|domain| item_url.contains(domain)) {
+                                    return false;
+                                }
                             }
-                        }
-                        true
-                    }).collect();
+                            true
+                        })
+                        .collect();
 
                     let duration_ms = start.elapsed().as_millis() as f64;
 
@@ -136,14 +163,23 @@ impl Tool for WebSearchTool {
                             "query": query,
                             "results": items,
                             "durationMs": duration_ms
-                        }).to_string(),
+                        })
+                        .to_string(),
                         is_error: false,
                         ..Default::default()
                     }
                 }
-                Err(e) => ToolResult { content: format!("Failed to read response: {e}"), is_error: true, ..Default::default() },
+                Err(e) => ToolResult {
+                    content: format!("Failed to read response: {e}"),
+                    is_error: true,
+                    ..Default::default()
+                },
             },
-            Err(e) => ToolResult { content: format!("Search failed: {e}"), is_error: true, ..Default::default() },
+            Err(e) => ToolResult {
+                content: format!("Search failed: {e}"),
+                is_error: true,
+                ..Default::default()
+            },
         }
     }
 
@@ -155,7 +191,10 @@ impl Tool for WebSearchTool {
         crate::tools::contract::ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: crate::tools::contract::ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

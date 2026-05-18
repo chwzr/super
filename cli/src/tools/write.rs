@@ -1,4 +1,7 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 
 #[derive(Default)]
@@ -47,15 +50,24 @@ impl Tool for WriteTool {
     }
 
     fn get_path(&self, input: &serde_json::Value) -> Option<std::path::PathBuf> {
-        input.get("file_path").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+        input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(std::path::PathBuf::from)
     }
 
     fn get_activity_description(&self, input: &serde_json::Value) -> Option<String> {
-        input.get("file_path").and_then(|v| v.as_str()).map(|p| format!("Writing {}", p))
+        input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("Writing {}", p))
     }
 
     fn to_auto_classifier_input(&self, input: &serde_json::Value) -> serde_json::Value {
-        let path = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        let path = input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let preview = if content.len() > 200 {
             format!("{}...", &content[..200])
@@ -69,7 +81,12 @@ impl Tool for WriteTool {
         true
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let file_path = match input.get("file_path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -99,7 +116,10 @@ impl Tool for WriteTool {
             if !parent.as_os_str().is_empty() && !parent.exists() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
                     return ToolResult {
-                        content: format!("Error creating parent directories for {}: {}", file_path, e),
+                        content: format!(
+                            "Error creating parent directories for {}: {}",
+                            file_path, e
+                        ),
                         is_error: true,
                         ..Default::default()
                     };
@@ -119,7 +139,11 @@ impl Tool for WriteTool {
                         if existed_before { "overwrote" } else { "wrote" },
                         content.len(),
                         file_path,
-                        if existed_before { " (file was overwritten)" } else { "" }
+                        if existed_before {
+                            " (file was overwritten)"
+                        } else {
+                            ""
+                        }
                     ),
                     is_error: false,
                     metadata: Some(meta),
@@ -142,7 +166,10 @@ impl Tool for WriteTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

@@ -1,6 +1,6 @@
+use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use serde_json::Value;
 
 /// Manages connections to MCP servers
 pub struct McpManager {

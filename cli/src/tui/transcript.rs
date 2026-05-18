@@ -1,14 +1,23 @@
 use crate::sdk::protocol::{
-    BlockDelta, BusMessage, ContentBlockFinal, ContentBlockStream, StreamEvent,
-    SystemSubtype,
+    BlockDelta, BusMessage, ContentBlockFinal, ContentBlockStream, StreamEvent, SystemSubtype,
 };
 
 /// One renderable item in the transcript.
 #[derive(Debug, Clone)]
 pub enum TranscriptItem {
-    User { text: String },
-    AssistantText { text: String, complete: bool },
-    Thinking { text: String, collapsed: bool, elapsed_ms: u64, complete: bool },
+    User {
+        text: String,
+    },
+    AssistantText {
+        text: String,
+        complete: bool,
+    },
+    Thinking {
+        text: String,
+        collapsed: bool,
+        elapsed_ms: u64,
+        complete: bool,
+    },
     ToolCall {
         tool_use_id: String,
         name: String,
@@ -16,13 +25,18 @@ pub enum TranscriptItem {
         result: Option<ToolResultRender>,
         elapsed_ms: u64,
     },
-    System { subtype: SystemSubtype, message: String },
+    System {
+        subtype: SystemSubtype,
+        message: String,
+    },
     /// One or more consecutive read/search tool calls within an assistant turn.
     /// Renders as a single dim-gray summary line by default (e.g. "Read 3 files
     /// (ctrl+o to expand)"); when the global `show_detailed_transcript` flag is
     /// on, each call renders as an individual block. See
     /// cli/docs/tool-call-render-spec.md "Render mode 1".
-    ToolBatch { calls: Vec<BatchCall> },
+    ToolBatch {
+        calls: Vec<BatchCall>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -50,10 +64,13 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
     // Cleared on each new MessageStart.
     let mut block_to_idx: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     // tool_use_id -> position in `out` (so tool_result can attach across turns)
-    let mut tool_use_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut tool_use_idx: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for ev in events {
-        if !matches_filter(ev, filter) { continue; }
+        if !matches_filter(ev, filter) {
+            continue;
+        }
         match ev {
             BusMessage::User { message, .. } => {
                 // A user message that contains any ToolResult is the synthetic
@@ -62,9 +79,10 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                 // SkillTool's full skill body, sent to the model only) — never
                 // user input. Matches Claude Code's `isMeta` skip in
                 // VirtualMessageList.tsx.
-                let is_tool_results_turn = message.content.iter().any(|b| {
-                    matches!(b, ContentBlockFinal::ToolResult { .. })
-                });
+                let is_tool_results_turn = message
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlockFinal::ToolResult { .. }));
                 for block in &message.content {
                     match block {
                         ContentBlockFinal::Text { text } => {
@@ -77,7 +95,11 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                                 out.push(TranscriptItem::User { text: stripped });
                             }
                         }
-                        ContentBlockFinal::ToolResult { tool_use_id, content, is_error } => {
+                        ContentBlockFinal::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => {
                             if let Some(idx) = tool_use_idx.get(tool_use_id) {
                                 if let TranscriptItem::ToolCall { result, .. } = &mut out[*idx] {
                                     *result = Some(ToolResultRender {
@@ -99,56 +121,75 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                     // New assistant turn — content-block indices restart.
                     block_to_idx.clear();
                 }
-                StreamEvent::ContentBlockStart { index, content_block } => {
-                    match content_block {
-                        ContentBlockStream::Text { text } => {
-                            let pos = out.len();
-                            out.push(TranscriptItem::AssistantText {
-                                text: text.clone(), complete: false,
-                            });
-                            block_to_idx.insert(*index, pos);
-                        }
-                        ContentBlockStream::Thinking { thinking, .. } => {
-                            let pos = out.len();
-                            out.push(TranscriptItem::Thinking {
-                                text: thinking.clone(), collapsed: true, elapsed_ms: 0,
-                                complete: false,
-                            });
-                            block_to_idx.insert(*index, pos);
-                        }
-                        ContentBlockStream::ToolUse { id, name, input } => {
-                            let pos = out.len();
-                            out.push(TranscriptItem::ToolCall {
-                                tool_use_id: id.clone(),
-                                name: name.clone(),
-                                input: input.clone(),
-                                result: None,
-                                elapsed_ms: 0,
-                            });
-                            block_to_idx.insert(*index, pos);
-                            tool_use_idx.insert(id.clone(), pos);
-                        }
+                StreamEvent::ContentBlockStart {
+                    index,
+                    content_block,
+                } => match content_block {
+                    ContentBlockStream::Text { text } => {
+                        let pos = out.len();
+                        out.push(TranscriptItem::AssistantText {
+                            text: text.clone(),
+                            complete: false,
+                        });
+                        block_to_idx.insert(*index, pos);
                     }
-                }
+                    ContentBlockStream::Thinking { thinking, .. } => {
+                        let pos = out.len();
+                        out.push(TranscriptItem::Thinking {
+                            text: thinking.clone(),
+                            collapsed: true,
+                            elapsed_ms: 0,
+                            complete: false,
+                        });
+                        block_to_idx.insert(*index, pos);
+                    }
+                    ContentBlockStream::ToolUse { id, name, input } => {
+                        let pos = out.len();
+                        out.push(TranscriptItem::ToolCall {
+                            tool_use_id: id.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                            result: None,
+                            elapsed_ms: 0,
+                        });
+                        block_to_idx.insert(*index, pos);
+                        tool_use_idx.insert(id.clone(), pos);
+                    }
+                },
                 StreamEvent::ContentBlockDelta { index, delta } => {
-                    let Some(&pos) = block_to_idx.get(index) else { continue };
+                    let Some(&pos) = block_to_idx.get(index) else {
+                        continue;
+                    };
                     match (&mut out[pos], delta) {
-                        (TranscriptItem::AssistantText { text, .. }, BlockDelta::TextDelta { text: d }) => {
+                        (
+                            TranscriptItem::AssistantText { text, .. },
+                            BlockDelta::TextDelta { text: d },
+                        ) => {
                             text.push_str(d);
                         }
-                        (TranscriptItem::Thinking { text, .. }, BlockDelta::ThinkingDelta { thinking: d }) => {
+                        (
+                            TranscriptItem::Thinking { text, .. },
+                            BlockDelta::ThinkingDelta { thinking: d },
+                        ) => {
                             text.push_str(d);
                         }
-                        (TranscriptItem::ToolCall { input, .. }, BlockDelta::InputJsonDelta { partial_json }) => {
+                        (
+                            TranscriptItem::ToolCall { input, .. },
+                            BlockDelta::InputJsonDelta { partial_json },
+                        ) => {
                             // Accumulate partial JSON in a side string under
                             // "__partial__". We finalize on ContentBlockStop.
                             // If the ContentBlockStart already delivered a
                             // non-empty input (rare but allowed by the spec),
                             // seed `__partial__` from the existing object so
                             // the prefix isn't lost.
-                            let cur = if let Some(partial) = input.get("__partial__").and_then(|v| v.as_str()) {
+                            let cur = if let Some(partial) =
+                                input.get("__partial__").and_then(|v| v.as_str())
+                            {
                                 partial.to_string()
-                            } else if input.is_object() && !input.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                            } else if input.is_object()
+                                && !input.as_object().map(|o| o.is_empty()).unwrap_or(true)
+                            {
                                 // Serialize the prior input so concatenation
                                 // remains valid (or at least recoverable) JSON.
                                 serde_json::to_string(input).unwrap_or_default()
@@ -162,7 +203,9 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                     }
                 }
                 StreamEvent::ContentBlockStop { index } => {
-                    let Some(&pos) = block_to_idx.get(index) else { continue };
+                    let Some(&pos) = block_to_idx.get(index) else {
+                        continue;
+                    };
                     match &mut out[pos] {
                         TranscriptItem::AssistantText { complete, .. } => {
                             *complete = true;
@@ -171,8 +214,11 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                             *complete = true;
                         }
                         TranscriptItem::ToolCall { input, .. } => {
-                            if let Some(partial) = input.get("__partial__").and_then(|v| v.as_str()) {
-                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(partial) {
+                            if let Some(partial) = input.get("__partial__").and_then(|v| v.as_str())
+                            {
+                                if let Ok(parsed) =
+                                    serde_json::from_str::<serde_json::Value>(partial)
+                                {
                                     *input = parsed;
                                 }
                             }
@@ -182,14 +228,20 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                 }
                 _ => {}
             },
-            BusMessage::ToolProgress { tool_use_id, elapsed_seconds, .. } => {
+            BusMessage::ToolProgress {
+                tool_use_id,
+                elapsed_seconds,
+                ..
+            } => {
                 if let Some(&pos) = tool_use_idx.get(tool_use_id) {
                     if let TranscriptItem::ToolCall { elapsed_ms, .. } = &mut out[pos] {
                         *elapsed_ms = (*elapsed_seconds * 1000.0) as u64;
                     }
                 }
             }
-            BusMessage::SystemEvent { subtype, message, .. } => {
+            BusMessage::SystemEvent {
+                subtype, message, ..
+            } => {
                 out.push(TranscriptItem::System {
                     subtype: subtype.clone(),
                     message: message.clone(),
@@ -265,10 +317,19 @@ pub fn group_tool_batches(items: Vec<TranscriptItem>) -> Vec<TranscriptItem> {
 
     for item in items {
         match item {
-            TranscriptItem::ToolCall { tool_use_id, name, input, result, .. }
-                if classify(&name) == ToolFamily::ReadSearch =>
-            {
-                pending.push(BatchCall { tool_use_id, name, input, result });
+            TranscriptItem::ToolCall {
+                tool_use_id,
+                name,
+                input,
+                result,
+                ..
+            } if classify(&name) == ToolFamily::ReadSearch => {
+                pending.push(BatchCall {
+                    tool_use_id,
+                    name,
+                    input,
+                    result,
+                });
             }
             other => {
                 flush(&mut out, &mut pending);
@@ -282,16 +343,36 @@ pub fn group_tool_batches(items: Vec<TranscriptItem>) -> Vec<TranscriptItem> {
 
 fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
     let parent = match ev {
-        BusMessage::User { parent_tool_use_id, .. }
-        | BusMessage::Assistant { parent_tool_use_id, .. }
-        | BusMessage::StreamEvent { parent_tool_use_id, .. }
-        | BusMessage::ToolProgress { parent_tool_use_id, .. }
-        | BusMessage::SystemEvent { parent_tool_use_id, .. }
-        | BusMessage::Result { parent_tool_use_id, .. }
-        | BusMessage::RenderEvent { parent_tool_use_id, .. }
-        | BusMessage::InteractionRequested { parent_tool_use_id, .. }
-        | BusMessage::InteractionResponse { parent_tool_use_id, .. }
-        | BusMessage::InteractionDenied { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+        BusMessage::User {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::Assistant {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::StreamEvent {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::ToolProgress {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::SystemEvent {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::Result {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::RenderEvent {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::InteractionRequested {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::InteractionResponse {
+            parent_tool_use_id, ..
+        }
+        | BusMessage::InteractionDenied {
+            parent_tool_use_id, ..
+        } => parent_tool_use_id.as_deref(),
     };
     match filter {
         None => parent.is_none(),
@@ -302,9 +383,7 @@ fn matches_filter(ev: &BusMessage, filter: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdk::protocol::{
-        AnthropicUsage, AssistantPayload, MessageMeta, UserPayload,
-    };
+    use crate::sdk::protocol::{AnthropicUsage, AssistantPayload, MessageMeta, UserPayload};
     use uuid::Uuid;
 
     fn tc(name: &str, id: &str) -> TranscriptItem {
@@ -312,7 +391,10 @@ mod tests {
             tool_use_id: id.into(),
             name: name.into(),
             input: serde_json::json!({}),
-            result: Some(ToolResultRender { content: "ok".into(), is_error: false }),
+            result: Some(ToolResultRender {
+                content: "ok".into(),
+                is_error: false,
+            }),
             elapsed_ms: 0,
         }
     }
@@ -367,7 +449,10 @@ mod tests {
     fn group_breaks_at_user_or_assistant_text() {
         let items = vec![
             tc("Read", "1"),
-            TranscriptItem::AssistantText { text: "thinking".into(), complete: true },
+            TranscriptItem::AssistantText {
+                text: "thinking".into(),
+                complete: true,
+            },
             tc("Read", "2"),
         ];
         let g = group_tool_batches(items);
@@ -415,7 +500,8 @@ mod tests {
 
     #[test]
     fn strip_system_reminders_handles_multiple_blocks() {
-        let s = "<system-reminder>a</system-reminder>middle<system-reminder>b</system-reminder>tail";
+        let s =
+            "<system-reminder>a</system-reminder>middle<system-reminder>b</system-reminder>tail";
         assert_eq!(strip_system_reminders(s), "middletail");
     }
 
@@ -476,7 +562,9 @@ mod tests {
                     ContentBlockFinal::Text {
                         text: "<system-reminder>\nSkills...\n</system-reminder>".into(),
                     },
-                    ContentBlockFinal::Text { text: "hello".into() },
+                    ContentBlockFinal::Text {
+                        text: "hello".into(),
+                    },
                 ],
             },
             parent_tool_use_id: None,
@@ -493,7 +581,9 @@ mod tests {
         let events = vec![BusMessage::User {
             message: UserPayload {
                 role: "user".into(),
-                content: vec![ContentBlockFinal::Text { text: "hello".into() }],
+                content: vec![ContentBlockFinal::Text {
+                    text: "hello".into(),
+                }],
             },
             parent_tool_use_id: None,
             uuid: Uuid::new_v4(),
@@ -507,9 +597,20 @@ mod tests {
     #[test]
     fn streaming_text_deltas_accumulate_into_one_assistant_text_item() {
         let events = vec![
-            env(StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlockStream::Text { text: String::new() } }),
-            env(StreamEvent::ContentBlockDelta { index: 0, delta: BlockDelta::TextDelta { text: "hel".into() } }),
-            env(StreamEvent::ContentBlockDelta { index: 0, delta: BlockDelta::TextDelta { text: "lo".into() } }),
+            env(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::Text {
+                    text: String::new(),
+                },
+            }),
+            env(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: BlockDelta::TextDelta { text: "hel".into() },
+            }),
+            env(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: BlockDelta::TextDelta { text: "lo".into() },
+            }),
             env(StreamEvent::ContentBlockStop { index: 0 }),
         ];
         let t = fold(&events, None);
@@ -529,12 +630,16 @@ mod tests {
             env(StreamEvent::ContentBlockStart {
                 index: 0,
                 content_block: ContentBlockStream::ToolUse {
-                    id: "tu_1".into(), name: "Read".into(), input: serde_json::json!({}),
+                    id: "tu_1".into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({}),
                 },
             }),
             env(StreamEvent::ContentBlockDelta {
                 index: 0,
-                delta: BlockDelta::InputJsonDelta { partial_json: "{\"file_path\":\"/x\"}".into() },
+                delta: BlockDelta::InputJsonDelta {
+                    partial_json: "{\"file_path\":\"/x\"}".into(),
+                },
             }),
             env(StreamEvent::ContentBlockStop { index: 0 }),
             BusMessage::User {
@@ -554,7 +659,13 @@ mod tests {
         let t = fold(&events, None);
         assert_eq!(t.len(), 1);
         match &t[0] {
-            TranscriptItem::ToolCall { tool_use_id, name, input, result, .. } => {
+            TranscriptItem::ToolCall {
+                tool_use_id,
+                name,
+                input,
+                result,
+                ..
+            } => {
                 assert_eq!(tool_use_id, "tu_1");
                 assert_eq!(name, "Read");
                 assert_eq!(input["file_path"], "/x");
@@ -571,9 +682,12 @@ mod tests {
         let events = vec![BusMessage::Result {
             stop_reason: Some("end_turn".into()),
             usage: AnthropicUsage::default(),
-            total_cost_usd: 0.0, duration_ms: 0, num_turns: 1,
+            total_cost_usd: 0.0,
+            duration_ms: 0,
+            num_turns: 1,
             parent_tool_use_id: None,
-            uuid: Uuid::new_v4(), session_id: "s1".into(),
+            uuid: Uuid::new_v4(),
+            session_id: "s1".into(),
         }];
         let t = fold(&events, None);
         assert_eq!(t.len(), 0);
@@ -585,21 +699,40 @@ mod tests {
         // already folded the deltas, the Assistant message must not double-add.
         let final_id = "msg_1".to_string();
         let events = vec![
-            env(StreamEvent::MessageStart { message: MessageMeta {
-                id: final_id.clone(), model: "anthropic/claude-sonnet-4-5".into(), role: "assistant".into(),
-                content: vec![], stop_reason: None, stop_sequence: None,
-                usage: AnthropicUsage::default(),
-            }}),
-            env(StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlockStream::Text { text: String::new() } }),
-            env(StreamEvent::ContentBlockDelta { index: 0, delta: BlockDelta::TextDelta { text: "hi".into() } }),
+            env(StreamEvent::MessageStart {
+                message: MessageMeta {
+                    id: final_id.clone(),
+                    model: "anthropic/claude-sonnet-4-5".into(),
+                    role: "assistant".into(),
+                    content: vec![],
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage: AnthropicUsage::default(),
+                },
+            }),
+            env(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::Text {
+                    text: String::new(),
+                },
+            }),
+            env(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: BlockDelta::TextDelta { text: "hi".into() },
+            }),
             env(StreamEvent::ContentBlockStop { index: 0 }),
             BusMessage::Assistant {
                 message: AssistantPayload {
-                    id: final_id, model: "anthropic/claude-sonnet-4-5".into(), role: "assistant".into(),
+                    id: final_id,
+                    model: "anthropic/claude-sonnet-4-5".into(),
+                    role: "assistant".into(),
                     content: vec![ContentBlockFinal::Text { text: "hi".into() }],
-                    stop_reason: Some("end_turn".into()), usage: AnthropicUsage::default(),
+                    stop_reason: Some("end_turn".into()),
+                    usage: AnthropicUsage::default(),
                 },
-                parent_tool_use_id: None, uuid: Uuid::new_v4(), session_id: "s1".into(),
+                parent_tool_use_id: None,
+                uuid: Uuid::new_v4(),
+                session_id: "s1".into(),
             },
         ];
         let t = fold(&events, None);
@@ -613,7 +746,9 @@ mod tests {
             env(StreamEvent::ContentBlockStart {
                 index: 0,
                 content_block: ContentBlockStream::ToolUse {
-                    id: "tu_p".into(), name: "Bash".into(), input: serde_json::json!({}),
+                    id: "tu_p".into(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({}),
                 },
             }),
             env(StreamEvent::ContentBlockStop { index: 0 }),
@@ -644,7 +779,9 @@ mod tests {
             BusMessage::User {
                 message: UserPayload {
                     role: "user".into(),
-                    content: vec![ContentBlockFinal::Text { text: "find auth".into() }],
+                    content: vec![ContentBlockFinal::Text {
+                        text: "find auth".into(),
+                    }],
                 },
                 parent_tool_use_id: None,
                 uuid: Uuid::new_v4(),
@@ -654,7 +791,8 @@ mod tests {
             env(StreamEvent::ContentBlockStart {
                 index: 0,
                 content_block: ContentBlockStream::ToolUse {
-                    id: tu.clone(), name: "Task".into(),
+                    id: tu.clone(),
+                    name: "Task".into(),
                     input: serde_json::json!({"description": "find auth", "subagent_type": "Explore"}),
                 },
             }),
@@ -664,20 +802,30 @@ mod tests {
             BusMessage::User {
                 message: UserPayload {
                     role: "user".into(),
-                    content: vec![ContentBlockFinal::Text { text: "<subagent prompt>".into() }],
+                    content: vec![ContentBlockFinal::Text {
+                        text: "<subagent prompt>".into(),
+                    }],
                 },
                 parent_tool_use_id: Some(tu.clone()),
                 uuid: Uuid::new_v4(),
                 session_id: "agent-xyz".into(),
             },
             BusMessage::StreamEvent {
-                event: StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlockStream::Text { text: "".into() } },
+                event: StreamEvent::ContentBlockStart {
+                    index: 0,
+                    content_block: ContentBlockStream::Text { text: "".into() },
+                },
                 parent_tool_use_id: Some(tu.clone()),
                 uuid: Uuid::new_v4(),
                 session_id: "agent-xyz".into(),
             },
             BusMessage::StreamEvent {
-                event: StreamEvent::ContentBlockDelta { index: 0, delta: BlockDelta::TextDelta { text: "found auth in src/auth.rs".into() } },
+                event: StreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: BlockDelta::TextDelta {
+                        text: "found auth in src/auth.rs".into(),
+                    },
+                },
                 parent_tool_use_id: Some(tu.clone()),
                 uuid: Uuid::new_v4(),
                 session_id: "agent-xyz".into(),
@@ -720,7 +868,9 @@ mod tests {
         let sub = fold(&events, Some(&tu));
         // Subagent view should have: User(<subagent prompt>) + AssistantText("found auth in src/auth.rs")
         assert_eq!(sub.len(), 2, "sub view: {sub:?}");
-        assert!(matches!(&sub[0], TranscriptItem::User { text } if text.contains("subagent prompt")));
+        assert!(
+            matches!(&sub[0], TranscriptItem::User { text } if text.contains("subagent prompt"))
+        );
         match &sub[1] {
             TranscriptItem::AssistantText { text, complete } => {
                 assert_eq!(text, "found auth in src/auth.rs");

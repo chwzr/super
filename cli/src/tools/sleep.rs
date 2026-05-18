@@ -1,12 +1,17 @@
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct SleepTool;
 
 #[async_trait]
 impl Tool for SleepTool {
-    fn name(&self) -> &str { "Sleep" }
+    fn name(&self) -> &str {
+        "Sleep"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Sleep for a specified duration in milliseconds. Max 300000ms (5 minutes).".into()
     }
@@ -33,12 +38,26 @@ impl Tool for SleepTool {
         }))
     }
 
-    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let ms = input["duration_ms"].as_u64().unwrap_or(1000).min(300000);
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-        ToolResult { content: format!("Slept for {ms}ms"), is_error: false, inject_messages: Vec::new(), metadata: None, mcp_meta: None, new_messages: Vec::new() }
+        ToolResult {
+            content: format!("Slept for {ms}ms"),
+            is_error: false,
+            inject_messages: Vec::new(),
+            metadata: None,
+            mcp_meta: None,
+            new_messages: Vec::new(),
+        }
     }
 
     fn map_tool_result_to_block(
@@ -49,7 +68,10 @@ impl Tool for SleepTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

@@ -5,7 +5,6 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use tokio::sync::{broadcast, mpsc};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -15,6 +14,7 @@ use ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
 };
 use shared::CliConfig;
+use tokio::sync::{broadcast, mpsc};
 
 use super::activity::ActivityState;
 use super::input_bar::InputBar;
@@ -152,7 +152,9 @@ impl App {
             .ok()
             .and_then(|p| {
                 let home = dirs::home_dir()?;
-                p.strip_prefix(&home).ok().map(|rel| format!("~/{}", rel.display()))
+                p.strip_prefix(&home)
+                    .ok()
+                    .map(|rel| format!("~/{}", rel.display()))
                     .or_else(|| Some(p.display().to_string()))
             })
             .unwrap_or_else(|| ".".to_string());
@@ -314,8 +316,9 @@ impl App {
         cfg.openrouter_api_key = None;
         crate::config::save_config(&cfg);
         if was_signed_in {
-            self.scroll_area
-                .push(Message::System("Successfully logged out from your Super account.".into()));
+            self.scroll_area.push(Message::System(
+                "Successfully logged out from your Super account.".into(),
+            ));
         } else {
             self.scroll_area
                 .push(Message::System("Not logged in.".into()));
@@ -341,16 +344,20 @@ impl App {
                     return Err(format!("HTTP {}", resp.status()));
                 }
                 let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-                let used  = body["used_usd"].as_f64().unwrap_or(0.0);
+                let used = body["used_usd"].as_f64().unwrap_or(0.0);
                 let limit = body["limit_usd"].as_f64().unwrap_or(f64::MAX);
                 Ok((used, limit))
-            }.await;
+            }
+            .await;
             let _ = tx.send(result);
         });
         self.status_fetch = Some(rx);
     }
 
-    fn handle_event(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
+    fn handle_event(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> std::io::Result<()> {
         if !event::poll(Duration::from_millis(50))? {
             return Ok(());
         }
@@ -380,9 +387,8 @@ impl App {
                 ModalAction::SetClass(c) => {
                     self.store.set_model_class(&c);
                     self._config.model_class = c.clone();
-                    self._config.model = crate::providers::resolve_slug(
-                        &self._config.provider, &c
-                    ).to_string();
+                    self._config.model =
+                        crate::providers::resolve_slug(&self._config.provider, &c).to_string();
                     crate::config::save_config(&self._config);
                     self.modal = None;
                     return Ok(());
@@ -390,9 +396,8 @@ impl App {
                 ModalAction::SetProvider(p) => {
                     self.store.set_provider(&p);
                     self._config.provider = p.clone();
-                    self._config.model = crate::providers::resolve_slug(
-                        &p, &self._config.model_class
-                    ).to_string();
+                    self._config.model =
+                        crate::providers::resolve_slug(&p, &self._config.model_class).to_string();
                     crate::config::save_config(&self._config);
                     self.modal = None;
                     return Ok(());
@@ -484,7 +489,8 @@ impl App {
                 }
             }
             KeyCode::Char('?') if self.input.content.is_empty() => {
-                self.scroll_area.push(Message::System(SHORTCUTS_HELP.to_string()));
+                self.scroll_area
+                    .push(Message::System(SHORTCUTS_HELP.to_string()));
             }
             KeyCode::Char(c) => {
                 self.input.push_char(c);
@@ -583,7 +589,11 @@ impl App {
                 Ok(msg) => {
                     // Side effects driven by specific bus events.
                     match &msg {
-                        BusMessage::ToolProgress { tool_name, elapsed_seconds, .. } => {
+                        BusMessage::ToolProgress {
+                            tool_name,
+                            elapsed_seconds,
+                            ..
+                        } => {
                             let want_verb = verb_for_tool(tool_name);
                             let should_swap = match &self.activity {
                                 ActivityState::Idle => true,
@@ -604,10 +614,11 @@ impl App {
                         }
                         BusMessage::InteractionRequested {
                             tool_use_id,
-                            spec: shared::RenderSpec::Interactive {
-                                widget: shared::InteractiveWidget::MultiQuestion { questions },
-                                ..
-                            },
+                            spec:
+                                shared::RenderSpec::Interactive {
+                                    widget: shared::InteractiveWidget::MultiQuestion { questions },
+                                    ..
+                                },
                             parent_tool_use_id,
                             ..
                         } => {
@@ -740,7 +751,9 @@ impl App {
         // even with items-first within a single tick.
         let items = group_tool_batches(fold(&self.scroll_area.events, None));
         loop {
-            let Some(item) = items.get(self.next_flush_idx) else { break };
+            let Some(item) = items.get(self.next_flush_idx) else {
+                break;
+            };
             if is_stable(item) {
                 let already = self
                     .flushed_chars_per_block
@@ -773,7 +786,8 @@ impl App {
                     let detailed = self.scroll_area.is_detailed_transcript();
                     let lines = item_to_lines(&chunk_item, already, detailed);
                     self.insert_lines(terminal, lines, width)?;
-                    self.flushed_chars_per_block.insert(self.next_flush_idx, until);
+                    self.flushed_chars_per_block
+                        .insert(self.next_flush_idx, until);
                 }
             }
             break;
@@ -807,7 +821,10 @@ impl App {
         })
     }
 
-    pub fn run(&mut self, mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
+    pub fn run(
+        &mut self,
+        mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> std::io::Result<()> {
         while !self.should_quit {
             self.activity.tick();
             self.flush_to_scrollback(&mut terminal)?;
@@ -826,13 +843,20 @@ impl App {
         }
         let dim = Style::default().fg(Color::DarkGray);
         let line = if self.slash_menu_open {
-            Line::from(vec![
-                Span::styled("  ↑↓ select · enter to run · esc to dismiss", dim),
-            ])
+            Line::from(vec![Span::styled(
+                "  ↑↓ select · enter to run · esc to dismiss",
+                dim,
+            )])
         } else if self.scroll_area.is_detailed_transcript() {
-            Line::from(vec![Span::styled("  Showing detailed transcript · ctrl+o to collapse", dim)])
+            Line::from(vec![Span::styled(
+                "  Showing detailed transcript · ctrl+o to collapse",
+                dim,
+            )])
         } else if matches!(self.activity, ActivityState::Active { .. }) {
-            Line::from(vec![Span::styled("  esc to interrupt · ? for shortcuts", dim)])
+            Line::from(vec![Span::styled(
+                "  esc to interrupt · ? for shortcuts",
+                dim,
+            )])
         } else {
             Line::from(vec![Span::styled("  ? for shortcuts", dim)])
         };
@@ -846,12 +870,12 @@ impl App {
         let items = group_tool_batches(fold(&self.scroll_area.events, None));
         let mut lines: Vec<Line<'static>> = Vec::new();
         for (i, item) in items.iter().enumerate().skip(self.next_flush_idx) {
-            let already = self
-                .flushed_chars_per_block
-                .get(&i)
-                .copied()
-                .unwrap_or(0);
-            lines.extend(item_to_lines(item, already, self.scroll_area.is_detailed_transcript()));
+            let already = self.flushed_chars_per_block.get(&i).copied().unwrap_or(0);
+            lines.extend(item_to_lines(
+                item,
+                already,
+                self.scroll_area.is_detailed_transcript(),
+            ));
         }
         if lines.is_empty() {
             return;
@@ -867,10 +891,7 @@ impl App {
             // Modal occupies the live area; chrome shrinks away.
             let modal_layout = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(4),
-                    Constraint::Length(1),
-                ])
+                .constraints([Constraint::Min(4), Constraint::Length(1)])
                 .split(area);
             if let Some(ref modal) = self.modal {
                 modal.render(f, modal_layout[0]);
@@ -933,7 +954,9 @@ fn friendly_model_name(slug: &str) -> String {
     match slug {
         "anthropic/claude-opus-4-7" => "Opus 4.7 (1M context)".to_string(),
         "anthropic/claude-sonnet-4-6" => "Sonnet 4.6".to_string(),
-        "anthropic/claude-haiku-4-5" | "anthropic/claude-haiku-4-5-20251001" => "Haiku 4.5".to_string(),
+        "anthropic/claude-haiku-4-5" | "anthropic/claude-haiku-4-5-20251001" => {
+            "Haiku 4.5".to_string()
+        }
         other => other
             .rsplit_once('/')
             .map(|(_, rest)| rest.to_string())
@@ -953,9 +976,12 @@ pub async fn run_with_engine(
     let viewport_height = VIEWPORT_HEIGHT.min(term_height);
     let _ = enable_raw_mode();
     let backend = CrosstermBackend::new(std::io::stdout());
-    let terminal = Terminal::with_options(backend, TerminalOptions {
-        viewport: Viewport::Inline(viewport_height),
-    });
+    let terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(viewport_height),
+        },
+    );
     if let Ok(terminal) = terminal {
         let mut app = App::new(config, store, engine, bus, system_prompt);
         let _ = app.run(terminal);
@@ -974,11 +1000,17 @@ mod tests {
         TranscriptItem::User { text: text.into() }
     }
     fn assistant(text: &str, complete: bool) -> TranscriptItem {
-        TranscriptItem::AssistantText { text: text.into(), complete }
+        TranscriptItem::AssistantText {
+            text: text.into(),
+            complete,
+        }
     }
     fn thinking(complete: bool) -> TranscriptItem {
         TranscriptItem::Thinking {
-            text: "x".into(), collapsed: true, elapsed_ms: 0, complete,
+            text: "x".into(),
+            collapsed: true,
+            elapsed_ms: 0,
+            complete,
         }
     }
     fn tool_call(result: Option<&str>) -> TranscriptItem {
@@ -987,7 +1019,8 @@ mod tests {
             name: "Read".into(),
             input: serde_json::json!({"file_path": "/x"}),
             result: result.map(|c| crate::tui::transcript::ToolResultRender {
-                content: c.into(), is_error: false,
+                content: c.into(),
+                is_error: false,
             }),
             elapsed_ms: 0,
         }
@@ -1017,8 +1050,13 @@ mod tests {
                 name: "Read".into(),
                 input: serde_json::json!({}),
                 result: if has_result {
-                    Some(crate::tui::transcript::ToolResultRender { content: "ok".into(), is_error: false })
-                } else { None },
+                    Some(crate::tui::transcript::ToolResultRender {
+                        content: "ok".into(),
+                        is_error: false,
+                    })
+                } else {
+                    None
+                },
             }],
         };
         assert!(is_stable(&mk(true)));

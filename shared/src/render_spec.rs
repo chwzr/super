@@ -201,7 +201,10 @@ mod tests {
             hunks: vec![DiffHunk {
                 old_start: 1,
                 new_start: 1,
-                lines: vec![DiffLine::Add { line: "+x".into() }, DiffLine::Remove { line: "-y".into() }],
+                lines: vec![
+                    DiffLine::Add { line: "+x".into() },
+                    DiffLine::Remove { line: "-y".into() },
+                ],
             }],
         };
         let json = serde_json::to_string(&spec).unwrap();

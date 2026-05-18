@@ -1,12 +1,12 @@
-use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::json;
 use super::contract::{
-    DescriptionCtx, PromptCtx, ProgressSink, RenderOpts, Tool, ToolCallContext, ToolResult,
+    DescriptionCtx, ProgressSink, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult,
     ToolResultBlock, ToolResultContent,
 };
 use crate::state::store::PermissionMode;
+use async_trait::async_trait;
+use serde_json::json;
 use shared::RenderSpec;
+use std::sync::Arc;
 
 pub struct EnterPlanModeTool {
     pub store: Arc<crate::state::store::Store>,

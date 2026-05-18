@@ -1,14 +1,20 @@
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct StructuredOutputTool;
 
 #[async_trait]
 impl Tool for StructuredOutputTool {
-    fn name(&self) -> &str { "StructuredOutput" }
+    fn name(&self) -> &str {
+        "StructuredOutput"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
-        "Validates and returns structured output. Ensures the response matches a specified schema.".into()
+        "Validates and returns structured output. Ensures the response matches a specified schema."
+            .into()
     }
 
     fn prompt(&self, _ctx: &PromptCtx) -> String {
@@ -32,7 +38,12 @@ impl Tool for StructuredOutputTool {
         }))
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let value = match input.get("value") {
             Some(v) => v.clone(),
             None => {
@@ -73,7 +84,10 @@ impl Tool for StructuredOutputTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }
@@ -82,7 +96,10 @@ impl Tool for StructuredOutputTool {
 
 /// Basic JSON Schema validation using the `jsonschema` crate.
 /// Returns Ok(()) if the value matches the schema, or Err with a description.
-fn validate_against_schema(value: &serde_json::Value, schema: &serde_json::Value) -> Result<(), String> {
+fn validate_against_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
     match jsonschema::validator_for(schema) {
         Ok(validator) => {
             let mut errors = validator.iter_errors(value);

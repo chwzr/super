@@ -14,12 +14,22 @@ use ratatui::{
 
 use crate::sdk::protocol::SystemSubtype;
 use crate::tui::scroll_area::Message;
-use crate::tui::transcript::{TranscriptItem, ToolResultRender};
+use crate::tui::transcript::{ToolResultRender, TranscriptItem};
 
-fn user_prefix_style()      -> Style { Style::default().fg(Color::White).add_modifier(Modifier::BOLD) }
-fn assistant_prefix_style() -> Style { Style::default().fg(Color::Cyan) }
-fn body_style()             -> Style { Style::default().fg(Color::White) }
-fn dim_style()              -> Style { Style::default().fg(Color::DarkGray) }
+fn user_prefix_style() -> Style {
+    Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD)
+}
+fn assistant_prefix_style() -> Style {
+    Style::default().fg(Color::Cyan)
+}
+fn body_style() -> Style {
+    Style::default().fg(Color::White)
+}
+fn dim_style() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
 
 /// Render a legacy `Message` to lines.
 ///
@@ -49,7 +59,11 @@ pub fn message_to_lines(m: &Message) -> Vec<Line<'static>> {
                 ]));
             }
         }
-        Message::ToolCall { name, input, result } => {
+        Message::ToolCall {
+            name,
+            input,
+            result,
+        } => {
             use crate::tui::colors::CC_GREEN;
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
@@ -85,7 +99,9 @@ pub fn message_to_lines(m: &Message) -> Vec<Line<'static>> {
         Message::Thinking => {
             lines.push(Line::from(Span::styled(
                 "thinking…",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             )));
         }
     }
@@ -100,7 +116,11 @@ pub fn message_to_lines(m: &Message) -> Vec<Line<'static>> {
 /// the rendering includes the leading prefix glyph (e.g. `⏺ `); otherwise the
 /// continuation rows use indentation only (no glyph) so the visual prefix in
 /// scrollback isn't duplicated in the live region.
-pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) -> Vec<Line<'static>> {
+pub fn item_to_lines(
+    item: &TranscriptItem,
+    text_offset: usize,
+    detailed: bool,
+) -> Vec<Line<'static>> {
     let dim = dim_style();
     let mut lines: Vec<Line<'static>> = Vec::new();
     match item {
@@ -139,16 +159,27 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
             // fresh line via this same code path.
             let _ = body;
         }
-        TranscriptItem::Thinking { text: _, collapsed: _, .. } => {
+        TranscriptItem::Thinking {
+            text: _,
+            collapsed: _,
+            ..
+        } => {
             if text_offset == 0 {
                 lines.push(Line::from(""));
             }
             lines.push(Line::from(Span::styled(
                 "thinking…",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             )));
         }
-        TranscriptItem::ToolCall { name, input, result, .. } => {
+        TranscriptItem::ToolCall {
+            name,
+            input,
+            result,
+            ..
+        } => {
             use crate::tui::colors::{CC_GREEN, CC_ORANGE};
             let is_error = result.as_ref().map(|r| r.is_error).unwrap_or(false);
             let prefix_color = if is_error { CC_ORANGE } else { CC_GREEN };
@@ -191,7 +222,12 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
                         Span::styled("  ", dim),
-                        Span::styled(display, Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            display,
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(summary, dim),
                     ]));
                     if let Some(r) = &call.result {
@@ -207,7 +243,8 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
                 // Group calls by their tool name in insertion order so we can emit
                 // one fragment per kind.
                 let mut order: Vec<String> = Vec::new();
-                let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                let mut counts: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
                 for c in calls {
                     if !counts.contains_key(&c.name) {
                         order.push(c.name.clone());
@@ -234,12 +271,25 @@ pub fn item_to_lines(item: &TranscriptItem, text_offset: usize, detailed: bool) 
 pub fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
     match name {
         "Task" => {
-            let agent = input.get("subagent_type").and_then(|v| v.as_str()).unwrap_or("?");
-            let desc  = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
-            if desc.is_empty() { format!("({agent})") } else { format!("({agent}) {desc}") }
+            let agent = input
+                .get("subagent_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let desc = input
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if desc.is_empty() {
+                format!("({agent})")
+            } else {
+                format!("({agent}) {desc}")
+            }
         }
         "Read" => {
-            let p = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+            let p = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("({})", osc8_link(p, p))
         }
         "Bash" => {
@@ -248,7 +298,10 @@ pub fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
             format!("({trimmed})")
         }
         "Edit" | "Write" => {
-            let p = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+            let p = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("({})", osc8_link(p, p))
         }
         _ => {
@@ -271,7 +324,10 @@ pub fn summarize_tool_call(name: &str, input: &serde_json::Value) -> String {
 pub fn tool_display_name(name: &str, input: &serde_json::Value) -> String {
     match name {
         "Edit" => {
-            let old = input.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+            let old = input
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if old.is_empty() {
                 "Create".to_string()
             } else {
@@ -313,8 +369,14 @@ fn render_edit_result(
     _r: &ToolResultRender,
     dim: &Style,
 ) {
-    let old = input.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
-    let new = input.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+    let old = input
+        .get("old_string")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let new = input
+        .get("new_string")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let counts = diff::count_changes(old, new);
 
     // Summary row: `  ⎿  Added N line[s], removed M line[s]`
@@ -326,19 +388,21 @@ fn render_edit_result(
     lines.extend(diff::render_hunks(old, new));
 }
 
-fn render_write_result(
-    lines: &mut Vec<Line<'static>>,
-    input: &serde_json::Value,
-    dim: &Style,
-) {
-    let path = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+fn render_write_result(lines: &mut Vec<Line<'static>>, input: &serde_json::Value, dim: &Style) {
+    let path = input
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
     let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let total_lines = content.lines().count();
     let plural = if total_lines == 1 { "line" } else { "lines" };
 
     let mut summary: Vec<Span<'static>> = vec![Span::styled("  ⎿  ", *dim)];
     summary.push(Span::raw("Wrote "));
-    summary.push(Span::styled(total_lines.to_string(), Style::default().add_modifier(Modifier::BOLD)));
+    summary.push(Span::styled(
+        total_lines.to_string(),
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     summary.push(Span::raw(format!(" {plural} to {path}")));
     lines.push(Line::from(summary));
 
@@ -394,7 +458,11 @@ fn render_generic_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, d
 fn render_bash_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
     use crate::tui::colors::CC_ORANGE;
     const MAX: usize = 3;
-    let body_color = if r.is_error { Style::default().fg(CC_ORANGE) } else { Style::default() };
+    let body_color = if r.is_error {
+        Style::default().fg(CC_ORANGE)
+    } else {
+        Style::default()
+    };
     let all: Vec<&str> = r.content.lines().collect();
     let total = all.len();
 
@@ -423,9 +491,13 @@ pub fn lines_height(lines: &[Line], width: u16) -> u16 {
 }
 
 fn visual_rows(line: &Line, width: u16) -> u16 {
-    if width == 0 { return 1; }
+    if width == 0 {
+        return 1;
+    }
     let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-    if char_count == 0 { return 1; }
+    if char_count == 0 {
+        return 1;
+    }
     char_count.div_ceil(width as usize) as u16
 }
 
@@ -448,11 +520,18 @@ mod tests {
     use crate::sdk::protocol::SystemSubtype;
 
     fn line_to_string(line: &Line) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
     }
 
     fn rendered_text(lines: &[Line]) -> String {
-        lines.iter().map(|l| line_to_string(l)).collect::<Vec<_>>().join("\n")
+        lines
+            .iter()
+            .map(|l| line_to_string(l))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -478,9 +557,18 @@ mod tests {
     fn summarize_tool_call_read_wraps_path_in_osc8_link() {
         let input = serde_json::json!({"file_path": "/tmp/notes.txt"});
         let summary = summarize_tool_call("Read", &input);
-        assert!(summary.contains("\x1b]8;;file:///tmp/notes.txt"), "OSC8 open: {summary:?}");
-        assert!(summary.contains("/tmp/notes.txt"), "label present: {summary:?}");
-        assert!(summary.contains("\x1b]8;;\x1b\\"), "OSC8 close: {summary:?}");
+        assert!(
+            summary.contains("\x1b]8;;file:///tmp/notes.txt"),
+            "OSC8 open: {summary:?}"
+        );
+        assert!(
+            summary.contains("/tmp/notes.txt"),
+            "label present: {summary:?}"
+        );
+        assert!(
+            summary.contains("\x1b]8;;\x1b\\"),
+            "OSC8 close: {summary:?}"
+        );
     }
 
     #[test]
@@ -505,9 +593,15 @@ mod tests {
         // Pretend "first line\n" (11 chars) was already flushed.
         let lines = item_to_lines(&item, "first line\n".len(), false);
         let body = rendered_text(&lines);
-        assert!(!body.contains("⏺"), "continuation should not have ⏺ prefix: {body:?}");
+        assert!(
+            !body.contains("⏺"),
+            "continuation should not have ⏺ prefix: {body:?}"
+        );
         // No leading blank line on a continuation.
-        assert!(!body.starts_with('\n'), "continuation should not lead with blank line: {body:?}");
+        assert!(
+            !body.starts_with('\n'),
+            "continuation should not lead with blank line: {body:?}"
+        );
         assert!(body.contains("  second line"), "got: {body:?}");
     }
 
@@ -522,7 +616,10 @@ mod tests {
         let lines = item_to_lines(&item, 0, false);
         let body = rendered_text(&lines);
         assert!(body.contains("thinking…"), "got: {body:?}");
-        assert!(!body.contains("long chain"), "raw thinking text must not leak: {body:?}");
+        assert!(
+            !body.contains("long chain"),
+            "raw thinking text must not leak: {body:?}"
+        );
     }
 
     #[test]
@@ -533,7 +630,10 @@ mod tests {
         };
         let lines = item_to_lines(&item, 0, false);
         let body = rendered_text(&lines);
-        assert!(body.contains("※ recap: summary of prior turn"), "got: {body:?}");
+        assert!(
+            body.contains("※ recap: summary of prior turn"),
+            "got: {body:?}"
+        );
     }
 
     #[test]
@@ -607,12 +707,23 @@ mod tests {
             tool_use_id: "tu1".into(),
             name: "Bash".into(),
             input: serde_json::json!({"command": "echo hi"}),
-            result: Some(ToolResultRender { content: "hi".into(), is_error: false }),
+            result: Some(ToolResultRender {
+                content: "hi".into(),
+                is_error: false,
+            }),
             elapsed_ms: 0,
         };
         let lines = item_to_lines(&item, 0, false);
         // Find the line whose first span is the `⏺ ` prefix.
-        let prefix = lines.iter().find(|l| l.spans.first().map(|s| s.content.contains('⏺')).unwrap_or(false)).expect("⏺ prefix line");
+        let prefix = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .first()
+                    .map(|s| s.content.contains('⏺'))
+                    .unwrap_or(false)
+            })
+            .expect("⏺ prefix line");
         assert_eq!(first_span_color(prefix), Some(CC_GREEN));
     }
 
@@ -622,18 +733,32 @@ mod tests {
             tool_use_id: "tu1".into(),
             name: "Bash".into(),
             input: serde_json::json!({"command": "false"}),
-            result: Some(ToolResultRender { content: "Error: Exit code 1".into(), is_error: true }),
+            result: Some(ToolResultRender {
+                content: "Error: Exit code 1".into(),
+                is_error: true,
+            }),
             elapsed_ms: 0,
         };
         let lines = item_to_lines(&item, 0, false);
-        let prefix = lines.iter().find(|l| l.spans.first().map(|s| s.content.contains('⏺')).unwrap_or(false)).expect("⏺ prefix line");
+        let prefix = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .first()
+                    .map(|s| s.content.contains('⏺'))
+                    .unwrap_or(false)
+            })
+            .expect("⏺ prefix line");
         assert_eq!(first_span_color(prefix), Some(CC_ORANGE));
     }
 
     #[test]
     fn osc8_link_wraps_label_with_escape_sequence() {
         let s = osc8_link("/abs/path.txt", "path.txt");
-        assert!(s.contains("\x1b]8;;file:///abs/path.txt\x1b\\"), "got: {s:?}");
+        assert!(
+            s.contains("\x1b]8;;file:///abs/path.txt\x1b\\"),
+            "got: {s:?}"
+        );
         assert!(s.contains("path.txt"));
         assert!(s.ends_with("\x1b]8;;\x1b\\"));
     }
@@ -645,25 +770,43 @@ mod tests {
             tool_use_id: id.into(),
             name: name.into(),
             input: serde_json::json!({"file_path": "/x"}),
-            result: Some(ToolResultRender { content: "ok".into(), is_error: false }),
+            result: Some(ToolResultRender {
+                content: "ok".into(),
+                is_error: false,
+            }),
         }
     }
 
     #[test]
     fn toolbatch_renders_collapsed_summary_for_reads() {
         let item = TranscriptItem::ToolBatch {
-            calls: vec![batch_call("Read", "1"), batch_call("Read", "2"), batch_call("Read", "3")],
+            calls: vec![
+                batch_call("Read", "1"),
+                batch_call("Read", "2"),
+                batch_call("Read", "3"),
+            ],
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("  Read 3 files (ctrl+o to expand)"), "got: {body:?}");
-        assert!(!body.contains("⏺"), "no ⏺ glyph on collapsed batch: {body:?}");
+        assert!(
+            body.contains("  Read 3 files (ctrl+o to expand)"),
+            "got: {body:?}"
+        );
+        assert!(
+            !body.contains("⏺"),
+            "no ⏺ glyph on collapsed batch: {body:?}"
+        );
     }
 
     #[test]
     fn toolbatch_collapsed_for_single_read_uses_singular_form() {
-        let item = TranscriptItem::ToolBatch { calls: vec![batch_call("Read", "1")] };
+        let item = TranscriptItem::ToolBatch {
+            calls: vec![batch_call("Read", "1")],
+        };
         let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("  Read 1 file (ctrl+o to expand)"), "got: {body:?}");
+        assert!(
+            body.contains("  Read 1 file (ctrl+o to expand)"),
+            "got: {body:?}"
+        );
     }
 
     #[test]
@@ -701,11 +844,20 @@ mod tests {
         };
         let lines = item_to_lines(&item, 0, false);
         let body = rendered_text(&lines);
-        assert!(body.contains("  ⎿  1"), "first output line under corner: {body:?}");
+        assert!(
+            body.contains("  ⎿  1"),
+            "first output line under corner: {body:?}"
+        );
         assert!(body.contains("     2"), "second line aligned: {body:?}");
         assert!(body.contains("     3"), "third line aligned: {body:?}");
-        assert!(body.contains("… +5 lines (ctrl+o to expand)"), "ellipsis present: {body:?}");
-        assert!(!body.contains("\n4\n") && !body.contains("     4"), "line 4 must be hidden: {body:?}");
+        assert!(
+            body.contains("… +5 lines (ctrl+o to expand)"),
+            "ellipsis present: {body:?}"
+        );
+        assert!(
+            !body.contains("\n4\n") && !body.contains("     4"),
+            "line 4 must be hidden: {body:?}"
+        );
     }
 
     #[test]
@@ -724,7 +876,10 @@ mod tests {
         assert!(body.contains("  ⎿  1"));
         assert!(body.contains("     2"));
         assert!(body.contains("     3"));
-        assert!(!body.contains("ctrl+o"), "no expand hint when nothing truncated: {body:?}");
+        assert!(
+            !body.contains("ctrl+o"),
+            "no expand hint when nothing truncated: {body:?}"
+        );
     }
 
     #[test]
@@ -745,10 +900,16 @@ mod tests {
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Update"), "display name: {body:?}");
-        assert!(body.contains("Added 1 line, removed 1 line"), "summary: {body:?}");
+        assert!(
+            body.contains("Added 1 line, removed 1 line"),
+            "summary: {body:?}"
+        );
         assert!(body.contains(" 1 -hello"), "removed hunk: {body:?}");
         assert!(body.contains(" 1 +hi"), "added hunk: {body:?}");
-        assert!(!body.contains("Successfully replaced"), "raw result text should not leak: {body:?}");
+        assert!(
+            !body.contains("Successfully replaced"),
+            "raw result text should not leak: {body:?}"
+        );
     }
 
     #[test]
@@ -768,11 +929,17 @@ mod tests {
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Write"), "display name: {body:?}");
-        assert!(body.contains("Wrote 3 lines to /tmp/notes.txt"), "summary: {body:?}");
+        assert!(
+            body.contains("Wrote 3 lines to /tmp/notes.txt"),
+            "summary: {body:?}"
+        );
         assert!(body.contains(" 1 alpha"), "numbered line 1: {body:?}");
-        assert!(body.contains(" 2 beta"),  "numbered line 2: {body:?}");
+        assert!(body.contains(" 2 beta"), "numbered line 2: {body:?}");
         assert!(body.contains(" 3 gamma"), "numbered line 3: {body:?}");
-        assert!(!body.contains("Successfully wrote"), "raw result text should not leak: {body:?}");
+        assert!(
+            !body.contains("Successfully wrote"),
+            "raw result text should not leak: {body:?}"
+        );
     }
 
     #[test]
@@ -785,13 +952,19 @@ mod tests {
                 "old_string": "",
                 "new_string": "first line\nsecond line\n",
             }),
-            result: Some(ToolResultRender { content: "ok".into(), is_error: false }),
+            result: Some(ToolResultRender {
+                content: "ok".into(),
+                is_error: false,
+            }),
             elapsed_ms: 0,
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Create"), "display name: {body:?}");
         assert!(body.contains("Added 2 lines"), "summary: {body:?}");
-        assert!(!body.contains("removed"), "no removed phrase when no removals: {body:?}");
+        assert!(
+            !body.contains("removed"),
+            "no removed phrase when no removals: {body:?}"
+        );
     }
 
     #[test]
@@ -801,10 +974,16 @@ mod tests {
         };
         let body = rendered_text(&item_to_lines(&item, 0, true));
         // No collapsed summary line.
-        assert!(!body.contains("Read 2 files (ctrl+o"), "should not show collapsed line: {body:?}");
+        assert!(
+            !body.contains("Read 2 files (ctrl+o"),
+            "should not show collapsed line: {body:?}"
+        );
         // Two Read entries are rendered (label "Read" followed immediately by "(path)").
         let occurrences = body.matches("Read(").count();
-        assert!(occurrences >= 2, "expected >=2 'Read(' occurrences, got {occurrences} in: {body:?}");
+        assert!(
+            occurrences >= 2,
+            "expected >=2 'Read(' occurrences, got {occurrences} in: {body:?}"
+        );
     }
 }
 

@@ -23,7 +23,10 @@ pub fn extract_bundled_skills() -> Vec<Skill> {
         let base = match extract_skill(def, &skill_dir) {
             Ok(()) => Some(skill_dir),
             Err(e) => {
-                eprintln!("[super] warning: could not extract skill '{}': {e}", def.name);
+                eprintln!(
+                    "[super] warning: could not extract skill '{}': {e}",
+                    def.name
+                );
                 None
             }
         };
@@ -47,7 +50,11 @@ fn extract_skill(def: &BundledSkillDef, skill_dir: &Path) -> std::io::Result<()>
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
             Ok(mut fh) => {
                 if let Err(e) = fh.write_all(file.content.as_bytes()) {
                     let _ = std::fs::remove_file(&target); // best-effort cleanup on partial write
@@ -98,7 +105,11 @@ mod tests {
         for def in BUNDLED_SKILLS {
             let skill = skill_from_def(def, None);
             assert!(skill.is_some(), "skill '{}' failed to parse", def.name);
-            assert!(!skill.unwrap().name.is_empty(), "skill '{}' parsed with empty name", def.name);
+            assert!(
+                !skill.unwrap().name.is_empty(),
+                "skill '{}' parsed with empty name",
+                def.name
+            );
         }
     }
 

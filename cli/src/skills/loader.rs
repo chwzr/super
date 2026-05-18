@@ -85,8 +85,13 @@ fn load_from_dir(dir: &Path, source: LoadedFrom) -> Vec<Skill> {
             let skill_md = path.join("SKILL.md");
             if skill_md.exists() {
                 if let Ok(raw) = std::fs::read_to_string(&skill_md) {
-                    let fallback_owned = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                    if let Some(s) = build_skill(&raw, &fallback_owned, Some(path), source.clone()) {
+                    let fallback_owned = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if let Some(s) = build_skill(&raw, &fallback_owned, Some(path), source.clone())
+                    {
                         skills.push(s);
                     }
                 }
@@ -114,15 +119,29 @@ fn build_skill(
     if fallback_name.is_empty() {
         return None;
     }
-    let name = fm.get("name").cloned().unwrap_or_else(|| fallback_name.to_string());
+    let name = fm
+        .get("name")
+        .cloned()
+        .unwrap_or_else(|| fallback_name.to_string());
     let description = fm.get("description").cloned().unwrap_or_default();
-    let user_invocable = fm.get("user-invocable").map(|v| v != "false").unwrap_or(true);
-    let when_to_use = fm.get("when_to_use").or_else(|| fm.get("when-to-use")).cloned();
+    let user_invocable = fm
+        .get("user-invocable")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    let when_to_use = fm
+        .get("when_to_use")
+        .or_else(|| fm.get("when-to-use"))
+        .cloned();
     // Only inline comma-separated format is supported (e.g. `allowed-tools: Bash,Read`).
     // YAML block sequences are not parsed.
     let allowed_tools = fm
         .get("allowed-tools")
-        .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     let model = fm.get("model").cloned();
     let context = match fm.get("context").map(String::as_str) {
@@ -249,7 +268,11 @@ This is the body.
         let dir = std::env::temp_dir().join(format!("super_test_flat_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let skill_md = dir.join("my-skill.md");
-        std::fs::write(&skill_md, "---\nname: my-skill\ndescription: flat\n---\nbody").unwrap();
+        std::fs::write(
+            &skill_md,
+            "---\nname: my-skill\ndescription: flat\n---\nbody",
+        )
+        .unwrap();
 
         let skills = load_from_dir(&dir, LoadedFrom::User);
         assert_eq!(skills.len(), 1);

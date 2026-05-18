@@ -45,13 +45,24 @@ pub trait AuthRepository: Send + Sync {
     async fn create_user(&self, email: &str, password_hash: &str) -> Result<User, AuthError>;
     async fn find_user_by_email(&self, email: &str) -> Result<Option<User>, AuthError>;
     async fn find_user_by_id(&self, id: &Uuid) -> Result<Option<User>, AuthError>;
-    async fn store_api_key(&self, user_id: &Uuid, key_id: &str, key_value: &str) -> Result<(), AuthError>;
+    async fn store_api_key(
+        &self,
+        user_id: &Uuid,
+        key_id: &str,
+        key_value: &str,
+    ) -> Result<(), AuthError>;
     async fn get_active_api_key(&self, user_id: &Uuid) -> Result<Option<ApiKey>, AuthError>;
     async fn revoke_api_key(&self, user_id: &Uuid, key_id: &str) -> Result<(), AuthError>;
     async fn store_authorization_code(&self, code: &AuthorizationCode) -> Result<(), AuthError>;
-    async fn consume_authorization_code(&self, code: &str) -> Result<Option<AuthorizationCode>, AuthError>;
+    async fn consume_authorization_code(
+        &self,
+        code: &str,
+    ) -> Result<Option<AuthorizationCode>, AuthError>;
     async fn store_refresh_token(&self, token: &RefreshToken) -> Result<(), AuthError>;
-    async fn consume_refresh_token(&self, token_hash: &str) -> Result<Option<RefreshToken>, AuthError>;
+    async fn consume_refresh_token(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<RefreshToken>, AuthError>;
 }
 
 #[async_trait]

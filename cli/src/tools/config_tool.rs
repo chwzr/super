@@ -1,4 +1,7 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -56,7 +59,12 @@ impl Tool for ConfigTool {
         input.get("value").is_none()
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let key = match input.get("key").and_then(|v| v.as_str()) {
             Some(k) => k,
             None => {
@@ -121,21 +129,27 @@ impl Tool for ConfigTool {
             };
 
             match get_nested(settings_obj, key) {
-                Some(val) => {
-                    ToolResult {
-                        content: format!("{}: {}", key, serde_json::to_string_pretty(val).unwrap_or_default()),
-                        is_error: false,
-                        inject_messages: Vec::new(),
-                        metadata: None,
-                        mcp_meta: None,
-                        new_messages: Vec::new(),
-                    }
-                }
+                Some(val) => ToolResult {
+                    content: format!(
+                        "{}: {}",
+                        key,
+                        serde_json::to_string_pretty(val).unwrap_or_default()
+                    ),
+                    is_error: false,
+                    inject_messages: Vec::new(),
+                    metadata: None,
+                    mcp_meta: None,
+                    new_messages: Vec::new(),
+                },
                 None => {
                     let config_val = get_config_field(&config, key);
                     match config_val {
                         Some(val) => ToolResult {
-                            content: format!("{}: {}", key, serde_json::to_string_pretty(&val).unwrap_or_default()),
+                            content: format!(
+                                "{}: {}",
+                                key,
+                                serde_json::to_string_pretty(&val).unwrap_or_default()
+                            ),
                             is_error: false,
                             inject_messages: Vec::new(),
                             metadata: None,
@@ -164,14 +178,20 @@ impl Tool for ConfigTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }
     }
 }
 
-fn get_nested<'a>(obj: &'a serde_json::Map<String, serde_json::Value>, key: &str) -> Option<&'a serde_json::Value> {
+fn get_nested<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a serde_json::Value> {
     let parts: Vec<&str> = key.split('.').collect();
 
     let mut current_obj = obj;
@@ -214,7 +234,10 @@ fn set_nested(
                     if !o.get().is_object() {
                         o.into_mut();
                         unsafe {
-                            (*current).insert(part.to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                            (*current).insert(
+                                part.to_string(),
+                                serde_json::Value::Object(serde_json::Map::new()),
+                            );
                         }
                     }
                 }
@@ -222,7 +245,9 @@ fn set_nested(
                     v.insert(serde_json::Value::Object(serde_json::Map::new()));
                 }
             }
-            if let Some(serde_json::Value::Object(ref mut next)) = unsafe { (*current).get_mut(*part) } {
+            if let Some(serde_json::Value::Object(ref mut next)) =
+                unsafe { (*current).get_mut(*part) }
+            {
                 current = next;
             }
         }
@@ -231,9 +256,18 @@ fn set_nested(
 
 fn get_config_field(config: &shared::CliConfig, key: &str) -> Option<serde_json::Value> {
     match key {
-        "access_token" => config.access_token.as_ref().map(|v| serde_json::Value::String(v.clone())),
-        "refresh_token" => config.refresh_token.as_ref().map(|v| serde_json::Value::String(v.clone())),
-        "openrouter_api_key" => config.openrouter_api_key.as_ref().map(|v| serde_json::Value::String(v.clone())),
+        "access_token" => config
+            .access_token
+            .as_ref()
+            .map(|v| serde_json::Value::String(v.clone())),
+        "refresh_token" => config
+            .refresh_token
+            .as_ref()
+            .map(|v| serde_json::Value::String(v.clone())),
+        "openrouter_api_key" => config
+            .openrouter_api_key
+            .as_ref()
+            .map(|v| serde_json::Value::String(v.clone())),
         "api_base_url" => Some(serde_json::Value::String(config.api_base_url.clone())),
         "model" => Some(serde_json::Value::String(config.model.clone())),
         "settings" => Some(config.settings.clone()),

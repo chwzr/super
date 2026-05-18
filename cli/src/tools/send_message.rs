@@ -1,10 +1,10 @@
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult,
+    ToolResultBlock, ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
 use shared::RenderSpec;
-use super::contract::{
-    DescriptionCtx, PromptCtx, ProgressSink, RenderOpts, Tool, ToolCallContext, ToolResult,
-    ToolResultBlock, ToolResultContent,
-};
 
 pub struct SendMessageTool;
 
@@ -104,11 +104,7 @@ impl Tool for SendMessageTool {
         Some("sends a message to a peer agent, sub-agent, user, or frontend")
     }
 
-    fn render_tool_use_message(
-        &self,
-        input: &serde_json::Value,
-        _opts: &RenderOpts,
-    ) -> RenderSpec {
+    fn render_tool_use_message(&self, input: &serde_json::Value, _opts: &RenderOpts) -> RenderSpec {
         let to = input["to"].as_str().unwrap_or("unknown");
         let summary = input["summary"]
             .as_str()
@@ -127,9 +123,7 @@ impl Tool for SendMessageTool {
         _progress: &[super::contract::ProgressEvent],
         _opts: &RenderOpts,
     ) -> Option<RenderSpec> {
-        let msg = output["message"]
-            .as_str()
-            .unwrap_or("Message sent.");
+        let msg = output["message"].as_str().unwrap_or("Message sent.");
         Some(RenderSpec::Text {
             body: msg.to_string(),
             dim: false,

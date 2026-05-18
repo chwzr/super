@@ -79,7 +79,9 @@ impl ScrollArea {
 }
 
 impl Default for ScrollArea {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -119,9 +121,12 @@ mod tests {
         sa.push_event(BusMessage::Result {
             stop_reason: None,
             usage: AnthropicUsage::default(),
-            total_cost_usd: 0.0, duration_ms: 0, num_turns: 0,
+            total_cost_usd: 0.0,
+            duration_ms: 0,
+            num_turns: 0,
             parent_tool_use_id: None,
-            uuid: Uuid::new_v4(), session_id: "s1".into(),
+            uuid: Uuid::new_v4(),
+            session_id: "s1".into(),
         });
         sa.clear();
         assert_eq!(sa.messages.len(), 0);

@@ -1,13 +1,18 @@
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::process::Command;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 
 pub struct BashTool;
 
 #[async_trait]
 impl Tool for BashTool {
-    fn name(&self) -> &str { "Bash" }
+    fn name(&self) -> &str {
+        "Bash"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Executes a bash command. Commands run in the current working directory. \
          Set 'run_in_background' for long-running commands. \
@@ -63,19 +68,18 @@ impl Tool for BashTool {
     }
 
     fn get_activity_description(&self, input: &serde_json::Value) -> Option<String> {
-        input.get("description")
+        input
+            .get("description")
             .and_then(|v| v.as_str())
             .map(String::from)
             .or_else(|| {
-                input.get("command")
-                    .and_then(|v| v.as_str())
-                    .map(|c| {
-                        if c.len() > 80 {
-                            format!("{}...", &c[..77])
-                        } else {
-                            c.to_string()
-                        }
-                    })
+                input.get("command").and_then(|v| v.as_str()).map(|c| {
+                    if c.len() > 80 {
+                        format!("{}...", &c[..77])
+                    } else {
+                        c.to_string()
+                    }
+                })
             })
     }
     async fn prepare_permission_matcher(
@@ -85,32 +89,34 @@ impl Tool for BashTool {
         let command_stem = input
             .get("command")
             .and_then(|v| v.as_str())
-            .map(|c| {
-                c.split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string()
-            })?;
+            .map(|c| c.split_whitespace().next().unwrap_or("").to_string())?;
 
         if command_stem.is_empty() {
             return None;
         }
 
         Some(Box::new(move |rule_content: &str| -> bool {
-            let rule_stem = rule_content.split_whitespace()
-                .next()
-                .unwrap_or("");
+            let rule_stem = rule_content.split_whitespace().next().unwrap_or("");
             rule_stem == command_stem || rule_content == "*"
         }))
     }
 
-    fn is_destructive(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_destructive(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
-    async fn call(&self, input: serde_json::Value, context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let command_str = input["command"].as_str().unwrap_or("");
         let timeout_ms = input["timeout"].as_u64().unwrap_or(120_000);
         let run_in_bg = input["run_in_background"].as_bool().unwrap_or(false);
-        let dangerously_disable_sandbox = input["dangerouslyDisableSandbox"].as_bool().unwrap_or(false);
+        let dangerously_disable_sandbox = input["dangerouslyDisableSandbox"]
+            .as_bool()
+            .unwrap_or(false);
         let _ = dangerously_disable_sandbox; // Read but not yet enforced (no sandbox implementation)
 
         // Block dangerous patterns
@@ -123,18 +129,38 @@ impl Tool for BashTool {
         }
 
         if run_in_bg {
-            match Command::new("bash").arg("-c").arg(command_str).current_dir(&context.cwd).spawn() {
+            match Command::new("bash")
+                .arg("-c")
+                .arg(command_str)
+                .current_dir(&context.cwd)
+                .spawn()
+            {
                 Ok(mut c) => {
-                    tokio::spawn(async move { c.wait().await.ok(); });
-                    ToolResult { content: "Command launched in background".into(), is_error: false, ..Default::default() }
+                    tokio::spawn(async move {
+                        c.wait().await.ok();
+                    });
+                    ToolResult {
+                        content: "Command launched in background".into(),
+                        is_error: false,
+                        ..Default::default()
+                    }
                 }
-                Err(e) => ToolResult { content: format!("Failed to spawn: {e}"), is_error: true, ..Default::default() },
+                Err(e) => ToolResult {
+                    content: format!("Failed to spawn: {e}"),
+                    is_error: true,
+                    ..Default::default()
+                },
             }
         } else {
             let result = tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
-                Command::new("bash").arg("-c").arg(command_str).current_dir(&context.cwd).output(),
-            ).await;
+                Command::new("bash")
+                    .arg("-c")
+                    .arg(command_str)
+                    .current_dir(&context.cwd)
+                    .output(),
+            )
+            .await;
             match result {
                 Ok(Ok(out)) => {
                     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -155,7 +181,9 @@ impl Tool for BashTool {
                             body.push_str(stderr.trim_end_matches('\n'));
                         }
                         if !stdout.is_empty() {
-                            if !body.is_empty() { body.push('\n'); }
+                            if !body.is_empty() {
+                                body.push('\n');
+                            }
                             body.push_str(stdout.trim_end_matches('\n'));
                         }
                         if body.is_empty() {
@@ -169,10 +197,22 @@ impl Tool for BashTool {
                     } else {
                         content
                     };
-                    ToolResult { content: truncated, is_error: !success, ..Default::default() }
+                    ToolResult {
+                        content: truncated,
+                        is_error: !success,
+                        ..Default::default()
+                    }
                 }
-                Ok(Err(e)) => ToolResult { content: format!("Command failed: {e}"), is_error: true, ..Default::default() },
-                Err(_) => ToolResult { content: "Command timed out".into(), is_error: true, ..Default::default() },
+                Ok(Err(e)) => ToolResult {
+                    content: format!("Command failed: {e}"),
+                    is_error: true,
+                    ..Default::default()
+                },
+                Err(_) => ToolResult {
+                    content: "Command timed out".into(),
+                    is_error: true,
+                    ..Default::default()
+                },
             }
         }
     }
@@ -185,7 +225,10 @@ impl Tool for BashTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }
@@ -233,16 +276,32 @@ mod tests {
     #[tokio::test]
     async fn bash_error_content_starts_with_exit_code_header() {
         let t = BashTool;
-        let out = t.call(serde_json::json!({"command": "bash -c 'echo ohno >&2; exit 2'"}), &ctx(), None).await;
+        let out = t
+            .call(
+                serde_json::json!({"command": "bash -c 'echo ohno >&2; exit 2'"}),
+                &ctx(),
+                None,
+            )
+            .await;
         assert!(out.is_error, "expected error");
-        assert!(out.content.starts_with("Error: Exit code 2"), "got: {:?}", out.content);
-        assert!(out.content.contains("ohno"), "stderr preserved: {:?}", out.content);
+        assert!(
+            out.content.starts_with("Error: Exit code 2"),
+            "got: {:?}",
+            out.content
+        );
+        assert!(
+            out.content.contains("ohno"),
+            "stderr preserved: {:?}",
+            out.content
+        );
     }
 
     #[tokio::test]
     async fn bash_success_content_does_not_prepend_exit_header() {
         let t = BashTool;
-        let out = t.call(serde_json::json!({"command": "echo hello"}), &ctx(), None).await;
+        let out = t
+            .call(serde_json::json!({"command": "echo hello"}), &ctx(), None)
+            .await;
         assert!(!out.is_error);
         assert!(!out.content.starts_with("Error:"), "got: {:?}", out.content);
         assert!(out.content.trim() == "hello");
@@ -252,9 +311,15 @@ mod tests {
     async fn permission_matcher_matches_command_stem() {
         let t = BashTool;
         let input = serde_json::json!({"command": "git status"});
-        let matcher = t.prepare_permission_matcher(&input).await.expect("should return matcher");
+        let matcher = t
+            .prepare_permission_matcher(&input)
+            .await
+            .expect("should return matcher");
         assert!(matcher("git *"), "git * should match git status");
-        assert!(matcher("git diff"), "git diff should match git status (stem check only)");
+        assert!(
+            matcher("git diff"),
+            "git diff should match git status (stem check only)"
+        );
         assert!(!matcher("ls *"), "ls * should not match git status");
         assert!(matcher("*"), "wildcard should match anything");
     }
@@ -271,7 +336,10 @@ mod tests {
     async fn permission_matcher_handles_whitespace_command() {
         let t = BashTool;
         let input = serde_json::json!({"command": "   echo hello"});
-        let matcher = t.prepare_permission_matcher(&input).await.expect("should return matcher");
+        let matcher = t
+            .prepare_permission_matcher(&input)
+            .await
+            .expect("should return matcher");
         assert!(matcher("echo *"), "should trim command");
     }
 }

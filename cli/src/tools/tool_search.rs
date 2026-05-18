@@ -1,7 +1,10 @@
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 const MAX_SEARCH_RESULTS: usize = 20;
 
@@ -11,7 +14,9 @@ pub struct ToolSearchTool {
 
 #[async_trait]
 impl Tool for ToolSearchTool {
-    fn name(&self) -> &str { "ToolSearch" }
+    fn name(&self) -> &str {
+        "ToolSearch"
+    }
 
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Search for tools by name or description. Use select: prefix for exact tool name lookup. Returns matching tools with their full schemas.".into()
@@ -25,8 +30,12 @@ impl Tool for ToolSearchTool {
         Some("discover and load deferred tools by name or description")
     }
 
-    fn should_defer(&self) -> bool { false }
-    fn always_load(&self) -> bool { true }
+    fn should_defer(&self) -> bool {
+        false
+    }
+    fn always_load(&self) -> bool {
+        true
+    }
 
     fn input_schema(&self) -> serde_json::Value {
         json!({
@@ -60,8 +69,12 @@ impl Tool for ToolSearchTool {
         }))
     }
 
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
-    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
+    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
     async fn call(
         &self,
@@ -110,13 +123,18 @@ impl Tool for ToolSearchTool {
         }
 
         // --- +prefix: require term in name ---
-        let require_in_name: Option<String> = query.strip_prefix('+')
+        let require_in_name: Option<String> = query
+            .strip_prefix('+')
             .and_then(|s| s.split_whitespace().next().map(|t| t.to_lowercase()));
 
         let search_terms: Vec<&str> = if require_in_name.is_some() {
             let after_plus = query.strip_prefix('+').unwrap();
             let parts: Vec<&str> = after_plus.splitn(2, ' ').collect();
-            if parts.len() > 1 { parts[1].split_whitespace().collect() } else { vec![] }
+            if parts.len() > 1 {
+                parts[1].split_whitespace().collect()
+            } else {
+                vec![]
+            }
         } else {
             query.split_whitespace().collect()
         };
@@ -142,23 +160,39 @@ impl Tool for ToolSearchTool {
             let mut score: i32 = 0;
 
             // Exact name match = highest
-            if name_lower == query_lower { score += 1000; }
+            if name_lower == query_lower {
+                score += 1000;
+            }
             // Name starts with query
-            else if name_lower.starts_with(&query_lower) { score += 500; }
+            else if name_lower.starts_with(&query_lower) {
+                score += 500;
+            }
             // Name contains query
-            else if name_lower.contains(&query_lower) { score += 200; }
+            else if name_lower.contains(&query_lower) {
+                score += 200;
+            }
 
             // Word-level matching in name
             for term in &search_terms {
                 let term_lower = term.to_lowercase();
-                if name_lower.contains(&term_lower) { score += 100; }
-                if desc_lower.contains(&term_lower) { score += 50; }
-                if hint_lower.contains(&term_lower) { score += 30; }
+                if name_lower.contains(&term_lower) {
+                    score += 100;
+                }
+                if desc_lower.contains(&term_lower) {
+                    score += 50;
+                }
+                if hint_lower.contains(&term_lower) {
+                    score += 30;
+                }
             }
 
             // Full query in description or hint
-            if desc_lower.contains(&query_lower) { score += 40; }
-            if hint_lower.contains(&query_lower) { score += 20; }
+            if desc_lower.contains(&query_lower) {
+                score += 40;
+            }
+            if hint_lower.contains(&query_lower) {
+                score += 20;
+            }
 
             if score > 0 || require_in_name.is_some() {
                 scored.push((score, tool));
@@ -176,7 +210,8 @@ impl Tool for ToolSearchTool {
             };
         }
 
-        let matches: Vec<String> = scored.iter()
+        let matches: Vec<String> = scored
+            .iter()
             .take(MAX_SEARCH_RESULTS)
             .map(|(_, tool)| format_tool_entry(&***tool))
             .collect();
@@ -197,7 +232,10 @@ impl Tool for ToolSearchTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

@@ -46,7 +46,9 @@ pub async fn await_interaction(
 ) -> InteractionOutcome {
     // Extract the response_schema from the Interactive variant
     let response_schema = match spec {
-        RenderSpec::Interactive { response_schema, .. } => response_schema.clone(),
+        RenderSpec::Interactive {
+            response_schema, ..
+        } => response_schema.clone(),
         _ => return InteractionOutcome::Aborted,
     };
 

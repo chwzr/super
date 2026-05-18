@@ -1,4 +1,7 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink, SearchReadKind};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, SearchReadKind, Tool, ToolCallContext, ToolResult,
+    ToolResultBlock, ToolResultContent,
+};
 use async_trait::async_trait;
 
 #[derive(Default)]
@@ -154,22 +157,21 @@ impl Tool for GrepTool {
     }
 
     fn is_search_or_read_command(&self, _input: &serde_json::Value) -> SearchReadKind {
-        SearchReadKind { is_search: true, ..Default::default() }
+        SearchReadKind {
+            is_search: true,
+            ..Default::default()
+        }
     }
 
     fn extract_search_text(&self, output: &serde_json::Value) -> Option<String> {
         if let Some(matches) = output["matches"].as_array() {
-            let lines: Vec<&str> = matches.iter()
-                .filter_map(|m| m["match"].as_str())
-                .collect();
+            let lines: Vec<&str> = matches.iter().filter_map(|m| m["match"].as_str()).collect();
             if !lines.is_empty() {
                 return Some(lines.join("\n"));
             }
         }
         if let Some(filenames) = output["filenames"].as_array() {
-            let lines: Vec<&str> = filenames.iter()
-                .filter_map(|v| v.as_str())
-                .collect();
+            let lines: Vec<&str> = filenames.iter().filter_map(|v| v.as_str()).collect();
             return Some(lines.join("\n"));
         }
         None
@@ -183,7 +185,12 @@ impl Tool for GrepTool {
         true
     }
 
-    async fn call(&self, input: serde_json::Value, context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let pattern_str = match input.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -195,20 +202,46 @@ impl Tool for GrepTool {
             }
         };
 
-        let output_mode = input.get("output_mode").and_then(|v| v.as_str()).unwrap_or("content");
-        let context_before = input.get("-B").and_then(|v| v.as_u64()).map(|v| v as usize)
+        let output_mode = input
+            .get("output_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("content");
+        let context_before = input
+            .get("-B")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
             .or_else(|| input.get("-C").and_then(|v| v.as_u64()).map(|v| v as usize))
-            .or_else(|| input.get("context").and_then(|v| v.as_u64()).map(|v| v as usize))
+            .or_else(|| {
+                input
+                    .get("context")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+            })
             .unwrap_or(0);
-        let context_after = input.get("-A").and_then(|v| v.as_u64()).map(|v| v as usize)
+        let context_after = input
+            .get("-A")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
             .or_else(|| input.get("-C").and_then(|v| v.as_u64()).map(|v| v as usize))
-            .or_else(|| input.get("context").and_then(|v| v.as_u64()).map(|v| v as usize))
+            .or_else(|| {
+                input
+                    .get("context")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+            })
             .unwrap_or(0);
         let _show_line_numbers = input.get("-n").and_then(|v| v.as_bool()).unwrap_or(true);
         let case_insensitive = input.get("-i").and_then(|v| v.as_bool()).unwrap_or(false);
-        let offset = input.get("offset").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+        let offset = input
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(0);
         let type_filter = input.get("type").and_then(|v| v.as_str());
-        let multiline = input.get("multiline").and_then(|v| v.as_bool()).unwrap_or(false);
+        let multiline = input
+            .get("multiline")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let regex = {
             let mut builder = regex::RegexBuilder::new(pattern_str);
@@ -266,10 +299,18 @@ impl Tool for GrepTool {
             let full_glob = if g.starts_with('/') {
                 let rel = g.trim_start_matches('/');
                 let gs = base_path.join(rel).to_string_lossy().to_string();
-                if cfg!(windows) { gs.replace('\\', "/") } else { gs }
+                if cfg!(windows) {
+                    gs.replace('\\', "/")
+                } else {
+                    gs
+                }
             } else {
                 let gs = base_path.join(g).to_string_lossy().to_string();
-                if cfg!(windows) { gs.replace('\\', "/") } else { gs }
+                if cfg!(windows) {
+                    gs.replace('\\', "/")
+                } else {
+                    gs
+                }
             };
             glob::glob(&full_glob)
         });
@@ -311,7 +352,8 @@ impl Tool for GrepTool {
                                 // Add context lines if requested
                                 if context_before > 0 {
                                     let before_start = line_num.saturating_sub(context_before);
-                                    let before_lines: Vec<String> = content.lines()
+                                    let before_lines: Vec<String> = content
+                                        .lines()
                                         .skip(before_start)
                                         .take(line_num - before_start)
                                         .map(String::from)
@@ -320,7 +362,8 @@ impl Tool for GrepTool {
                                 }
                                 if context_after > 0 {
                                     let after_start = line_num + 1;
-                                    let after_lines: Vec<String> = content.lines()
+                                    let after_lines: Vec<String> = content
+                                        .lines()
                                         .skip(after_start)
                                         .take(context_after)
                                         .map(String::from)
@@ -373,13 +416,10 @@ impl Tool for GrepTool {
                 // Skip binary files by checking common binary extensions
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     let binary_exts = [
-                        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp",
-                        "pdf", "zip", "gz", "tar", "bz2", "xz",
-                        "so", "dylib", "dll", "exe", "bin",
-                        "o", "obj", "class", "pyc",
-                        "ttf", "otf", "woff", "woff2", "eot",
-                        "mp3", "mp4", "avi", "mov", "mkv",
-                        "db", "sqlite", "lock",
+                        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "pdf", "zip", "gz",
+                        "tar", "bz2", "xz", "so", "dylib", "dll", "exe", "bin", "o", "obj",
+                        "class", "pyc", "ttf", "otf", "woff", "woff2", "eot", "mp3", "mp4", "avi",
+                        "mov", "mkv", "db", "sqlite", "lock",
                     ];
                     if binary_exts.contains(&ext) {
                         continue;
@@ -404,8 +444,8 @@ impl Tool for GrepTool {
                             break;
                         }
 
-                        let rel = pathdiff::diff_paths(path, cwd)
-                            .unwrap_or_else(|| path.to_path_buf());
+                        let rel =
+                            pathdiff::diff_paths(path, cwd).unwrap_or_else(|| path.to_path_buf());
                         let column = regex.find(line).map(|m| m.start() + 1).unwrap_or(1);
                         let mut entry = serde_json::json!({
                             "file": rel.to_string_lossy(),
@@ -417,7 +457,8 @@ impl Tool for GrepTool {
                         // Add context lines if requested
                         if context_before > 0 {
                             let before_start = line_num.saturating_sub(context_before);
-                            let before_lines: Vec<String> = content.lines()
+                            let before_lines: Vec<String> = content
+                                .lines()
                                 .skip(before_start)
                                 .take(line_num - before_start)
                                 .map(String::from)
@@ -426,7 +467,8 @@ impl Tool for GrepTool {
                         }
                         if context_after > 0 {
                             let after_start = line_num + 1;
-                            let after_lines: Vec<String> = content.lines()
+                            let after_lines: Vec<String> = content
+                                .lines()
                                 .skip(after_start)
                                 .take(context_after)
                                 .map(String::from)
@@ -461,12 +503,14 @@ impl Tool for GrepTool {
                 })
             }
             "count" => {
-                let mut file_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                let mut file_counts: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
                 for entry in &results {
                     let file = entry["file"].as_str().unwrap_or("").to_string();
                     *file_counts.entry(file).or_insert(0) += 1;
                 }
-                let counts: Vec<serde_json::Value> = file_counts.into_iter()
+                let counts: Vec<serde_json::Value> = file_counts
+                    .into_iter()
                     .map(|(file, count)| serde_json::json!({"file": file, "count": count}))
                     .collect();
                 serde_json::json!({

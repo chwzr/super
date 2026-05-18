@@ -64,13 +64,18 @@ pub fn spawn_sidechain_writer(bus: Arc<SessionBus>, base_dir: PathBuf) {
 /// Conventional base path for sidechains.
 pub fn default_sidechain_dir(root_session_id: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".super").join("sessions").join(root_session_id).join("sidechains")
+    home.join(".super")
+        .join("sessions")
+        .join(root_session_id)
+        .join("sidechains")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdk::protocol::{AnthropicUsage, AssistantPayload, BusMessage, ContentBlockFinal, SystemSubtype};
+    use crate::sdk::protocol::{
+        AnthropicUsage, AssistantPayload, BusMessage, ContentBlockFinal, SystemSubtype,
+    };
     use uuid::Uuid;
 
     #[tokio::test]
@@ -85,7 +90,9 @@ mod tests {
                 id: "msg_root".into(),
                 model: "x".into(),
                 role: "assistant".into(),
-                content: vec![ContentBlockFinal::Text { text: "root".into() }],
+                content: vec![ContentBlockFinal::Text {
+                    text: "root".into(),
+                }],
                 stop_reason: None,
                 usage: AnthropicUsage::default(),
             },
@@ -110,7 +117,10 @@ mod tests {
         assert!(path.exists(), "expected sidechain at {:?}", path);
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("child note"));
-        assert!(!contents.contains("\"msg_root\""), "root event must not appear");
+        assert!(
+            !contents.contains("\"msg_root\""),
+            "root event must not appear"
+        );
     }
 
     #[tokio::test]

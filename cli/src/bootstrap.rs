@@ -13,10 +13,10 @@ pub async fn run() {
     let store = Arc::new(crate::state::store::Store::new());
     // Seed the store's provider and model_class from config.
     {
-        let provider    = config.provider.clone();
+        let provider = config.provider.clone();
         let model_class = config.model_class.clone();
         store.set_state(|s| {
-            s.provider    = provider;
+            s.provider = provider;
             s.model_class = model_class;
         });
     }
@@ -24,20 +24,19 @@ pub async fn run() {
     // Build tool registry with all tools.
     let cwd_for_agents = std::env::current_dir().unwrap_or_default();
     let agent_registry = Arc::new(crate::agents::AgentRegistry::load(&cwd_for_agents));
-    let registry = crate::tools::ToolRegistry::new(
-        store.clone(),
-        config.clone(),
-        agent_registry,
-    );
+    let registry = crate::tools::ToolRegistry::new(store.clone(), config.clone(), agent_registry);
 
     // Load skills: bundled (embedded in binary) + user/project.
     // Bundled skills are extracted to ~/.super/plugins/superpowers/ on first run.
     let bundled_skills = crate::skills::bundled::extract_bundled_skills();
-    let local_skills  = crate::skills::loader::load_all_skills();
+    let local_skills = crate::skills::loader::load_all_skills();
 
     // Merge: local (user/project) overrides bundled on name collision.
     let mut by_name: std::collections::HashMap<String, crate::skills::loader::Skill> =
-        bundled_skills.into_iter().map(|s| (s.name.clone(), s)).collect();
+        bundled_skills
+            .into_iter()
+            .map(|s| (s.name.clone(), s))
+            .collect();
     for s in local_skills {
         by_name.insert(s.name.clone(), s);
     }

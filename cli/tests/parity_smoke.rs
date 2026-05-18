@@ -11,9 +11,7 @@ use shared::RenderSpec;
 use super_cli::conversation::session_bus::SessionBus;
 use super_cli::sdk::protocol::BusMessage;
 use super_cli::state::store::{PermissionMode, Store};
-use super_cli::tools::contract::{
-    DescriptionCtx, PromptCtx, RenderOpts, ToolCallContext,
-};
+use super_cli::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, ToolCallContext};
 use super_cli::tools::permission::{PermissionResult, PermissionSystem};
 use super_cli::tools::ToolRegistry;
 
@@ -62,7 +60,13 @@ async fn default_mode_permission_check_returns_allow() {
         tool_use_id: "tu_smoke".into(),
         progress_sink: None,
     };
-    let result = sys.evaluate(read.as_ref(), &serde_json::json!({"file_path":"/tmp/x"}), &ctx).await;
+    let result = sys
+        .evaluate(
+            read.as_ref(),
+            &serde_json::json!({"file_path":"/tmp/x"}),
+            &ctx,
+        )
+        .await;
     assert!(matches!(result, PermissionResult::Allow { .. }));
 }
 
@@ -101,9 +105,17 @@ async fn bypass_mode_short_circuits_to_allow() {
         tool_use_id: "tu_smoke".into(),
         progress_sink: None,
     };
-    let result = sys.evaluate(bash.as_ref(), &serde_json::json!({"command":"echo hi"}), &ctx).await;
+    let result = sys
+        .evaluate(
+            bash.as_ref(),
+            &serde_json::json!({"command":"echo hi"}),
+            &ctx,
+        )
+        .await;
     match result {
-        PermissionResult::Allow { decision_reason, .. } => {
+        PermissionResult::Allow {
+            decision_reason, ..
+        } => {
             assert!(decision_reason.is_some());
         }
         other => panic!("expected Allow, got {:?}", other),

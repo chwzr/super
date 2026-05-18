@@ -1,3 +1,5 @@
+use super::prompts;
+use super::registry::{Command, CommandKind, CommandRegistry};
 use crate::config::load_config;
 use crate::state::store::Store;
 use crate::tui::modal::Modal;
@@ -9,8 +11,6 @@ use crate::tui::modals::model_picker::ModelPicker;
 use crate::tui::modals::provider_picker::ProviderPicker;
 use crate::tui::modals::resume_picker::ResumePicker;
 use crate::tui::modals::status_view::{StatusSnapshot, StatusView};
-use super::prompts;
-use super::registry::{Command, CommandKind, CommandRegistry};
 
 /// Dispatch a slash command. Returns the action the TUI should take.
 ///
@@ -51,10 +51,9 @@ pub fn dispatch(command: &Command, input: &str, store: &Store) -> CommandResult 
 
         _ => match command.kind {
             CommandKind::Prompt => CommandResult::Prompt(args.to_string()),
-            CommandKind::Local => CommandResult::Display(format!(
-                "Command {} is not yet implemented.",
-                command.name
-            )),
+            CommandKind::Local => {
+                CommandResult::Display(format!("Command {} is not yet implemented.", command.name))
+            }
         },
     }
 }
@@ -88,9 +87,7 @@ fn help() -> CommandResult {
     // Compute max width of "name [hint]" for alignment.
     let col_width = commands
         .iter()
-        .map(|c| {
-            c.name.len() + c.argument_hint.map(|h| h.len() + 1).unwrap_or(0)
-        })
+        .map(|c| c.name.len() + c.argument_hint.map(|h| h.len() + 1).unwrap_or(0))
         .max()
         .unwrap_or(20)
         + 2;
@@ -124,19 +121,22 @@ fn version() -> CommandResult {
 }
 
 fn status(store: &Store) -> CommandResult {
-    let state  = store.get_state();
+    let state = store.get_state();
     let config = load_config();
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "?".into());
     let slug = crate::providers::resolve_slug(&state.provider, &state.model_class);
     let snap = StatusSnapshot {
-        version:  env!("CARGO_PKG_VERSION").to_string(),
-        model:    slug.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        model: slug.to_string(),
         provider: crate::providers::provider_display_name(&state.provider).to_string(),
         thinking: state.thinking_enabled,
-        effort:   state.effort_level.clone(),
-        email:    config.access_token.as_ref().map(|_| "signed in".to_string()),
+        effort: state.effort_level.clone(),
+        email: config
+            .access_token
+            .as_ref()
+            .map(|_| "signed in".to_string()),
         messages: state.messages.len(),
         cwd,
     };
@@ -181,7 +181,7 @@ fn think(store: &Store) -> CommandResult {
 fn context(store: &Store) -> CommandResult {
     let state = store.get_state();
     let count = state.messages.len();
-    let slug  = crate::providers::resolve_slug(&state.provider, &state.model_class);
+    let slug = crate::providers::resolve_slug(&state.provider, &state.model_class);
     let model = friendly_model_short_name(slug);
     // Approximate token counts (1 token ≈ 4 chars). Full tokenizer is a follow-up.
     let msg_chars: usize = state.messages.iter().map(approx_message_chars).sum();
@@ -293,7 +293,12 @@ fn export(store: &Store) -> CommandResult {
             System(s) => {
                 let _ = writeln!(file, "[system]: {s}\n");
             }
-            ToolCall { name, input, result, .. } => {
+            ToolCall {
+                name,
+                input,
+                result,
+                ..
+            } => {
                 let _ = writeln!(file, "[tool use: {name}]\n{input}\n");
                 if let Some(r) = result {
                     let _ = writeln!(file, "[tool result]\n{r}\n");
@@ -373,7 +378,8 @@ fn memory() -> CommandResult {
     let in_git = run_git(&["rev-parse", "--is-inside-work-tree"])
         .trim()
         .to_lowercase()
-        .as_str() == "true";
+        .as_str()
+        == "true";
     let project_label = "Project memory";
     let project_verb = if in_git { "Checked in at" } else { "Saved in" };
     let project_desc = format!("{project_verb} ./CLAUDE.md");
