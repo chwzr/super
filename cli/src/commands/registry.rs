@@ -42,7 +42,8 @@ impl CommandRegistry {
         // excluded from super are recorded in PLAN.md under "Feature
         // Blacklist (slash commands, 2026-05-14)".
         // Tuple layout: (name, aliases, description, argument_hint, kind)
-        let builtins: Vec<(&str, &[&str], &str, Option<&'static str>, CommandKind)> = vec![
+        type BuiltinDef<'a> = (&'a str, &'a [&'a str], &'a str, Option<&'static str>, CommandKind);
+        let builtins: Vec<BuiltinDef> = vec![
             // ----- Local commands -----
             ("/help",        &[] as &[&str],              "Show help and available commands",                                                                None,                              CommandKind::Local),
             ("/clear",       &["/reset", "/new"],         "Clear conversation history and free up context",                                                  None,                              CommandKind::Local),
