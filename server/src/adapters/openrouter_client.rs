@@ -23,9 +23,10 @@ struct OpenRouterKeyResponse {
     key: String,
     name: Option<String>,
     label: Option<String>,
-    limit: Option<f64>,
-    #[serde(default)]
-    disabled: bool,
+    #[serde(default, rename = "limit")]
+    _limit: Option<f64>,
+    #[serde(default, rename = "disabled")]
+    _disabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -75,8 +76,8 @@ impl OpenRouterProvider for OpenRouterClient {
         Ok(OpenRouterKey {
             id: label.to_string(),
             key: key.key,
-            label: label.to_string(),
-            limit_usd,
+            _label: label.to_string(),
+            _limit_usd: limit_usd,
         })
     }
 

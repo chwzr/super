@@ -82,45 +82,28 @@ impl ToolRegistry {
         config: shared::CliConfig,
         agent_registry: Arc<crate::agents::AgentRegistry>,
     ) -> Arc<Self> {
-        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-
-        // Standard tools
-        tools.push(Arc::new(ReadTool));
-        tools.push(Arc::new(EditTool));
-        tools.push(Arc::new(WriteTool));
-        tools.push(Arc::new(GlobTool));
-        tools.push(Arc::new(GrepTool));
-        tools.push(Arc::new(NotebookEditTool));
-        tools.push(Arc::new(BashTool));
-        tools.push(Arc::new(ConfigTool));
-        tools.push(Arc::new(WebFetchTool));
-        tools.push(Arc::new(WebSearchTool));
-
-        // LSP
-        tools.push(Arc::new(LspTool));
-
-        // Cron tools (share the same job registry)
         let cron_jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        tools.push(Arc::new(CronCreateTool { jobs: cron_jobs.clone() }));
-        tools.push(Arc::new(CronDeleteTool { jobs: cron_jobs.clone() }));
-        tools.push(Arc::new(CronListTool { jobs: cron_jobs.clone() }));
-
-        // Sleep
-        tools.push(Arc::new(SleepTool));
-
-        // Monitor (stub)
-        tools.push(Arc::new(MonitorTool));
-
-        // SkillTool is registered later by bootstrap with the loaded skills;
-        // not registered here to avoid a duplicate `Skill` tool name in the
-        // request payload (rejected by Amazon Bedrock-routed providers).
-
-        // StructuredOutput
-        tools.push(Arc::new(StructuredOutputTool));
-
-        // Worktree tools (stubs)
-        tools.push(Arc::new(EnterWorktreeTool));
-        tools.push(Arc::new(ExitWorktreeTool));
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(ReadTool),
+            Arc::new(EditTool),
+            Arc::new(WriteTool),
+            Arc::new(GlobTool),
+            Arc::new(GrepTool),
+            Arc::new(NotebookEditTool),
+            Arc::new(BashTool),
+            Arc::new(ConfigTool),
+            Arc::new(WebFetchTool),
+            Arc::new(WebSearchTool),
+            Arc::new(LspTool),
+            Arc::new(CronCreateTool { jobs: cron_jobs.clone() }),
+            Arc::new(CronDeleteTool { jobs: cron_jobs.clone() }),
+            Arc::new(CronListTool { jobs: cron_jobs.clone() }),
+            Arc::new(SleepTool),
+            Arc::new(MonitorTool),
+            Arc::new(StructuredOutputTool),
+            Arc::new(EnterWorktreeTool),
+            Arc::new(ExitWorktreeTool),
+        ];
 
         let registry = Arc::new(Self { tools: Arc::new(RwLock::new(tools)) });
 

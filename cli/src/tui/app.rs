@@ -602,19 +602,22 @@ impl App {
                             // which renders to nothing. Batches 2-5 wire this
                             // into the scrollback / live region.
                         }
-                        BusMessage::InteractionRequested { tool_use_id, spec, parent_tool_use_id, .. } => {
-                            if let shared::RenderSpec::Interactive {
+                        BusMessage::InteractionRequested {
+                            tool_use_id,
+                            spec: shared::RenderSpec::Interactive {
                                 widget: shared::InteractiveWidget::MultiQuestion { questions },
                                 ..
-                            } = spec {
-                                self.pending_interaction = Some(PendingInteraction {
-                                    tool_use_id: tool_use_id.clone(),
-                                    parent_tool_use_id: parent_tool_use_id.clone(),
-                                });
-                                self.modal = Some(Modal::Question(
-                                    crate::tui::modals::question::QuestionModal::new(questions.clone()),
-                                ));
-                            }
+                            },
+                            parent_tool_use_id,
+                            ..
+                        } => {
+                            self.pending_interaction = Some(PendingInteraction {
+                                tool_use_id: tool_use_id.clone(),
+                                parent_tool_use_id: parent_tool_use_id.clone(),
+                            });
+                            self.modal = Some(Modal::Question(
+                                crate::tui::modals::question::QuestionModal::new(questions.clone()),
+                            ));
                         }
                         _ => {}
                     }

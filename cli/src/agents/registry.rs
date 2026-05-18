@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 
 use super::built_in::built_in_agents;
 use super::definition::{AgentDefinition, AgentSource};
@@ -17,7 +17,7 @@ impl AgentRegistry {
 
     /// Load with all three layers from disk. User layer scans
     /// `~/.claude/agents/*.md`; project layer scans `<cwd>/.claude/agents/*.md`.
-    pub fn load(cwd: &PathBuf) -> Self {
+    pub fn load(cwd: &Path) -> Self {
         let user = dirs::home_dir()
             .map(|h| h.join(".claude").join("agents"))
             .map(|d| load_agents_from_dir(&d, AgentSource::User))

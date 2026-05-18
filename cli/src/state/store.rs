@@ -82,9 +82,11 @@ pub enum PermissionMode {
     Auto,
 }
 
+type Subscriber = Box<dyn Fn(&AppState) + Send + Sync>;
+
 pub struct Store {
     state: Arc<RwLock<AppState>>,
-    subscribers: Arc<RwLock<Vec<Box<dyn Fn(&AppState) + Send + Sync>>>>,
+    subscribers: Arc<RwLock<Vec<Subscriber>>>,
 }
 
 impl Clone for Store {

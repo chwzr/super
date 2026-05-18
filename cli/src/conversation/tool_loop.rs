@@ -12,6 +12,7 @@ use crate::tools::ToolRegistry;
 /// Execute all tool_use blocks from one assistant turn, returning the
 /// corresponding tool_result blocks in emission order. Concurrency-safe tools
 /// run in parallel via `tokio::task::JoinSet`; others run sequentially.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tool_uses(
     registry: &ToolRegistry,
     tool_uses: Vec<(String, String, serde_json::Value)>, // (id, name, input)

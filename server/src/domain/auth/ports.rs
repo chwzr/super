@@ -15,8 +15,8 @@ pub struct User {
 pub struct ApiKey {
     pub openrouter_key_id: String,
     pub openrouter_key_value: String,
-    pub created_at: DateTime<Utc>,
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub _created_at: DateTime<Utc>,
+    pub _revoked_at: Option<DateTime<Utc>>,
 }
 
 pub struct AuthorizationCode {
@@ -30,8 +30,8 @@ pub struct AuthorizationCode {
 pub struct OpenRouterKey {
     pub id: String,
     pub key: String,
-    pub label: String,
-    pub limit_usd: u32,
+    pub _label: String,
+    pub _limit_usd: u32,
 }
 
 pub struct RefreshToken {

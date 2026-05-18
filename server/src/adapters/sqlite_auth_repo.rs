@@ -141,12 +141,12 @@ impl AuthRepository for SqliteAuthRepo {
                 Ok(ApiKey {
                     openrouter_key_id: row.get(0)?,
                     openrouter_key_value: row.get(1)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(
+                    _created_at: chrono::DateTime::parse_from_rfc3339(
                         &row.get::<_, String>(2)?,
                     )
                     .unwrap()
                     .with_timezone(&Utc),
-                    revoked_at: row.get::<_, Option<String>>(3)?.map(|s| {
+                    _revoked_at: row.get::<_, Option<String>>(3)?.map(|s| {
                         chrono::DateTime::parse_from_rfc3339(&s)
                             .unwrap()
                             .with_timezone(&Utc)
