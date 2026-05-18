@@ -3,9 +3,10 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::conversation::session_bus::SessionBus;
+use crate::executor::interactive::{self, InteractionOutcome};
 use crate::sdk::protocol::{BusMessage, ContentBlockFinal};
 use crate::state::store::PermissionMode;
-use crate::tools::contract::{DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{DescriptionCtx, ProgressSink, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult};
 use crate::tools::ToolRegistry;
 
 /// Execute all tool_use blocks from one assistant turn, returning the
@@ -24,11 +25,13 @@ pub async fn run_tool_uses(
 ) -> Vec<ContentBlockFinal> {
     // Partition into safe (read-only / pure) and unsafe (writes, shell, network with side effects).
     // Preserve original order index so we can recombine into emission order at the end.
+    // Interactive tools always go into the serial (unsafe) path because they must
+    // suspend the turn and wait for user input before proceeding.
     let mut safe: Vec<(usize, String, Arc<dyn Tool>, serde_json::Value)> = Vec::new();
     let mut unsafe_: Vec<(usize, String, Arc<dyn Tool>, serde_json::Value)> = Vec::new();
     for (i, (id, name, input)) in tool_uses.into_iter().enumerate() {
         match registry.get(&name) {
-            Some(tool) if tool.is_concurrency_safe(&input) => {
+            Some(tool) if tool.is_concurrency_safe(&input) && !tool.requires_user_interaction() => {
                 safe.push((i, id, tool, input));
             }
             Some(tool) => {
@@ -156,6 +159,69 @@ pub async fn run_tool_uses(
             progress_sink: None,
         };
 
+        // Interactive tools: render the spec, suspend the turn, await the
+        // user response, then merge the answers into the tool input.
+        let effective_input = if tool.requires_user_interaction() {
+            let spec = tool.render_tool_use_message(&input, &RenderOpts {
+                verbose: false,
+                is_transcript_mode: false,
+            });
+
+            if matches!(&spec, shared::RenderSpec::Interactive { .. }) {
+                // Emit the spec via RenderEvent so the transcript can
+                // optionally render it in scrollback (the modal is the
+                // primary surface, but scrollback parity is useful).
+                bus.emit(BusMessage::RenderEvent {
+                    tool_use_id: id.clone(),
+                    spec: spec.clone(),
+                    parent_tool_use_id: parent_tool_use_id.clone(),
+                    uuid: uuid::Uuid::new_v4(),
+                    session_id: session_id.clone(),
+                });
+
+                match interactive::await_interaction(id.clone(), &spec, &bus, parent_tool_use_id.clone()).await {
+                    InteractionOutcome::Resolved { updated_input } => {
+                        // Merge answers into the original input so call()
+                        // sees the full picture.
+                        updated_input
+                    }
+                    InteractionOutcome::Denied => {
+                        if let Some(rejection) = tool.render_tool_use_rejected_message(&input, &RenderOpts {
+                            verbose: false,
+                            is_transcript_mode: false,
+                        }) {
+                            // Emit the rejection so the transcript shows it.
+                            bus.emit(BusMessage::RenderEvent {
+                                tool_use_id: id.clone(),
+                                spec: rejection,
+                                parent_tool_use_id: parent_tool_use_id.clone(),
+                                uuid: uuid::Uuid::new_v4(),
+                                session_id: session_id.clone(),
+                            });
+                        }
+                        unsafe_results.push((i, id, ToolResult {
+                            content: "User declined to answer questions".into(),
+                            is_error: true,
+                            ..Default::default()
+                        }));
+                        continue;
+                    }
+                    InteractionOutcome::Aborted => {
+                        unsafe_results.push((i, id, ToolResult {
+                            content: "Interaction aborted".into(),
+                            is_error: true,
+                            ..Default::default()
+                        }));
+                        continue;
+                    }
+                }
+            } else {
+                input
+            }
+        } else {
+            input
+        };
+
         // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
         let bus_for_tick = bus.clone();
         let id_for_tick = id.clone();
@@ -179,7 +245,7 @@ pub async fn run_tool_uses(
             }
         });
 
-        let res = tool.call(input, &ctx, None).await;
+        let res = tool.call(effective_input, &ctx, None).await;
         ticker.abort();
         unsafe_results.push((i, id, res));
     }
