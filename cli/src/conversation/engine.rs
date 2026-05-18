@@ -78,6 +78,7 @@ impl ConversationEngine {
     /// bus and store, but stamps every emit with `agent_id` as the session_id,
     /// starts with a fresh (empty) conversation history isolated from the
     /// parent, and pins the resolved permission mode for the subagent.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_child(
         store: Arc<Store>,
         config: CliConfig,
