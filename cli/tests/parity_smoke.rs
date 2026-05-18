@@ -30,7 +30,7 @@ async fn read_tool_round_trips_through_new_contract() {
 
     let prompt = read.prompt(&PromptCtx::default());
     // Placeholder marker until Batch 3 ports the real prompt text.
-    assert!(prompt.contains("TODO(parity:batch-3)"));
+    assert!(prompt.contains("Reads a file from the local filesystem"));
 
     assert!(read.is_read_only(&serde_json::Value::Null));
     assert!(read.is_concurrency_safe(&serde_json::Value::Null));
