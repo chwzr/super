@@ -42,6 +42,7 @@ pub async fn await_interaction(
     tool_use_id: String,
     spec: &RenderSpec,
     bus: &std::sync::Arc<crate::conversation::session_bus::SessionBus>,
+    parent_tool_use_id: Option<String>,
 ) -> InteractionOutcome {
     // Extract the response_schema from the Interactive variant
     let response_schema = match spec {
@@ -55,7 +56,7 @@ pub async fn await_interaction(
         tool_use_id: tool_use_id.clone(),
         spec: spec.clone(),
         response_schema,
-        parent_tool_use_id: None,
+        parent_tool_use_id,
         uuid: uuid::Uuid::new_v4(),
         session_id: bus.session_id().to_string(),
     });

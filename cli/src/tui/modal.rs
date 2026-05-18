@@ -14,6 +14,7 @@ use crate::tui::modals::effort_picker::{EffortAction, EffortPicker};
 use crate::tui::modals::mcp_list::{McpAction, McpList};
 use crate::tui::modals::model_picker::{ModelAction, ModelPicker};
 use crate::tui::modals::provider_picker::{ProviderAction, ProviderPicker};
+use crate::tui::modals::question::{QuestionAction, QuestionModal};
 use crate::tui::modals::resume_picker::{ResumeAction, ResumePicker};
 use crate::tui::modals::status_view::{StatusAction, StatusView};
 
@@ -23,6 +24,7 @@ pub enum ModalAction {
     SetClass(String),
     SetProvider(String),
     SetEffort(String),
+    SubmitAnswers(serde_json::Value),
 }
 
 pub enum Modal {
@@ -34,6 +36,7 @@ pub enum Modal {
     Status(StatusView),
     Config(ConfigView),
     Agents(AgentsView),
+    Question(QuestionModal),
 }
 
 impl Modal {
@@ -47,6 +50,7 @@ impl Modal {
             Modal::Status(_)   => "Super",
             Modal::Config(_)   => "Super Config",
             Modal::Agents(_)   => "Agents",
+            Modal::Question(_) => "Questions",
         }
     }
 
@@ -87,6 +91,11 @@ impl Modal {
                 AgentsAction::Continue => ModalAction::Continue,
                 AgentsAction::Cancel   => ModalAction::Close,
             },
+            Modal::Question(p) => match p.handle_key(key) {
+                QuestionAction::Continue         => ModalAction::Continue,
+                QuestionAction::Submit(payload)  => ModalAction::SubmitAnswers(payload),
+                QuestionAction::Cancel           => ModalAction::Close,
+            },
         }
     }
 
@@ -108,6 +117,7 @@ impl Modal {
             Modal::Status(v)   => v.render(f, content_area),
             Modal::Config(p)   => p.render(f, content_area),
             Modal::Agents(p)   => p.render(f, content_area),
+            Modal::Question(p) => p.render(f, content_area),
         }
     }
 }

@@ -4,5 +4,6 @@ pub mod effort_picker;
 pub mod mcp_list;
 pub mod model_picker;
 pub mod provider_picker;
+pub mod question;
 pub mod resume_picker;
 pub mod status_view;

@@ -60,6 +60,12 @@ enum AuthEvent {
     LoginDone(Result<String, String>),
 }
 
+/// Tracks a pending interactive tool invocation while the modal is displayed.
+struct PendingInteraction {
+    tool_use_id: String,
+    parent_tool_use_id: Option<String>,
+}
+
 pub struct App {
     scroll_area: ScrollArea,
     activity: ActivityState,
@@ -91,6 +97,10 @@ pub struct App {
     auth_inflight: Option<mpsc::UnboundedReceiver<AuthEvent>>,
     status_fetch: Option<tokio::sync::mpsc::UnboundedReceiver<Result<(f64, f64), String>>>,
     modal: Option<Modal>,
+    /// When `Some`, a tool is awaiting user interaction (AskUserQuestion,
+    /// permission prompt, etc.). The modal is showing; on submit/cancel we
+    /// emit InteractionResponse / InteractionDenied so the tool loop resumes.
+    pending_interaction: Option<PendingInteraction>,
     /// Splash banner lines written to scrollback once on first tick.
     /// `Some` until flushed, then `None`.
     splash_pending: Option<Vec<Line<'static>>>,
@@ -177,6 +187,7 @@ impl App {
             auth_inflight: None,
             status_fetch: None,
             modal: None,
+            pending_interaction: None,
             splash_pending: Some(splash_lines),
             flushed_message_count: 0,
             next_flush_idx: 0,
@@ -354,6 +365,15 @@ impl App {
             match modal.handle_key(key) {
                 ModalAction::Continue => return Ok(()),
                 ModalAction::Close => {
+                    if let Some(ref interaction) = self.pending_interaction {
+                        self.bus.emit(BusMessage::InteractionDenied {
+                            tool_use_id: interaction.tool_use_id.clone(),
+                            parent_tool_use_id: interaction.parent_tool_use_id.clone(),
+                            uuid: uuid::Uuid::new_v4(),
+                            session_id: self.bus.session_id().to_string(),
+                        });
+                        self.pending_interaction = None;
+                    }
                     self.modal = None;
                     return Ok(());
                 }
@@ -380,6 +400,23 @@ impl App {
                 ModalAction::SetEffort(e) => {
                     self.store.set_effort(e);
                     self.modal = None;
+                    return Ok(());
+                }
+                ModalAction::SubmitAnswers(payload) => {
+                    // The modal was an InteractionRequested widget
+                    // (MultiQuestion). Emit the response so the suspended
+                    // tool loop can resume with user answers.
+                    if let Some(ref interaction) = self.pending_interaction {
+                        self.bus.emit(BusMessage::InteractionResponse {
+                            tool_use_id: interaction.tool_use_id.clone(),
+                            payload,
+                            parent_tool_use_id: interaction.parent_tool_use_id.clone(),
+                            uuid: uuid::Uuid::new_v4(),
+                            session_id: self.bus.session_id().to_string(),
+                        });
+                    }
+                    self.modal = None;
+                    self.pending_interaction = None;
                     return Ok(());
                 }
             }
@@ -564,6 +601,20 @@ impl App {
                             // Batch 1: tools only emit RenderSpec::Nothing,
                             // which renders to nothing. Batches 2-5 wire this
                             // into the scrollback / live region.
+                        }
+                        BusMessage::InteractionRequested { tool_use_id, spec, parent_tool_use_id, .. } => {
+                            if let shared::RenderSpec::Interactive {
+                                widget: shared::InteractiveWidget::MultiQuestion { questions },
+                                ..
+                            } = spec {
+                                self.pending_interaction = Some(PendingInteraction {
+                                    tool_use_id: tool_use_id.clone(),
+                                    parent_tool_use_id: parent_tool_use_id.clone(),
+                                });
+                                self.modal = Some(Modal::Question(
+                                    crate::tui::modals::question::QuestionModal::new(questions.clone()),
+                                ));
+                            }
                         }
                         _ => {}
                     }
