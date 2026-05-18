@@ -71,14 +71,10 @@ impl McpManager {
         .await?;
 
         // Store discovered tools
-        self.servers
-            .write()
-            .await
-            .get_mut(name)
-            .map(|s| {
-                s.connected = true;
-                s.tools = tools;
-            });
+        if let Some(s) = self.servers.write().await.get_mut(name) {
+            s.connected = true;
+            s.tools = tools;
+        }
 
         Ok(())
     }
