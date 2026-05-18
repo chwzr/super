@@ -941,6 +941,30 @@ fn friendly_model_name(slug: &str) -> String {
     }
 }
 
+pub async fn run_with_engine(
+    config: CliConfig,
+    store: Arc<Store>,
+    engine: ConversationEngine,
+    _registry: Arc<ToolRegistry>,
+    bus: Arc<SessionBus>,
+    system_prompt: SystemPrompt,
+) {
+    let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+    let viewport_height = VIEWPORT_HEIGHT.min(term_height);
+    let _ = enable_raw_mode();
+    let backend = CrosstermBackend::new(std::io::stdout());
+    let terminal = Terminal::with_options(backend, TerminalOptions {
+        viewport: Viewport::Inline(viewport_height),
+    });
+    if let Ok(terminal) = terminal {
+        let mut app = App::new(config, store, engine, bus, system_prompt);
+        let _ = app.run(terminal);
+    }
+    let _ = disable_raw_mode();
+    let _ = execute!(std::io::stdout(), crossterm::cursor::Show);
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1001,10 +1025,6 @@ mod tests {
         assert!(!is_stable(&mk(false)));
     }
 
-    /// Mirrors the line-level streaming logic in `flush_to_scrollback`:
-    /// given the in-flight text and how many leading chars have already been
-    /// pushed to scrollback, return the chunk (if any) that should be pushed
-    /// next, and the new cursor position.
     fn next_flush_chunk(text: &str, already: usize) -> Option<(String, usize)> {
         let tail = &text[already..];
         let rel_nl = tail.rfind('\n')?;
@@ -1015,19 +1035,14 @@ mod tests {
     #[test]
     fn streaming_flush_pushes_completed_lines_only() {
         let text = "first line\nsecond line\npartial";
-        // No flush yet; rfind('\n') finds the \n after "second line"
-        // → flush "first line\nsecond line\n" (23 chars).
         let (chunk, cursor) = next_flush_chunk(text, 0).expect("has a complete line");
         assert_eq!(chunk, "first line\nsecond line\n");
         assert_eq!(cursor, 23);
-        // Now from cursor=23, tail is "partial" — no newline, nothing to flush.
         assert!(next_flush_chunk(text, cursor).is_none());
     }
 
     #[test]
     fn streaming_flush_pushes_nothing_when_no_newline_yet() {
-        // The model has begun streaming but no newline has arrived: keep the
-        // whole text in the live tail; push nothing.
         let text = "still streaming partial line";
         assert!(next_flush_chunk(text, 0).is_none());
     }
@@ -1036,34 +1051,8 @@ mod tests {
     fn streaming_flush_advances_past_blank_lines() {
         let text = "para 1\n\npara 2\n";
         let (chunk, cursor) = next_flush_chunk(text, 0).unwrap();
-        // rfind walks back to the last \n, which is at position 14.
-        // Flush everything up to and including it.
         assert_eq!(chunk, "para 1\n\npara 2\n");
         assert_eq!(cursor, text.len());
         assert!(next_flush_chunk(text, cursor).is_none());
     }
-}
-
-pub async fn run_with_engine(
-    config: CliConfig,
-    store: Arc<Store>,
-    engine: ConversationEngine,
-    _registry: Arc<ToolRegistry>,
-    bus: Arc<SessionBus>,
-    system_prompt: SystemPrompt,
-) {
-    let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
-    let viewport_height = VIEWPORT_HEIGHT.min(term_height);
-    let _ = enable_raw_mode();
-    let backend = CrosstermBackend::new(std::io::stdout());
-    let terminal = Terminal::with_options(backend, TerminalOptions {
-        viewport: Viewport::Inline(viewport_height),
-    });
-    if let Ok(terminal) = terminal {
-        let mut app = App::new(config, store, engine, bus, system_prompt);
-        let _ = app.run(terminal);
-    }
-    let _ = disable_raw_mode();
-    let _ = execute!(std::io::stdout(), crossterm::cursor::Show);
-    println!();
 }

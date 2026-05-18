@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_spans_only_removed_uses_capital_R() {
+    fn summary_spans_only_removed_uses_capital_r() {
         let spans = summary_spans(DiffCounts { additions: 0, removals: 3 });
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "Removed 3 lines");

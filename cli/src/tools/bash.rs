@@ -192,6 +192,25 @@ impl Tool for BashTool {
     }
 }
 
+fn security_check(cmd: &str) -> Option<&'static str> {
+    let dangerous: &[(&str, &str)] = &[
+        ("rm -rf /", "destroys root filesystem"),
+        ("mkfs.", "filesystem formatting"),
+        ("dd if=", "raw device write"),
+        ("sudo ", "privilege escalation"),
+        ("curl | sh", "pipe to shell"),
+        ("wget | bash", "pipe to shell"),
+        ("passwd", "password change"),
+        ("chsh", "shell change"),
+    ];
+    for (pattern, reason) in dangerous {
+        if cmd.contains(pattern) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,23 +274,4 @@ mod tests {
         let matcher = t.prepare_permission_matcher(&input).await.expect("should return matcher");
         assert!(matcher("echo *"), "should trim command");
     }
-}
-
-fn security_check(cmd: &str) -> Option<&'static str> {
-    let dangerous: &[(&str, &str)] = &[
-        ("rm -rf /", "destroys root filesystem"),
-        ("mkfs.", "filesystem formatting"),
-        ("dd if=", "raw device write"),
-        ("sudo ", "privilege escalation"),
-        ("curl | sh", "pipe to shell"),
-        ("wget | bash", "pipe to shell"),
-        ("passwd", "password change"),
-        ("chsh", "shell change"),
-    ];
-    for (pattern, reason) in dangerous {
-        if cmd.contains(pattern) {
-            return Some(reason);
-        }
-    }
-    None
 }
