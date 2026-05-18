@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 #[derive(Clone)]
 pub struct SystemPrompt {
@@ -6,7 +6,7 @@ pub struct SystemPrompt {
 }
 
 impl SystemPrompt {
-    pub fn build(cwd: &PathBuf) -> Self {
+    pub fn build(cwd: &Path) -> Self {
         let mut sections = Vec::new();
 
         // Load CLAUDE.md from cwd and parent directories
@@ -26,8 +26,8 @@ impl SystemPrompt {
     }
 }
 
-fn load_claude_md(cwd: &PathBuf) -> Option<String> {
-    let mut dir = Some(cwd.as_path());
+fn load_claude_md(cwd: &Path) -> Option<String> {
+    let mut dir = Some(cwd);
     while let Some(d) = dir {
         let path = d.join("CLAUDE.md");
         if path.exists() {
