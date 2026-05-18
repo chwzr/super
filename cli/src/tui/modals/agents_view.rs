@@ -57,6 +57,12 @@ pub struct AgentsView {
     proj_agents: Vec<String>,
 }
 
+impl Default for AgentsView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentsView {
     pub fn new() -> Self {
         let user_agents = dirs::home_dir()

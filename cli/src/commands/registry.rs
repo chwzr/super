@@ -21,6 +21,12 @@ pub struct CommandRegistry {
     commands: HashMap<String, Command>,
 }
 
+impl Default for CommandRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandRegistry {
     pub fn new() -> Self {
         let mut registry = Self {

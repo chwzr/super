@@ -631,7 +631,7 @@ impl App {
             match rx.try_recv() {
                 Ok(result) => {
                     if let Some(crate::tui::modal::Modal::Status(ref mut sv)) = self.modal {
-                        sv.set_usage(result.map_err(|e| e));
+                        sv.set_usage(result);
                     }
                     self.status_fetch = None;
                 }
@@ -672,7 +672,7 @@ impl App {
                 let verb = self
                     .activity
                     .verb()
-                    .map(|v| past_tense(v))
+                    .map(past_tense)
                     .unwrap_or_else(|| "Cogitated".to_string());
                 self.scroll_area
                     .push(Message::Trail(format!("{} for {}s", verb, elapsed_secs)));

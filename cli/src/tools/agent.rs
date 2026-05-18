@@ -11,7 +11,6 @@ use crate::agents::model::resolve_model;
 use crate::agents::permission::resolve_permission_mode;
 use crate::agents::AgentRegistry;
 use crate::conversation::engine::ConversationEngine;
-use crate::conversation::session_bus::SessionBus;
 use crate::conversation::system_prompt::SystemPrompt;
 use crate::sdk::protocol::{BusMessage, SystemSubtype};
 use crate::state::store::{AsyncAgentHandle, Store};
@@ -161,7 +160,7 @@ impl Tool for AgentTool {
                 bus.clone(),
                 agent_id.clone(),
                 ctx.abort_signal.clone(),
-                Some(child_perm.clone()),
+                Some(child_perm),
                 false,
             );
             let sys = build_child_system_prompt(&agent_def);
@@ -202,7 +201,7 @@ impl Tool for AgentTool {
             bus.clone(),
             agent_id.clone(),
             Some(abort_rx),
-            Some(child_perm.clone()),
+            Some(child_perm),
             true,
         );
         let sys = build_child_system_prompt(&agent_def);
@@ -271,6 +270,7 @@ fn build_child_system_prompt(agent: &AgentDefinition) -> SystemPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::session_bus::SessionBus;
     use crate::state::store::PermissionMode;
 
     #[tokio::test]

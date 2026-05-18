@@ -130,8 +130,7 @@ impl ConversationEngine {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let permission_mode = self
             .permission_mode_override
-            .clone()
-            .unwrap_or_else(|| self.store.get_state().permission_mode.clone());
+            .unwrap_or_else(|| self.store.get_state().permission_mode);
         let tools = self.registry.assemble_for_mode(&permission_mode);
 
         // Seed history. Root engines inherit the shared store's history; child
@@ -321,7 +320,7 @@ impl ConversationEngine {
                 &self.registry,
                 tool_uses,
                 cwd.clone(),
-                permission_mode.clone(),
+                permission_mode,
                 self.abort.clone(),
                 self.bus.clone(),
                 parent_tool_use_id.clone(),

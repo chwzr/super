@@ -7,7 +7,6 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::conversation::session_bus::SessionBus;
-use crate::sdk::protocol::BusMessage;
 
 /// Spawn a background task that subscribes to the bus and persists every
 /// message with `parent_tool_use_id.is_some()` into a per-agent JSONL file
@@ -71,7 +70,7 @@ pub fn default_sidechain_dir(root_session_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdk::protocol::{AnthropicUsage, AssistantPayload, ContentBlockFinal, SystemSubtype};
+    use crate::sdk::protocol::{AnthropicUsage, AssistantPayload, BusMessage, ContentBlockFinal, SystemSubtype};
     use uuid::Uuid;
 
     #[tokio::test]

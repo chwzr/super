@@ -16,10 +16,10 @@ pub fn resolve_permission_mode(
     _is_async: bool,
 ) -> PermissionMode {
     match parent {
-        PermissionMode::BypassPermissions | PermissionMode::AcceptEdits => parent.clone(),
+        PermissionMode::BypassPermissions | PermissionMode::AcceptEdits => *parent,
         _ => match agent {
-            Some(m) => m.clone(),
-            None => parent.clone(),
+            Some(m) => *m,
+            None => *parent,
         },
     }
 }

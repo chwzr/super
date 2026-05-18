@@ -28,6 +28,12 @@ pub struct McpToolDef {
     pub input_schema: Value,
 }
 
+impl Default for McpManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpManager {
     pub fn new() -> Self {
         Self {

@@ -13,6 +13,12 @@ pub struct ResumePicker {
     pub query: String,
 }
 
+impl Default for ResumePicker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResumePicker {
     pub fn new() -> Self {
         Self { query: String::new() }

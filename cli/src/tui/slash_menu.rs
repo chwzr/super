@@ -21,6 +21,12 @@ pub struct MenuEntry {
     pub description: String,
 }
 
+impl Default for SlashMenu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SlashMenu {
     pub fn new() -> Self {
         Self {

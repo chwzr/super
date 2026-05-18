@@ -91,7 +91,7 @@ fn load_from_dir(dir: &Path, source: LoadedFrom) -> Vec<Skill> {
                     }
                 }
             }
-        } else if path.extension().map_or(false, |e| e == "md") {
+        } else if path.extension().is_some_and(|e| e == "md") {
             // Flat format: <skill-name>.md
             if let Ok(raw) = std::fs::read_to_string(&path) {
                 let fallback = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
@@ -158,7 +158,7 @@ fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
         return (HashMap::new(), trimmed.to_string());
     };
     let fm_str = &rest[..end];
-    let body = rest[end + 4..].trim_start_matches(|c| c == '\n' || c == '\r').to_string();
+    let body = rest[end + 4..].trim_start_matches(['\n', '\r']).to_string();
     let mut map = HashMap::new();
     for line in fm_str.lines() {
         if let Some((k, v)) = line.split_once(':') {

@@ -426,7 +426,7 @@ fn visual_rows(line: &Line, width: u16) -> u16 {
     if width == 0 { return 1; }
     let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
     if char_count == 0 { return 1; }
-    ((char_count + width as usize - 1) / width as usize) as u16
+    char_count.div_ceil(width as usize) as u16
 }
 
 /// Stub dispatcher: turns a `RenderSpec` into TUI lines. Batch 1 only

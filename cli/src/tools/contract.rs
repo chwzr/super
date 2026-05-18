@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
@@ -23,18 +23,6 @@ pub struct ToolResult {
     pub new_messages: Vec<serde_json::Value>,
 }
 
-impl Default for ToolResult {
-    fn default() -> Self {
-        Self {
-            content: String::new(),
-            is_error: false,
-            metadata: None,
-            inject_messages: Vec::new(),
-            mcp_meta: None,
-            new_messages: Vec::new(),
-        }
-    }
-}
 
 /// Outcome of `Tool::validate_input` — pre-flight validation that the model
 /// sees as a failed-tool result so it can self-correct.
