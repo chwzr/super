@@ -275,10 +275,8 @@ pub async fn run_tool_uses(
     }
 
     // Merge and sort by original index so the returned vec preserves model emission order.
-    let mut combined: Vec<(usize, String, ToolResult)> = safe_results
-        .into_iter()
-        .chain(unsafe_results.into_iter())
-        .collect();
+    let mut combined: Vec<(usize, String, ToolResult)> =
+        safe_results.into_iter().chain(unsafe_results).collect();
     combined.sort_by_key(|(i, _, _)| *i);
 
     let mut blocks: Vec<ContentBlockFinal> = Vec::with_capacity(combined.len());

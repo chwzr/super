@@ -192,7 +192,7 @@ impl Tool for GlobTool {
         }
 
         // Sort by mtime (newest first)
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.1));
 
         // Limit to 100 results
         let total = entries.len();

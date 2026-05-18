@@ -544,13 +544,11 @@ impl App {
                     }
                 }
             }
-            KeyCode::Tab => {
-                if self.slash_menu_open {
-                    if let Some(entry) = entries.get(self.slash_menu.selected) {
-                        self.input.clear();
-                        for c in entry.name.chars() {
-                            self.input.push_char(c);
-                        }
+            KeyCode::Tab if self.slash_menu_open => {
+                if let Some(entry) = entries.get(self.slash_menu.selected) {
+                    self.input.clear();
+                    for c in entry.name.chars() {
+                        self.input.push_char(c);
                     }
                 }
             }
@@ -750,10 +748,7 @@ impl App {
         // before any items exist — the ordering is preserved across ticks
         // even with items-first within a single tick.
         let items = group_tool_batches(fold(&self.scroll_area.events, None));
-        loop {
-            let Some(item) = items.get(self.next_flush_idx) else {
-                break;
-            };
+        while let Some(item) = items.get(self.next_flush_idx) {
             if is_stable(item) {
                 let already = self
                     .flushed_chars_per_block

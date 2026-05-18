@@ -57,43 +57,35 @@ impl QuestionModal {
                 return self.build_submit();
             }
 
-            KeyCode::Char(' ') => {
-                if question.multi_select {
-                    let cursor = self.cursors[q_index];
-                    let sel = &mut self.selections[q_index];
-                    if let Some(pos) = sel.iter().position(|&s| s == cursor) {
-                        sel.remove(pos);
-                    } else {
-                        sel.push(cursor);
-                        sel.sort_unstable();
-                    }
+            KeyCode::Char(' ') if question.multi_select => {
+                let cursor = self.cursors[q_index];
+                let sel = &mut self.selections[q_index];
+                if let Some(pos) = sel.iter().position(|&s| s == cursor) {
+                    sel.remove(pos);
+                } else {
+                    sel.push(cursor);
+                    sel.sort_unstable();
                 }
             }
 
-            KeyCode::Up | KeyCode::Char('k') if n_opts > 0 => {
-                if self.cursors[q_index] > 0 {
-                    self.cursors[q_index] -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if n_opts > 0 && self.cursors[q_index] > 0 => {
+                self.cursors[q_index] -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') if n_opts > 0 => {
-                if self.cursors[q_index] + 1 < n_opts {
-                    self.cursors[q_index] += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j')
+                if n_opts > 0 && self.cursors[q_index] + 1 < n_opts =>
+            {
+                self.cursors[q_index] += 1;
             }
 
-            KeyCode::Tab => {
-                if self.questions.len() > 1 {
-                    self.focused_question = (self.focused_question + 1) % self.questions.len();
-                }
+            KeyCode::Tab if self.questions.len() > 1 => {
+                self.focused_question = (self.focused_question + 1) % self.questions.len();
             }
-            KeyCode::BackTab => {
-                if self.questions.len() > 1 {
-                    self.focused_question = if self.focused_question == 0 {
-                        self.questions.len() - 1
-                    } else {
-                        self.focused_question - 1
-                    };
-                }
+            KeyCode::BackTab if self.questions.len() > 1 => {
+                self.focused_question = if self.focused_question == 0 {
+                    self.questions.len() - 1
+                } else {
+                    self.focused_question - 1
+                };
             }
 
             KeyCode::Char(c) if c.is_ascii_digit() && n_opts > 0 => {

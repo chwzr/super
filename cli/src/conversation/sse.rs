@@ -28,10 +28,7 @@ impl SseParser {
 
         // Find frame boundaries. Per SSE, a frame ends at "\n\n", "\r\n\r\n",
         // or "\r\r". We scan for any of those.
-        loop {
-            let Some((end, sep_len)) = find_frame_boundary(&self.buffer) else {
-                break;
-            };
+        while let Some((end, sep_len)) = find_frame_boundary(&self.buffer) {
             let frame_bytes: Vec<u8> = self.buffer.drain(..end + sep_len).collect();
             let frame_bytes = &frame_bytes[..end]; // strip the trailing separator
             let frame = String::from_utf8_lossy(frame_bytes);
