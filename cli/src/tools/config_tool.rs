@@ -1,5 +1,6 @@
 use crate::tools::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 use async_trait::async_trait;
+use serde_json::json;
 
 #[derive(Default)]
 pub struct ConfigTool;
@@ -34,12 +35,25 @@ impl Tool for ConfigTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "value": {"description": "The current value, if reading"},
+                "set": {"type": "boolean", "description": "Whether the key was set"}
+            }
+        }))
+    }
+
     fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
         true
     }
 
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
-        true
+    fn is_read_only(&self, input: &serde_json::Value) -> bool {
+        // Read-only when no value is provided (get mode);
+        // write when value is present (set mode).
+        input.get("value").is_none()
     }
 
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {

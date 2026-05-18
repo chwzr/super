@@ -115,9 +115,6 @@ impl ToolRegistry {
         // not registered here to avoid a duplicate `Skill` tool name in the
         // request payload (rejected by Amazon Bedrock-routed providers).
 
-        // ToolSearch
-        tools.push(Arc::new(ToolSearchTool));
-
         // StructuredOutput
         tools.push(Arc::new(StructuredOutputTool));
 
@@ -126,6 +123,12 @@ impl ToolRegistry {
         tools.push(Arc::new(ExitWorktreeTool));
 
         let registry = Arc::new(Self { tools: Arc::new(RwLock::new(tools)) });
+
+        // ToolSearch — registers after the Arc exists so it can hold a
+        // back-reference for searching the full tool list.
+        registry.register(Arc::new(ToolSearchTool {
+            registry: registry.clone(),
+        }));
 
         // Agent and task management tools.
         // AgentTool needs an Arc<ToolRegistry> back-reference, so it goes

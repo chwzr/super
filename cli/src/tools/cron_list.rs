@@ -25,6 +25,27 @@ impl Tool for CronListTool {
             "properties": {}
         })
     }
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "cron": {"type": "string"},
+                            "prompt": {"type": "string"},
+                            "recurring": {"type": "boolean"},
+                            "durable": {"type": "boolean"}
+                        }
+                    }
+                }
+            }
+        }))
+    }
+    fn should_defer(&self) -> bool { true }
     fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
 
     async fn call(&self, _input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {

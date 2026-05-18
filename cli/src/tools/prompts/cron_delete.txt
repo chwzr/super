@@ -1,2 +1,1 @@
-TODO(parity:batch-5): port the CronDelete prompt from
-claude-code-src/tools/CronDelete/prompt.ts (PROMPT export).
+Cancel a cron job previously scheduled with CronCreate. Removes it from the in-memory session store.

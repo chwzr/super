@@ -25,25 +25,43 @@ impl Tool for StructuredOutputTool {
         })
     }
 
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "type": "string",
+            "description": "Structured output tool result"
+        }))
+    }
+
     async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
-        let value = input.get("value");
-        match value {
-            Some(v) => ToolResult {
-                content: v.to_string(),
-                is_error: false,
-                inject_messages: Vec::new(),
-                metadata: None,
-                mcp_meta: None,
-                new_messages: Vec::new(),
-            },
-            None => ToolResult {
-                content: "StructuredOutput: no value provided".into(),
-                is_error: true,
-                inject_messages: Vec::new(),
-                metadata: None,
-                mcp_meta: None,
-                new_messages: Vec::new(),
-            },
+        let value = match input.get("value") {
+            Some(v) => v.clone(),
+            None => {
+                return ToolResult {
+                    content: "StructuredOutput: no value provided".into(),
+                    is_error: true,
+                    ..Default::default()
+                };
+            }
+        };
+
+        // If schema is provided, validate the value against it
+        if let Some(schema) = input.get("schema") {
+            match validate_against_schema(&value, schema) {
+                Ok(()) => {}
+                Err(e) => {
+                    return ToolResult {
+                        content: format!("Output does not match required schema: {e}"),
+                        is_error: true,
+                        ..Default::default()
+                    };
+                }
+            }
+        }
+
+        ToolResult {
+            content: value.to_string(),
+            is_error: false,
+            ..Default::default()
         }
     }
 
@@ -59,5 +77,28 @@ impl Tool for StructuredOutputTool {
             ),
             is_error: false,
         }
+    }
+}
+
+/// Basic JSON Schema validation using the `jsonschema` crate.
+/// Returns Ok(()) if the value matches the schema, or Err with a description.
+fn validate_against_schema(value: &serde_json::Value, schema: &serde_json::Value) -> Result<(), String> {
+    match jsonschema::validator_for(schema) {
+        Ok(validator) => {
+            let mut errors = validator.iter_errors(value);
+            if let Some(first) = errors.next() {
+                let mut msg = format!("{}: {}", first.instance_path(), first);
+                for e in errors.take(9) {
+                    msg.push_str(&format!("; {}: {}", e.instance_path(), e));
+                }
+                if validator.iter_errors(value).count() > 10 {
+                    msg.push_str("; ...");
+                }
+                Err(msg)
+            } else {
+                Ok(())
+            }
+        }
+        Err(e) => Err(format!("Invalid JSON schema: {e}")),
     }
 }
