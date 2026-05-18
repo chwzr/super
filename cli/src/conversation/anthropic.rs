@@ -78,12 +78,10 @@ mod tests {
         let body = build_request_body(
             "anthropic/claude-sonnet-4-5",
             "you are super",
-            &[
-                HistoryEntry {
-                    role: Role::User,
-                    content: vec![ContentBlockFinal::Text { text: "hi".into() }],
-                },
-            ],
+            &[HistoryEntry {
+                role: Role::User,
+                content: vec![ContentBlockFinal::Text { text: "hi".into() }],
+            }],
             &[],
             4096,
             true,

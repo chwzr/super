@@ -6,9 +6,9 @@ use axum::Router;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
-use domain::auth::service::AuthService;
-use adapters::sqlite_auth_repo::SqliteAuthRepo;
 use adapters::openrouter_client::OpenRouterClient;
+use adapters::sqlite_auth_repo::SqliteAuthRepo;
+use domain::auth::service::AuthService;
 
 #[tokio::main]
 async fn main() {

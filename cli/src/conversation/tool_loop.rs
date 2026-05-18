@@ -6,7 +6,9 @@ use crate::conversation::session_bus::SessionBus;
 use crate::executor::interactive::{self, InteractionOutcome};
 use crate::sdk::protocol::{BusMessage, ContentBlockFinal};
 use crate::state::store::PermissionMode;
-use crate::tools::contract::{DescriptionCtx, ProgressSink, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult,
+};
 use crate::tools::ToolRegistry;
 
 /// Execute all tool_use blocks from one assistant turn, returning the
@@ -40,7 +42,12 @@ pub async fn run_tool_uses(
             }
             None => {
                 // Unknown tool — emit error result so the model sees it.
-                unsafe_.push((i, id, Arc::new(MissingTool { name }) as Arc<dyn Tool>, input));
+                unsafe_.push((
+                    i,
+                    id,
+                    Arc::new(MissingTool { name }) as Arc<dyn Tool>,
+                    input,
+                ));
             }
         }
     }
@@ -99,16 +106,11 @@ pub async fn run_tool_uses(
             // Spawning *inside* the outer task lets us recover the panic
             // payload here and rebuild a ToolResult tagged with the original
             // tool_use_id.
-            let inner = tokio::task::spawn(async move {
-                tool.call(input, &ctx, None).await
-            });
+            let inner = tokio::task::spawn(async move { tool.call(input, &ctx, None).await });
             let res = match inner.await {
                 Ok(r) => r,
                 Err(e) if e.is_panic() => ToolResult {
-                    content: format!(
-                        "Tool panicked: {}",
-                        downcast_panic(&e.into_panic())
-                    ),
+                    content: format!("Tool panicked: {}", downcast_panic(&e.into_panic())),
                     is_error: true,
                     ..Default::default()
                 },
@@ -163,10 +165,13 @@ pub async fn run_tool_uses(
         // Interactive tools: render the spec, suspend the turn, await the
         // user response, then merge the answers into the tool input.
         let effective_input = if tool.requires_user_interaction() {
-            let spec = tool.render_tool_use_message(&input, &RenderOpts {
-                verbose: false,
-                is_transcript_mode: false,
-            });
+            let spec = tool.render_tool_use_message(
+                &input,
+                &RenderOpts {
+                    verbose: false,
+                    is_transcript_mode: false,
+                },
+            );
 
             if matches!(&spec, shared::RenderSpec::Interactive { .. }) {
                 // Emit the spec via RenderEvent so the transcript can
@@ -180,17 +185,27 @@ pub async fn run_tool_uses(
                     session_id: session_id.clone(),
                 });
 
-                match interactive::await_interaction(id.clone(), &spec, &bus, parent_tool_use_id.clone()).await {
+                match interactive::await_interaction(
+                    id.clone(),
+                    &spec,
+                    &bus,
+                    parent_tool_use_id.clone(),
+                )
+                .await
+                {
                     InteractionOutcome::Resolved { updated_input } => {
                         // Merge answers into the original input so call()
                         // sees the full picture.
                         updated_input
                     }
                     InteractionOutcome::Denied => {
-                        if let Some(rejection) = tool.render_tool_use_rejected_message(&input, &RenderOpts {
-                            verbose: false,
-                            is_transcript_mode: false,
-                        }) {
+                        if let Some(rejection) = tool.render_tool_use_rejected_message(
+                            &input,
+                            &RenderOpts {
+                                verbose: false,
+                                is_transcript_mode: false,
+                            },
+                        ) {
                             // Emit the rejection so the transcript shows it.
                             bus.emit(BusMessage::RenderEvent {
                                 tool_use_id: id.clone(),
@@ -200,19 +215,27 @@ pub async fn run_tool_uses(
                                 session_id: session_id.clone(),
                             });
                         }
-                        unsafe_results.push((i, id, ToolResult {
-                            content: "User declined to answer questions".into(),
-                            is_error: true,
-                            ..Default::default()
-                        }));
+                        unsafe_results.push((
+                            i,
+                            id,
+                            ToolResult {
+                                content: "User declined to answer questions".into(),
+                                is_error: true,
+                                ..Default::default()
+                            },
+                        ));
                         continue;
                     }
                     InteractionOutcome::Aborted => {
-                        unsafe_results.push((i, id, ToolResult {
-                            content: "Interaction aborted".into(),
-                            is_error: true,
-                            ..Default::default()
-                        }));
+                        unsafe_results.push((
+                            i,
+                            id,
+                            ToolResult {
+                                content: "Interaction aborted".into(),
+                                is_error: true,
+                                ..Default::default()
+                            },
+                        ));
                         continue;
                     }
                 }
@@ -252,8 +275,10 @@ pub async fn run_tool_uses(
     }
 
     // Merge and sort by original index so the returned vec preserves model emission order.
-    let mut combined: Vec<(usize, String, ToolResult)> =
-        safe_results.into_iter().chain(unsafe_results.into_iter()).collect();
+    let mut combined: Vec<(usize, String, ToolResult)> = safe_results
+        .into_iter()
+        .chain(unsafe_results.into_iter())
+        .collect();
     combined.sort_by_key(|(i, _, _)| *i);
 
     let mut blocks: Vec<ContentBlockFinal> = Vec::with_capacity(combined.len());
@@ -300,7 +325,12 @@ impl Tool for MissingTool {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({})
     }
-    async fn call(&self, _input: serde_json::Value, _ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         ToolResult {
             content: format!("Unknown tool: {}", self.name),
             is_error: true,
@@ -338,7 +368,11 @@ mod tests {
         .await;
         assert_eq!(results.len(), 1);
         match &results[0] {
-            ContentBlockFinal::ToolResult { tool_use_id, content, is_error } => {
+            ContentBlockFinal::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
                 assert_eq!(tool_use_id, "tu_1");
                 assert!(*is_error);
                 assert!(content.contains("Unknown tool"));
@@ -355,16 +389,18 @@ mod tests {
             CliConfig::default(),
             Arc::new(crate::agents::AgentRegistry::built_in_only()),
         );
-        let tmpfile = std::env::temp_dir().join(format!(
-            "super_tool_loop_test_{}.txt",
-            uuid::Uuid::new_v4()
-        ));
+        let tmpfile =
+            std::env::temp_dir().join(format!("super_tool_loop_test_{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&tmpfile, "hello\nworld\n").unwrap();
 
         let bus = Arc::new(SessionBus::new("test".into()));
         let results = run_tool_uses(
             &registry,
-            vec![("tu_2".into(), "Read".into(), serde_json::json!({"file_path": tmpfile.to_string_lossy()}))],
+            vec![(
+                "tu_2".into(),
+                "Read".into(),
+                serde_json::json!({"file_path": tmpfile.to_string_lossy()}),
+            )],
             std::env::current_dir().unwrap(),
             PermissionMode::Default,
             None,
@@ -376,7 +412,11 @@ mod tests {
         .await;
         assert_eq!(results.len(), 1);
         match &results[0] {
-            ContentBlockFinal::ToolResult { tool_use_id, content, is_error } => {
+            ContentBlockFinal::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
                 assert_eq!(tool_use_id, "tu_2");
                 assert!(!*is_error, "got error: {content}");
                 assert!(content.contains("hello"));
@@ -427,10 +467,13 @@ mod tests {
 
         assert_eq!(results.len(), 3);
         // Order must match input order regardless of which subset ran in parallel.
-        let ids: Vec<&str> = results.iter().filter_map(|b| match b {
-            ContentBlockFinal::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
-            _ => None,
-        }).collect();
+        let ids: Vec<&str> = results
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlockFinal::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(ids, vec!["tu_a", "tu_b", "tu_c"]);
 
         std::fs::remove_file(&tmp_read).ok();
@@ -447,13 +490,34 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl Tool for CaptureTool {
-            fn name(&self) -> &str { "Capture" }
-            fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String { "capture".into() }
-            fn prompt(&self, _ctx: &PromptCtx) -> String { String::new() }
-            fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
-            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+            fn name(&self) -> &str {
+                "Capture"
+            }
+            fn description(
+                &self,
+                _input: Option<&serde_json::Value>,
+                _ctx: &DescriptionCtx,
+            ) -> String {
+                "capture".into()
+            }
+            fn prompt(&self, _ctx: &PromptCtx) -> String {
+                String::new()
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                ctx: &ToolCallContext,
+                _on_progress: Option<ProgressSink>,
+            ) -> ToolResult {
                 *self.seen_parent.lock().unwrap() = ctx.parent_tool_use_id.clone();
-                ToolResult { content: "ok".into(), is_error: false, ..Default::default() }
+                ToolResult {
+                    content: "ok".into(),
+                    is_error: false,
+                    ..Default::default()
+                }
             }
         }
 
@@ -464,7 +528,9 @@ mod tests {
             CliConfig::default(),
             Arc::new(crate::agents::AgentRegistry::built_in_only()),
         );
-        registry.register(Arc::new(CaptureTool { seen_parent: seen.clone() }));
+        registry.register(Arc::new(CaptureTool {
+            seen_parent: seen.clone(),
+        }));
 
         let bus = Arc::new(SessionBus::new("s-root".into()));
         let _ = run_tool_uses(
@@ -477,7 +543,8 @@ mod tests {
             Some("tu_parent".into()),
             "agent-1".into(),
             false,
-        ).await;
+        )
+        .await;
 
         assert_eq!(seen.lock().unwrap().clone().as_deref(), Some("tu_parent"));
     }
@@ -487,16 +554,39 @@ mod tests {
         use crate::tools::contract::{Tool, ToolCallContext, ToolResult};
         use std::sync::{Arc, Mutex};
 
-        struct CaptureTool { seen: Arc<Mutex<Option<String>>> }
+        struct CaptureTool {
+            seen: Arc<Mutex<Option<String>>>,
+        }
         #[async_trait::async_trait]
         impl Tool for CaptureTool {
-            fn name(&self) -> &str { "Capture2" }
-            fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String { "capture".into() }
-            fn prompt(&self, _ctx: &PromptCtx) -> String { String::new() }
-            fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
-            async fn call(&self, _input: serde_json::Value, ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+            fn name(&self) -> &str {
+                "Capture2"
+            }
+            fn description(
+                &self,
+                _input: Option<&serde_json::Value>,
+                _ctx: &DescriptionCtx,
+            ) -> String {
+                "capture".into()
+            }
+            fn prompt(&self, _ctx: &PromptCtx) -> String {
+                String::new()
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                ctx: &ToolCallContext,
+                _on_progress: Option<ProgressSink>,
+            ) -> ToolResult {
                 *self.seen.lock().unwrap() = Some(ctx.tool_use_id.clone());
-                ToolResult { content: "ok".into(), is_error: false, ..Default::default() }
+                ToolResult {
+                    content: "ok".into(),
+                    is_error: false,
+                    ..Default::default()
+                }
             }
         }
 
@@ -517,7 +607,8 @@ mod tests {
             None,
             "test-session".into(),
             false,
-        ).await;
+        )
+        .await;
 
         assert_eq!(seen.lock().unwrap().clone().as_deref(), Some("tu_actual"));
     }
@@ -532,12 +623,31 @@ mod tests {
         struct PanickingTool;
         #[async_trait::async_trait]
         impl Tool for PanickingTool {
-            fn name(&self) -> &str { "Panicker" }
-            fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String { "always panics".into() }
-            fn prompt(&self, _ctx: &PromptCtx) -> String { String::new() }
-            fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
-            fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool { true }   // must go through the JoinSet path
-            async fn call(&self, _input: serde_json::Value, _ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+            fn name(&self) -> &str {
+                "Panicker"
+            }
+            fn description(
+                &self,
+                _input: Option<&serde_json::Value>,
+                _ctx: &DescriptionCtx,
+            ) -> String {
+                "always panics".into()
+            }
+            fn prompt(&self, _ctx: &PromptCtx) -> String {
+                String::new()
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+                true
+            } // must go through the JoinSet path
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &ToolCallContext,
+                _on_progress: Option<ProgressSink>,
+            ) -> ToolResult {
                 panic!("boom");
             }
         }
@@ -566,8 +676,15 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            ContentBlockFinal::ToolResult { tool_use_id, content, is_error } => {
-                assert_eq!(tool_use_id, "tu_panic", "panicked tool_use_id MUST survive panic");
+            ContentBlockFinal::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(
+                    tool_use_id, "tu_panic",
+                    "panicked tool_use_id MUST survive panic"
+                );
                 assert!(*is_error);
                 assert!(content.contains("panic") || content.contains("boom"));
             }
@@ -605,7 +722,11 @@ mod tests {
         }
 
         assert_eq!(blocks.len(), 2);
-        assert!(matches!(&blocks[0], ContentBlockFinal::ToolResult { content, .. } if content == "Launching skill: foo"));
-        assert!(matches!(&blocks[1], ContentBlockFinal::Text { text } if text.contains("# Foo Skill")));
+        assert!(
+            matches!(&blocks[0], ContentBlockFinal::ToolResult { content, .. } if content == "Launching skill: foo")
+        );
+        assert!(
+            matches!(&blocks[1], ContentBlockFinal::Text { text } if text.contains("# Foo Skill"))
+        );
     }
 }

@@ -29,7 +29,9 @@ impl SseParser {
         // Find frame boundaries. Per SSE, a frame ends at "\n\n", "\r\n\r\n",
         // or "\r\r". We scan for any of those.
         loop {
-            let Some((end, sep_len)) = find_frame_boundary(&self.buffer) else { break };
+            let Some((end, sep_len)) = find_frame_boundary(&self.buffer) else {
+                break;
+            };
             let frame_bytes: Vec<u8> = self.buffer.drain(..end + sep_len).collect();
             let frame_bytes = &frame_bytes[..end]; // strip the trailing separator
             let frame = String::from_utf8_lossy(frame_bytes);
@@ -52,11 +54,7 @@ impl Default for SseParser {
 fn find_frame_boundary(buf: &[u8]) -> Option<(usize, usize)> {
     // We accept LF-LF, CRLF-CRLF, and CR-CR as frame terminators per the SSE spec.
     // Search for whichever appears first.
-    let candidates: [(&[u8], usize); 3] = [
-        (b"\r\n\r\n", 4),
-        (b"\n\n", 2),
-        (b"\r\r", 2),
-    ];
+    let candidates: [(&[u8], usize); 3] = [(b"\r\n\r\n", 4), (b"\n\n", 2), (b"\r\r", 2)];
     let mut best: Option<(usize, usize)> = None;
     for (pat, sep_len) in candidates {
         if let Some(idx) = find_subslice(buf, pat) {
@@ -86,7 +84,9 @@ fn parse_frame(frame: &str) -> Option<StreamEvent> {
         if line.is_empty() || line.starts_with(':') {
             continue;
         }
-        let Some((field, value)) = line.split_once(':') else { continue };
+        let Some((field, value)) = line.split_once(':') else {
+            continue;
+        };
         // Per SSE, a single leading space after the colon is stripped.
         let value = value.strip_prefix(' ').unwrap_or(value);
         if field == "data" {
@@ -120,7 +120,10 @@ mod tests {
         let events_b = parser.feed(chunk_b);
         assert_eq!(events_b.len(), 1);
         match &events_b[0] {
-            StreamEvent::ContentBlockDelta { index, delta: BlockDelta::TextDelta { text } } => {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: BlockDelta::TextDelta { text },
+            } => {
                 assert_eq!(*index, 0);
                 assert_eq!(text, "hi");
             }
@@ -147,7 +150,10 @@ mod tests {
         let events_b = parser.feed(chunk_b);
         assert_eq!(events_b.len(), 1);
         match &events_b[0] {
-            StreamEvent::ContentBlockDelta { delta: BlockDelta::TextDelta { text }, .. } => {
+            StreamEvent::ContentBlockDelta {
+                delta: BlockDelta::TextDelta { text },
+                ..
+            } => {
                 assert_eq!(text, "👋!", "multi-byte codepoint must survive the split");
             }
             other => panic!("wrong variant: {other:?}"),

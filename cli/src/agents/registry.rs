@@ -22,10 +22,8 @@ impl AgentRegistry {
             .map(|h| h.join(".claude").join("agents"))
             .map(|d| load_agents_from_dir(&d, AgentSource::User))
             .unwrap_or_default();
-        let project = load_agents_from_dir(
-            &cwd.join(".claude").join("agents"),
-            AgentSource::Project,
-        );
+        let project =
+            load_agents_from_dir(&cwd.join(".claude").join("agents"), AgentSource::Project);
         Self::from_layers(built_in_agents(), user, project)
     }
 

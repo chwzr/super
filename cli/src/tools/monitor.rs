@@ -1,16 +1,22 @@
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct MonitorTool;
 
 #[async_trait]
 impl Tool for MonitorTool {
-    fn name(&self) -> &str { "Monitor" }
+    fn name(&self) -> &str {
+        "Monitor"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Start a background monitor that streams events from a long-running script. \
          Each stdout line is an event. Supports tailing logs, polling for changes, \
-         and watching processes.".into()
+         and watching processes."
+            .into()
     }
 
     fn prompt(&self, _ctx: &PromptCtx) -> String {
@@ -39,9 +45,16 @@ impl Tool for MonitorTool {
         }))
     }
 
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
-    async fn call(&self, _input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         ToolResult {
             content: "Monitor tool — file/process watching is not yet implemented in this CLI. \
                       This feature will stream events from long-running scripts in a future release."
@@ -62,7 +75,10 @@ impl Tool for MonitorTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

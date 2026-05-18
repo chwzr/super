@@ -1,6 +1,6 @@
+use crate::state::store::PermissionMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::state::store::PermissionMode;
 
 // ── New permission result types (Batch 1) ────────────────────────────────
 
@@ -28,10 +28,19 @@ pub enum PermissionResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DecisionReason {
-    Rule { source: RuleSource, pattern: String },
-    Hook { hook_name: String },
-    Mode { mode: crate::state::store::PermissionMode },
-    Classifier { confidence: f32 },
+    Rule {
+        source: RuleSource,
+        pattern: String,
+    },
+    Hook {
+        hook_name: String,
+    },
+    Mode {
+        mode: crate::state::store::PermissionMode,
+    },
+    Classifier {
+        confidence: f32,
+    },
     ToolDefault,
 }
 
@@ -174,10 +183,12 @@ impl PermissionSystem {
         }
 
         // 3. Auto mode (was DontAsk): anything that would normally Ask is auto-denied.
-        if matches!(self.mode, PermissionMode::Auto) && matches!(
-            tool.check_permissions(input, ctx).await,
-            PermissionResult::Ask { .. }
-        ) {
+        if matches!(self.mode, PermissionMode::Auto)
+            && matches!(
+                tool.check_permissions(input, ctx).await,
+                PermissionResult::Ask { .. }
+            )
+        {
             return PermissionResult::Deny {
                 reason: "Auto mode: prompts are auto-denied.".into(),
                 decision_reason: Some(DecisionReason::Mode { mode: self.mode }),
@@ -232,7 +243,10 @@ mod permission_result_tests {
 mod evaluate_v2_tests {
     use super::*;
     use crate::state::store::PermissionMode;
-    use crate::tools::contract::{Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, DescriptionCtx, PromptCtx, ProgressSink};
+    use crate::tools::contract::{
+        DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult,
+        ToolResultBlock, ToolResultContent,
+    };
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
@@ -243,15 +257,30 @@ mod evaluate_v2_tests {
 
     #[async_trait]
     impl Tool for DummyTool {
-        fn name(&self) -> &str { self.name }
+        fn name(&self) -> &str {
+            self.name
+        }
         fn description(&self, _input: Option<&Value>, _ctx: &DescriptionCtx) -> String {
             "test".into()
         }
-        fn prompt(&self, _ctx: &PromptCtx) -> String { "".into() }
-        fn input_schema(&self) -> Value { json!({"type":"object"}) }
-        fn is_read_only(&self, _input: &Value) -> bool { self.read_only }
-        async fn check_permissions(&self, _input: &Value, _ctx: &ToolCallContext) -> PermissionResult {
-            PermissionResult::Allow { updated_input: None, decision_reason: Some(DecisionReason::ToolDefault) }
+        fn prompt(&self, _ctx: &PromptCtx) -> String {
+            "".into()
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type":"object"})
+        }
+        fn is_read_only(&self, _input: &Value) -> bool {
+            self.read_only
+        }
+        async fn check_permissions(
+            &self,
+            _input: &Value,
+            _ctx: &ToolCallContext,
+        ) -> PermissionResult {
+            PermissionResult::Allow {
+                updated_input: None,
+                decision_reason: Some(DecisionReason::ToolDefault),
+            }
         }
         async fn call(
             &self,
@@ -268,11 +297,7 @@ mod evaluate_v2_tests {
         ) -> shared::RenderSpec {
             shared::RenderSpec::Nothing
         }
-        fn map_tool_result_to_block(
-            &self,
-            _output: &Value,
-            tool_use_id: &str,
-        ) -> ToolResultBlock {
+        fn map_tool_result_to_block(&self, _output: &Value, tool_use_id: &str) -> ToolResultBlock {
             ToolResultBlock {
                 tool_use_id: tool_use_id.into(),
                 content: ToolResultContent::Text("ok".into()),
@@ -284,10 +309,16 @@ mod evaluate_v2_tests {
     #[tokio::test]
     async fn bypass_mode_returns_allow_with_mode_reason() {
         let sys = PermissionSystem::new(PermissionMode::BypassPermissions);
-        let tool = DummyTool { name: "X", read_only: false };
+        let tool = DummyTool {
+            name: "X",
+            read_only: false,
+        };
         let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
         match result {
-            PermissionResult::Allow { decision_reason: Some(DecisionReason::Mode { mode }), .. } => {
+            PermissionResult::Allow {
+                decision_reason: Some(DecisionReason::Mode { mode }),
+                ..
+            } => {
                 assert_eq!(mode, PermissionMode::BypassPermissions);
             }
             other => panic!("expected Allow via Mode reason, got {:?}", other),
@@ -297,7 +328,10 @@ mod evaluate_v2_tests {
     #[tokio::test]
     async fn plan_mode_denies_non_read_only_tool() {
         let sys = PermissionSystem::new(PermissionMode::Plan);
-        let tool = DummyTool { name: "Y", read_only: false };
+        let tool = DummyTool {
+            name: "Y",
+            read_only: false,
+        };
         let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
         assert!(matches!(result, PermissionResult::Deny { .. }));
     }
@@ -305,7 +339,10 @@ mod evaluate_v2_tests {
     #[tokio::test]
     async fn plan_mode_allows_read_only_tool() {
         let sys = PermissionSystem::new(PermissionMode::Plan);
-        let tool = DummyTool { name: "Z", read_only: true };
+        let tool = DummyTool {
+            name: "Z",
+            read_only: true,
+        };
         let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
         assert!(matches!(result, PermissionResult::Allow { .. }));
     }
@@ -313,9 +350,18 @@ mod evaluate_v2_tests {
     #[tokio::test]
     async fn defaults_to_tool_check_when_no_rules_match() {
         let sys = PermissionSystem::new(PermissionMode::Default);
-        let tool = DummyTool { name: "W", read_only: false };
+        let tool = DummyTool {
+            name: "W",
+            read_only: false,
+        };
         let result = sys.evaluate(&tool, &json!({}), &dummy_ctx()).await;
-        assert!(matches!(result, PermissionResult::Allow { decision_reason: Some(DecisionReason::ToolDefault), .. }));
+        assert!(matches!(
+            result,
+            PermissionResult::Allow {
+                decision_reason: Some(DecisionReason::ToolDefault),
+                ..
+            }
+        ));
     }
 
     fn dummy_ctx() -> ToolCallContext {
@@ -337,7 +383,7 @@ mod matcher_tests {
     use super::*;
     use crate::state::store::PermissionMode;
     use crate::tools::contract::{
-        DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult,
+        DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult,
     };
     use async_trait::async_trait;
     use serde_json::{json, Value};
@@ -348,12 +394,18 @@ mod matcher_tests {
 
     #[async_trait]
     impl Tool for CommandTool {
-        fn name(&self) -> &str { "Bash" }
+        fn name(&self) -> &str {
+            "Bash"
+        }
         fn description(&self, _input: Option<&Value>, _ctx: &DescriptionCtx) -> String {
             "Bash test stand-in".into()
         }
-        fn prompt(&self, _ctx: &PromptCtx) -> String { String::new() }
-        fn input_schema(&self) -> Value { json!({"type":"object"}) }
+        fn prompt(&self, _ctx: &PromptCtx) -> String {
+            String::new()
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type":"object"})
+        }
 
         async fn prepare_permission_matcher(
             &self,
@@ -395,7 +447,10 @@ mod matcher_tests {
             .evaluate(&tool, &json!({"command": "git status"}), &dummy_ctx())
             .await;
         match result {
-            PermissionResult::Allow { decision_reason: Some(DecisionReason::Rule { pattern, .. }), .. } => {
+            PermissionResult::Allow {
+                decision_reason: Some(DecisionReason::Rule { pattern, .. }),
+                ..
+            } => {
                 assert_eq!(pattern, "git *");
             }
             other => panic!("expected Allow via Rule(git *), got {:?}", other),
@@ -418,7 +473,10 @@ mod matcher_tests {
         // Falls through to the tool's check_permissions (default: Allow ToolDefault).
         assert!(matches!(
             result,
-            PermissionResult::Allow { decision_reason: Some(DecisionReason::ToolDefault), .. }
+            PermissionResult::Allow {
+                decision_reason: Some(DecisionReason::ToolDefault),
+                ..
+            }
         ));
     }
 

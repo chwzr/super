@@ -1,20 +1,26 @@
-use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::json;
 use super::contract::{
-    DescriptionCtx, InterruptBehavior, PromptCtx, ProgressSink, RenderOpts, Tool, ToolCallContext,
+    DescriptionCtx, InterruptBehavior, ProgressSink, PromptCtx, RenderOpts, Tool, ToolCallContext,
     ToolResult, ToolResultBlock, ToolResultContent, ValidationResult,
 };
 use crate::state::store::PermissionMode;
 use crate::tools::permission::PermissionResult;
+use async_trait::async_trait;
+use serde_json::json;
 use shared::{InteractiveWidget, RenderSpec, StatusState};
+use std::sync::Arc;
 
 pub struct ExitPlanModeTool {
     pub store: Arc<crate::state::store::Store>,
 }
 
 impl ExitPlanModeTool {
-    fn build_output(&self, plan: &str, is_agent: bool, file_path: Option<&str>, plan_was_edited: bool) -> serde_json::Value {
+    fn build_output(
+        &self,
+        plan: &str,
+        is_agent: bool,
+        file_path: Option<&str>,
+        plan_was_edited: bool,
+    ) -> serde_json::Value {
         let mut map = serde_json::Map::new();
         map.insert("plan".into(), plan.into());
         map.insert("isAgent".into(), is_agent.into());
@@ -136,11 +142,7 @@ impl Tool for ExitPlanModeTool {
         }
     }
 
-    fn render_tool_use_message(
-        &self,
-        input: &serde_json::Value,
-        _opts: &RenderOpts,
-    ) -> RenderSpec {
+    fn render_tool_use_message(&self, input: &serde_json::Value, _opts: &RenderOpts) -> RenderSpec {
         let plan_markdown = input["plan"]
             .as_str()
             .unwrap_or("(no plan provided)")
@@ -161,10 +163,7 @@ impl Tool for ExitPlanModeTool {
         let parsed: serde_json::Value =
             serde_json::from_str(output.as_str().unwrap_or("{}")).unwrap_or_default();
 
-        let plan = parsed["plan"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let plan = parsed["plan"].as_str().unwrap_or("").to_string();
 
         Some(RenderSpec::Group {
             children: vec![
@@ -219,12 +218,7 @@ impl Tool for ExitPlanModeTool {
         ToolResult {
             content: output.to_string(),
             is_error: false,
-            metadata: Some(
-                [
-                    ("plan_length".into(), plan.len().to_string()),
-                ]
-                .into(),
-            ),
+            metadata: Some([("plan_length".into(), plan.len().to_string())].into()),
             ..Default::default()
         }
     }
@@ -274,7 +268,9 @@ mod tests {
             tool_use_id: "tu_test".into(),
             progress_sink: None,
         };
-        let result = tool.validate_input(&json!({"plan": "some plan"}), &ctx).await;
+        let result = tool
+            .validate_input(&json!({"plan": "some plan"}), &ctx)
+            .await;
         match result {
             ValidationResult::Err { message, .. } => {
                 assert!(message.contains("Not in plan mode"));
@@ -302,7 +298,9 @@ mod tests {
             tool_use_id: "tu_test".into(),
             progress_sink: None,
         };
-        let result = tool.validate_input(&json!({"plan": "some plan"}), &ctx).await;
+        let result = tool
+            .validate_input(&json!({"plan": "some plan"}), &ctx)
+            .await;
         assert!(matches!(result, ValidationResult::Ok));
     }
 

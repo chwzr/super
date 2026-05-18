@@ -7,8 +7,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::colors::{CC_BLUE, CC_DIM, CC_GREEN};
 use crate::providers;
+use crate::tui::colors::{CC_BLUE, CC_DIM, CC_GREEN};
 
 pub struct ClassEntry {
     pub class: &'static str,
@@ -16,9 +16,18 @@ pub struct ClassEntry {
 }
 
 const CLASSES: &[ClassEntry] = &[
-    ClassEntry { class: "haiku",  description: "Fastest model for simple tasks" },
-    ClassEntry { class: "sonnet", description: "Balanced intelligence and speed" },
-    ClassEntry { class: "opus",   description: "Most capable for complex tasks" },
+    ClassEntry {
+        class: "haiku",
+        description: "Fastest model for simple tasks",
+    },
+    ClassEntry {
+        class: "sonnet",
+        description: "Balanced intelligence and speed",
+    },
+    ClassEntry {
+        class: "opus",
+        description: "Most capable for complex tasks",
+    },
 ];
 
 pub struct ModelPicker {
@@ -33,26 +42,36 @@ impl ModelPicker {
             .iter()
             .position(|c| c.class == current_class)
             .unwrap_or(1); // default to sonnet
-        Self { cursor, current_class, current_provider }
+        Self {
+            cursor,
+            current_class,
+            current_provider,
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ModelAction {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.cursor > 0 { self.cursor -= 1; }
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                }
                 ModelAction::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.cursor + 1 < CLASSES.len() { self.cursor += 1; }
+                if self.cursor + 1 < CLASSES.len() {
+                    self.cursor += 1;
+                }
                 ModelAction::Continue
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 let idx = (c as usize).wrapping_sub('1' as usize);
-                if idx < CLASSES.len() { self.cursor = idx; }
+                if idx < CLASSES.len() {
+                    self.cursor = idx;
+                }
                 ModelAction::Continue
             }
             KeyCode::Enter => ModelAction::Select(CLASSES[self.cursor].class),
-            KeyCode::Esc   => ModelAction::Cancel,
+            KeyCode::Esc => ModelAction::Cancel,
             _ => ModelAction::Continue,
         }
     }
@@ -61,7 +80,7 @@ impl ModelPicker {
         let mut lines: Vec<Line> = Vec::new();
 
         for (i, entry) in CLASSES.iter().enumerate() {
-            let is_cursor  = i == self.cursor;
+            let is_cursor = i == self.cursor;
             let is_current = entry.class == self.current_class;
 
             let prefix = if is_cursor { "❯ " } else { "  " };
@@ -73,8 +92,8 @@ impl ModelPicker {
                 Style::default().fg(CC_DIM)
             };
             let check_style = Style::default().fg(CC_GREEN);
-            let desc_style  = Style::default().fg(CC_DIM);
-            let checkmark   = if is_current { " ✔" } else { "" };
+            let desc_style = Style::default().fg(CC_DIM);
+            let checkmark = if is_current { " ✔" } else { "" };
 
             let slug = providers::resolve_slug(&self.current_provider, entry.class);
             let label_with_slug = format!("{:<8}  {}", entry.class, slug);

@@ -39,7 +39,11 @@ fn load_mcp_servers() -> Vec<McpServer> {
                         .to_string();
                     let enabled = !disabled.contains(&name);
                     if !servers.iter().any(|s| s.name == name) {
-                        servers.push(McpServer { name, transport, enabled });
+                        servers.push(McpServer {
+                            name,
+                            transport,
+                            enabled,
+                        });
                     }
                 }
             }
@@ -109,11 +113,15 @@ impl McpList {
     pub fn handle_key(&mut self, key: KeyEvent) -> McpAction {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.cursor > 0 { self.cursor -= 1; }
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                }
                 McpAction::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.cursor + 1 < self.servers.len() { self.cursor += 1; }
+                if self.cursor + 1 < self.servers.len() {
+                    self.cursor += 1;
+                }
                 McpAction::Continue
             }
             KeyCode::Enter | KeyCode::Char(' ') => {

@@ -36,7 +36,10 @@ fn main() {
     out.push_str("pub static BUNDLED_SKILLS: &[BundledSkillDef] = &[\n");
 
     for (skill_name, rel_paths) in &skills {
-        out.push_str(&format!("    BundledSkillDef {{ name: {:?}, files: &[\n", skill_name));
+        out.push_str(&format!(
+            "    BundledSkillDef {{ name: {:?}, files: &[\n",
+            skill_name
+        ));
         for rel in rel_paths {
             let abs = format!("{}/assets/skills/{}/{}", manifest, skill_name, rel);
             out.push_str(&format!(

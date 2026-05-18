@@ -5,7 +5,10 @@ use serde_json::json;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use crate::agents::definition::AgentDefinition;
 use crate::agents::model::resolve_model;
 use crate::agents::permission::resolve_permission_mode;
@@ -70,16 +73,14 @@ impl Tool for AgentTool {
 
     fn input_schema(&self) -> serde_json::Value {
         let agents = self.registry.list();
-        let agent_types: Vec<String> = agents.iter()
-            .map(|d| d.agent_type.clone())
-            .collect();
-        let agent_descriptions: String = agents.iter()
+        let agent_types: Vec<String> = agents.iter().map(|d| d.agent_type.clone()).collect();
+        let agent_descriptions: String = agents
+            .iter()
             .map(|d| format!("- {}: {}", d.agent_type, d.description))
             .collect::<Vec<_>>()
             .join("\n");
-        let subagent_desc = format!(
-            "The agent type to use. Available agents:\n{agent_descriptions}"
-        );
+        let subagent_desc =
+            format!("The agent type to use. Available agents:\n{agent_descriptions}");
 
         json!({
             "type": "object",
@@ -98,9 +99,17 @@ impl Tool for AgentTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, ctx: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        ctx: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         // 1. Validate input
-        let description = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let description = input
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let prompt = match input.get("prompt").and_then(|v| v.as_str()) {
             Some(p) if !p.trim().is_empty() => p.to_string(),
             _ => return err("missing required field: prompt"),
@@ -109,12 +118,21 @@ impl Tool for AgentTool {
             Some(s) if !s.trim().is_empty() => s.to_string(),
             _ => return err("missing required field: subagent_type"),
         };
-        let model_override = input.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let is_async = input.get("run_in_background").and_then(|v| v.as_bool()).unwrap_or(false);
+        let model_override = input
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let is_async = input
+            .get("run_in_background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         // 2. Resolve agent
         let Some(agent_def) = self.registry.resolve(&subagent_type) else {
-            let available: Vec<String> = self.registry.list().into_iter()
+            let available: Vec<String> = self
+                .registry
+                .list()
+                .into_iter()
                 .map(|d| d.agent_type.clone())
                 .collect();
             return err(&format!(
@@ -165,7 +183,10 @@ impl Tool for AgentTool {
             );
             let sys = build_child_system_prompt(&agent_def);
 
-            return match child.process_prompt(prompt, &sys, Some(parent_tool_use_id)).await {
+            return match child
+                .process_prompt(prompt, &sys, Some(parent_tool_use_id))
+                .await
+            {
                 Ok(final_text) => ToolResult {
                     content: final_text,
                     is_error: false,
@@ -211,7 +232,9 @@ impl Tool for AgentTool {
         let parent_tu_for_task = parent_tool_use_id.clone();
 
         tokio::spawn(async move {
-            let result = child.process_prompt(prompt, &sys, Some(parent_tu_for_task.clone())).await;
+            let result = child
+                .process_prompt(prompt, &sys, Some(parent_tu_for_task.clone()))
+                .await;
             let text = match result {
                 Ok(t) => t,
                 Err(e) => format!("error: {e}"),
@@ -252,7 +275,10 @@ impl Tool for AgentTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }
@@ -260,11 +286,20 @@ impl Tool for AgentTool {
 }
 
 fn err(msg: &str) -> ToolResult {
-    ToolResult { content: msg.to_string(), is_error: true, inject_messages: Vec::new(), metadata: None, mcp_meta: None, new_messages: Vec::new() }
+    ToolResult {
+        content: msg.to_string(),
+        is_error: true,
+        inject_messages: Vec::new(),
+        metadata: None,
+        mcp_meta: None,
+        new_messages: Vec::new(),
+    }
 }
 
 fn build_child_system_prompt(agent: &AgentDefinition) -> SystemPrompt {
-    SystemPrompt { sections: vec![agent.system_prompt.clone()] }
+    SystemPrompt {
+        sections: vec![agent.system_prompt.clone()],
+    }
 }
 
 #[cfg(test)]
@@ -305,7 +340,11 @@ mod tests {
         });
         let result = tool.call(input, &ctx, None).await;
         assert!(result.is_error);
-        assert!(result.content.contains("unknown subagent"), "got: {}", result.content);
+        assert!(
+            result.content.contains("unknown subagent"),
+            "got: {}",
+            result.content
+        );
     }
 
     #[tokio::test]
@@ -315,7 +354,10 @@ mod tests {
         let agent_reg = Arc::new(AgentRegistry::built_in_only());
         let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
         let tool = AgentTool {
-            store, config: cfg, registry: agent_reg, tool_registry: tool_reg,
+            store,
+            config: cfg,
+            registry: agent_reg,
+            tool_registry: tool_reg,
         };
         assert_eq!(tool.name(), "Task");
     }
@@ -327,18 +369,32 @@ mod tests {
         let agent_reg = Arc::new(AgentRegistry::built_in_only());
         let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
         let tool = AgentTool {
-            store, config: cfg, registry: agent_reg, tool_registry: tool_reg,
+            store,
+            config: cfg,
+            registry: agent_reg,
+            tool_registry: tool_reg,
         };
         let schema = tool.input_schema();
         let st = &schema["properties"]["subagent_type"];
-        let enum_vals: Vec<&str> = st["enum"].as_array().unwrap()
+        let enum_vals: Vec<&str> = st["enum"]
+            .as_array()
+            .unwrap()
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert!(enum_vals.contains(&"general-purpose"), "missing general-purpose: {enum_vals:?}");
-        assert!(enum_vals.contains(&"Explore"), "missing Explore: {enum_vals:?}");
+        assert!(
+            enum_vals.contains(&"general-purpose"),
+            "missing general-purpose: {enum_vals:?}"
+        );
+        assert!(
+            enum_vals.contains(&"Explore"),
+            "missing Explore: {enum_vals:?}"
+        );
         assert!(enum_vals.contains(&"Plan"), "missing Plan: {enum_vals:?}");
         let desc = st["description"].as_str().unwrap();
-        assert!(desc.contains("Explore"), "description missing Explore: {desc}");
+        assert!(
+            desc.contains("Explore"),
+            "description missing Explore: {desc}"
+        );
     }
 }

@@ -22,7 +22,7 @@ impl AgentsTab {
     }
     fn label(self) -> &'static str {
         match self {
-            AgentsTab::Agents  => "Agents",
+            AgentsTab::Agents => "Agents",
             AgentsTab::Running => "Running",
             AgentsTab::Library => "Library",
         }
@@ -118,7 +118,7 @@ impl AgentsView {
         lines.push(Line::raw(""));
 
         match self.tab {
-            AgentsTab::Agents  => self.render_agents(&mut lines),
+            AgentsTab::Agents => self.render_agents(&mut lines),
             AgentsTab::Running => self.render_running(&mut lines),
             AgentsTab::Library => self.render_library(&mut lines),
         }

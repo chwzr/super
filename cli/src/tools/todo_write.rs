@@ -40,8 +40,7 @@ impl Tool for TodoWriteTool {
     }
 
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
-        "Creates and updates a structured task list for your current coding session."
-            .into()
+        "Creates and updates a structured task list for your current coding session.".into()
     }
 
     fn prompt(&self, _ctx: &PromptCtx) -> String {
@@ -126,22 +125,12 @@ impl Tool for TodoWriteTool {
     }
 
     fn to_auto_classifier_input(&self, input: &serde_json::Value) -> serde_json::Value {
-        let count = input["todos"]
-            .as_array()
-            .map(|a| a.len())
-            .unwrap_or(0);
+        let count = input["todos"].as_array().map(|a| a.len()).unwrap_or(0);
         serde_json::Value::String(format!("{count} items"))
     }
 
-    fn render_tool_use_message(
-        &self,
-        input: &serde_json::Value,
-        _opts: &RenderOpts,
-    ) -> RenderSpec {
-        let count = input["todos"]
-            .as_array()
-            .map(|a| a.len())
-            .unwrap_or(0);
+    fn render_tool_use_message(&self, input: &serde_json::Value, _opts: &RenderOpts) -> RenderSpec {
+        let count = input["todos"].as_array().map(|a| a.len()).unwrap_or(0);
         RenderSpec::Header {
             verb: format!("Updating todo list ({count} items)"),
             target: None,
@@ -208,10 +197,7 @@ impl Tool for TodoWriteTool {
             .collect();
 
         // 2. Collect new todos from input
-        let new_todos_arr = input["todos"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let new_todos_arr = input["todos"].as_array().cloned().unwrap_or_default();
 
         let new_todos: Vec<serde_json::Value> = new_todos_arr.clone();
 
@@ -221,16 +207,10 @@ impl Tool for TodoWriteTool {
         self.store.set_state(move |state| {
             state.tasks.clear();
             for todo_item in &new_todos_arr {
-                let content = todo_item["content"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let content = todo_item["content"].as_str().unwrap_or("").to_string();
                 let id = content.clone(); // Use content as the task id
                 let status_str = todo_item["status"].as_str().unwrap_or("pending");
-                let active_form = todo_item["activeForm"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let active_form = todo_item["activeForm"].as_str().unwrap_or("").to_string();
 
                 state.tasks.insert(
                     id.clone(),
@@ -250,9 +230,9 @@ impl Tool for TodoWriteTool {
         });
 
         // 4. Build output
-        let all_completed = new_todos.iter().all(|item| {
-            item["status"].as_str() == Some("completed")
-        });
+        let all_completed = new_todos
+            .iter()
+            .all(|item| item["status"].as_str() == Some("completed"));
 
         let mut output = json!({
             "oldTodos": old_todos,
@@ -289,10 +269,7 @@ impl Tool for TodoWriteTool {
         output: &serde_json::Value,
         tool_use_id: &str,
     ) -> ToolResultBlock {
-        let count = output["newTodos"]
-            .as_array()
-            .map(|a| a.len())
-            .unwrap_or(0);
+        let count = output["newTodos"].as_array().map(|a| a.len()).unwrap_or(0);
         let text = format!(
             "Todos have been modified successfully. The updated list contains {count} items. Ensure that you continue to use the todo list to track your progress."
         );

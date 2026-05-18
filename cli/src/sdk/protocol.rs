@@ -6,13 +6,19 @@ use uuid::Uuid;
 #[serde(tag = "type")]
 pub enum SdkMessage {
     #[serde(rename = "init")]
-    Init { session_id: String, tools: Vec<String> },
+    Init {
+        session_id: String,
+        tools: Vec<String>,
+    },
     #[serde(rename = "user")]
     User { content: String },
     #[serde(rename = "assistant")]
     Assistant { content: Vec<ContentBlock> },
     #[serde(rename = "tool_use")]
-    ToolUse { name: String, input: serde_json::Value },
+    ToolUse {
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(rename = "tool_result")]
     ToolResult {
         name: String,
@@ -54,10 +60,7 @@ pub struct UsageInfo {
 #[serde(tag = "type")]
 pub enum ControlMessage {
     #[serde(rename = "initialize")]
-    Initialize {
-        tools: Vec<String>,
-        model: String,
-    },
+    Initialize { tools: Vec<String>, model: String },
     #[serde(rename = "interrupt")]
     Interrupt,
     #[serde(rename = "can_use_tool")]
@@ -112,13 +115,19 @@ pub enum StreamEvent {
     #[serde(rename = "message_start")]
     MessageStart { message: MessageMeta },
     #[serde(rename = "content_block_start")]
-    ContentBlockStart { index: u32, content_block: ContentBlockStream },
+    ContentBlockStart {
+        index: u32,
+        content_block: ContentBlockStream,
+    },
     #[serde(rename = "content_block_delta")]
     ContentBlockDelta { index: u32, delta: BlockDelta },
     #[serde(rename = "content_block_stop")]
     ContentBlockStop { index: u32 },
     #[serde(rename = "message_delta")]
-    MessageDelta { delta: MessageDeltaInfo, usage: AnthropicUsage },
+    MessageDelta {
+        delta: MessageDeltaInfo,
+        usage: AnthropicUsage,
+    },
     #[serde(rename = "message_stop")]
     MessageStop,
     /// Anthropic also sends `ping` events for keep-alive. We accept them silently.
@@ -134,9 +143,18 @@ pub enum ContentBlockStream {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "thinking")]
-    Thinking { thinking: String, #[serde(default)] signature: String },
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        signature: String,
+    },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, #[serde(default)] input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        #[serde(default)]
+        input: serde_json::Value,
+    },
 }
 
 /// Content blocks in finalized assistant/user messages.
@@ -148,9 +166,18 @@ pub enum ContentBlockFinal {
     #[serde(rename = "thinking")]
     Thinking { thinking: String, signature: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(rename = "tool_result")]
-    ToolResult { tool_use_id: String, content: String, #[serde(default)] is_error: bool },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(default)]
+        is_error: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,16 +332,36 @@ impl BusMessage {
 
     pub fn parent_tool_use_id(&self) -> Option<&str> {
         match self {
-            BusMessage::User { parent_tool_use_id, .. }
-            | BusMessage::Assistant { parent_tool_use_id, .. }
-            | BusMessage::StreamEvent { parent_tool_use_id, .. }
-            | BusMessage::ToolProgress { parent_tool_use_id, .. }
-            | BusMessage::SystemEvent { parent_tool_use_id, .. }
-            | BusMessage::Result { parent_tool_use_id, .. }
-            | BusMessage::RenderEvent { parent_tool_use_id, .. }
-            | BusMessage::InteractionRequested { parent_tool_use_id, .. }
-            | BusMessage::InteractionResponse { parent_tool_use_id, .. }
-            | BusMessage::InteractionDenied { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+            BusMessage::User {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::Assistant {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::StreamEvent {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::ToolProgress {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::SystemEvent {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::Result {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::RenderEvent {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::InteractionRequested {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::InteractionResponse {
+                parent_tool_use_id, ..
+            }
+            | BusMessage::InteractionDenied {
+                parent_tool_use_id, ..
+            } => parent_tool_use_id.as_deref(),
         }
     }
 }
@@ -352,10 +399,14 @@ mod tests {
 
     #[test]
     fn stream_event_text_delta_roundtrip() {
-        let json = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#;
+        let json =
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#;
         let parsed: StreamEvent = serde_json::from_str(json).unwrap();
         match parsed {
-            StreamEvent::ContentBlockDelta { index, delta: BlockDelta::TextDelta { text } } => {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: BlockDelta::TextDelta { text },
+            } => {
                 assert_eq!(index, 0);
                 assert_eq!(text, "hi");
             }
@@ -375,7 +426,10 @@ mod tests {
         let json = r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"PLAN"}}"#;
         let parsed: StreamEvent = serde_json::from_str(json).unwrap();
         match parsed {
-            StreamEvent::ContentBlockDelta { delta: BlockDelta::InputJsonDelta { partial_json }, .. } => {
+            StreamEvent::ContentBlockDelta {
+                delta: BlockDelta::InputJsonDelta { partial_json },
+                ..
+            } => {
                 assert!(partial_json.starts_with("{\"file_path\""));
             }
             _ => panic!("wrong variant: {parsed:?}"),
@@ -403,7 +457,11 @@ mod tests {
         assert!(json.contains("\"subtype\":\"async_agent_done\""));
         let back: BusMessage = serde_json::from_str(&json).unwrap();
         match back {
-            BusMessage::SystemEvent { subtype, parent_tool_use_id, .. } => {
+            BusMessage::SystemEvent {
+                subtype,
+                parent_tool_use_id,
+                ..
+            } => {
                 assert!(matches!(subtype, SystemSubtype::AsyncAgentDone));
                 assert_eq!(parent_tool_use_id.as_deref(), Some("tu_parent"));
             }
@@ -416,7 +474,9 @@ mod tests {
         let msg = BusMessage::Result {
             stop_reason: None,
             usage: AnthropicUsage::default(),
-            total_cost_usd: 0.0, duration_ms: 0, num_turns: 1,
+            total_cost_usd: 0.0,
+            duration_ms: 0,
+            num_turns: 1,
             parent_tool_use_id: None,
             uuid: Uuid::new_v4(),
             session_id: "s-root".into(),
@@ -451,7 +511,11 @@ mod tests {
         assert!(json.contains("\"parent_tool_use_id\":\"tu_parent\""));
         let back: BusMessage = serde_json::from_str(&json).unwrap();
         match back {
-            BusMessage::Result { parent_tool_use_id, num_turns, .. } => {
+            BusMessage::Result {
+                parent_tool_use_id,
+                num_turns,
+                ..
+            } => {
                 assert_eq!(parent_tool_use_id.as_deref(), Some("tu_parent"));
                 assert_eq!(num_turns, 3);
             }
@@ -493,7 +557,11 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let back: BusMessage = serde_json::from_str(&json).unwrap();
         match back {
-            BusMessage::Assistant { message, session_id, .. } => {
+            BusMessage::Assistant {
+                message,
+                session_id,
+                ..
+            } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(message.id, "m1");
                 assert_eq!(message.content.len(), 1);

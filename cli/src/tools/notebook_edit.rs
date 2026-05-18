@@ -1,4 +1,7 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 
 #[derive(Default)]
@@ -71,7 +74,12 @@ impl Tool for NotebookEditTool {
         true
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let notebook_path = match input.get("notebook_path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -137,9 +145,7 @@ impl Tool for NotebookEditTool {
 
         let original_notebook = notebook.clone();
 
-        let cells = notebook
-            .get_mut("cells")
-            .and_then(|c| c.as_array_mut());
+        let cells = notebook.get_mut("cells").and_then(|c| c.as_array_mut());
 
         let cells = match cells {
             Some(c) => c,
@@ -190,9 +196,9 @@ impl Tool for NotebookEditTool {
                 let new_cell = create_cell(ct, new_source.as_str());
 
                 if let Some(cid) = cell_id {
-                    let insert_after = cells.iter().position(|c| {
-                        c.get("id").and_then(|v| v.as_str()) == Some(cid)
-                    });
+                    let insert_after = cells
+                        .iter()
+                        .position(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid));
                     match insert_after {
                         Some(pos) => cells.insert(pos + 1, new_cell),
                         None => {
@@ -222,7 +228,10 @@ impl Tool for NotebookEditTool {
             }
             _ => {
                 return ToolResult {
-                    content: format!("Invalid edit_mode '{}'. Must be 'replace', 'insert', or 'delete'.", edit_mode),
+                    content: format!(
+                        "Invalid edit_mode '{}'. Must be 'replace', 'insert', or 'delete'.",
+                        edit_mode
+                    ),
                     is_error: true,
                     ..Default::default()
                 };
@@ -300,9 +309,9 @@ fn find_cell_index(
 ) -> Result<usize, Box<ToolResult>> {
     match cell_id {
         Some(cid) => {
-            let pos = cells.iter().position(|c| {
-                c.get("id").and_then(|v| v.as_str()) == Some(cid)
-            });
+            let pos = cells
+                .iter()
+                .position(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid));
             match pos {
                 Some(i) => Ok(i),
                 None => Err(Box::new(ToolResult {

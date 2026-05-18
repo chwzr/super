@@ -82,15 +82,16 @@ impl AuthRepository for SqliteAuthRepo {
                     id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
                     email: row.get(1)?,
                     password_hash: row.get(2)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(
-                        &row.get::<_, String>(3)?,
-                    )
-                    .unwrap()
-                    .with_timezone(&Utc),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(3)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
                 })
             })
             .map_err(|e| AuthError::Internal(e.to_string()))?;
-        Ok(rows.next().transpose().map_err(|e| AuthError::Internal(e.to_string()))?)
+        Ok(rows
+            .next()
+            .transpose()
+            .map_err(|e| AuthError::Internal(e.to_string()))?)
     }
 
     async fn find_user_by_id(&self, id: &Uuid) -> Result<Option<User>, AuthError> {
@@ -104,15 +105,16 @@ impl AuthRepository for SqliteAuthRepo {
                     id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
                     email: row.get(1)?,
                     password_hash: row.get(2)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(
-                        &row.get::<_, String>(3)?,
-                    )
-                    .unwrap()
-                    .with_timezone(&Utc),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(3)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
                 })
             })
             .map_err(|e| AuthError::Internal(e.to_string()))?;
-        Ok(rows.next().transpose().map_err(|e| AuthError::Internal(e.to_string()))?)
+        Ok(rows
+            .next()
+            .transpose()
+            .map_err(|e| AuthError::Internal(e.to_string()))?)
     }
 
     async fn store_api_key(
@@ -141,11 +143,9 @@ impl AuthRepository for SqliteAuthRepo {
                 Ok(ApiKey {
                     openrouter_key_id: row.get(0)?,
                     openrouter_key_value: row.get(1)?,
-                    _created_at: chrono::DateTime::parse_from_rfc3339(
-                        &row.get::<_, String>(2)?,
-                    )
-                    .unwrap()
-                    .with_timezone(&Utc),
+                    _created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(2)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
                     _revoked_at: row.get::<_, Option<String>>(3)?.map(|s| {
                         chrono::DateTime::parse_from_rfc3339(&s)
                             .unwrap()
@@ -154,7 +154,10 @@ impl AuthRepository for SqliteAuthRepo {
                 })
             })
             .map_err(|e| AuthError::Internal(e.to_string()))?;
-        Ok(rows.next().transpose().map_err(|e| AuthError::Internal(e.to_string()))?)
+        Ok(rows
+            .next()
+            .transpose()
+            .map_err(|e| AuthError::Internal(e.to_string()))?)
     }
 
     async fn revoke_api_key(&self, user_id: &Uuid, key_id: &str) -> Result<(), AuthError> {
@@ -168,10 +171,7 @@ impl AuthRepository for SqliteAuthRepo {
         Ok(())
     }
 
-    async fn store_authorization_code(
-        &self,
-        code: &AuthorizationCode,
-    ) -> Result<(), AuthError> {
+    async fn store_authorization_code(&self, code: &AuthorizationCode) -> Result<(), AuthError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO auth_codes (code, user_id, code_challenge, expires_at) VALUES (?1, ?2, ?3, ?4)",
@@ -197,21 +197,19 @@ impl AuthRepository for SqliteAuthRepo {
                     code: row.get(0)?,
                     user_id: Uuid::parse_str(&row.get::<_, String>(1)?).unwrap(),
                     code_challenge: row.get(2)?,
-                    expires_at: chrono::DateTime::parse_from_rfc3339(
-                        &row.get::<_, String>(3)?,
-                    )
-                    .unwrap()
-                    .with_timezone(&Utc),
+                    expires_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(3)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
                 })
             })
             .map_err(|e| AuthError::Internal(e.to_string()))?;
-        let auth_code = result.last().transpose().map_err(|e| AuthError::Internal(e.to_string()))?;
-        if auth_code.is_some() {
-            conn.execute(
-                "DELETE FROM auth_codes WHERE code = ?1",
-                params![code],
-            )
+        let auth_code = result
+            .last()
+            .transpose()
             .map_err(|e| AuthError::Internal(e.to_string()))?;
+        if auth_code.is_some() {
+            conn.execute("DELETE FROM auth_codes WHERE code = ?1", params![code])
+                .map_err(|e| AuthError::Internal(e.to_string()))?;
         }
         Ok(auth_code)
     }
@@ -220,7 +218,11 @@ impl AuthRepository for SqliteAuthRepo {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO refresh_tokens (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
-            params![token.token_hash, token.user_id.to_string(), token.expires_at.to_rfc3339()],
+            params![
+                token.token_hash,
+                token.user_id.to_string(),
+                token.expires_at.to_rfc3339()
+            ],
         )
         .map_err(|e| AuthError::Internal(e.to_string()))?;
         Ok(())
@@ -241,15 +243,16 @@ impl AuthRepository for SqliteAuthRepo {
                 Ok(RefreshToken {
                     token_hash: row.get(0)?,
                     user_id: Uuid::parse_str(&row.get::<_, String>(1)?).unwrap(),
-                    expires_at: chrono::DateTime::parse_from_rfc3339(
-                        &row.get::<_, String>(2)?,
-                    )
-                    .unwrap()
-                    .with_timezone(&Utc),
+                    expires_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(2)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
                 })
             })
             .map_err(|e| AuthError::Internal(e.to_string()))?;
-        let token = result.last().transpose().map_err(|e| AuthError::Internal(e.to_string()))?;
+        let token = result
+            .last()
+            .transpose()
+            .map_err(|e| AuthError::Internal(e.to_string()))?;
         if token.is_some() {
             conn.execute(
                 "DELETE FROM refresh_tokens WHERE token_hash = ?1",

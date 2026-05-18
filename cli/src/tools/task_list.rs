@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use std::sync::Arc;
 
 pub struct TaskListTool {
     pub store: Arc<crate::state::store::Store>,
@@ -9,7 +12,9 @@ pub struct TaskListTool {
 
 #[async_trait]
 impl Tool for TaskListTool {
-    fn name(&self) -> &str { "TaskList" }
+    fn name(&self) -> &str {
+        "TaskList"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Lists all tracked tasks.".into()
     }
@@ -35,9 +40,16 @@ impl Tool for TaskListTool {
     fn input_schema(&self) -> serde_json::Value {
         json!({"type": "object", "properties": {}})
     }
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
-    async fn call(&self, _input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let tasks = self.store.get_state().tasks;
         if tasks.is_empty() {
             return ToolResult {
@@ -66,7 +78,10 @@ impl Tool for TaskListTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

@@ -1,8 +1,8 @@
+use crate::config::{load_config, save_config};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use shared::{AuthorizeRequest, RefreshRequest, TokenResponse, UserProfile};
-use crate::config::{load_config, save_config};
 
 pub struct AuthClient {
     base_url: String,
@@ -39,8 +39,8 @@ impl AuthClient {
         let mut request_line = String::new();
         reader.read_line(&mut request_line)?;
 
-        let code = extract_code_from_request(&request_line)
-            .ok_or("no authorization code in callback")?;
+        let code =
+            extract_code_from_request(&request_line).ok_or("no authorization code in callback")?;
 
         let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Logged in! You can close this window.</h1></body></html>";
         stream.write_all(response.as_bytes())?;
@@ -77,10 +77,7 @@ impl AuthClient {
         Ok(resp.json().await?)
     }
 
-    async fn get_profile(
-        &self,
-        token: &str,
-    ) -> Result<UserProfile, Box<dyn std::error::Error>> {
+    async fn get_profile(&self, token: &str) -> Result<UserProfile, Box<dyn std::error::Error>> {
         let resp = self
             .http
             .get(format!("{}/auth/me", self.base_url))

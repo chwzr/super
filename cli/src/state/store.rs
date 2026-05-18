@@ -1,7 +1,7 @@
-use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use crate::tui::scroll_area::Message;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Default)]
 pub struct TaskRecord {
@@ -169,10 +169,18 @@ impl Store {
     /// Returns true if an agent was found and signalled.
     pub fn abort_async_agent(&self, agent_id: &str) -> bool {
         // Read out the handle outside set_state so we can call its send()
-        let handle = self.state.read().unwrap().async_agents.get(agent_id).cloned();
+        let handle = self
+            .state
+            .read()
+            .unwrap()
+            .async_agents
+            .get(agent_id)
+            .cloned();
         if let Some(h) = handle {
             let _ = h.abort.send(true);
-            self.set_state(|s| { s.async_agents.remove(agent_id); });
+            self.set_state(|s| {
+                s.async_agents.remove(agent_id);
+            });
             true
         } else {
             false
@@ -180,13 +188,20 @@ impl Store {
     }
 
     pub fn list_async_agents(&self) -> Vec<AsyncAgentHandle> {
-        self.state.read().unwrap().async_agents.values().cloned().collect()
+        self.state
+            .read()
+            .unwrap()
+            .async_agents
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Abort every currently-registered async agent. Called by the TUI's exit
     /// path. Returns the number of agents that were signalled.
     pub fn shutdown_async_agents(&self) -> usize {
-        let ids: Vec<String> = self.list_async_agents()
+        let ids: Vec<String> = self
+            .list_async_agents()
             .into_iter()
             .map(|h| h.agent_id)
             .collect();
@@ -258,7 +273,10 @@ mod tests {
         assert!(store.abort_async_agent("a2"));
         // Watch should have fired
         assert!(*rx.borrow_and_update());
-        assert!(store.list_async_agents().is_empty(), "abort also removes the handle");
+        assert!(
+            store.list_async_agents().is_empty(),
+            "abort also removes the handle"
+        );
     }
 
     #[test]

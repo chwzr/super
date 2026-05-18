@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
@@ -6,9 +5,12 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{AuthError, RegisterRequest, TokenResponse, UserProfile};
+use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::domain::auth::ports::{AuthRepository, AuthorizationCode, OpenRouterProvider, RefreshToken};
+use crate::domain::auth::ports::{
+    AuthRepository, AuthorizationCode, OpenRouterProvider, RefreshToken,
+};
 
 const JWT_SECRET: &str = "CHANGE_ME_IN_PRODUCTION_USE_ENV_VAR";
 const DEFAULT_KEY_LIMIT_USD: u32 = 20;
@@ -26,16 +28,12 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    pub fn new(
-        repo: Arc<dyn AuthRepository>,
-        openrouter: Arc<dyn OpenRouterProvider>,
-    ) -> Self {
+    pub fn new(repo: Arc<dyn AuthRepository>, openrouter: Arc<dyn OpenRouterProvider>) -> Self {
         Self { repo, openrouter }
     }
 
     fn hash_password(password: &str) -> Result<String, AuthError> {
-        bcrypt::hash(password, bcrypt::DEFAULT_COST)
-            .map_err(|e| AuthError::Internal(e.to_string()))
+        bcrypt::hash(password, bcrypt::DEFAULT_COST).map_err(|e| AuthError::Internal(e.to_string()))
     }
 
     fn verify_password(password: &str, hash: &str) -> Result<bool, AuthError> {
@@ -80,10 +78,7 @@ impl AuthService {
 
     pub async fn register(&self, req: &RegisterRequest) -> Result<UserProfile, AuthError> {
         let password_hash = Self::hash_password(&req.password)?;
-        let user = self
-            .repo
-            .create_user(&req.email, &password_hash)
-            .await?;
+        let user = self.repo.create_user(&req.email, &password_hash).await?;
 
         // Provision OpenRouter key at registration time
         let label = format!("super-user-{}", user.id);
@@ -91,9 +86,7 @@ impl AuthService {
             .openrouter
             .create_key(&label, DEFAULT_KEY_LIMIT_USD)
             .await?;
-        self.repo
-            .store_api_key(&user.id, &key.id, &key.key)
-            .await?;
+        self.repo.store_api_key(&user.id, &key.id, &key.key).await?;
 
         Ok(UserProfile {
             id: user.id,
@@ -175,10 +168,7 @@ impl AuthService {
         })
     }
 
-    pub async fn refresh(
-        &self,
-        refresh_token: &str,
-    ) -> Result<TokenResponse, AuthError> {
+    pub async fn refresh(&self, refresh_token: &str) -> Result<TokenResponse, AuthError> {
         let mut hasher = Sha256::new();
         hasher.update(refresh_token.as_bytes());
         let token_hash = URL_SAFE_NO_PAD.encode(hasher.finalize());
@@ -275,9 +265,7 @@ impl AuthService {
             .openrouter
             .create_key(&label, DEFAULT_KEY_LIMIT_USD)
             .await?;
-        self.repo
-            .store_api_key(&user_id, &key.id, &key.key)
-            .await?;
+        self.repo.store_api_key(&user_id, &key.id, &key.key).await?;
 
         Ok(UserProfile {
             id: user.id,

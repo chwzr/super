@@ -67,7 +67,8 @@ fn plan() -> AgentDefinition {
 fn statusline_setup() -> AgentDefinition {
     AgentDefinition {
         agent_type: "statusline-setup".into(),
-        description: "Use this agent to configure the user's Claude Code status line setting.".into(),
+        description: "Use this agent to configure the user's Claude Code status line setting."
+            .into(),
         system_prompt: STATUSLINE_PROMPT.to_string(),
         tools: Some(vec!["Read".into(), "Edit".into()]),
         disallowed_tools: vec![],

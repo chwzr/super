@@ -1,4 +1,7 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -6,7 +9,9 @@ pub struct WebFetchTool;
 
 #[async_trait]
 impl Tool for WebFetchTool {
-    fn name(&self) -> &str { "WebFetch" }
+    fn name(&self) -> &str {
+        "WebFetch"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Fetches content from a URL and processes it. \
          HTTP URLs are upgraded to HTTPS. Returns the page content as text."
@@ -26,7 +31,9 @@ impl Tool for WebFetchTool {
             "required": ["url", "prompt"]
         })
     }
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
     fn output_schema(&self) -> Option<serde_json::Value> {
         Some(json!({
@@ -43,7 +50,12 @@ impl Tool for WebFetchTool {
         }))
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let url = input["url"].as_str().unwrap_or("");
         let prompt = input["prompt"].as_str().unwrap_or("");
 
@@ -57,7 +69,8 @@ impl Tool for WebFetchTool {
                     "codeText": "Bad Request",
                     "result": "URL exceeds 2000 character limit",
                     "durationMs": 0
-                }).to_string(),
+                })
+                .to_string(),
                 is_error: true,
                 ..Default::default()
             };
@@ -71,7 +84,8 @@ impl Tool for WebFetchTool {
                     "codeText": "Bad Request",
                     "result": "URLs with credentials are not supported",
                     "durationMs": 0
-                }).to_string(),
+                })
+                .to_string(),
                 is_error: true,
                 ..Default::default()
             };
@@ -97,7 +111,11 @@ impl Tool for WebFetchTool {
                     Ok(body) => {
                         // Simple HTML-to-text: strip tags
                         let text = strip_html(&body);
-                        let _truncated = if text.len() > 100000 { format!("{}...\n[content truncated]", &text[..100000]) } else { text };
+                        let _truncated = if text.len() > 100000 {
+                            format!("{}...\n[content truncated]", &text[..100000])
+                        } else {
+                            text
+                        };
                         let byte_count = body.len();
                         let duration_ms = start.elapsed().as_millis() as f64;
                         ToolResult {
@@ -123,13 +141,14 @@ impl Tool for WebFetchTool {
                                 "codeText": status.canonical_reason().unwrap_or("Error"),
                                 "result": format!("Failed to read response: {}", e),
                                 "durationMs": duration_ms
-                            }).to_string(),
+                            })
+                            .to_string(),
                             is_error: true,
                             ..Default::default()
                         }
                     }
                 }
-            },
+            }
             Err(e) => {
                 let duration_ms = start.elapsed().as_millis() as f64;
                 ToolResult {
@@ -140,11 +159,12 @@ impl Tool for WebFetchTool {
                         "codeText": "Connection Error",
                         "result": format!("Failed to fetch {}: {}", url, e),
                         "durationMs": duration_ms
-                    }).to_string(),
+                    })
+                    .to_string(),
                     is_error: true,
                     ..Default::default()
                 }
-            },
+            }
         }
     }
 
@@ -156,7 +176,10 @@ impl Tool for WebFetchTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

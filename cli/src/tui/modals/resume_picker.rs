@@ -21,7 +21,9 @@ impl Default for ResumePicker {
 
 impl ResumePicker {
     pub fn new() -> Self {
-        Self { query: String::new() }
+        Self {
+            query: String::new(),
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ResumeAction {
@@ -54,7 +56,10 @@ impl ResumePicker {
                 Style::default().fg(CC_DIM),
             )),
             Line::raw(""),
-            Line::from(Span::styled("  [esc to cancel]", Style::default().fg(CC_DIM))),
+            Line::from(Span::styled(
+                "  [esc to cancel]",
+                Style::default().fg(CC_DIM),
+            )),
         ];
         f.render_widget(Paragraph::new(lines), area);
     }

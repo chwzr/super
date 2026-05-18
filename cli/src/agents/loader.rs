@@ -28,8 +28,9 @@ pub fn parse_agent_md(
     contents: &str,
     source: AgentSource,
 ) -> Result<AgentDefinition, String> {
-    let (fm_src, body) = split_frontmatter(contents)
-        .ok_or_else(|| format!("{filename}: missing or malformed YAML frontmatter (expected leading ---)"))?;
+    let (fm_src, body) = split_frontmatter(contents).ok_or_else(|| {
+        format!("{filename}: missing or malformed YAML frontmatter (expected leading ---)")
+    })?;
     let fm: Frontmatter = serde_yaml::from_str(fm_src)
         .map_err(|e| format!("{filename}: invalid frontmatter: {e}"))?;
     if fm.description.trim().is_empty() {
@@ -37,7 +38,9 @@ pub fn parse_agent_md(
     }
     let body_trimmed = body.trim().to_string();
     if body_trimmed.is_empty() {
-        return Err(format!("{filename}: body (system prompt) must not be empty"));
+        return Err(format!(
+            "{filename}: body (system prompt) must not be empty"
+        ));
     }
 
     let permission_mode = match fm.permission_mode.as_deref() {
@@ -93,7 +96,11 @@ pub fn load_agents_from_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinit
         if path.extension().and_then(|s| s.to_str()) != Some("md") {
             continue;
         }
-        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("?").to_string();
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?")
+            .to_string();
         match std::fs::read_to_string(&path) {
             Ok(contents) => match parse_agent_md(&filename, &contents, source) {
                 Ok(def) => out.push(def),

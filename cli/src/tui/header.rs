@@ -53,10 +53,7 @@ impl Header {
             Line::from(vec![
                 Span::styled(MASCOT[3], mascot_style),
                 Span::raw(gap),
-                Span::styled(
-                    format!("@{} · {}", self.user_handle, self.cwd),
-                    meta_style,
-                ),
+                Span::styled(format!("@{} · {}", self.user_handle, self.cwd), meta_style),
             ]),
             Line::from(Span::styled(MASCOT[4], mascot_style)),
             Line::from(Span::styled(MASCOT[5], mascot_style)),

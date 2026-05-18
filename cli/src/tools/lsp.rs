@@ -1,14 +1,20 @@
+use super::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use super::contract::{DescriptionCtx, PromptCtx, ProgressSink, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent};
 
 pub struct LspTool;
 
 #[async_trait]
 impl Tool for LspTool {
-    fn name(&self) -> &str { "LSP" }
+    fn name(&self) -> &str {
+        "LSP"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
-        "Interact with Language Server Protocol (LSP) servers to get code intelligence features.".into()
+        "Interact with Language Server Protocol (LSP) servers to get code intelligence features."
+            .into()
     }
 
     fn prompt(&self, _ctx: &PromptCtx) -> String {
@@ -40,12 +46,28 @@ impl Tool for LspTool {
         }))
     }
 
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { true }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let operation = input["operation"].as_str().unwrap_or("");
         let file_path = input["filePath"].as_str().unwrap_or("");
-        ToolResult { content: format!("LSP {operation} on {file_path} — LSP server integration not yet implemented"), is_error: false, inject_messages: Vec::new(), metadata: None, mcp_meta: None, new_messages: Vec::new() }
+        ToolResult {
+            content: format!(
+                "LSP {operation} on {file_path} — LSP server integration not yet implemented"
+            ),
+            is_error: false,
+            inject_messages: Vec::new(),
+            metadata: None,
+            mcp_meta: None,
+            new_messages: Vec::new(),
+        }
     }
 
     fn map_tool_result_to_block(
@@ -56,7 +78,10 @@ impl Tool for LspTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

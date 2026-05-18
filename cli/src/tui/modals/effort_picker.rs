@@ -19,43 +19,48 @@ pub enum EffortLevel {
 
 impl EffortLevel {
     pub fn all() -> &'static [EffortLevel] {
-        &[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High, EffortLevel::Max]
+        &[
+            EffortLevel::Low,
+            EffortLevel::Medium,
+            EffortLevel::High,
+            EffortLevel::Max,
+        ]
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            EffortLevel::Low    => "Low",
+            EffortLevel::Low => "Low",
             EffortLevel::Medium => "Medium",
-            EffortLevel::High   => "High",
-            EffortLevel::Max    => "Max",
+            EffortLevel::High => "High",
+            EffortLevel::Max => "Max",
         }
     }
 
     pub fn value(self) -> &'static str {
         match self {
-            EffortLevel::Low    => "low",
+            EffortLevel::Low => "low",
             EffortLevel::Medium => "medium",
-            EffortLevel::High   => "high",
-            EffortLevel::Max    => "max",
+            EffortLevel::High => "high",
+            EffortLevel::Max => "max",
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            EffortLevel::Low    => "Minimal processing, fastest response",
+            EffortLevel::Low => "Minimal processing, fastest response",
             EffortLevel::Medium => "Balanced performance and quality",
-            EffortLevel::High   => "More thorough analysis",
-            EffortLevel::Max    => "Maximum capability, slowest",
+            EffortLevel::High => "More thorough analysis",
+            EffortLevel::Max => "Maximum capability, slowest",
         }
     }
 
     fn from_str(s: &str) -> EffortLevel {
         match s {
-            "low"    => EffortLevel::Low,
+            "low" => EffortLevel::Low,
             "medium" => EffortLevel::Medium,
-            "high"   => EffortLevel::High,
-            "max"    => EffortLevel::Max,
-            _        => EffortLevel::Medium,
+            "high" => EffortLevel::High,
+            "max" => EffortLevel::Max,
+            _ => EffortLevel::Medium,
         }
     }
 }
@@ -78,15 +83,19 @@ impl EffortPicker {
         let idx = all.iter().position(|&l| l == self.level).unwrap_or(1);
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => {
-                if idx > 0 { self.level = all[idx - 1]; }
+                if idx > 0 {
+                    self.level = all[idx - 1];
+                }
                 EffortAction::Continue
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                if idx + 1 < all.len() { self.level = all[idx + 1]; }
+                if idx + 1 < all.len() {
+                    self.level = all[idx + 1];
+                }
                 EffortAction::Continue
             }
             KeyCode::Enter => EffortAction::Select(self.level.value()),
-            KeyCode::Esc   => EffortAction::Cancel,
+            KeyCode::Esc => EffortAction::Cancel,
             _ => EffortAction::Continue,
         }
     }
@@ -98,7 +107,10 @@ impl EffortPicker {
         let axis_line = Line::from(vec![
             Span::styled("  Speed ", Style::default().fg(CC_DIM)),
             Span::styled("←", Style::default().fg(CC_DIM)),
-            Span::styled("────────────────────────────────────", Style::default().fg(CC_DIM)),
+            Span::styled(
+                "────────────────────────────────────",
+                Style::default().fg(CC_DIM),
+            ),
             Span::styled("→", Style::default().fg(CC_DIM)),
             Span::styled(" Intelligence", Style::default().fg(CC_DIM)),
         ]);

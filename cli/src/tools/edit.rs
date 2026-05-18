@@ -1,4 +1,7 @@
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use shared;
 
@@ -76,16 +79,28 @@ impl Tool for EditTool {
     }
 
     fn get_path(&self, input: &serde_json::Value) -> Option<std::path::PathBuf> {
-        input.get("file_path").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+        input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(std::path::PathBuf::from)
     }
 
     fn get_activity_description(&self, input: &serde_json::Value) -> Option<String> {
-        input.get("file_path").and_then(|v| v.as_str()).map(|p| format!("Editing {}", p))
+        input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("Editing {}", p))
     }
 
     fn to_auto_classifier_input(&self, input: &serde_json::Value) -> serde_json::Value {
-        let path = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-        let new_str = input.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+        let path = input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let new_str = input
+            .get("new_string")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         serde_json::Value::String(format!("{}: {}", path, new_str))
     }
 
@@ -115,26 +130,42 @@ impl Tool for EditTool {
         let file_path = output["file_path"].as_str().unwrap_or("").to_string();
         let hunks_json = output["hunks"].as_array().cloned().unwrap_or_default();
 
-        let hunks: Vec<shared::DiffHunk> = hunks_json.iter().filter_map(|h| {
-            let lines: Vec<shared::DiffLine> = h["lines"].as_array()?.iter().filter_map(|l| {
-                match l["kind"].as_str()? {
-                    "context" => Some(shared::DiffLine::Context { line: l["line"].as_str()?.to_string() }),
-                    "add" => Some(shared::DiffLine::Add { line: l["line"].as_str()?.to_string() }),
-                    "remove" => Some(shared::DiffLine::Remove { line: l["line"].as_str()?.to_string() }),
-                    _ => None,
-                }
-            }).collect();
-            Some(shared::DiffHunk {
-                old_start: h["old_start"].as_u64()? as u32,
-                new_start: h["new_start"].as_u64()? as u32,
-                lines,
+        let hunks: Vec<shared::DiffHunk> = hunks_json
+            .iter()
+            .filter_map(|h| {
+                let lines: Vec<shared::DiffLine> = h["lines"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|l| match l["kind"].as_str()? {
+                        "context" => Some(shared::DiffLine::Context {
+                            line: l["line"].as_str()?.to_string(),
+                        }),
+                        "add" => Some(shared::DiffLine::Add {
+                            line: l["line"].as_str()?.to_string(),
+                        }),
+                        "remove" => Some(shared::DiffLine::Remove {
+                            line: l["line"].as_str()?.to_string(),
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                Some(shared::DiffHunk {
+                    old_start: h["old_start"].as_u64()? as u32,
+                    new_start: h["new_start"].as_u64()? as u32,
+                    lines,
+                })
             })
-        }).collect();
+            .collect();
 
         Some(shared::RenderSpec::Diff { file_path, hunks })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let file_path = match input.get("file_path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -329,7 +360,10 @@ impl Tool for EditTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

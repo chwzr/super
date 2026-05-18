@@ -16,7 +16,8 @@ pub fn load_config() -> CliConfig {
     } else {
         CliConfig::default()
     };
-    config.model = crate::providers::resolve_slug(&config.provider, &config.model_class).to_string();
+    config.model =
+        crate::providers::resolve_slug(&config.provider, &config.model_class).to_string();
     config
 }
 

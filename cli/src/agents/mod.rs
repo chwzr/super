@@ -5,8 +5,8 @@ pub mod model;
 pub mod permission;
 pub mod registry;
 
-pub use registry::AgentRegistry;
 pub use definition::{AgentDefinition, AgentSource};
+pub use registry::AgentRegistry;
 
 #[cfg(test)]
 mod tests {
@@ -33,11 +33,20 @@ mod tests {
     fn resolve_model_handles_aliases_and_inherit() {
         use super::model::resolve_model;
         let parent = "anthropic/claude-sonnet-4-6";
-        assert_eq!(resolve_model(Some("sonnet"), parent, "anthropic"), "anthropic/claude-sonnet-4-6");
-        assert_eq!(resolve_model(Some("opus"),   parent, "anthropic"), "anthropic/claude-opus-4-7");
-        assert_eq!(resolve_model(Some("haiku"),  parent, "anthropic"), "anthropic/claude-haiku-4-5-20251001");
+        assert_eq!(
+            resolve_model(Some("sonnet"), parent, "anthropic"),
+            "anthropic/claude-sonnet-4-6"
+        );
+        assert_eq!(
+            resolve_model(Some("opus"), parent, "anthropic"),
+            "anthropic/claude-opus-4-7"
+        );
+        assert_eq!(
+            resolve_model(Some("haiku"), parent, "anthropic"),
+            "anthropic/claude-haiku-4-5-20251001"
+        );
         assert_eq!(resolve_model(Some("inherit"), parent, "anthropic"), parent);
-        assert_eq!(resolve_model(None,            parent, "anthropic"), parent);
+        assert_eq!(resolve_model(None, parent, "anthropic"), parent);
         assert_eq!(
             resolve_model(Some("anthropic/claude-something-else"), parent, "anthropic"),
             "anthropic/claude-something-else"
@@ -61,7 +70,11 @@ mod tests {
     fn permission_overlay_parent_bypass_wins() {
         use super::permission::resolve_permission_mode;
         use crate::state::store::PermissionMode;
-        let out = resolve_permission_mode(&PermissionMode::BypassPermissions, Some(&PermissionMode::Plan), false);
+        let out = resolve_permission_mode(
+            &PermissionMode::BypassPermissions,
+            Some(&PermissionMode::Plan),
+            false,
+        );
         assert!(matches!(out, PermissionMode::BypassPermissions));
     }
 
@@ -69,7 +82,11 @@ mod tests {
     fn permission_overlay_parent_accept_edits_wins() {
         use super::permission::resolve_permission_mode;
         use crate::state::store::PermissionMode;
-        let out = resolve_permission_mode(&PermissionMode::AcceptEdits, Some(&PermissionMode::Plan), false);
+        let out = resolve_permission_mode(
+            &PermissionMode::AcceptEdits,
+            Some(&PermissionMode::Plan),
+            false,
+        );
         assert!(matches!(out, PermissionMode::AcceptEdits));
     }
 
@@ -77,7 +94,8 @@ mod tests {
     fn permission_overlay_agent_override_applies_when_parent_default() {
         use super::permission::resolve_permission_mode;
         use crate::state::store::PermissionMode;
-        let out = resolve_permission_mode(&PermissionMode::Default, Some(&PermissionMode::Plan), false);
+        let out =
+            resolve_permission_mode(&PermissionMode::Default, Some(&PermissionMode::Plan), false);
         assert!(matches!(out, PermissionMode::Plan));
     }
 
@@ -91,14 +109,16 @@ mod tests {
 
     #[test]
     fn loader_parses_full_frontmatter() {
-        use super::loader::parse_agent_md;
         use super::definition::AgentSource;
+        use super::loader::parse_agent_md;
         let src = "---\ndescription: An explorer\ntools: [Read, Grep]\ndisallowedTools: [Edit]\nmodel: haiku\npermissionMode: plan\nmaxTurns: 8\n---\nYou are an explorer.\nUse the tools.\n";
-        let def = parse_agent_md("Explore.md", src, AgentSource::Project)
-            .expect("parses");
+        let def = parse_agent_md("Explore.md", src, AgentSource::Project).expect("parses");
         assert_eq!(def.agent_type, "Explore");
         assert_eq!(def.description, "An explorer");
-        assert_eq!(def.tools.as_ref().unwrap(), &vec!["Read".to_string(), "Grep".to_string()]);
+        assert_eq!(
+            def.tools.as_ref().unwrap(),
+            &vec!["Read".to_string(), "Grep".to_string()]
+        );
         assert_eq!(def.disallowed_tools, vec!["Edit".to_string()]);
         assert_eq!(def.model.as_deref(), Some("haiku"));
         assert_eq!(def.max_turns, Some(8));
@@ -108,24 +128,24 @@ mod tests {
 
     #[test]
     fn loader_rejects_missing_frontmatter() {
-        use super::loader::parse_agent_md;
         use super::definition::AgentSource;
+        use super::loader::parse_agent_md;
         let src = "no frontmatter here\n";
         assert!(parse_agent_md("foo.md", src, AgentSource::User).is_err());
     }
 
     #[test]
     fn loader_rejects_empty_description() {
-        use super::loader::parse_agent_md;
         use super::definition::AgentSource;
+        use super::loader::parse_agent_md;
         let src = "---\ndescription: \"\"\n---\nbody\n";
         assert!(parse_agent_md("foo.md", src, AgentSource::User).is_err());
     }
 
     #[test]
     fn loader_strips_md_suffix_for_agent_type() {
-        use super::loader::parse_agent_md;
         use super::definition::AgentSource;
+        use super::loader::parse_agent_md;
         let src = "---\ndescription: x\n---\nbody";
         let def = parse_agent_md("my-agent.md", src, AgentSource::Project).unwrap();
         assert_eq!(def.agent_type, "my-agent");
@@ -182,7 +202,8 @@ mod tests {
     #[test]
     fn explore_agent_is_read_only_blocking_edit_write() {
         use super::built_in::built_in_agents;
-        let explore = built_in_agents().into_iter()
+        let explore = built_in_agents()
+            .into_iter()
             .find(|a| a.agent_type == "Explore")
             .expect("Explore in built-ins");
         assert!(explore.disallowed_tools.iter().any(|t| t == "Edit"));

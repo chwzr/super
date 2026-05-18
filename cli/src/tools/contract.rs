@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
@@ -22,7 +21,6 @@ pub struct ToolResult {
     #[serde(skip)]
     pub new_messages: Vec<serde_json::Value>,
 }
-
 
 /// Outcome of `Tool::validate_input` — pre-flight validation that the model
 /// sees as a failed-tool result so it can self-correct.
@@ -162,7 +160,9 @@ pub struct ToolCallContext {
 pub trait Tool: Send + Sync {
     // ── Identity ──────────────────────────────────────────────────────────
     fn name(&self) -> &str;
-    fn aliases(&self) -> &[&'static str] { &[] }
+    fn aliases(&self) -> &[&'static str] {
+        &[]
+    }
     fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
         self.name().into()
     }
@@ -173,38 +173,76 @@ pub trait Tool: Send + Sync {
     // ── Discovery / loading ───────────────────────────────────────────────
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String;
     fn prompt(&self, _ctx: &PromptCtx) -> String;
-    fn search_hint(&self) -> Option<&'static str> { None }
-    fn should_defer(&self) -> bool { false }
-    fn always_load(&self) -> bool { false }
-    fn is_enabled(&self) -> bool { true }
+    fn search_hint(&self) -> Option<&'static str> {
+        None
+    }
+    fn should_defer(&self) -> bool {
+        false
+    }
+    fn always_load(&self) -> bool {
+        false
+    }
+    fn is_enabled(&self) -> bool {
+        true
+    }
 
     // ── Schemas ───────────────────────────────────────────────────────────
     fn input_schema(&self) -> serde_json::Value;
-    fn output_schema(&self) -> Option<serde_json::Value> { None }
-    fn max_result_size_chars(&self) -> usize { 200_000 }
-    fn strict(&self) -> bool { false }
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
+    fn max_result_size_chars(&self) -> usize {
+        200_000
+    }
+    fn strict(&self) -> bool {
+        false
+    }
 
     // ── Behavior flags (per-input) ────────────────────────────────────────
-    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool { false }
-    fn is_read_only(&self, _input: &serde_json::Value) -> bool { false }
-    fn is_destructive(&self, _input: &serde_json::Value) -> bool { false }
-    fn is_open_world(&self, _input: &serde_json::Value) -> bool { false }
-    fn is_mcp(&self) -> bool { false }
-    fn is_lsp(&self) -> bool { false }
-    fn requires_user_interaction(&self) -> bool { false }
-    fn interrupt_behavior(&self) -> InterruptBehavior { InterruptBehavior::Block }
+    fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
+    fn is_read_only(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
+    fn is_destructive(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
+    fn is_open_world(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
+    fn is_mcp(&self) -> bool {
+        false
+    }
+    fn is_lsp(&self) -> bool {
+        false
+    }
+    fn requires_user_interaction(&self) -> bool {
+        false
+    }
+    fn interrupt_behavior(&self) -> InterruptBehavior {
+        InterruptBehavior::Block
+    }
     fn inputs_equivalent(&self, a: &serde_json::Value, b: &serde_json::Value) -> bool {
         a == b
     }
-    fn get_path(&self, _input: &serde_json::Value) -> Option<std::path::PathBuf> { None }
+    fn get_path(&self, _input: &serde_json::Value) -> Option<std::path::PathBuf> {
+        None
+    }
     fn is_search_or_read_command(&self, _input: &serde_json::Value) -> SearchReadKind {
         SearchReadKind::default()
     }
-    fn is_transparent_wrapper(&self) -> bool { false }
+    fn is_transparent_wrapper(&self) -> bool {
+        false
+    }
 
     // ── Activity / spinner ────────────────────────────────────────────────
-    fn get_activity_description(&self, _input: &serde_json::Value) -> Option<String> { None }
-    fn get_tool_use_summary(&self, _input: &serde_json::Value) -> Option<String> { None }
+    fn get_activity_description(&self, _input: &serde_json::Value) -> Option<String> {
+        None
+    }
+    fn get_tool_use_summary(&self, _input: &serde_json::Value) -> Option<String> {
+        None
+    }
 
     // ── Validation + permissions ──────────────────────────────────────────
     async fn validate_input(
@@ -221,9 +259,7 @@ pub trait Tool: Send + Sync {
     ) -> crate::tools::permission::PermissionResult {
         crate::tools::permission::PermissionResult::Allow {
             updated_input: None,
-            decision_reason: Some(
-                crate::tools::permission::DecisionReason::ToolDefault,
-            ),
+            decision_reason: Some(crate::tools::permission::DecisionReason::ToolDefault),
         }
     }
     async fn prepare_permission_matcher(
@@ -263,7 +299,9 @@ pub trait Tool: Send + Sync {
     ) -> Option<shared::RenderSpec> {
         None
     }
-    fn render_tool_use_queued_message(&self) -> Option<shared::RenderSpec> { None }
+    fn render_tool_use_queued_message(&self) -> Option<shared::RenderSpec> {
+        None
+    }
     fn render_tool_result_message(
         &self,
         _output: &serde_json::Value,
@@ -293,8 +331,12 @@ pub trait Tool: Send + Sync {
     ) -> Option<shared::RenderSpec> {
         None
     }
-    fn is_result_truncated(&self, _output: &serde_json::Value) -> bool { false }
-    fn extract_search_text(&self, _output: &serde_json::Value) -> Option<String> { None }
+    fn is_result_truncated(&self, _output: &serde_json::Value) -> bool {
+        false
+    }
+    fn extract_search_text(&self, _output: &serde_json::Value) -> Option<String> {
+        None
+    }
 
     // ── Result mapping ────────────────────────────────────────────────────
     fn map_tool_result_to_block(
@@ -305,7 +347,10 @@ pub trait Tool: Send + Sync {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }
@@ -331,7 +376,10 @@ mod tests {
             ..Default::default()
         };
         let json = serde_json::to_string(&r).unwrap();
-        assert!(!json.contains("inject_messages"), "inject_messages must not appear in JSON: {json}");
+        assert!(
+            !json.contains("inject_messages"),
+            "inject_messages must not appear in JSON: {json}"
+        );
         assert!(!json.contains("injected"));
     }
 

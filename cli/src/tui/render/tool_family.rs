@@ -41,7 +41,7 @@ pub fn batch_fragment(name: &str, count: usize) -> Vec<Span<'static>> {
         "Read" => ("Read ", " file", " files"),
         "Grep" => ("Searched for ", " pattern", " patterns"),
         "Glob" => ("listed ", " directory", " directories"),
-        "LSP"  => ("queried ", " symbol", " symbols"),
+        "LSP" => ("queried ", " symbol", " symbols"),
         _ => {
             return vec![
                 Span::styled(format!("{name} x"), dim),
@@ -66,7 +66,10 @@ mod fragment_tests {
     }
 
     fn bold_count(spans: &[Span<'_>]) -> usize {
-        spans.iter().filter(|s| s.style.add_modifier.contains(Modifier::BOLD)).count()
+        spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .count()
     }
 
     #[test]
@@ -115,7 +118,15 @@ mod tests {
 
     #[test]
     fn mutating_tools_classify_as_mutating() {
-        for n in ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch"] {
+        for n in [
+            "Bash",
+            "Write",
+            "Edit",
+            "MultiEdit",
+            "NotebookEdit",
+            "WebFetch",
+            "WebSearch",
+        ] {
             assert_eq!(classify(n), ToolFamily::Mutating, "tool={n}");
         }
     }

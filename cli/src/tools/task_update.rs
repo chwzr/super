@@ -1,8 +1,11 @@
-use std::sync::Arc;
+use crate::state::store::TaskStatus;
+use crate::tools::contract::{
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent,
+};
 use async_trait::async_trait;
 use serde_json::json;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
-use crate::state::store::TaskStatus;
+use std::sync::Arc;
 
 pub struct TaskUpdateTool {
     pub store: Arc<crate::state::store::Store>,
@@ -10,7 +13,9 @@ pub struct TaskUpdateTool {
 
 #[async_trait]
 impl Tool for TaskUpdateTool {
-    fn name(&self) -> &str { "TaskUpdate" }
+    fn name(&self) -> &str {
+        "TaskUpdate"
+    }
     fn description(&self, _input: Option<&serde_json::Value>, _ctx: &DescriptionCtx) -> String {
         "Updates a task in the task list. Supports updating status, subject, description, activeForm, owner, metadata, addBlocks, and addBlockedBy."
             .into()
@@ -55,12 +60,18 @@ impl Tool for TaskUpdateTool {
         }))
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &ToolCallContext, _on_progress: Option<ProgressSink>) -> ToolResult {
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolCallContext,
+        _on_progress: Option<ProgressSink>,
+    ) -> ToolResult {
         let task_id = input["taskId"].as_str().unwrap_or("").to_string();
 
         if task_id.is_empty() {
             return ToolResult {
-                content: json!({"success": false, "taskId": "", "error": "taskId is required"}).to_string(),
+                content: json!({"success": false, "taskId": "", "error": "taskId is required"})
+                    .to_string(),
                 is_error: true,
                 ..Default::default()
             };
@@ -70,7 +81,8 @@ impl Tool for TaskUpdateTool {
         let found = self.store.get_state().tasks.contains_key(&task_id);
         if !found {
             return ToolResult {
-                content: json!({"success": false, "taskId": task_id, "error": "Task not found"}).to_string(),
+                content: json!({"success": false, "taskId": task_id, "error": "Task not found"})
+                    .to_string(),
                 is_error: true,
                 ..Default::default()
             };
@@ -81,16 +93,32 @@ impl Tool for TaskUpdateTool {
         let mut status_change: Option<String> = None;
 
         // Parse optional fields from input
-        let subject = input.get("subject").and_then(|v| v.as_str().map(String::from));
-        let description = input.get("description").and_then(|v| v.as_str().map(String::from));
-        let active_form = input.get("activeForm").and_then(|v| v.as_str().map(String::from));
+        let subject = input
+            .get("subject")
+            .and_then(|v| v.as_str().map(String::from));
+        let description = input
+            .get("description")
+            .and_then(|v| v.as_str().map(String::from));
+        let active_form = input
+            .get("activeForm")
+            .and_then(|v| v.as_str().map(String::from));
         let status_str = input["status"].as_str();
-        let owner = input.get("owner").and_then(|v| v.as_str().map(String::from));
+        let owner = input
+            .get("owner")
+            .and_then(|v| v.as_str().map(String::from));
         let add_blocks: Option<Vec<String>> = input.get("addBlocks").and_then(|v| {
-            v.as_array().map(|a| a.iter().filter_map(|i| i.as_str().map(String::from)).collect())
+            v.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
         });
         let add_blocked_by: Option<Vec<String>> = input.get("addBlockedBy").and_then(|v| {
-            v.as_array().map(|a| a.iter().filter_map(|i| i.as_str().map(String::from)).collect())
+            v.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
         });
         let metadata_merge: Option<serde_json::Value> = input.get("metadata").cloned();
 
@@ -114,17 +142,31 @@ impl Tool for TaskUpdateTool {
         }
 
         // Build the list of fields being updated
-        if subject.is_some() { updated_fields.push("subject".into()); }
-        if description.is_some() { updated_fields.push("description".into()); }
-        if active_form.is_some() { updated_fields.push("activeForm".into()); }
+        if subject.is_some() {
+            updated_fields.push("subject".into());
+        }
+        if description.is_some() {
+            updated_fields.push("description".into());
+        }
+        if active_form.is_some() {
+            updated_fields.push("activeForm".into());
+        }
         if status.is_some() {
             updated_fields.push("status".into());
             status_change = status_str.map(String::from);
         }
-        if owner.is_some() { updated_fields.push("owner".into()); }
-        if add_blocks.is_some() { updated_fields.push("addBlocks".into()); }
-        if add_blocked_by.is_some() { updated_fields.push("addBlockedBy".into()); }
-        if metadata_merge.is_some() { updated_fields.push("metadata".into()); }
+        if owner.is_some() {
+            updated_fields.push("owner".into());
+        }
+        if add_blocks.is_some() {
+            updated_fields.push("addBlocks".into());
+        }
+        if add_blocked_by.is_some() {
+            updated_fields.push("addBlockedBy".into());
+        }
+        if metadata_merge.is_some() {
+            updated_fields.push("metadata".into());
+        }
 
         let tid = task_id.clone();
         let updated_fields_for_result = updated_fields.clone();
@@ -132,11 +174,21 @@ impl Tool for TaskUpdateTool {
 
         self.store.set_state(move |s| {
             if let Some(t) = s.tasks.get_mut(&tid) {
-                if let Some(ref v) = subject { t.subject = v.clone(); }
-                if let Some(ref v) = description { t.description = v.clone(); }
-                if let Some(ref v) = active_form { t.active_form = Some(v.clone()); }
-                if let Some(v) = status { t.status = v; }
-                if let Some(ref v) = owner { t.owner = Some(v.clone()); }
+                if let Some(ref v) = subject {
+                    t.subject = v.clone();
+                }
+                if let Some(ref v) = description {
+                    t.description = v.clone();
+                }
+                if let Some(ref v) = active_form {
+                    t.active_form = Some(v.clone());
+                }
+                if let Some(v) = status {
+                    t.status = v;
+                }
+                if let Some(ref v) = owner {
+                    t.owner = Some(v.clone());
+                }
                 if let Some(ref ids) = add_blocks {
                     for id in ids {
                         if !t.blocks.contains(id) {
@@ -153,7 +205,9 @@ impl Tool for TaskUpdateTool {
                 }
                 if let Some(ref merge) = metadata_merge {
                     let existing = t.metadata.get_or_insert(json!({}));
-                    if let (Some(obj), Some(merge_obj)) = (existing.as_object_mut(), merge.as_object()) {
+                    if let (Some(obj), Some(merge_obj)) =
+                        (existing.as_object_mut(), merge.as_object())
+                    {
                         for (key, val) in merge_obj {
                             if val.is_null() {
                                 obj.remove(key);
@@ -191,7 +245,10 @@ impl Tool for TaskUpdateTool {
         ToolResultBlock {
             tool_use_id: tool_use_id.into(),
             content: ToolResultContent::Text(
-                output.as_str().map(String::from).unwrap_or_else(|| output.to_string()),
+                output
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| output.to_string()),
             ),
             is_error: false,
         }

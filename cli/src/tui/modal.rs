@@ -42,14 +42,14 @@ pub enum Modal {
 impl Modal {
     pub fn title(&self) -> &str {
         match self {
-            Modal::Model(_)    => "Set Model Class",
+            Modal::Model(_) => "Set Model Class",
             Modal::Provider(_) => "Select Provider",
-            Modal::Effort(_)   => "Effort Level",
-            Modal::Mcp(_)      => "MCP Servers",
-            Modal::Resume(_)   => "Resume Session",
-            Modal::Status(_)   => "Super",
-            Modal::Config(_)   => "Super Config",
-            Modal::Agents(_)   => "Agents",
+            Modal::Effort(_) => "Effort Level",
+            Modal::Mcp(_) => "MCP Servers",
+            Modal::Resume(_) => "Resume Session",
+            Modal::Status(_) => "Super",
+            Modal::Config(_) => "Super Config",
+            Modal::Agents(_) => "Agents",
             Modal::Question(_) => "Questions",
         }
     }
@@ -57,50 +57,52 @@ impl Modal {
     pub fn handle_key(&mut self, key: KeyEvent) -> ModalAction {
         match self {
             Modal::Model(p) => match p.handle_key(key) {
-                ModelAction::Continue   => ModalAction::Continue,
-                ModelAction::Select(c)  => ModalAction::SetClass(c.to_string()),
-                ModelAction::Cancel     => ModalAction::Close,
+                ModelAction::Continue => ModalAction::Continue,
+                ModelAction::Select(c) => ModalAction::SetClass(c.to_string()),
+                ModelAction::Cancel => ModalAction::Close,
             },
             Modal::Provider(p) => match p.handle_key(key) {
-                ProviderAction::Continue   => ModalAction::Continue,
+                ProviderAction::Continue => ModalAction::Continue,
                 ProviderAction::Select(id) => ModalAction::SetProvider(id.to_string()),
-                ProviderAction::Cancel     => ModalAction::Close,
+                ProviderAction::Cancel => ModalAction::Close,
             },
             Modal::Effort(p) => match p.handle_key(key) {
-                EffortAction::Continue  => ModalAction::Continue,
+                EffortAction::Continue => ModalAction::Continue,
                 EffortAction::Select(v) => ModalAction::SetEffort(v.to_string()),
-                EffortAction::Cancel    => ModalAction::Close,
+                EffortAction::Cancel => ModalAction::Close,
             },
             Modal::Mcp(p) => match p.handle_key(key) {
                 McpAction::Continue => ModalAction::Continue,
-                McpAction::Cancel   => ModalAction::Close,
+                McpAction::Cancel => ModalAction::Close,
             },
             Modal::Resume(p) => match p.handle_key(key) {
                 ResumeAction::Continue => ModalAction::Continue,
-                ResumeAction::Cancel   => ModalAction::Close,
+                ResumeAction::Cancel => ModalAction::Close,
             },
             Modal::Status(v) => match v.handle_key(key) {
                 StatusAction::Continue => ModalAction::Continue,
-                StatusAction::Cancel   => ModalAction::Close,
+                StatusAction::Cancel => ModalAction::Close,
             },
             Modal::Config(p) => match p.handle_key(key) {
                 ConfigAction::Continue => ModalAction::Continue,
-                ConfigAction::Cancel   => ModalAction::Close,
+                ConfigAction::Cancel => ModalAction::Close,
             },
             Modal::Agents(p) => match p.handle_key(key) {
                 AgentsAction::Continue => ModalAction::Continue,
-                AgentsAction::Cancel   => ModalAction::Close,
+                AgentsAction::Cancel => ModalAction::Close,
             },
             Modal::Question(p) => match p.handle_key(key) {
-                QuestionAction::Continue         => ModalAction::Continue,
-                QuestionAction::Submit(payload)  => ModalAction::SubmitAnswers(payload),
-                QuestionAction::Cancel           => ModalAction::Close,
+                QuestionAction::Continue => ModalAction::Continue,
+                QuestionAction::Submit(payload) => ModalAction::SubmitAnswers(payload),
+                QuestionAction::Cancel => ModalAction::Close,
             },
         }
     }
 
     pub fn render(&self, f: &mut Frame, area: Rect) {
-        if area.height < 2 { return; }
+        if area.height < 2 {
+            return;
+        }
         let sep_area = Rect { height: 1, ..area };
         let content_area = Rect {
             y: area.y + 1,
@@ -109,14 +111,14 @@ impl Modal {
         };
         render_separator(f, sep_area, self.title());
         match self {
-            Modal::Model(p)    => p.render(f, content_area),
+            Modal::Model(p) => p.render(f, content_area),
             Modal::Provider(p) => p.render(f, content_area),
-            Modal::Effort(p)   => p.render(f, content_area),
-            Modal::Mcp(p)      => p.render(f, content_area),
-            Modal::Resume(p)   => p.render(f, content_area),
-            Modal::Status(v)   => v.render(f, content_area),
-            Modal::Config(p)   => p.render(f, content_area),
-            Modal::Agents(p)   => p.render(f, content_area),
+            Modal::Effort(p) => p.render(f, content_area),
+            Modal::Mcp(p) => p.render(f, content_area),
+            Modal::Resume(p) => p.render(f, content_area),
+            Modal::Status(v) => v.render(f, content_area),
+            Modal::Config(p) => p.render(f, content_area),
+            Modal::Agents(p) => p.render(f, content_area),
             Modal::Question(p) => p.render(f, content_area),
         }
     }
@@ -127,12 +129,15 @@ fn render_separator(f: &mut Frame, area: Rect, title: &str) {
     let title_with_spaces = format!(" {} ", title);
     let title_len = title_with_spaces.len();
     let dashes = total_w.saturating_sub(title_len);
-    let left  = dashes / 2;
+    let left = dashes / 2;
     let right = dashes - left;
 
     let sep_line = Line::from(vec![
-        Span::styled("─".repeat(left),  Style::default().fg(CC_BLUE)),
-        Span::styled(title_with_spaces, Style::default().fg(CC_BLUE).add_modifier(Modifier::BOLD)),
+        Span::styled("─".repeat(left), Style::default().fg(CC_BLUE)),
+        Span::styled(
+            title_with_spaces,
+            Style::default().fg(CC_BLUE).add_modifier(Modifier::BOLD),
+        ),
         Span::styled("─".repeat(right), Style::default().fg(CC_BLUE)),
     ]);
     f.render_widget(Paragraph::new(sep_line), area);
