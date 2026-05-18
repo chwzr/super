@@ -54,7 +54,7 @@ pub async fn run_tool_uses(
     for (i, id, tool, input) in safe {
         let ctx = ToolCallContext {
             cwd: cwd.clone(),
-            permission_mode: permission_mode.clone(),
+            permission_mode,
             abort_signal: abort_signal.clone(),
             parent_tool_use_id: parent_tool_use_id.clone(),
             bus: Some(bus.clone()),
@@ -150,7 +150,7 @@ pub async fn run_tool_uses(
     for (i, id, tool, input) in unsafe_ {
         let ctx = ToolCallContext {
             cwd: cwd.clone(),
-            permission_mode: permission_mode.clone(),
+            permission_mode,
             abort_signal: abort_signal.clone(),
             parent_tool_use_id: parent_tool_use_id.clone(),
             bus: Some(bus.clone()),

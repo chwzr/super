@@ -86,8 +86,7 @@ impl Tool for BashTool {
             .get("command")
             .and_then(|v| v.as_str())
             .map(|c| {
-                c.trim()
-                    .split_whitespace()
+                c.split_whitespace()
                     .next()
                     .unwrap_or("")
                     .to_string()
@@ -98,8 +97,7 @@ impl Tool for BashTool {
         }
 
         Some(Box::new(move |rule_content: &str| -> bool {
-            let rule_stem = rule_content.trim()
-                .split_whitespace()
+            let rule_stem = rule_content.split_whitespace()
                 .next()
                 .unwrap_or("");
             rule_stem == command_stem || rule_content == "*"

@@ -64,7 +64,7 @@ impl AuthClient {
     ) -> Result<TokenResponse, Box<dyn std::error::Error>> {
         let resp = self
             .http
-            .post(&format!("{}/auth/authorize", self.base_url))
+            .post(format!("{}/auth/authorize", self.base_url))
             .json(&AuthorizeRequest {
                 code: code.to_string(),
                 code_verifier: code_verifier.to_string(),
@@ -83,7 +83,7 @@ impl AuthClient {
     ) -> Result<UserProfile, Box<dyn std::error::Error>> {
         let resp = self
             .http
-            .get(&format!("{}/auth/me", self.base_url))
+            .get(format!("{}/auth/me", self.base_url))
             .bearer_auth(token)
             .send()
             .await?;
@@ -100,7 +100,7 @@ impl AuthClient {
     ) -> Result<TokenResponse, Box<dyn std::error::Error>> {
         let resp = self
             .http
-            .post(&format!("{}/auth/refresh", self.base_url))
+            .post(format!("{}/auth/refresh", self.base_url))
             .json(&RefreshRequest {
                 refresh_token: refresh_token.to_string(),
             })

@@ -14,6 +14,12 @@ pub struct InputBar {
     cursor_position: usize,
 }
 
+impl Default for InputBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputBar {
     pub fn new() -> Self {
         Self {

@@ -85,14 +85,14 @@ impl ToolRegistry {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
 
         // Standard tools
-        tools.push(Arc::new(ReadTool::default()));
-        tools.push(Arc::new(EditTool::default()));
-        tools.push(Arc::new(WriteTool::default()));
-        tools.push(Arc::new(GlobTool::default()));
-        tools.push(Arc::new(GrepTool::default()));
-        tools.push(Arc::new(NotebookEditTool::default()));
+        tools.push(Arc::new(ReadTool));
+        tools.push(Arc::new(EditTool));
+        tools.push(Arc::new(WriteTool));
+        tools.push(Arc::new(GlobTool));
+        tools.push(Arc::new(GrepTool));
+        tools.push(Arc::new(NotebookEditTool));
         tools.push(Arc::new(BashTool));
-        tools.push(Arc::new(ConfigTool::default()));
+        tools.push(Arc::new(ConfigTool));
         tools.push(Arc::new(WebFetchTool));
         tools.push(Arc::new(WebSearchTool));
 

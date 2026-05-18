@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
-use crate::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
+use crate::tools::contract::{DescriptionCtx, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock, ToolResultContent, ProgressSink};
 use crate::state::store::TaskStatus;
 
 pub struct TaskUpdateTool {
@@ -95,13 +95,13 @@ impl Tool for TaskUpdateTool {
         let metadata_merge: Option<serde_json::Value> = input.get("metadata").cloned();
 
         // Parse status
-        let status = status_str.map(|s| match s {
+        let status = status_str.and_then(|s| match s {
             "pending" => Some(TaskStatus::Pending),
             "in_progress" => Some(TaskStatus::InProgress),
             "completed" => Some(TaskStatus::Completed),
             "deleted" => Some(TaskStatus::Deleted),
             _ => None,
-        }).flatten();
+        });
 
         if let Some(s) = status_str {
             if status.is_none() {

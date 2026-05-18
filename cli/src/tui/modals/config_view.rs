@@ -22,6 +22,12 @@ pub struct ConfigView {
     pub scroll: usize,
 }
 
+impl Default for ConfigView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfigView {
     pub fn new() -> Self {
         let entries = Self::load_entries();

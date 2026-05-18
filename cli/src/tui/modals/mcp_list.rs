@@ -92,6 +92,12 @@ pub struct McpList {
     pub cursor: usize,
 }
 
+impl Default for McpList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpList {
     pub fn new() -> Self {
         Self {

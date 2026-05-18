@@ -97,7 +97,7 @@ impl OpenRouterProvider for OpenRouterClient {
         for key in keys.data {
             if key.label.as_deref() == Some(key_label) || key.name.as_deref() == Some(key_label) {
                 self.http
-                    .delete(&format!("https://openrouter.ai/api/v1/keys/{}", key.key))
+                    .delete(format!("https://openrouter.ai/api/v1/keys/{}", key.key))
                     .bearer_auth(&self.management_key)
                     .send()
                     .await
