@@ -161,7 +161,7 @@ impl Tool for NotebookEditTool {
 
                 let idx = match cell_idx {
                     Ok(i) => i,
-                    Err(e) => return e,
+                    Err(e) => return *e,
                 };
 
                 // Preserve existing cell_type if not specified (clone to avoid borrow conflict)
@@ -215,7 +215,7 @@ impl Tool for NotebookEditTool {
 
                 let idx = match cell_idx {
                     Ok(i) => i,
-                    Err(e) => return e,
+                    Err(e) => return *e,
                 };
 
                 cells.remove(idx);
@@ -297,7 +297,7 @@ fn find_cell_index(
     cells: &[serde_json::Value],
     cell_id: Option<&str>,
     notebook_path: &str,
-) -> Result<usize, ToolResult> {
+) -> Result<usize, Box<ToolResult>> {
     match cell_id {
         Some(cid) => {
             let pos = cells.iter().position(|c| {
@@ -305,23 +305,23 @@ fn find_cell_index(
             });
             match pos {
                 Some(i) => Ok(i),
-                None => Err(ToolResult {
+                None => Err(Box::new(ToolResult {
                     content: format!(
                         "Cell with id '{}' not found in notebook {}",
                         cid, notebook_path
                     ),
                     is_error: true,
                     ..Default::default()
-                }),
+                })),
             }
         }
         None => {
             if cells.is_empty() {
-                Err(ToolResult {
+                Err(Box::new(ToolResult {
                     content: format!("Notebook {} has no cells to edit", notebook_path),
                     is_error: true,
                     ..Default::default()
-                })
+                }))
             } else {
                 Ok(0)
             }
