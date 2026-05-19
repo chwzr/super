@@ -1,6 +1,6 @@
 use super::contract::{
-    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult,
-    ToolResultBlock, ToolResultContent, ValidationResult,
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent, ValidationResult,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -63,10 +63,7 @@ impl Tool for ExitWorktreeTool {
         input: &serde_json::Value,
         _ctx: &ToolCallContext,
     ) -> ValidationResult {
-        let action = input
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
         if action != "keep" && action != "remove" {
             return ValidationResult::Err {
@@ -86,19 +83,16 @@ impl Tool for ExitWorktreeTool {
                 if let Some(session) = crate::utils::worktree::get_session() {
                     let rt = tokio::runtime::Handle::try_current();
                     if let Ok(handle) = rt {
-                        match handle.block_on(
-                            crate::utils::worktree::count_worktree_changes(
-                                &session.worktree_path,
-                                &session.original_head_commit,
-                            ),
-                        ) {
+                        match handle.block_on(crate::utils::worktree::count_worktree_changes(
+                            &session.worktree_path,
+                            &session.original_head_commit,
+                        )) {
                             Ok(changes) => {
                                 if !changes.uncommitted_files.is_empty()
                                     || changes.commits_ahead > 0
                                 {
-                                    let mut msg = String::from(
-                                        "Worktree has uncommitted changes:\n",
-                                    );
+                                    let mut msg =
+                                        String::from("Worktree has uncommitted changes:\n");
                                     for f in &changes.uncommitted_files {
                                         msg.push_str(&format!("  {f}\n"));
                                     }
@@ -159,10 +153,7 @@ impl Tool for ExitWorktreeTool {
                 let path = session.worktree_path.clone();
                 crate::utils::worktree::keep_worktree(&session);
                 ToolResult {
-                    content: format!(
-                        "Left worktree session. Worktree kept at {}",
-                        path.display()
-                    ),
+                    content: format!("Left worktree session. Worktree kept at {}", path.display()),
                     is_error: false,
                     ..Default::default()
                 }

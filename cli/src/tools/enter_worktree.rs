@@ -1,6 +1,6 @@
 use super::contract::{
-    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult,
-    ToolResultBlock, ToolResultContent, ValidationResult,
+    DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
+    ToolResultContent, ValidationResult,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -61,7 +61,9 @@ impl Tool for EnterWorktreeTool {
 
         if name.is_some() && path.is_some() {
             return ValidationResult::Err {
-                message: "'name' and 'path' are mutually exclusive — provide one or the other, not both".into(),
+                message:
+                    "'name' and 'path' are mutually exclusive — provide one or the other, not both"
+                        .into(),
                 error_code: 1,
             };
         }
@@ -243,8 +245,10 @@ mod tests {
         let tool = EnterWorktreeTool;
         let result = tool.call(json!({"name": "test-wt"}), &test_ctx, None).await;
         if result.is_error {
-            assert!(result.content.contains("not in a git repository")
-                || result.content.contains("git"));
+            assert!(
+                result.content.contains("not in a git repository")
+                    || result.content.contains("git")
+            );
         }
     }
 }

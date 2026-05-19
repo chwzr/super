@@ -110,13 +110,12 @@ async fn resolve_base_ref(repo_root: &Path) -> Result<String, String> {
         Err(_) => {
             // Fetch origin and try again
             let _ = git_in_dir(repo_root, &["fetch", "origin"]).await;
-            match git_in_dir(repo_root, &["symbolic-ref", "refs/remotes/origin/HEAD"]).await {
-                Ok(output) => {
-                    if let Some(branch) = output.strip_prefix("refs/remotes/origin/") {
-                        return Ok(format!("origin/{branch}"));
-                    }
+            if let Ok(output) =
+                git_in_dir(repo_root, &["symbolic-ref", "refs/remotes/origin/HEAD"]).await
+            {
+                if let Some(branch) = output.strip_prefix("refs/remotes/origin/") {
+                    return Ok(format!("origin/{branch}"));
                 }
-                Err(_) => {}
             }
         }
     }
@@ -168,11 +167,17 @@ pub async fn get_or_create_worktree(
         .await
         .map_err(|e| format!("failed to read HEAD: {e}"))?;
 
-    git_in_dir(repo_root, &[
-        "worktree", "add", "-B", &branch_name,
-        worktree_path.to_str().unwrap_or(""),
-        &base,
-    ])
+    git_in_dir(
+        repo_root,
+        &[
+            "worktree",
+            "add",
+            "-B",
+            &branch_name,
+            worktree_path.to_str().unwrap_or(""),
+            &base,
+        ],
+    )
     .await
     .map_err(|e| format!("failed to create worktree: {e}"))?;
 
@@ -262,7 +267,9 @@ pub async fn cleanup_worktree(session: &WorktreeSession) -> Result<(), String> {
 
     // git worktree remove --force
     let _ = git(&[
-        "worktree", "remove", "--force",
+        "worktree",
+        "remove",
+        "--force",
         session.worktree_path.to_str().unwrap_or(""),
     ])
     .await;
@@ -297,10 +304,14 @@ pub async fn count_worktree_changes(
         .collect();
 
     // Commits on the worktree branch not on the original branch
-    let count_str = git_in_dir(worktree_path, &[
-        "rev-list", "--count",
-        &format!("{original_head_commit}..HEAD"),
-    ])
+    let count_str = git_in_dir(
+        worktree_path,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{original_head_commit}..HEAD"),
+        ],
+    )
     .await
     .map_err(|e| format!("failed to count commits: {e}"))?;
     let commits_ahead: usize = count_str.parse().unwrap_or(0);
