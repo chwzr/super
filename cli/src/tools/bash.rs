@@ -136,18 +136,105 @@ impl Tool for BashTool {
         }
 
         if run_in_bg {
+            let desc = input["description"]
+                .as_str()
+                .unwrap_or("background bash")
+                .to_string();
+            let task_id = uuid::Uuid::new_v4().to_string();
+            let output_path = crate::state::store::Store::task_output_path(&task_id);
+            let agent_id = context.parent_tool_use_id.clone();
+
+            // Ensure parent directories exist
+            if let Some(parent) = output_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            let queue = context
+                .queue
+                .clone()
+                .expect("MessageQueue must be available in ToolCallContext");
+
             match Command::new("bash")
                 .arg("-c")
                 .arg(command_str)
                 .current_dir(&context.cwd)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
                 .spawn()
             {
-                Ok(mut c) => {
+                Ok(mut child) => {
+                    let stdout = child.stdout.take();
+                    let stderr = child.stderr.take();
+                    let output_path_for_writer = output_path.clone();
+                    let task_id_for_closure = task_id.clone();
+
                     tokio::spawn(async move {
-                        c.wait().await.ok();
+                        use tokio::io::AsyncReadExt;
+
+                        let stdout_bytes = if let Some(stdout) = stdout {
+                            let mut reader = tokio::io::BufReader::new(stdout);
+                            let mut buf = Vec::new();
+                            let _ = reader.read_to_end(&mut buf).await;
+                            buf
+                        } else {
+                            Vec::new()
+                        };
+
+                        let stderr_bytes = if let Some(stderr) = stderr {
+                            let mut reader = tokio::io::BufReader::new(stderr);
+                            let mut buf = Vec::new();
+                            let _ = reader.read_to_end(&mut buf).await;
+                            buf
+                        } else {
+                            Vec::new()
+                        };
+
+                        // Write output to file
+                        let mut output = String::from_utf8_lossy(&stdout_bytes).to_string();
+                        let stderr_str = String::from_utf8_lossy(&stderr_bytes);
+                        if !stderr_str.is_empty() {
+                            output.push_str("\nstderr:\n");
+                            output.push_str(&stderr_str);
+                        }
+                        let _ = std::fs::write(&output_path_for_writer, &output);
+
+                        // Wait for process to finish
+                        let exit_status = child.wait().await;
+                        let exit_code = exit_status.as_ref().ok().and_then(|s| s.code()).unwrap_or(-1);
+                        let status = if exit_status.map(|s| s.success()).unwrap_or(false) {
+                            "completed"
+                        } else {
+                            "failed"
+                        };
+
+                        let summary = format!(
+                            "Background bash \"{desc}\" {} (exit code {exit_code})",
+                            if status == "completed" { "completed" } else { "failed" }
+                        );
+                        let notification = format!(
+                            "<task-notification>\n  <task-id>{task_id}</task-id>\n  <output-file>{output_path}</output-file>\n  <status>{status}</status>\n  <summary>{summary}</summary>\n</task-notification>",
+                            task_id = task_id_for_closure,
+                            output_path = output_path_for_writer.display(),
+                            status = status,
+                            summary = summary,
+                        );
+
+                        use crate::conversation::message_queue::{PromptInputMode, QueuePriority};
+                        queue.enqueue_pending_notification(
+                            notification,
+                            PromptInputMode::TaskNotification,
+                            QueuePriority::Next,
+                            agent_id,
+                        );
                     });
+
                     ToolResult {
-                        content: "Command launched in background".into(),
+                        content: json!({
+                            "background": true,
+                            "task_id": task_id,
+                            "message": format!("Command launched in background. Output: {}", output_path.display()),
+                        })
+                        .to_string(),
                         is_error: false,
                         ..Default::default()
                     }
