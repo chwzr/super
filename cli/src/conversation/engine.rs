@@ -187,6 +187,7 @@ impl ConversationEngine {
         let mut num_turns: u32 = 0;
         let client = reqwest::Client::new();
         let system_rendered = system_prompt.render();
+        let mut sleep_ran = false;
 
         loop {
             num_turns += 1;
@@ -203,6 +204,58 @@ impl ConversationEngine {
                     "max turns (50) reached without end_turn",
                 );
                 return Err("max turns (50) reached without end_turn".to_string());
+            }
+
+            // Drain pending queue notifications before each API call.
+            // If Sleep ran, drain everything (Later); otherwise only Next-priority.
+            let max_priority = if sleep_ran {
+                crate::conversation::message_queue::QueuePriority::Later
+            } else {
+                crate::conversation::message_queue::QueuePriority::Next
+            };
+
+            // Agent filter: subagents drain only their own agent's task-notifications
+            let agent_filter = self.session_id_override.as_deref();
+
+            let queued = self.queue.drain(max_priority, Some(agent_filter));
+            for cmd in &queued {
+                match cmd.mode {
+                    crate::conversation::message_queue::PromptInputMode::TaskNotification => {
+                        let text_block = ContentBlockFinal::Text {
+                            text: cmd.value.clone(),
+                        };
+                        history.push(HistoryEntry {
+                            role: crate::conversation::anthropic::Role::User,
+                            content: vec![text_block],
+                        });
+                        self.bus.emit_system(
+                            crate::sdk::protocol::SystemSubtype::Notice,
+                            &cmd.value,
+                        );
+                    }
+                    crate::conversation::message_queue::PromptInputMode::Prompt => {
+                        let text_block = ContentBlockFinal::Text {
+                            text: cmd.value.clone(),
+                        };
+                        history.push(HistoryEntry {
+                            role: crate::conversation::anthropic::Role::User,
+                            content: vec![text_block.clone()],
+                        });
+                        self.bus.emit(BusMessage::User {
+                            message: UserPayload {
+                                role: "user".to_string(),
+                                content: vec![text_block],
+                            },
+                            parent_tool_use_id: parent_tool_use_id.clone(),
+                            uuid: Uuid::new_v4(),
+                            session_id: session_id.clone(),
+                        });
+                    }
+                    _ => {
+                        // Bash and OrphanedPermission modes are consumed by the TUI
+                        // queue processor, not mid-turn.
+                    }
+                }
             }
 
             let body = build_request_body(&model, &system_rendered, &history, &tools, 8192, true);
@@ -322,6 +375,9 @@ impl ConversationEngine {
                 return Ok(last_assistant_text);
             }
 
+            // Track whether Sleep was called this iteration for next iteration's drain priority
+            let sleep_was_called = tool_uses.iter().any(|(_, name, _)| name == "Sleep");
+
             // Execute the tools, emit the synthetic user turn, loop.
             let tool_results = run_tool_uses(
                 &self.registry,
@@ -350,6 +406,9 @@ impl ConversationEngine {
                 role: Role::User,
                 content: tool_results,
             });
+
+            // Track whether Sleep was called this iteration for next iteration's drain priority
+            sleep_ran = sleep_was_called;
         }
     }
 }
