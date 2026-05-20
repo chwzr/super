@@ -61,7 +61,7 @@ impl Tool for CronDeleteTool {
         drop(jobs);
 
         // Wake the cron runtime so it notices the removal.
-        let _ = self.wake_tx.send(true);
+        let _ = self.wake_tx.send_modify(|v| *v = !*v);
 
         if removed {
             ToolResult {

@@ -152,7 +152,8 @@ impl Tool for CronCreateTool {
         drop(jobs);
 
         // Wake the cron runtime so it re-evaluates scheduling.
-        let _ = self.wake_tx.send(true);
+        // Toggle the value so changed() fires even if it was already true.
+        let _ = self.wake_tx.send_modify(|v| *v = !*v);
 
         let human = format!("cron: {cron} recurring: {recurring} durable: {durable}");
 

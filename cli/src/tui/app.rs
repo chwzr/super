@@ -265,8 +265,9 @@ impl App {
         // write-back on completion). Queue and dispatch in process_pending
         // when the in-flight call finishes.
         if self.inflight.is_some() {
-            self.queued_prompts.push_back(prompt.clone());
-            // Also enqueue to message queue so engine drain picks it up mid-turn
+            // Enqueue to message queue so engine drain picks it up mid-turn.
+            // Do NOT also push to queued_prompts — that would cause the same
+            // input to be processed twice (once mid-turn, once post-turn).
             self.queue
                 .enqueue(crate::conversation::message_queue::QueuedCommand {
                     value: prompt,
@@ -733,8 +734,21 @@ impl App {
     }
 
     fn dispatch_next_queued(&mut self) {
+        // First check local deque (prompts submitted while engine was idle)
         if let Some(next) = self.queued_prompts.pop_front() {
             self.spawn_engine(next);
+            return;
+        }
+        // Then check message queue for any pending Prompt commands
+        // (e.g. cron firings queued while engine was running)
+        let prompts = self
+            .queue
+            .drain(QueuePriority::Later, Some(None));
+        for cmd in prompts {
+            if matches!(cmd.mode, PromptInputMode::Prompt) {
+                self.spawn_engine(cmd.value);
+                return;
+            }
         }
     }
 
