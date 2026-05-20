@@ -104,5 +104,5 @@ pub async fn run() {
     system_prompt.add_section(format!("Available tools:\n{tool_descriptions}"));
 
     // Launch TUI.
-    crate::tui::app::run_with_engine(config, store, engine, registry, bus, system_prompt).await;
+    crate::tui::app::run_with_engine(config, store, engine, registry, bus, system_prompt, queue).await;
 }
