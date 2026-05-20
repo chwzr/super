@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -128,7 +127,7 @@ impl ConversationEngine {
             .openrouter_api_key
             .clone()
             .ok_or_else(|| "no OpenRouter API key configured".to_string())?;
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cwd = crate::utils::cwd::get_cwd();
         let permission_mode = self
             .permission_mode_override
             .unwrap_or_else(|| self.store.get_state().permission_mode);
