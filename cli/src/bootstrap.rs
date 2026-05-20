@@ -25,7 +25,7 @@ pub async fn run() {
     // Create the cron jobs map and wake channel
     let cron_jobs: Arc<
         std::sync::Mutex<
-            std::collections::HashMap<String, crate::tools::cron_create::CronJob>,
+            std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>,
         >,
     > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let (cron_wake_tx, cron_wake_rx) = tokio::sync::watch::channel(false);

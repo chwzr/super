@@ -616,7 +616,7 @@ mod tests {
         Arc<crate::conversation::message_queue::MessageQueue>,
         Arc<
             std::sync::Mutex<
-                std::collections::HashMap<String, crate::tools::cron_create::CronJob>,
+                std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>,
             >,
         >,
         tokio::sync::watch::Sender<bool>,

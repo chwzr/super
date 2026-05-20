@@ -86,7 +86,10 @@ impl ToolRegistry {
         queue: Arc<MessageQueue>,
         cron_jobs: Arc<
             std::sync::Mutex<
-                std::collections::HashMap<String, crate::tools::cron_create::CronJob>,
+                std::collections::HashMap<
+                    String,
+                    crate::conversation::cron_runtime::CronJob,
+                >,
             >,
         >,
         cron_wake_tx: watch::Sender<bool>,
@@ -282,7 +285,7 @@ mod registry_tests {
 
     fn make_test_deps() -> (
         Arc<MessageQueue>,
-        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::tools::cron_create::CronJob>>>,
+        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>>>,
         watch::Sender<bool>,
     ) {
         let queue = Arc::new(MessageQueue::new());

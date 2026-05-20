@@ -14,7 +14,7 @@ use super_cli::sdk::protocol::BusMessage;
 use super_cli::state::store::{PermissionMode, Store};
 use super_cli::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, ToolCallContext};
 use super_cli::tools::permission::{PermissionResult, PermissionSystem};
-use super_cli::tools::cron_create::CronJob;
+use super_cli::conversation::cron_runtime::CronJob;
 use super_cli::tools::ToolRegistry;
 
 fn make_test_registry(store: Arc<Store>) -> Arc<ToolRegistry> {

@@ -2,7 +2,6 @@ use super::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
     ToolResultContent,
 };
-use super::cron_create::CronJob;
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
@@ -10,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
 pub struct CronDeleteTool {
-    pub jobs: Arc<Mutex<HashMap<String, CronJob>>>,
+    pub jobs: Arc<Mutex<HashMap<String, crate::conversation::cron_runtime::CronJob>>>,
     pub wake_tx: watch::Sender<bool>,
 }
 
