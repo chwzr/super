@@ -228,10 +228,8 @@ impl ConversationEngine {
                             role: crate::conversation::anthropic::Role::User,
                             content: vec![text_block],
                         });
-                        self.bus.emit_system(
-                            crate::sdk::protocol::SystemSubtype::Notice,
-                            &cmd.value,
-                        );
+                        self.bus
+                            .emit_system(crate::sdk::protocol::SystemSubtype::Notice, &cmd.value);
                     }
                     crate::conversation::message_queue::PromptInputMode::Prompt => {
                         let text_block = ContentBlockFinal::Text {

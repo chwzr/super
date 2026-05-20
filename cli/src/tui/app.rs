@@ -267,14 +267,15 @@ impl App {
         if self.inflight.is_some() {
             self.queued_prompts.push_back(prompt.clone());
             // Also enqueue to message queue so engine drain picks it up mid-turn
-            self.queue.enqueue(crate::conversation::message_queue::QueuedCommand {
-                value: prompt,
-                mode: PromptInputMode::Prompt,
-                priority: QueuePriority::Next,
-                agent_id: None,
-                is_meta: false,
-                uuid: uuid::Uuid::new_v4(),
-            });
+            self.queue
+                .enqueue(crate::conversation::message_queue::QueuedCommand {
+                    value: prompt,
+                    mode: PromptInputMode::Prompt,
+                    priority: QueuePriority::Next,
+                    agent_id: None,
+                    is_meta: false,
+                    uuid: uuid::Uuid::new_v4(),
+                });
             return;
         }
         let engine = self.engine.clone();

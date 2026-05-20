@@ -160,11 +160,7 @@ mod tests {
         }
     }
 
-    fn cmd_with_agent(
-        value: &str,
-        priority: QueuePriority,
-        agent_id: &str,
-    ) -> QueuedCommand {
+    fn cmd_with_agent(value: &str, priority: QueuePriority, agent_id: &str) -> QueuedCommand {
         QueuedCommand {
             value: value.into(),
             mode: PromptInputMode::TaskNotification,
@@ -178,9 +174,21 @@ mod tests {
     #[test]
     fn drain_respects_priority_threshold() {
         let q = MessageQueue::new();
-        q.enqueue(cmd("a", QueuePriority::Later, PromptInputMode::TaskNotification));
-        q.enqueue(cmd("b", QueuePriority::Next, PromptInputMode::TaskNotification));
-        q.enqueue(cmd("c", QueuePriority::Now, PromptInputMode::TaskNotification));
+        q.enqueue(cmd(
+            "a",
+            QueuePriority::Later,
+            PromptInputMode::TaskNotification,
+        ));
+        q.enqueue(cmd(
+            "b",
+            QueuePriority::Next,
+            PromptInputMode::TaskNotification,
+        ));
+        q.enqueue(cmd(
+            "c",
+            QueuePriority::Now,
+            PromptInputMode::TaskNotification,
+        ));
 
         let drained = q.drain(QueuePriority::Next, None);
         assert_eq!(drained.len(), 2);
@@ -193,7 +201,11 @@ mod tests {
     #[test]
     fn drain_filters_by_agent() {
         let q = MessageQueue::new();
-        q.enqueue(cmd("main", QueuePriority::Next, PromptInputMode::TaskNotification));
+        q.enqueue(cmd(
+            "main",
+            QueuePriority::Next,
+            PromptInputMode::TaskNotification,
+        ));
         q.enqueue(cmd_with_agent("sub", QueuePriority::Next, "agent-1"));
 
         // Main thread drain
@@ -210,8 +222,16 @@ mod tests {
     #[test]
     fn clear_removes_all() {
         let q = MessageQueue::new();
-        q.enqueue(cmd("a", QueuePriority::Now, PromptInputMode::TaskNotification));
-        q.enqueue(cmd("b", QueuePriority::Later, PromptInputMode::TaskNotification));
+        q.enqueue(cmd(
+            "a",
+            QueuePriority::Now,
+            PromptInputMode::TaskNotification,
+        ));
+        q.enqueue(cmd(
+            "b",
+            QueuePriority::Later,
+            PromptInputMode::TaskNotification,
+        ));
         q.clear();
         assert_eq!(q.len(), 0);
     }
@@ -219,7 +239,11 @@ mod tests {
     #[test]
     fn has_pending_checks_priority() {
         let q = MessageQueue::new();
-        q.enqueue(cmd("a", QueuePriority::Later, PromptInputMode::TaskNotification));
+        q.enqueue(cmd(
+            "a",
+            QueuePriority::Later,
+            PromptInputMode::TaskNotification,
+        ));
         assert!(!q.has_pending(QueuePriority::Next));
         assert!(q.has_pending(QueuePriority::Later));
     }
@@ -227,8 +251,16 @@ mod tests {
     #[test]
     fn remove_by_filter_selective() {
         let q = MessageQueue::new();
-        q.enqueue(cmd("keep", QueuePriority::Next, PromptInputMode::TaskNotification));
-        q.enqueue(cmd("drop", QueuePriority::Next, PromptInputMode::TaskNotification));
+        q.enqueue(cmd(
+            "keep",
+            QueuePriority::Next,
+            PromptInputMode::TaskNotification,
+        ));
+        q.enqueue(cmd(
+            "drop",
+            QueuePriority::Next,
+            PromptInputMode::TaskNotification,
+        ));
 
         let removed = q.remove_by_filter(|c| c.value == "drop");
         assert_eq!(removed.len(), 1);

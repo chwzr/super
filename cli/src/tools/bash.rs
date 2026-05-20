@@ -200,7 +200,11 @@ impl Tool for BashTool {
 
                         // Wait for process to finish
                         let exit_status = child.wait().await;
-                        let exit_code = exit_status.as_ref().ok().and_then(|s| s.code()).unwrap_or(-1);
+                        let exit_code = exit_status
+                            .as_ref()
+                            .ok()
+                            .and_then(|s| s.code())
+                            .unwrap_or(-1);
                         let status = if exit_status.map(|s| s.success()).unwrap_or(false) {
                             "completed"
                         } else {
@@ -209,7 +213,11 @@ impl Tool for BashTool {
 
                         let summary = format!(
                             "Background bash \"{desc}\" {} (exit code {exit_code})",
-                            if status == "completed" { "completed" } else { "failed" }
+                            if status == "completed" {
+                                "completed"
+                            } else {
+                                "failed"
+                            }
                         );
                         let notification = format!(
                             "<task-notification>\n  <task-id>{task_id}</task-id>\n  <output-file>{output_path}</output-file>\n  <status>{status}</status>\n  <summary>{summary}</summary>\n</task-notification>",

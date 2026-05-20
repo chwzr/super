@@ -348,9 +348,10 @@ mod tests {
 
     fn make_test_registry(store: Arc<Store>) -> Arc<ToolRegistry> {
         let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
-        let jobs = Arc::new(std::sync::Mutex::new(
-            std::collections::HashMap::<String, crate::conversation::cron_runtime::CronJob>::new(),
-        ));
+        let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            crate::conversation::cron_runtime::CronJob,
+        >::new()));
         let (tx, _rx) = tokio::sync::watch::channel(false);
         ToolRegistry::new(
             store,

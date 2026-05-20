@@ -8,20 +8,21 @@
 use std::sync::Arc;
 
 use shared::RenderSpec;
+use super_cli::conversation::cron_runtime::CronJob;
 use super_cli::conversation::message_queue::MessageQueue;
 use super_cli::conversation::session_bus::SessionBus;
 use super_cli::sdk::protocol::BusMessage;
 use super_cli::state::store::{PermissionMode, Store};
 use super_cli::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, ToolCallContext};
 use super_cli::tools::permission::{PermissionResult, PermissionSystem};
-use super_cli::conversation::cron_runtime::CronJob;
 use super_cli::tools::ToolRegistry;
 
 fn make_test_registry(store: Arc<Store>) -> Arc<ToolRegistry> {
     let queue = Arc::new(MessageQueue::new());
-    let jobs = Arc::new(std::sync::Mutex::new(
-        std::collections::HashMap::<String, CronJob>::new(),
-    ));
+    let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        CronJob,
+    >::new()));
     let (tx, _rx) = tokio::sync::watch::channel(false);
     ToolRegistry::new(
         store,

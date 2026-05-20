@@ -60,7 +60,6 @@ use read::ReadTool;
 use send_message::SendMessageTool;
 use sleep::SleepTool;
 use std::sync::{Arc, RwLock};
-use tokio::sync::watch;
 use structured_output::StructuredOutputTool;
 use task_create::TaskCreateTool;
 use task_get::TaskGetTool;
@@ -69,6 +68,7 @@ use task_output::TaskOutputTool;
 use task_stop::TaskStopTool;
 use task_update::TaskUpdateTool;
 use todo_write::TodoWriteTool;
+use tokio::sync::watch;
 use tool_search::ToolSearchTool;
 use web_fetch::WebFetchTool;
 use web_search::WebSearchTool;
@@ -86,10 +86,7 @@ impl ToolRegistry {
         queue: Arc<MessageQueue>,
         cron_jobs: Arc<
             std::sync::Mutex<
-                std::collections::HashMap<
-                    String,
-                    crate::conversation::cron_runtime::CronJob,
-                >,
+                std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>,
             >,
         >,
         cron_wake_tx: watch::Sender<bool>,
@@ -285,7 +282,11 @@ mod registry_tests {
 
     fn make_test_deps() -> (
         Arc<MessageQueue>,
-        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>>>,
+        Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>,
+            >,
+        >,
         watch::Sender<bool>,
     ) {
         let queue = Arc::new(MessageQueue::new());

@@ -4,9 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::conversation::message_queue::{
-    MessageQueue, PromptInputMode, QueuePriority,
-};
+use crate::conversation::message_queue::{MessageQueue, PromptInputMode, QueuePriority};
 
 /// Parsed fields of a 5-field cron expression.
 #[derive(Debug, Clone)]
@@ -161,14 +159,15 @@ impl CronRuntime {
                 let jobs = self.jobs.lock().unwrap();
                 for (id, job) in jobs.iter() {
                     if job.fields.matches_now() {
-                        self.queue.enqueue(crate::conversation::message_queue::QueuedCommand {
-                            value: job.prompt.clone(),
-                            mode: PromptInputMode::Prompt,
-                            priority: QueuePriority::Later,
-                            agent_id: None,
-                            is_meta: true,
-                            uuid: Uuid::new_v4(),
-                        });
+                        self.queue
+                            .enqueue(crate::conversation::message_queue::QueuedCommand {
+                                value: job.prompt.clone(),
+                                mode: PromptInputMode::Prompt,
+                                priority: QueuePriority::Later,
+                                agent_id: None,
+                                is_meta: true,
+                                uuid: Uuid::new_v4(),
+                            });
 
                         if !job.recurring {
                             to_remove.push(id.clone());

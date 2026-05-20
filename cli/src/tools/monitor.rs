@@ -79,7 +79,7 @@ impl Tool for MonitorTool {
         // Spawn the child process, piping stdout
         let mut child = match Command::new("bash")
             .arg("-c")
-            .arg(command_str.to_string())
+            .arg(command_str)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()

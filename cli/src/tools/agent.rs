@@ -348,7 +348,14 @@ mod tests {
 
     fn make_test_registry(store: Arc<Store>, agent_reg: Arc<AgentRegistry>) -> Arc<ToolRegistry> {
         let (queue, jobs, wake_tx) = make_test_deps();
-        ToolRegistry::new(store, shared::CliConfig::default(), agent_reg, queue, jobs, wake_tx)
+        ToolRegistry::new(
+            store,
+            shared::CliConfig::default(),
+            agent_reg,
+            queue,
+            jobs,
+            wake_tx,
+        )
     }
 
     #[tokio::test]

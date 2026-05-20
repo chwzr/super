@@ -46,11 +46,8 @@ pub async fn run() {
     );
 
     // Spawn cron runtime
-    let cron_runtime = crate::conversation::cron_runtime::CronRuntime::new(
-        cron_jobs,
-        queue.clone(),
-        cron_wake_rx,
-    );
+    let cron_runtime =
+        crate::conversation::cron_runtime::CronRuntime::new(cron_jobs, queue.clone(), cron_wake_rx);
     tokio::spawn(async move { cron_runtime.run().await });
 
     // Load skills: bundled (embedded in binary) + user/project.
@@ -104,5 +101,6 @@ pub async fn run() {
     system_prompt.add_section(format!("Available tools:\n{tool_descriptions}"));
 
     // Launch TUI.
-    crate::tui::app::run_with_engine(config, store, engine, registry, bus, system_prompt, queue).await;
+    crate::tui::app::run_with_engine(config, store, engine, registry, bus, system_prompt, queue)
+        .await;
 }
