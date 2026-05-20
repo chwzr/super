@@ -267,6 +267,7 @@ mod tests {
             auto_deny_prompts: false,
             tool_use_id: "tu_test".into(),
             progress_sink: None,
+            queue: None,
         };
         let result = tool
             .validate_input(&json!({"plan": "some plan"}), &ctx)
@@ -297,6 +298,7 @@ mod tests {
             auto_deny_prompts: false,
             tool_use_id: "tu_test".into(),
             progress_sink: None,
+            queue: None,
         };
         let result = tool
             .validate_input(&json!({"plan": "some plan"}), &ctx)

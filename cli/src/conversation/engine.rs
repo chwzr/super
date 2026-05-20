@@ -43,6 +43,9 @@ pub struct ConversationEngine {
     /// driven by this engine. `true` for async subagent engines, `false`
     /// everywhere else (root, sync subagents).
     pub auto_deny_prompts: bool,
+    /// Message queue shared across the conversation session. Tools enqueue
+    /// notifications (Monitor, background Bash, async Agent, Cron) here.
+    pub queue: Arc<crate::conversation::message_queue::MessageQueue>,
     /// All loaded skills (bundled + user + project). Used to build the
     /// per-session skill listing injected on the first user turn.
     pub skills: Arc<Vec<crate::skills::loader::Skill>>,
@@ -68,6 +71,7 @@ impl ConversationEngine {
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
             skills: Arc::new(Vec::new()),
             skill_listing_sent: Arc::new(AtomicBool::new(false)),
         }
@@ -98,6 +102,7 @@ impl ConversationEngine {
             history_override: Some(Vec::new()),
             permission_mode_override,
             auto_deny_prompts,
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
             skills: Arc::new(Vec::new()),
             skill_listing_sent: Arc::new(AtomicBool::new(false)),
         }
@@ -326,6 +331,7 @@ impl ConversationEngine {
                 parent_tool_use_id.clone(),
                 session_id.clone(),
                 self.auto_deny_prompts, // root engines never auto-deny; async child engines propagate true
+                self.queue.clone(),
             )
             .await;
 
@@ -701,6 +707,7 @@ mod tests {
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
             skills: std::sync::Arc::new(Vec::new()),
             skill_listing_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
@@ -726,6 +733,7 @@ mod tests {
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
             skills: std::sync::Arc::new(Vec::new()),
             skill_listing_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };

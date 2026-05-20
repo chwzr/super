@@ -270,6 +270,7 @@ mod tests {
             auto_deny_prompts: true,
             tool_use_id: String::new(),
             progress_sink: None,
+            queue: None,
         }
     }
 

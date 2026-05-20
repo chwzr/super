@@ -332,6 +332,7 @@ mod tests {
             auto_deny_prompts: false,
             tool_use_id: String::new(),
             progress_sink: None,
+            queue: None,
         };
         let input = serde_json::json!({
             "description": "do thing",

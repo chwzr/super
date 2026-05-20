@@ -59,6 +59,7 @@ async fn default_mode_permission_check_returns_allow() {
         auto_deny_prompts: false,
         tool_use_id: "tu_smoke".into(),
         progress_sink: None,
+        queue: None,
     };
     let result = sys
         .evaluate(
@@ -104,6 +105,7 @@ async fn bypass_mode_short_circuits_to_allow() {
         auto_deny_prompts: false,
         tool_use_id: "tu_smoke".into(),
         progress_sink: None,
+        queue: None,
     };
     let result = sys
         .evaluate(
