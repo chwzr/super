@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 pub struct CronJob {
     pub cron: String,
@@ -16,6 +17,7 @@ pub struct CronJob {
 
 pub struct CronCreateTool {
     pub jobs: Arc<Mutex<HashMap<String, CronJob>>>,
+    pub wake_tx: watch::Sender<bool>,
 }
 
 #[async_trait]
@@ -140,6 +142,10 @@ impl Tool for CronCreateTool {
 
         let mut jobs = self.jobs.lock().unwrap();
         jobs.insert(id.clone(), job);
+        drop(jobs);
+
+        // Wake the cron runtime so it re-evaluates scheduling.
+        let _ = self.wake_tx.send(true);
 
         let human = format!("cron: {cron} recurring: {recurring} durable: {durable}");
 

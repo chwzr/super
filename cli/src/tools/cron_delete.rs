@@ -7,9 +7,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 pub struct CronDeleteTool {
     pub jobs: Arc<Mutex<HashMap<String, CronJob>>>,
+    pub wake_tx: watch::Sender<bool>,
 }
 
 #[async_trait]
@@ -56,7 +58,13 @@ impl Tool for CronDeleteTool {
         let id = input["id"].as_str().unwrap_or("").to_string();
         let mut jobs = self.jobs.lock().unwrap();
 
-        if jobs.remove(&id).is_some() {
+        let removed = jobs.remove(&id).is_some();
+        drop(jobs);
+
+        // Wake the cron runtime so it notices the removal.
+        let _ = self.wake_tx.send(true);
+
+        if removed {
             ToolResult {
                 content: format!("Cron job {id} deleted"),
                 is_error: false,

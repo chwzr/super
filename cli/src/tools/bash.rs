@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use crate::conversation::message_queue::MessageQueue;
+use crate::state::store::Store;
 use crate::tools::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
     ToolResultContent,
@@ -6,7 +10,10 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::process::Command;
 
-pub struct BashTool;
+pub struct BashTool {
+    pub queue: Arc<MessageQueue>,
+    pub store: Arc<Store>,
+}
 
 #[async_trait]
 impl Tool for BashTool {
@@ -260,6 +267,13 @@ mod tests {
     use crate::state::store::PermissionMode;
     use crate::tools::contract::{Tool, ToolCallContext};
 
+    fn make_tool() -> BashTool {
+        BashTool {
+            queue: Arc::new(MessageQueue::new()),
+            store: Arc::new(Store::new()),
+        }
+    }
+
     fn ctx() -> ToolCallContext {
         ToolCallContext {
             cwd: std::env::temp_dir(),
@@ -276,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_error_content_starts_with_exit_code_header() {
-        let t = BashTool;
+        let t = make_tool();
         let out = t
             .call(
                 serde_json::json!({"command": "bash -c 'echo ohno >&2; exit 2'"}),
@@ -299,7 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_success_content_does_not_prepend_exit_header() {
-        let t = BashTool;
+        let t = make_tool();
         let out = t
             .call(serde_json::json!({"command": "echo hello"}), &ctx(), None)
             .await;
@@ -310,7 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn permission_matcher_matches_command_stem() {
-        let t = BashTool;
+        let t = make_tool();
         let input = serde_json::json!({"command": "git status"});
         let matcher = t
             .prepare_permission_matcher(&input)
@@ -327,7 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn permission_matcher_handles_no_command() {
-        let t = BashTool;
+        let t = make_tool();
         let input = serde_json::json!({});
         let matcher = t.prepare_permission_matcher(&input).await;
         assert!(matcher.is_none(), "no command = no matcher");
@@ -335,7 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn permission_matcher_handles_whitespace_command() {
-        let t = BashTool;
+        let t = make_tool();
         let input = serde_json::json!({"command": "   echo hello"});
         let matcher = t
             .prepare_permission_matcher(&input)

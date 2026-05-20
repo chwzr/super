@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::load_config;
+use crate::conversation::message_queue::MessageQueue;
 
 pub async fn run() {
     let config = load_config();
@@ -21,10 +22,36 @@ pub async fn run() {
         });
     }
 
+    // Create the cron jobs map and wake channel
+    let cron_jobs: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, crate::tools::cron_create::CronJob>,
+        >,
+    > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let (cron_wake_tx, cron_wake_rx) = tokio::sync::watch::channel(false);
+
+    // Create the shared message queue
+    let queue = Arc::new(MessageQueue::new());
+
     // Build tool registry with all tools.
     let cwd_for_agents = std::env::current_dir().unwrap_or_default();
     let agent_registry = Arc::new(crate::agents::AgentRegistry::load(&cwd_for_agents));
-    let registry = crate::tools::ToolRegistry::new(store.clone(), config.clone(), agent_registry);
+    let registry = crate::tools::ToolRegistry::new(
+        store.clone(),
+        config.clone(),
+        agent_registry,
+        queue.clone(),
+        cron_jobs.clone(),
+        cron_wake_tx,
+    );
+
+    // Spawn cron runtime
+    let cron_runtime = crate::conversation::cron_runtime::CronRuntime::new(
+        cron_jobs,
+        queue.clone(),
+        cron_wake_rx,
+    );
+    tokio::spawn(async move { cron_runtime.run().await });
 
     // Load skills: bundled (embedded in binary) + user/project.
     // Bundled skills are extracted to ~/.super/plugins/superpowers/ on first run.
@@ -63,6 +90,7 @@ pub async fn run() {
         config.clone(),
         registry.clone(),
         bus.clone(),
+        queue.clone(),
     );
     engine.skills = Arc::new(all_skills);
 

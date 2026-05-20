@@ -60,6 +60,7 @@ impl ConversationEngine {
         config: CliConfig,
         registry: Arc<ToolRegistry>,
         bus: Arc<SessionBus>,
+        queue: Arc<crate::conversation::message_queue::MessageQueue>,
     ) -> Self {
         Self {
             store,
@@ -71,7 +72,7 @@ impl ConversationEngine {
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
-            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            queue,
             skills: Arc::new(Vec::new()),
             skill_listing_sent: Arc::new(AtomicBool::new(false)),
         }
@@ -91,6 +92,7 @@ impl ConversationEngine {
         abort: Option<watch::Receiver<bool>>,
         permission_mode_override: Option<PermissionMode>,
         auto_deny_prompts: bool,
+        queue: Arc<crate::conversation::message_queue::MessageQueue>,
     ) -> Self {
         Self {
             store,
@@ -102,7 +104,7 @@ impl ConversationEngine {
             history_override: Some(Vec::new()),
             permission_mode_override,
             auto_deny_prompts,
-            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            queue,
             skills: Arc::new(Vec::new()),
             skill_listing_sent: Arc::new(AtomicBool::new(false)),
         }
@@ -551,6 +553,34 @@ fn format_skill_entry(skill: &crate::skills::loader::Skill) -> String {
 mod tests {
     use super::*;
 
+    fn make_test_deps() -> (
+        Arc<crate::conversation::message_queue::MessageQueue>,
+        Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<String, crate::tools::cron_create::CronJob>,
+            >,
+        >,
+        tokio::sync::watch::Sender<bool>,
+    ) {
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
+        let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        (queue, jobs, tx)
+    }
+
+    fn make_test_registry(store: Arc<Store>) -> Arc<ToolRegistry> {
+        let agent_reg = std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only());
+        let (queue, jobs, wake_tx) = make_test_deps();
+        crate::tools::ToolRegistry::new(
+            store,
+            shared::CliConfig::default(),
+            agent_reg,
+            queue,
+            jobs,
+            wake_tx,
+        )
+    }
+
     #[test]
     fn fold_accumulates_text_deltas() {
         let mut blocks: Vec<Option<PartialBlock>> = Vec::new();
@@ -692,22 +722,18 @@ mod tests {
         use crate::conversation::session_bus::SessionBus;
         let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
         let store_arc = std::sync::Arc::new(crate::state::store::Store::new());
-        let agent_reg = std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only());
+        let (queue, _, _) = make_test_deps();
         let engine = ConversationEngine {
             store: store_arc.clone(),
             config: shared::CliConfig::default(),
-            registry: crate::tools::ToolRegistry::new(
-                store_arc.clone(),
-                shared::CliConfig::default(),
-                agent_reg.clone(),
-            ),
+            registry: make_test_registry(store_arc.clone()),
             bus: bus.clone(),
             abort: None,
             session_id_override: None,
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
-            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            queue,
             skills: std::sync::Arc::new(Vec::new()),
             skill_listing_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
@@ -719,21 +745,18 @@ mod tests {
         use crate::conversation::session_bus::SessionBus;
         let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
         let store_arc = std::sync::Arc::new(crate::state::store::Store::new());
+        let (queue, _, _) = make_test_deps();
         let engine = ConversationEngine {
             store: store_arc.clone(),
             config: shared::CliConfig::default(),
-            registry: crate::tools::ToolRegistry::new(
-                store_arc,
-                shared::CliConfig::default(),
-                std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
-            ),
+            registry: make_test_registry(store_arc),
             bus,
             abort: None,
             session_id_override: Some("agent-1".into()),
             history_override: None,
             permission_mode_override: None,
             auto_deny_prompts: false,
-            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            queue,
             skills: std::sync::Arc::new(Vec::new()),
             skill_listing_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
@@ -745,11 +768,8 @@ mod tests {
         use crate::conversation::session_bus::SessionBus;
         let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
         let store = std::sync::Arc::new(crate::state::store::Store::new());
-        let registry = crate::tools::ToolRegistry::new(
-            store.clone(),
-            shared::CliConfig::default(),
-            std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
-        );
+        let registry = make_test_registry(store.clone());
+        let (queue, _, _) = make_test_deps();
         let child = ConversationEngine::new_child(
             store,
             shared::CliConfig::default(),
@@ -759,6 +779,7 @@ mod tests {
             None,
             None,
             false,
+            queue,
         );
         assert_eq!(child.effective_session_id(), "agent-xyz");
         assert_eq!(child.session_id_override.as_deref(), Some("agent-xyz"));
@@ -770,12 +791,8 @@ mod tests {
         use crate::state::store::PermissionMode;
         let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
         let store_arc = std::sync::Arc::new(crate::state::store::Store::new());
-        let agent_reg = std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only());
-        let registry = crate::tools::ToolRegistry::new(
-            store_arc.clone(),
-            shared::CliConfig::default(),
-            agent_reg,
-        );
+        let registry = make_test_registry(store_arc.clone());
+        let (queue, _, _) = make_test_deps();
         let child = ConversationEngine::new_child(
             store_arc,
             shared::CliConfig::default(),
@@ -785,6 +802,7 @@ mod tests {
             None,
             Some(PermissionMode::Plan),
             false,
+            queue,
         );
         assert_eq!(child.history_override.as_ref().map(|v| v.len()), Some(0));
         assert!(matches!(
@@ -798,12 +816,8 @@ mod tests {
         use crate::conversation::session_bus::SessionBus;
         let bus = std::sync::Arc::new(SessionBus::new("s-root".into()));
         let store_arc = std::sync::Arc::new(crate::state::store::Store::new());
-        let agent_reg = std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only());
-        let registry = crate::tools::ToolRegistry::new(
-            store_arc.clone(),
-            shared::CliConfig::default(),
-            agent_reg,
-        );
+        let registry = make_test_registry(store_arc.clone());
+        let (queue, _, _) = make_test_deps();
         let sync_child = ConversationEngine::new_child(
             store_arc.clone(),
             shared::CliConfig::default(),
@@ -813,6 +827,7 @@ mod tests {
             None,
             None,
             false,
+            queue.clone(),
         );
         let async_child = ConversationEngine::new_child(
             store_arc,
@@ -823,6 +838,7 @@ mod tests {
             None,
             None,
             true,
+            queue,
         );
         assert!(!sync_child.auto_deny_prompts);
         assert!(async_child.auto_deny_prompts);

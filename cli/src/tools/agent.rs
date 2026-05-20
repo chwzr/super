@@ -14,6 +14,7 @@ use crate::agents::model::resolve_model;
 use crate::agents::permission::resolve_permission_mode;
 use crate::agents::AgentRegistry;
 use crate::conversation::engine::ConversationEngine;
+use crate::conversation::message_queue::MessageQueue;
 use crate::conversation::system_prompt::SystemPrompt;
 use crate::sdk::protocol::{BusMessage, SystemSubtype};
 use crate::state::store::{AsyncAgentHandle, Store};
@@ -24,6 +25,7 @@ pub struct AgentTool {
     pub config: shared::CliConfig,
     pub registry: Arc<AgentRegistry>,
     pub tool_registry: Arc<ToolRegistry>,
+    pub queue: Arc<MessageQueue>,
 }
 
 #[async_trait]
@@ -180,6 +182,7 @@ impl Tool for AgentTool {
                 ctx.abort_signal.clone(),
                 Some(child_perm),
                 false,
+                self.queue.clone(),
             );
             let sys = build_child_system_prompt(&agent_def);
 
@@ -224,6 +227,7 @@ impl Tool for AgentTool {
             Some(abort_rx),
             Some(child_perm),
             true,
+            self.queue.clone(),
         );
         let sys = build_child_system_prompt(&agent_def);
         let store_for_task = self.store.clone();
@@ -308,18 +312,39 @@ mod tests {
     use crate::conversation::session_bus::SessionBus;
     use crate::state::store::PermissionMode;
 
+    fn make_test_deps() -> (
+        Arc<MessageQueue>,
+        Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<String, crate::tools::cron_create::CronJob>,
+            >,
+        >,
+        watch::Sender<bool>,
+    ) {
+        let queue = Arc::new(MessageQueue::new());
+        let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let (tx, _rx) = watch::channel(false);
+        (queue, jobs, tx)
+    }
+
+    fn make_test_registry(store: Arc<Store>, agent_reg: Arc<AgentRegistry>) -> Arc<ToolRegistry> {
+        let (queue, jobs, wake_tx) = make_test_deps();
+        ToolRegistry::new(store, shared::CliConfig::default(), agent_reg, queue, jobs, wake_tx)
+    }
+
     #[tokio::test]
     async fn agent_tool_errors_on_unknown_subagent_type() {
         let store = Arc::new(Store::new());
         let cfg = shared::CliConfig::default();
         let agent_reg = Arc::new(AgentRegistry::built_in_only());
-        let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
+        let tool_reg = make_test_registry(store.clone(), agent_reg.clone());
 
         let tool = AgentTool {
             store: store.clone(),
             config: cfg.clone(),
             registry: agent_reg,
             tool_registry: tool_reg.clone(),
+            queue: Arc::new(MessageQueue::new()),
         };
 
         let bus = Arc::new(SessionBus::new("s-root".into()));
@@ -353,12 +378,13 @@ mod tests {
         let store = Arc::new(Store::new());
         let cfg = shared::CliConfig::default();
         let agent_reg = Arc::new(AgentRegistry::built_in_only());
-        let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
+        let tool_reg = make_test_registry(store.clone(), agent_reg.clone());
         let tool = AgentTool {
             store,
             config: cfg,
             registry: agent_reg,
             tool_registry: tool_reg,
+            queue: Arc::new(MessageQueue::new()),
         };
         assert_eq!(tool.name(), "Task");
     }
@@ -368,12 +394,13 @@ mod tests {
         let store = Arc::new(Store::new());
         let cfg = shared::CliConfig::default();
         let agent_reg = Arc::new(AgentRegistry::built_in_only());
-        let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
+        let tool_reg = make_test_registry(store.clone(), agent_reg.clone());
         let tool = AgentTool {
             store,
             config: cfg,
             registry: agent_reg,
             tool_registry: tool_reg,
+            queue: Arc::new(MessageQueue::new()),
         };
         let schema = tool.input_schema();
         let st = &schema["properties"]["subagent_type"];

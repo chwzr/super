@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::conversation::message_queue::MessageQueue;
 use super::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
     ToolResultContent,
@@ -5,7 +8,9 @@ use super::contract::{
 use async_trait::async_trait;
 use serde_json::json;
 
-pub struct MonitorTool;
+pub struct MonitorTool {
+    pub queue: Arc<MessageQueue>,
+}
 
 #[async_trait]
 impl Tool for MonitorTool {
