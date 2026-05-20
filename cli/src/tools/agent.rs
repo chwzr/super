@@ -14,7 +14,7 @@ use crate::agents::model::resolve_model;
 use crate::agents::permission::resolve_permission_mode;
 use crate::agents::AgentRegistry;
 use crate::conversation::engine::ConversationEngine;
-use crate::conversation::message_queue::MessageQueue;
+use crate::conversation::message_queue::{MessageQueue, PromptInputMode, QueuePriority};
 use crate::conversation::system_prompt::SystemPrompt;
 use crate::sdk::protocol::{BusMessage, SystemSubtype};
 use crate::state::store::{AsyncAgentHandle, Store};
@@ -234,11 +234,14 @@ impl Tool for AgentTool {
         let bus_for_task = bus.clone();
         let agent_id_for_task = agent_id.clone();
         let parent_tu_for_task = parent_tool_use_id.clone();
+        let queue_for_agent = self.queue.clone();
+        let description_for_task = description.to_string();
 
         tokio::spawn(async move {
             let result = child
                 .process_prompt(prompt, &sys, Some(parent_tu_for_task.clone()))
                 .await;
+            let is_ok = result.is_ok();
             let text = match result {
                 Ok(t) => t,
                 Err(e) => format!("error: {e}"),
@@ -250,6 +253,22 @@ impl Tool for AgentTool {
                 uuid: Uuid::new_v4(),
                 session_id: agent_id_for_task.clone(),
             });
+            // Enqueue notification for the model
+            let status = if is_ok { "completed" } else { "failed" };
+            let summary = format!(
+                "Agent \"{description_for_task}\" {}",
+                if is_ok { "completed" } else { "failed" }
+            );
+            let notification = format!(
+                "<task-notification>\n  <task-id>{}</task-id>\n  <status>{}</status>\n  <summary>{}</summary>\n</task-notification>",
+                agent_id_for_task, status, summary
+            );
+            queue_for_agent.enqueue_pending_notification(
+                notification,
+                PromptInputMode::TaskNotification,
+                QueuePriority::Later,
+                None, // agent notification goes to main thread
+            );
             store_for_task.complete_async_agent(&agent_id_for_task);
         });
 
