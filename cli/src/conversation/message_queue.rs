@@ -28,11 +28,12 @@ pub struct QueuedCommand {
     pub uuid: Uuid,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MessageQueue {
     inner: Arc<Mutex<MessageQueueInner>>,
 }
 
+#[derive(Debug)]
 struct MessageQueueInner {
     queue: Vec<QueuedCommand>,
 }
@@ -130,6 +131,11 @@ impl MessageQueue {
     /// Total number of commands in the queue.
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().queue.len()
+    }
+
+    /// True when the queue has no commands.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
