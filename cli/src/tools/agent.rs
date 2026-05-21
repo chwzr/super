@@ -331,6 +331,7 @@ mod tests {
     use crate::conversation::session_bus::SessionBus;
     use crate::state::store::PermissionMode;
 
+    #[allow(clippy::type_complexity)]
     fn make_test_deps() -> (
         Arc<MessageQueue>,
         Arc<

@@ -610,6 +610,7 @@ fn format_skill_entry(skill: &crate::skills::loader::Skill) -> String {
 mod tests {
     use super::*;
 
+    #[allow(clippy::type_complexity)]
     fn make_test_deps() -> (
         Arc<crate::conversation::message_queue::MessageQueue>,
         Arc<

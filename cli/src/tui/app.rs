@@ -741,9 +741,7 @@ impl App {
         }
         // Then check message queue for any pending Prompt commands
         // (e.g. cron firings queued while engine was running)
-        let prompts = self
-            .queue
-            .drain(QueuePriority::Later, Some(None));
+        let prompts = self.queue.drain(QueuePriority::Later, Some(None));
         for cmd in prompts {
             if matches!(cmd.mode, PromptInputMode::Prompt) {
                 self.spawn_engine(cmd.value);

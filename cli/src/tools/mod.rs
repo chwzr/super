@@ -280,6 +280,7 @@ mod registry_tests {
     use crate::agents::definition::{AgentDefinition, AgentSource};
     use crate::state::store::PermissionMode;
 
+    #[allow(clippy::type_complexity)]
     fn make_test_deps() -> (
         Arc<MessageQueue>,
         Arc<
