@@ -8,6 +8,8 @@
 use std::sync::Arc;
 
 use shared::RenderSpec;
+use super_cli::conversation::cron_runtime::CronJob;
+use super_cli::conversation::message_queue::MessageQueue;
 use super_cli::conversation::session_bus::SessionBus;
 use super_cli::sdk::protocol::BusMessage;
 use super_cli::state::store::{PermissionMode, Store};
@@ -15,14 +17,27 @@ use super_cli::tools::contract::{DescriptionCtx, PromptCtx, RenderOpts, ToolCall
 use super_cli::tools::permission::{PermissionResult, PermissionSystem};
 use super_cli::tools::ToolRegistry;
 
+fn make_test_registry(store: Arc<Store>) -> Arc<ToolRegistry> {
+    let queue = Arc::new(MessageQueue::new());
+    let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        CronJob,
+    >::new()));
+    let (tx, _rx) = tokio::sync::watch::channel(false);
+    ToolRegistry::new(
+        store,
+        shared::CliConfig::default(),
+        Arc::new(super_cli::agents::AgentRegistry::built_in_only()),
+        queue,
+        jobs,
+        tx,
+    )
+}
+
 #[tokio::test]
 async fn read_tool_round_trips_through_new_contract() {
     let store = Arc::new(Store::new());
-    let registry = ToolRegistry::new(
-        store.clone(),
-        shared::CliConfig::default(),
-        Arc::new(super_cli::agents::AgentRegistry::built_in_only()),
-    );
+    let registry = make_test_registry(store.clone());
 
     let read = registry.get("Read").expect("Read tool registered");
     let desc = read.description(None, &DescriptionCtx::default());
@@ -43,11 +58,7 @@ async fn read_tool_round_trips_through_new_contract() {
 #[tokio::test]
 async fn default_mode_permission_check_returns_allow() {
     let store = Arc::new(Store::new());
-    let registry = ToolRegistry::new(
-        store.clone(),
-        shared::CliConfig::default(),
-        Arc::new(super_cli::agents::AgentRegistry::built_in_only()),
-    );
+    let registry = make_test_registry(store.clone());
     let read = registry.get("Read").unwrap();
     let sys = PermissionSystem::new(PermissionMode::Default);
     let ctx = ToolCallContext {
@@ -59,6 +70,7 @@ async fn default_mode_permission_check_returns_allow() {
         auto_deny_prompts: false,
         tool_use_id: "tu_smoke".into(),
         progress_sink: None,
+        queue: None,
     };
     let result = sys
         .evaluate(
@@ -88,11 +100,7 @@ async fn bus_round_trips_render_event() {
 #[tokio::test]
 async fn bypass_mode_short_circuits_to_allow() {
     let store = Arc::new(Store::new());
-    let registry = ToolRegistry::new(
-        store.clone(),
-        shared::CliConfig::default(),
-        Arc::new(super_cli::agents::AgentRegistry::built_in_only()),
-    );
+    let registry = make_test_registry(store.clone());
     let bash = registry.get("Bash").unwrap();
     let sys = PermissionSystem::new(PermissionMode::BypassPermissions);
     let ctx = ToolCallContext {
@@ -104,6 +112,7 @@ async fn bypass_mode_short_circuits_to_allow() {
         auto_deny_prompts: false,
         tool_use_id: "tu_smoke".into(),
         progress_sink: None,
+        queue: None,
     };
     let result = sys
         .evaluate(

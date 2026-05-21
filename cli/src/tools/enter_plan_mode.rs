@@ -180,6 +180,7 @@ mod tests {
             auto_deny_prompts: false,
             tool_use_id: "tu_test".into(),
             progress_sink: None,
+            queue: None,
         };
         let result = tool.call(json!({}), &ctx, None).await;
         assert!(!result.is_error);

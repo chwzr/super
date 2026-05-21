@@ -36,6 +36,7 @@ pub mod web_fetch_preapproved;
 pub mod web_search;
 pub mod write;
 
+use crate::conversation::message_queue::MessageQueue;
 use crate::state::store::{PermissionMode, Store};
 use agent::AgentTool;
 use ask_user_question::AskUserQuestionTool;
@@ -67,6 +68,7 @@ use task_output::TaskOutputTool;
 use task_stop::TaskStopTool;
 use task_update::TaskUpdateTool;
 use todo_write::TodoWriteTool;
+use tokio::sync::watch;
 use tool_search::ToolSearchTool;
 use web_fetch::WebFetchTool;
 use web_search::WebSearchTool;
@@ -81,8 +83,14 @@ impl ToolRegistry {
         store: Arc<Store>,
         config: shared::CliConfig,
         agent_registry: Arc<crate::agents::AgentRegistry>,
+        queue: Arc<MessageQueue>,
+        cron_jobs: Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>,
+            >,
+        >,
+        cron_wake_tx: watch::Sender<bool>,
     ) -> Arc<Self> {
-        let cron_jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(ReadTool),
             Arc::new(EditTool),
@@ -90,22 +98,29 @@ impl ToolRegistry {
             Arc::new(GlobTool),
             Arc::new(GrepTool),
             Arc::new(NotebookEditTool),
-            Arc::new(BashTool),
+            Arc::new(BashTool {
+                queue: queue.clone(),
+                store: store.clone(),
+            }),
             Arc::new(ConfigTool),
             Arc::new(WebFetchTool),
             Arc::new(WebSearchTool),
             Arc::new(LspTool),
             Arc::new(CronCreateTool {
                 jobs: cron_jobs.clone(),
+                wake_tx: cron_wake_tx.clone(),
             }),
             Arc::new(CronDeleteTool {
                 jobs: cron_jobs.clone(),
+                wake_tx: cron_wake_tx.clone(),
             }),
             Arc::new(CronListTool {
                 jobs: cron_jobs.clone(),
             }),
             Arc::new(SleepTool),
-            Arc::new(MonitorTool),
+            Arc::new(MonitorTool {
+                queue: queue.clone(),
+            }),
             Arc::new(StructuredOutputTool),
             Arc::new(EnterWorktreeTool),
             Arc::new(ExitWorktreeTool),
@@ -129,6 +144,7 @@ impl ToolRegistry {
             config: config.clone(),
             registry: agent_registry,
             tool_registry: registry.clone(),
+            queue: queue.clone(),
         }));
         registry.register(Arc::new(TaskCreateTool {
             store: store.clone(),
@@ -264,6 +280,22 @@ mod registry_tests {
     use crate::agents::definition::{AgentDefinition, AgentSource};
     use crate::state::store::PermissionMode;
 
+    #[allow(clippy::type_complexity)]
+    fn make_test_deps() -> (
+        Arc<MessageQueue>,
+        Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>,
+            >,
+        >,
+        watch::Sender<bool>,
+    ) {
+        let queue = Arc::new(MessageQueue::new());
+        let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let (tx, _rx) = watch::channel(false);
+        (queue, jobs, tx)
+    }
+
     fn agent(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentDefinition {
         AgentDefinition {
             agent_type: "x".into(),
@@ -281,10 +313,14 @@ mod registry_tests {
     #[test]
     fn filter_star_keeps_all() {
         let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let (queue, jobs, wake_tx) = make_test_deps();
         let reg = ToolRegistry::new(
             store,
             shared::CliConfig::default(),
             std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+            queue,
+            jobs,
+            wake_tx,
         );
         let all = reg.assemble_for_mode(&PermissionMode::Default).len();
         let filtered = reg.filter_for_agent(&agent(Some(vec!["*"]), vec![]));
@@ -297,10 +333,14 @@ mod registry_tests {
     #[test]
     fn filter_named_subset_keeps_only_listed() {
         let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let (queue, jobs, wake_tx) = make_test_deps();
         let reg = ToolRegistry::new(
             store,
             shared::CliConfig::default(),
             std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+            queue,
+            jobs,
+            wake_tx,
         );
         let filtered = reg.filter_for_agent(&agent(Some(vec!["Read", "Grep"]), vec![]));
         let names: Vec<String> = filtered.list();
@@ -312,10 +352,14 @@ mod registry_tests {
     #[test]
     fn filter_disallowed_removes_listed() {
         let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let (queue, jobs, wake_tx) = make_test_deps();
         let reg = ToolRegistry::new(
             store,
             shared::CliConfig::default(),
             std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+            queue,
+            jobs,
+            wake_tx,
         );
         let filtered = reg.filter_for_agent(&agent(Some(vec!["*"]), vec!["Edit", "Write"]));
         let names: Vec<String> = filtered.list();
@@ -326,10 +370,14 @@ mod registry_tests {
     #[test]
     fn filter_none_means_inherit_all() {
         let store = std::sync::Arc::new(crate::state::store::Store::new());
+        let (queue, jobs, wake_tx) = make_test_deps();
         let reg = ToolRegistry::new(
             store,
             shared::CliConfig::default(),
             std::sync::Arc::new(crate::agents::AgentRegistry::built_in_only()),
+            queue,
+            jobs,
+            wake_tx,
         );
         let all = reg.assemble_for_mode(&PermissionMode::Default).len();
         let filtered = reg.filter_for_agent(&agent(None, vec![]));

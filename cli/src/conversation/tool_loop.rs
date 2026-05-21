@@ -25,6 +25,7 @@ pub async fn run_tool_uses(
     parent_tool_use_id: Option<String>,
     session_id: String,
     auto_deny_prompts: bool,
+    queue: Arc<crate::conversation::message_queue::MessageQueue>,
 ) -> Vec<ContentBlockFinal> {
     // Partition into safe (read-only / pure) and unsafe (writes, shell, network with side effects).
     // Preserve original order index so we can recombine into emission order at the end.
@@ -69,6 +70,7 @@ pub async fn run_tool_uses(
             auto_deny_prompts,
             tool_use_id: id.clone(),
             progress_sink: None,
+            queue: Some(queue.clone()),
         };
         let bus_for_task = bus.clone();
         let tool_name = tool.name().to_string();
@@ -160,6 +162,7 @@ pub async fn run_tool_uses(
             auto_deny_prompts,
             tool_use_id: id.clone(),
             progress_sink: None,
+            queue: Some(queue.clone()),
         };
 
         // Interactive tools: render the spec, suspend the turn, await the
@@ -343,15 +346,29 @@ mod tests {
     use crate::state::store::Store;
     use shared::CliConfig;
 
-    #[tokio::test]
-    async fn unknown_tool_produces_error_result() {
-        let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(
+    fn make_test_registry(store: Arc<Store>) -> Arc<ToolRegistry> {
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
+        let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            crate::conversation::cron_runtime::CronJob,
+        >::new()));
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        ToolRegistry::new(
             store,
             CliConfig::default(),
             Arc::new(crate::agents::AgentRegistry::built_in_only()),
-        );
+            queue,
+            jobs,
+            tx,
+        )
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_produces_error_result() {
+        let store = Arc::new(Store::new());
+        let registry = make_test_registry(store);
         let bus = Arc::new(SessionBus::new("test".into()));
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
         let results = run_tool_uses(
             &registry,
             vec![("tu_1".into(), "DoesNotExist".into(), serde_json::json!({}))],
@@ -362,6 +379,7 @@ mod tests {
             None,                  // parent_tool_use_id
             "test-session".into(), // session_id
             false,                 // auto_deny_prompts
+            queue,
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -382,16 +400,13 @@ mod tests {
     #[tokio::test]
     async fn read_tool_executes_against_real_file() {
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(
-            store,
-            CliConfig::default(),
-            Arc::new(crate::agents::AgentRegistry::built_in_only()),
-        );
+        let registry = make_test_registry(store);
         let tmpfile =
             std::env::temp_dir().join(format!("super_tool_loop_test_{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&tmpfile, "hello\nworld\n").unwrap();
 
         let bus = Arc::new(SessionBus::new("test".into()));
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
         let results = run_tool_uses(
             &registry,
             vec![(
@@ -406,6 +421,7 @@ mod tests {
             None,                  // parent_tool_use_id
             "test-session".into(), // session_id
             false,                 // auto_deny_prompts
+            queue,
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -430,11 +446,7 @@ mod tests {
         // Read is concurrency-safe; Write is not. Verify both produce results
         // tagged with the right tool_use_id in original emission order.
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(
-            store,
-            CliConfig::default(),
-            Arc::new(crate::agents::AgentRegistry::built_in_only()),
-        );
+        let registry = make_test_registry(store);
         let tmp_read = std::env::temp_dir().join(format!(
             "super_tool_loop_mix_read_{}.txt",
             uuid::Uuid::new_v4()
@@ -446,6 +458,7 @@ mod tests {
         std::fs::write(&tmp_read, "read-me").unwrap();
 
         let bus = Arc::new(SessionBus::new("test".into()));
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
         let results = run_tool_uses(
             &registry,
             vec![
@@ -460,6 +473,7 @@ mod tests {
             None,                  // parent_tool_use_id
             "test-session".into(), // session_id
             false,                 // auto_deny_prompts
+            queue,
         )
         .await;
 
@@ -521,16 +535,13 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(None));
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(
-            store,
-            CliConfig::default(),
-            Arc::new(crate::agents::AgentRegistry::built_in_only()),
-        );
+        let registry = make_test_registry(store);
         registry.register(Arc::new(CaptureTool {
             seen_parent: seen.clone(),
         }));
 
         let bus = Arc::new(SessionBus::new("s-root".into()));
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
         let _ = run_tool_uses(
             &registry,
             vec![("tu_x".into(), "Capture".into(), serde_json::json!({}))],
@@ -541,6 +552,7 @@ mod tests {
             Some("tu_parent".into()),
             "agent-1".into(),
             false,
+            queue,
         )
         .await;
 
@@ -590,11 +602,11 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(None));
         let store = Arc::new(Store::new());
-        let agent_reg = Arc::new(crate::agents::AgentRegistry::built_in_only());
-        let registry = ToolRegistry::new(store, CliConfig::default(), agent_reg);
+        let registry = make_test_registry(store);
         registry.register(Arc::new(CaptureTool { seen: seen.clone() }));
 
         let bus = Arc::new(SessionBus::new("s-root".into()));
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
         let _ = run_tool_uses(
             &registry,
             vec![("tu_actual".into(), "Capture2".into(), serde_json::json!({}))],
@@ -605,6 +617,7 @@ mod tests {
             None,
             "test-session".into(),
             false,
+            queue,
         )
         .await;
 
@@ -651,14 +664,11 @@ mod tests {
         }
 
         let store = Arc::new(Store::new());
-        let registry = ToolRegistry::new(
-            store,
-            CliConfig::default(),
-            Arc::new(crate::agents::AgentRegistry::built_in_only()),
-        );
+        let registry = make_test_registry(store);
         registry.register(Arc::new(PanickingTool));
 
         let bus = Arc::new(SessionBus::new("test".into()));
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
         let results = run_tool_uses(
             &registry,
             vec![("tu_panic".into(), "Panicker".into(), serde_json::json!({}))],
@@ -669,6 +679,7 @@ mod tests {
             None,                  // parent_tool_use_id
             "test-session".into(), // session_id
             false,                 // auto_deny_prompts
+            queue,
         )
         .await;
 

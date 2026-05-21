@@ -199,6 +199,7 @@ mod tests {
             auto_deny_prompts: false,
             tool_use_id: "tu_test".into(),
             progress_sink: None,
+            queue: None,
         }
     }
 

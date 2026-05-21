@@ -6,16 +6,13 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
-pub struct CronJob {
-    pub cron: String,
-    pub prompt: String,
-    pub recurring: bool,
-    pub durable: bool,
-}
+use crate::conversation::cron_runtime::{self, CronFields};
 
 pub struct CronCreateTool {
-    pub jobs: Arc<Mutex<HashMap<String, CronJob>>>,
+    pub jobs: Arc<Mutex<HashMap<String, crate::conversation::cron_runtime::CronJob>>>,
+    pub wake_tx: watch::Sender<bool>,
 }
 
 #[async_trait]
@@ -130,16 +127,33 @@ impl Tool for CronCreateTool {
             }
         }
 
+        // Parse cron fields for the runtime
+        let fields = match CronFields::parse(&cron) {
+            Ok(f) => f,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("Invalid cron expression: {e}"),
+                    is_error: true,
+                    ..Default::default()
+                };
+            }
+        };
+
         let id = uuid::Uuid::new_v4().to_string();
-        let job = CronJob {
+        let runtime_job = cron_runtime::CronJob {
             cron: cron.clone(),
-            prompt,
+            prompt: prompt.clone(),
             recurring,
-            durable,
+            fields,
         };
 
         let mut jobs = self.jobs.lock().unwrap();
-        jobs.insert(id.clone(), job);
+        jobs.insert(id.clone(), runtime_job);
+        drop(jobs);
+
+        // Wake the cron runtime so it re-evaluates scheduling.
+        // Toggle the value so changed() fires even if it was already true.
+        let _ = self.wake_tx.send_modify(|v| *v = !*v);
 
         let human = format!("cron: {cron} recurring: {recurring} durable: {durable}");
 

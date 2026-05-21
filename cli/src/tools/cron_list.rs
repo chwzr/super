@@ -2,14 +2,13 @@ use super::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
     ToolResultContent,
 };
-use super::cron_create::CronJob;
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub struct CronListTool {
-    pub jobs: Arc<Mutex<HashMap<String, CronJob>>>,
+    pub jobs: Arc<Mutex<HashMap<String, crate::conversation::cron_runtime::CronJob>>>,
 }
 
 #[async_trait]
@@ -42,8 +41,7 @@ impl Tool for CronListTool {
                             "id": {"type": "string"},
                             "cron": {"type": "string"},
                             "prompt": {"type": "string"},
-                            "recurring": {"type": "boolean"},
-                            "durable": {"type": "boolean"}
+                            "recurring": {"type": "boolean"}
                         }
                     }
                 }
@@ -78,11 +76,10 @@ impl Tool for CronListTool {
         let mut content = String::from("Registered cron jobs:\n");
         for (id, job) in jobs.iter() {
             content.push_str(&format!(
-                "- {id}: \"{cron}\" prompt=\"{prompt}\" recurring={recurring} durable={durable}\n",
+                "- {id}: \"{cron}\" prompt=\"{prompt}\" recurring={recurring}\n",
                 cron = job.cron,
                 prompt = job.prompt,
                 recurring = job.recurring,
-                durable = job.durable,
             ));
         }
         ToolResult {

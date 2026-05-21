@@ -154,6 +154,9 @@ pub struct ToolCallContext {
     /// Optional per-call progress channel. When set, the tool can push
     /// `ProgressEvent`s and the executor relays them onto the session bus.
     pub progress_sink: Option<ProgressSink>,
+    /// Message queue for tools that need to enqueue notifications (Monitor,
+    /// background Bash, async Agent, Cron).
+    pub queue: Option<std::sync::Arc<crate::conversation::message_queue::MessageQueue>>,
 }
 
 #[async_trait::async_trait]
@@ -394,6 +397,7 @@ mod tests {
             auto_deny_prompts: true,
             tool_use_id: "tu_test".into(),
             progress_sink: None,
+            queue: None,
         };
         assert!(ctx.auto_deny_prompts);
         assert_eq!(ctx.tool_use_id, "tu_test");

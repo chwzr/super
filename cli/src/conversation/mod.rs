@@ -1,6 +1,8 @@
 pub mod anthropic;
 pub mod compaction;
+pub mod cron_runtime;
 pub mod engine;
+pub mod message_queue;
 pub mod session_bus;
 pub mod sidechain;
 pub mod sse;

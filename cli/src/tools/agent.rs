@@ -14,6 +14,7 @@ use crate::agents::model::resolve_model;
 use crate::agents::permission::resolve_permission_mode;
 use crate::agents::AgentRegistry;
 use crate::conversation::engine::ConversationEngine;
+use crate::conversation::message_queue::{MessageQueue, PromptInputMode, QueuePriority};
 use crate::conversation::system_prompt::SystemPrompt;
 use crate::sdk::protocol::{BusMessage, SystemSubtype};
 use crate::state::store::{AsyncAgentHandle, Store};
@@ -24,6 +25,7 @@ pub struct AgentTool {
     pub config: shared::CliConfig,
     pub registry: Arc<AgentRegistry>,
     pub tool_registry: Arc<ToolRegistry>,
+    pub queue: Arc<MessageQueue>,
 }
 
 #[async_trait]
@@ -180,6 +182,7 @@ impl Tool for AgentTool {
                 ctx.abort_signal.clone(),
                 Some(child_perm),
                 false,
+                self.queue.clone(),
             );
             let sys = build_child_system_prompt(&agent_def);
 
@@ -224,17 +227,21 @@ impl Tool for AgentTool {
             Some(abort_rx),
             Some(child_perm),
             true,
+            self.queue.clone(),
         );
         let sys = build_child_system_prompt(&agent_def);
         let store_for_task = self.store.clone();
         let bus_for_task = bus.clone();
         let agent_id_for_task = agent_id.clone();
         let parent_tu_for_task = parent_tool_use_id.clone();
+        let queue_for_agent = self.queue.clone();
+        let description_for_task = description.to_string();
 
         tokio::spawn(async move {
             let result = child
                 .process_prompt(prompt, &sys, Some(parent_tu_for_task.clone()))
                 .await;
+            let is_ok = result.is_ok();
             let text = match result {
                 Ok(t) => t,
                 Err(e) => format!("error: {e}"),
@@ -246,6 +253,22 @@ impl Tool for AgentTool {
                 uuid: Uuid::new_v4(),
                 session_id: agent_id_for_task.clone(),
             });
+            // Enqueue notification for the model
+            let status = if is_ok { "completed" } else { "failed" };
+            let summary = format!(
+                "Agent \"{description_for_task}\" {}",
+                if is_ok { "completed" } else { "failed" }
+            );
+            let notification = format!(
+                "<task-notification>\n  <task-id>{}</task-id>\n  <status>{}</status>\n  <summary>{}</summary>\n</task-notification>",
+                agent_id_for_task, status, summary
+            );
+            queue_for_agent.enqueue_pending_notification(
+                notification,
+                PromptInputMode::TaskNotification,
+                QueuePriority::Later,
+                None, // agent notification goes to main thread
+            );
             store_for_task.complete_async_agent(&agent_id_for_task);
         });
 
@@ -308,18 +331,47 @@ mod tests {
     use crate::conversation::session_bus::SessionBus;
     use crate::state::store::PermissionMode;
 
+    #[allow(clippy::type_complexity)]
+    fn make_test_deps() -> (
+        Arc<MessageQueue>,
+        Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<String, crate::conversation::cron_runtime::CronJob>,
+            >,
+        >,
+        watch::Sender<bool>,
+    ) {
+        let queue = Arc::new(MessageQueue::new());
+        let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let (tx, _rx) = watch::channel(false);
+        (queue, jobs, tx)
+    }
+
+    fn make_test_registry(store: Arc<Store>, agent_reg: Arc<AgentRegistry>) -> Arc<ToolRegistry> {
+        let (queue, jobs, wake_tx) = make_test_deps();
+        ToolRegistry::new(
+            store,
+            shared::CliConfig::default(),
+            agent_reg,
+            queue,
+            jobs,
+            wake_tx,
+        )
+    }
+
     #[tokio::test]
     async fn agent_tool_errors_on_unknown_subagent_type() {
         let store = Arc::new(Store::new());
         let cfg = shared::CliConfig::default();
         let agent_reg = Arc::new(AgentRegistry::built_in_only());
-        let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
+        let tool_reg = make_test_registry(store.clone(), agent_reg.clone());
 
         let tool = AgentTool {
             store: store.clone(),
             config: cfg.clone(),
             registry: agent_reg,
             tool_registry: tool_reg.clone(),
+            queue: Arc::new(MessageQueue::new()),
         };
 
         let bus = Arc::new(SessionBus::new("s-root".into()));
@@ -332,6 +384,7 @@ mod tests {
             auto_deny_prompts: false,
             tool_use_id: String::new(),
             progress_sink: None,
+            queue: None,
         };
         let input = serde_json::json!({
             "description": "do thing",
@@ -352,12 +405,13 @@ mod tests {
         let store = Arc::new(Store::new());
         let cfg = shared::CliConfig::default();
         let agent_reg = Arc::new(AgentRegistry::built_in_only());
-        let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
+        let tool_reg = make_test_registry(store.clone(), agent_reg.clone());
         let tool = AgentTool {
             store,
             config: cfg,
             registry: agent_reg,
             tool_registry: tool_reg,
+            queue: Arc::new(MessageQueue::new()),
         };
         assert_eq!(tool.name(), "Task");
     }
@@ -367,12 +421,13 @@ mod tests {
         let store = Arc::new(Store::new());
         let cfg = shared::CliConfig::default();
         let agent_reg = Arc::new(AgentRegistry::built_in_only());
-        let tool_reg = ToolRegistry::new(store.clone(), cfg.clone(), agent_reg.clone());
+        let tool_reg = make_test_registry(store.clone(), agent_reg.clone());
         let tool = AgentTool {
             store,
             config: cfg,
             registry: agent_reg,
             tool_registry: tool_reg,
+            queue: Arc::new(MessageQueue::new()),
         };
         let schema = tool.input_schema();
         let st = &schema["properties"]["subagent_type"];

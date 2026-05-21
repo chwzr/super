@@ -22,6 +22,7 @@ use super::scroll_area::{Message, ScrollArea};
 use super::slash_menu::SlashMenu;
 use super::splash;
 use crate::conversation::engine::ConversationEngine;
+use crate::conversation::message_queue::{MessageQueue, PromptInputMode, QueuePriority};
 use crate::conversation::session_bus::SessionBus;
 use crate::conversation::system_prompt::SystemPrompt;
 use crate::sdk::protocol::BusMessage;
@@ -75,6 +76,8 @@ pub struct App {
     _config: CliConfig,
     store: Arc<Store>,
     engine: ConversationEngine,
+    /// Shared message queue for mid-turn user input and system notifications.
+    queue: Arc<MessageQueue>,
     /// Kept alive so the broadcast channel underlying `bus_rx` doesn't close
     /// when the original Arc is dropped after `App::new` returns.
     #[allow(dead_code)]
@@ -147,6 +150,7 @@ impl App {
         engine: ConversationEngine,
         bus: Arc<SessionBus>,
         system_prompt: SystemPrompt,
+        queue: Arc<MessageQueue>,
     ) -> Self {
         let cwd = std::env::current_dir()
             .ok()
@@ -177,6 +181,7 @@ impl App {
             _config: config,
             store,
             engine,
+            queue,
             bus: bus.clone(),
             bus_rx,
             system_prompt,
@@ -260,7 +265,18 @@ impl App {
         // write-back on completion). Queue and dispatch in process_pending
         // when the in-flight call finishes.
         if self.inflight.is_some() {
-            self.queued_prompts.push_back(prompt);
+            // Enqueue to message queue so engine drain picks it up mid-turn.
+            // Do NOT also push to queued_prompts — that would cause the same
+            // input to be processed twice (once mid-turn, once post-turn).
+            self.queue
+                .enqueue(crate::conversation::message_queue::QueuedCommand {
+                    value: prompt,
+                    mode: PromptInputMode::Prompt,
+                    priority: QueuePriority::Next,
+                    agent_id: None,
+                    is_meta: false,
+                    uuid: uuid::Uuid::new_v4(),
+                });
             return;
         }
         let engine = self.engine.clone();
@@ -563,6 +579,7 @@ impl App {
                     }
                     self.inflight = None;
                     self.queued_prompts.clear();
+                    self.queue.clear();
                     self.activity = ActivityState::idle();
                     self.scroll_area
                         .push(Message::Trail("Interrupted by user".to_string()));
@@ -717,8 +734,19 @@ impl App {
     }
 
     fn dispatch_next_queued(&mut self) {
+        // First check local deque (prompts submitted while engine was idle)
         if let Some(next) = self.queued_prompts.pop_front() {
             self.spawn_engine(next);
+            return;
+        }
+        // Then check message queue for any pending Prompt commands
+        // (e.g. cron firings queued while engine was running)
+        let prompts = self.queue.drain(QueuePriority::Later, Some(None));
+        for cmd in prompts {
+            if matches!(cmd.mode, PromptInputMode::Prompt) {
+                self.spawn_engine(cmd.value);
+                return;
+            }
         }
     }
 
@@ -966,6 +994,7 @@ pub async fn run_with_engine(
     _registry: Arc<ToolRegistry>,
     bus: Arc<SessionBus>,
     system_prompt: SystemPrompt,
+    queue: Arc<MessageQueue>,
 ) {
     let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
     let viewport_height = VIEWPORT_HEIGHT.min(term_height);
@@ -978,7 +1007,7 @@ pub async fn run_with_engine(
         },
     );
     if let Ok(terminal) = terminal {
-        let mut app = App::new(config, store, engine, bus, system_prompt);
+        let mut app = App::new(config, store, engine, bus, system_prompt, queue);
         let _ = app.run(terminal);
     }
     let _ = disable_raw_mode();

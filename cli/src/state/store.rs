@@ -1,6 +1,7 @@
 use crate::tui::scroll_area::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Default)]
@@ -195,6 +196,15 @@ impl Store {
             .values()
             .cloned()
             .collect()
+    }
+
+    /// Build the output path for a background task.
+    /// Path: ~/.super/tasks/{task_id}.output
+    pub fn task_output_path(task_id: &str) -> PathBuf {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.join(".super")
+            .join("tasks")
+            .join(format!("{task_id}.output"))
     }
 
     /// Abort every currently-registered async agent. Called by the TUI's exit
