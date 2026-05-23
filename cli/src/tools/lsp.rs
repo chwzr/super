@@ -105,10 +105,7 @@ impl Tool for LspTool {
             Ok(meta) => {
                 if !meta.is_file() {
                     return ValidationResult::Err {
-                        message: format!(
-                            "Not a regular file: {}",
-                            file_path.display()
-                        ),
+                        message: format!("Not a regular file: {}", file_path.display()),
                         error_code: 2,
                     };
                 }
@@ -153,20 +150,32 @@ impl Tool for LspTool {
         let manager_guard = match crate::lsp::get_lsp_manager() {
             Some(g) => g,
             None => {
-                return LspTool::error_result(operation, file_path, "LSP server manager not initialized.");
+                return LspTool::error_result(
+                    operation,
+                    file_path,
+                    "LSP server manager not initialized.",
+                );
             }
         };
 
         // Handle the double Option: get_lsp_manager returns MutexGuard<Option<LspServerManager>>
         if manager_guard.is_none() {
-            return LspTool::error_result(operation, file_path, "LSP server manager not initialized.");
+            return LspTool::error_result(
+                operation,
+                file_path,
+                "LSP server manager not initialized.",
+            );
         }
 
         let absolute_path = expand_path(file_path);
         let abs_path_str = match absolute_path.to_str() {
             Some(s) => s.to_string(),
             None => {
-                return LspTool::error_result(operation, file_path, "Invalid file path (non-UTF-8).");
+                return LspTool::error_result(
+                    operation,
+                    file_path,
+                    "Invalid file path (non-UTF-8).",
+                );
             }
         };
 
@@ -276,15 +285,16 @@ impl Tool for LspTool {
                         .map(|a| a.len())
                         .unwrap_or(0);
 
-                    Ok(LspTool::build_result(operation, file_path, &formatted, count, 0))
+                    Ok(LspTool::build_result(
+                        operation, file_path, &formatted, count, 0,
+                    ))
                 }
                 _ => {
                     let response: Option<serde_json::Value> = rt
                         .block_on(manager.send_request(&abs_path_str, &method, params))
                         .unwrap_or(None);
 
-                    let (formatted, result_count, file_count) =
-                        format_result(operation, &response);
+                    let (formatted, result_count, file_count) = format_result(operation, &response);
 
                     Ok(LspTool::build_result(
                         operation,
@@ -299,11 +309,7 @@ impl Tool for LspTool {
 
         match result {
             Ok(tool_result) => tool_result,
-            Err(err_msg) => LspTool::error_result(
-                operation,
-                file_path,
-                &err_msg,
-            ),
+            Err(err_msg) => LspTool::error_result(operation, file_path, &err_msg),
         }
     }
 
@@ -386,7 +392,7 @@ fn expand_path(file_path: &str) -> std::path::PathBuf {
 fn map_operation(
     operation: &str,
     absolute_path: &str,
-    line: usize,    // 1-based from user
+    line: usize,      // 1-based from user
     character: usize, // 1-based from user
 ) -> Option<(String, serde_json::Value)> {
     let uri = format!("file://{}", absolute_path);
@@ -417,10 +423,7 @@ fn map_operation(
             "textDocument/documentSymbol".into(),
             json!({"textDocument": {"uri": uri}}),
         )),
-        "workspaceSymbol" => Some((
-            "workspace/symbol".into(),
-            json!({"query": ""}),
-        )),
+        "workspaceSymbol" => Some(("workspace/symbol".into(), json!({"query": ""}))),
         "goToImplementation" => Some((
             "textDocument/implementation".into(),
             json!({"textDocument": {"uri": uri}, "position": position}),
@@ -440,10 +443,7 @@ fn map_operation(
 /// Location objects, grouping references by file, rendering Hover as
 /// Markdown, etc.). These are deferred pending the full typed deserialization
 /// layer.
-fn format_result(
-    operation: &str,
-    response: &Option<serde_json::Value>,
-) -> (String, usize, usize) {
+fn format_result(operation: &str, response: &Option<serde_json::Value>) -> (String, usize, usize) {
     let value = match response {
         Some(v) => v,
         None => return ("No response from LSP server.".into(), 0, 0),
@@ -477,45 +477,37 @@ fn format_result(
                 None if value.get("uri").is_some() => {
                     // Single Location object, not an array
                     match format_location(value) {
-                        Some(formatted) => {
-                            (format!("Defined at {}", formatted), 1, 1)
-                        }
+                        Some(formatted) => (format!("Defined at {}", formatted), 1, 1),
                         None => ("Result returned but could not be parsed.".into(), 0, 0),
                     }
                 }
                 _ => {
                     let count = value.as_array().map(|a| a.len()).unwrap_or(0);
-                    let raw = serde_json::to_string_pretty(value).unwrap_or_else(|_| format!("{:?}", value));
+                    let raw = serde_json::to_string_pretty(value)
+                        .unwrap_or_else(|_| format!("{:?}", value));
                     (format!("Result:\n{}", raw), count, 0)
                 }
             }
         }
         "findReferences" => {
             match value.as_array() {
-                Some(arr) if arr.is_empty() => {
-                    ("No references found.".into(), 0, 0)
-                }
+                Some(arr) if arr.is_empty() => ("No references found.".into(), 0, 0),
                 Some(arr) => {
                     // Group by file
                     let mut file_groups: HashMap<String, Vec<String>> = HashMap::new();
                     for loc in arr {
-                        let uri = loc
-                            .get("uri")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        let path = uri
-                            .strip_prefix("file://")
-                            .unwrap_or(uri);
-                        let entry = format!("  line {}", loc.get("range")
-                            .and_then(|r| r.get("start"))
-                            .and_then(|s| s.get("line"))
-                            .and_then(|l| l.as_u64())
-                            .map(|n| (n as usize + 1).to_string())
-                            .unwrap_or_else(|| "?".into()));
-                        file_groups
-                            .entry(path.to_string())
-                            .or_default()
-                            .push(entry);
+                        let uri = loc.get("uri").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let path = uri.strip_prefix("file://").unwrap_or(uri);
+                        let entry = format!(
+                            "  line {}",
+                            loc.get("range")
+                                .and_then(|r| r.get("start"))
+                                .and_then(|s| s.get("line"))
+                                .and_then(|l| l.as_u64())
+                                .map(|n| (n as usize + 1).to_string())
+                                .unwrap_or_else(|| "?".into())
+                        );
+                        file_groups.entry(path.to_string()).or_default().push(entry);
                     }
 
                     let total: usize = file_groups.values().map(|v| v.len()).sum();
@@ -534,9 +526,7 @@ fn format_result(
 
                     (output, total, file_count)
                 }
-                _ => {
-                    ("Unexpected response format for references.".into(), 0, 0)
-                }
+                _ => ("Unexpected response format for references.".into(), 0, 0),
             }
         }
         "hover" => {
@@ -572,7 +562,11 @@ fn format_result(
             if symbols == 0 {
                 ("No document symbols found.".into(), 0, 0)
             } else {
-                let mut out = format!("Found {} document symbol{}:\n", symbols, if symbols == 1 { "" } else { "s" });
+                let mut out = format!(
+                    "Found {} document symbol{}:\n",
+                    symbols,
+                    if symbols == 1 { "" } else { "s" }
+                );
                 format_symbol_list(&mut out, value.as_array(), 0);
                 (out, symbols, 0)
             }
@@ -582,7 +576,11 @@ fn format_result(
             if symbols == 0 {
                 ("No workspace symbols found.".into(), 0, 0)
             } else {
-                let mut out = format!("Found {} workspace symbol{}:\n", symbols, if symbols == 1 { "" } else { "s" });
+                let mut out = format!(
+                    "Found {} workspace symbol{}:\n",
+                    symbols,
+                    if symbols == 1 { "" } else { "s" }
+                );
                 if let Some(arr) = value.as_array() {
                     for sym in arr {
                         let name = sym.get("name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -614,48 +612,46 @@ fn format_result(
                 (out, symbols, 0)
             }
         }
-        "prepareCallHierarchy" => {
-            match value.as_array() {
-                Some(arr) if arr.is_empty() => {
-                    ("No call hierarchy items found at this position.".into(), 0, 0)
+        "prepareCallHierarchy" => match value.as_array() {
+            Some(arr) if arr.is_empty() => (
+                "No call hierarchy items found at this position.".into(),
+                0,
+                0,
+            ),
+            Some(arr) => {
+                let mut lines = Vec::new();
+                for item in arr {
+                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let kind = item
+                        .get("kind")
+                        .and_then(|v| v.as_u64())
+                        .map(|k| symbol_kind_name(k))
+                        .unwrap_or_default();
+                    lines.push(format!("  {} ({})", name, kind));
                 }
-                Some(arr) => {
-                    let mut lines = Vec::new();
-                    for item in arr {
-                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let kind = item
-                            .get("kind")
-                            .and_then(|v| v.as_u64())
-                            .map(|k| symbol_kind_name(k))
-                            .unwrap_or_default();
-                        lines.push(format!("  {} ({})", name, kind));
-                    }
-                    let count = lines.len();
-                    (
-                        format!(
-                            "Found {} call hierarchy item{}:\n{}",
-                            count,
-                            if count == 1 { "" } else { "s" },
-                            lines.join("\n"),
-                        ),
+                let count = lines.len();
+                (
+                    format!(
+                        "Found {} call hierarchy item{}:\n{}",
                         count,
-                        0,
-                    )
-                }
-                _ => ("Unexpected response format.".into(), 0, 0),
+                        if count == 1 { "" } else { "s" },
+                        lines.join("\n"),
+                    ),
+                    count,
+                    0,
+                )
             }
-        }
+            _ => ("Unexpected response format.".into(), 0, 0),
+        },
         _ => {
-            let raw = serde_json::to_string_pretty(value).unwrap_or_else(|_| format!("{:?}", value));
+            let raw =
+                serde_json::to_string_pretty(value).unwrap_or_else(|_| format!("{:?}", value));
             (format!("Result:\n{}", raw), 0, 0)
         }
     }
 }
 
-fn format_call_hierarchy(
-    operation: &str,
-    calls: &Option<serde_json::Value>,
-) -> String {
+fn format_call_hierarchy(operation: &str, calls: &Option<serde_json::Value>) -> String {
     let direction = if operation == "incomingCalls" {
         "incoming"
     } else {
@@ -855,11 +851,10 @@ mod tests {
 
     #[test]
     fn map_operation_go_to_definition() {
-        let (method, params) =
-            map_operation("goToDefinition", "/tmp/test.rs", 10, 5).unwrap();
+        let (method, params) = map_operation("goToDefinition", "/tmp/test.rs", 10, 5).unwrap();
         assert_eq!(method, "textDocument/definition");
         assert_eq!(params["textDocument"]["uri"], "file:///tmp/test.rs");
-        assert_eq!(params["position"]["line"], 9);  // 0-based
+        assert_eq!(params["position"]["line"], 9); // 0-based
         assert_eq!(params["position"]["character"], 4); // 0-based
     }
 

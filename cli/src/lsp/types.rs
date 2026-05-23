@@ -28,8 +28,12 @@ pub struct LspServerConfig {
     pub max_restarts: u32,
 }
 
-fn default_startup_timeout_ms() -> u64 { 30_000 }
-fn default_max_restarts() -> u32 { 3 }
+fn default_startup_timeout_ms() -> u64 {
+    30_000
+}
+fn default_max_restarts() -> u32 {
+    3
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitState {

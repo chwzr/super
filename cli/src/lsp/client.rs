@@ -11,7 +11,6 @@ use lsp_server::{Connection, Message, RequestId};
 use lsp_types::{InitializeParams, InitializeResult, ServerCapabilities};
 use tracing::{debug, error};
 
-
 /// Structured error from LSP client operations.
 /// Carries the protocol error code when available (e.g. -32801 for ContentModified).
 #[derive(Debug, Clone)]
@@ -126,8 +125,15 @@ fn child_transport(
         })
         .unwrap();
 
-    let io_threads = ChildIoThreads { reader, writer, dropper };
-    let connection = Connection { sender: writer_sender, receiver: reader_receiver };
+    let io_threads = ChildIoThreads {
+        reader,
+        writer,
+        dropper,
+    };
+    let connection = Connection {
+        sender: writer_sender,
+        receiver: reader_receiver,
+    };
     (connection, io_threads)
 }
 
@@ -239,10 +245,7 @@ impl LspClient {
     }
 
     /// Send initialize request and store capabilities.
-    pub fn initialize(
-        &mut self,
-        params: InitializeParams,
-    ) -> Result<InitializeResult, LspError> {
+    pub fn initialize(&mut self, params: InitializeParams) -> Result<InitializeResult, LspError> {
         let conn = self.connection()?;
         let id = RequestId::from(1i32);
         // Clone the sender so we can drop the immutable borrow on `self`
@@ -411,12 +414,12 @@ impl LspClient {
                 method: "shutdown".to_string(),
                 params: serde_json::Value::Null,
             }));
-            let _ = conn.sender.send(Message::Notification(
-                lsp_server::Notification {
+            let _ = conn
+                .sender
+                .send(Message::Notification(lsp_server::Notification {
                     method: "exit".to_string(),
                     params: serde_json::Value::Null,
-                },
-            ));
+                }));
         }
 
         // Drop connection BEFORE joining threads — the writer thread
@@ -437,12 +440,10 @@ impl LspClient {
     }
 
     fn connection(&self) -> Result<&Connection, LspError> {
-        self.connection
-            .as_ref()
-            .ok_or_else(|| LspError {
-                message: format!("LSP client '{}' not started", self.name),
-                code: None,
-            })
+        self.connection.as_ref().ok_or_else(|| LspError {
+            message: format!("LSP client '{}' not started", self.name),
+            code: None,
+        })
     }
 
     fn check_ready(&self) -> Result<(), LspError> {

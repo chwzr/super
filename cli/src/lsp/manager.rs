@@ -85,10 +85,7 @@ impl LspServerManager {
         self.servers.get(name)
     }
 
-    fn get_server_for_file_mut(
-        &mut self,
-        file_path: &str,
-    ) -> Option<&mut LspServerInstance> {
+    fn get_server_for_file_mut(&mut self, file_path: &str) -> Option<&mut LspServerInstance> {
         let ext = get_extension(file_path)?;
         let names = self.extension_map.get(&ext)?;
         let name = names.first()?.clone();
@@ -116,10 +113,7 @@ impl LspServerManager {
 
         let needs_start = match self.servers.get(&name) {
             Some(s) => {
-                matches!(
-                    s.state,
-                    LspServerState::Stopped | LspServerState::Error
-                )
+                matches!(s.state, LspServerState::Stopped | LspServerState::Error)
             }
             None => return Ok(None),
         };
@@ -146,11 +140,7 @@ impl LspServerManager {
         }
     }
 
-    pub async fn open_file(
-        &mut self,
-        file_path: &str,
-        content: &str,
-    ) -> Result<(), String> {
+    pub async fn open_file(&mut self, file_path: &str, content: &str) -> Result<(), String> {
         let ext = get_extension(file_path);
         let server_name = match ext
             .as_ref()
@@ -191,19 +181,14 @@ impl LspServerManager {
             server
                 .send_notification("textDocument/didOpen", params)
                 .await?;
-            self.opened_files
-                .insert(file_uri, server_name.clone());
+            self.opened_files.insert(file_uri, server_name.clone());
             debug!("LSP: Sent didOpen for {}", file_path);
         }
 
         Ok(())
     }
 
-    pub async fn change_file(
-        &mut self,
-        file_path: &str,
-        content: &str,
-    ) -> Result<(), String> {
+    pub async fn change_file(&mut self, file_path: &str, content: &str) -> Result<(), String> {
         let file_uri = path_to_uri(file_path);
 
         let server_name = match self.opened_files.get(&file_uri) {
@@ -284,7 +269,7 @@ fn get_extension(file_path: &str) -> Option<String> {
 }
 
 fn path_to_uri(file_path: &str) -> String {
-    let abs = std::fs::canonicalize(file_path)
-        .unwrap_or_else(|_| Path::new(file_path).to_path_buf());
+    let abs =
+        std::fs::canonicalize(file_path).unwrap_or_else(|_| Path::new(file_path).to_path_buf());
     format!("file://{}", abs.to_string_lossy().replace('\\', "/"))
 }

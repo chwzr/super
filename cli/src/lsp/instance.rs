@@ -47,14 +47,16 @@ impl LspServerInstance {
     }
 
     pub async fn start(&mut self) -> Result<(), String> {
-        if matches!(self.state, LspServerState::Running | LspServerState::Starting) {
+        if matches!(
+            self.state,
+            LspServerState::Running | LspServerState::Starting
+        ) {
             return Ok(());
         }
 
         // Check crash recovery cap
         let recovery_count = self.crash_recovery_count.load(Ordering::Acquire);
-        if matches!(self.state, LspServerState::Error)
-            && recovery_count > self.config.max_restarts
+        if matches!(self.state, LspServerState::Error) && recovery_count > self.config.max_restarts
         {
             let msg = format!(
                 "LSP server '{}' exceeded max crash recovery attempts ({})",
@@ -70,16 +72,12 @@ impl LspServerInstance {
         let command = self.config.command.clone();
         let args = self.config.args.clone();
         let env = self.config.env.clone();
-        let workspace_folder = self
-            .config
-            .workspace_folder
-            .clone()
-            .unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            });
+        let workspace_folder = self.config.workspace_folder.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        });
         let init_options = self.config.initialization_options.clone();
         let _startup_timeout_ms = self.config.startup_timeout_ms;
 
@@ -92,15 +90,14 @@ impl LspServerInstance {
 
             // Build crash callback that updates shared state on unexpected exit.
             let crash_name = name.clone();
-            let crash_cb: super::client::CrashCallback =
-                Arc::new(move |msg: String| {
-                    error!(
-                        "LSP server '{}' crash detected via callback: {}",
-                        crash_name, msg
-                    );
-                    crash_detected.store(true, Ordering::Release);
-                    crash_recovery_count.fetch_add(1, Ordering::Release);
-                });
+            let crash_cb: super::client::CrashCallback = Arc::new(move |msg: String| {
+                error!(
+                    "LSP server '{}' crash detected via callback: {}",
+                    crash_name, msg
+                );
+                crash_detected.store(true, Ordering::Release);
+                crash_recovery_count.fetch_add(1, Ordering::Release);
+            });
 
             c.start(
                 &command,
@@ -131,10 +128,8 @@ impl LspServerInstance {
             Err(e) => {
                 // Attempt cleanup of the failed client
                 let cleanup_client = self.client.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    cleanup_client.lock().unwrap().stop()
-                })
-                .await;
+                let _ = tokio::task::spawn_blocking(move || cleanup_client.lock().unwrap().stop())
+                    .await;
                 self.state = LspServerState::Error;
                 self.last_error = Some(e.clone());
                 error!("LSP server '{}' failed to start: {}", self.name, e);
@@ -144,7 +139,10 @@ impl LspServerInstance {
     }
 
     pub async fn stop(&mut self) -> Result<(), String> {
-        if matches!(self.state, LspServerState::Stopped | LspServerState::Stopping) {
+        if matches!(
+            self.state,
+            LspServerState::Stopped | LspServerState::Stopping
+        ) {
             return Ok(());
         }
 
@@ -252,7 +250,8 @@ impl LspServerInstance {
 
         tokio::task::spawn_blocking(move || {
             let mut c = client.lock().unwrap();
-            c.send_notification(&method_owned, params).map_err(|e| e.message)
+            c.send_notification(&method_owned, params)
+                .map_err(|e| e.message)
         })
         .await
         .map_err(|e| format!("spawn_blocking join: {}", e))?
