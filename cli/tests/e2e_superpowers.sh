@@ -181,5 +181,93 @@ phase_0_setup() {
     echo -e "${GREEN}Phase 0 complete${NC}"
 }
 
+phase_1_brainstorming() {
+    echo "--- Phase 1: Brainstorming Skill ---"
+
+    local responses=(
+        "just a simple binary, no library crate, bare minimum"
+        "yes, exactly"
+        "no further requirements, keep it minimal"
+        "approved, proceed to write the spec"
+    )
+    local resp_idx=0
+
+    echo "  Sending initial prompt..."
+    type_line "create a cargo rust package which is a simple binary that adds numbers"
+    sleep 2.0
+
+    local max_rounds=12
+    local round=0
+
+    while [ "$round" -lt "$max_rounds" ]; do
+        round=$((round + 1))
+        echo "  Round $round: waiting for stable output..."
+        wait_stable 40 || echo "  (wait_stable timed out, continuing)"
+
+        assert_no_panic || return 1
+
+        if echo "$CAPTURE" | grep -qi "writing.plan\|implementation plan\|plan document"; then
+            echo "  Detected transition to writing-plans phase"
+            break
+        fi
+
+        if echo "$CAPTURE" | grep -q '\?'; then
+            if [ "$resp_idx" -lt "${#responses[@]}" ]; then
+                local resp="${responses[$resp_idx]}"
+                resp_idx=$((resp_idx + 1))
+                echo "  Responding (q $resp_idx): $resp"
+                type_line "$resp"
+                sleep 1.5
+            else
+                echo "  Response queue exhausted, sending 'proceed'"
+                type_line "proceed"
+                sleep 1.5
+            fi
+            continue
+        fi
+
+        if echo "$CAPTURE" | grep -qi "look right\|looks good\|approve\|proceed\|shall i"; then
+            echo "  Design approval prompt detected, approving..."
+            type_line "approved, proceed to write the spec"
+            sleep 2.0
+            continue
+        fi
+
+        if echo "$CAPTURE" | grep -q "Task\|task"; then
+            echo "  Task items visible, waiting for question..."
+            sleep 2.0
+            continue
+        fi
+
+        if echo "$CAPTURE" | grep -qi "spec\|design doc\|design document"; then
+            echo "  Spec/design content visible..."
+            if [ "$resp_idx" -lt "${#responses[@]}" ]; then
+                local resp="${responses[$resp_idx]}"
+                resp_idx=$((resp_idx + 1))
+                type_line "$resp"
+                sleep 1.5
+            fi
+            continue
+        fi
+
+        if [ "$resp_idx" -lt "${#responses[@]}" ]; then
+            local resp="${responses[$resp_idx]}"
+            resp_idx=$((resp_idx + 1))
+            echo "  Sending next response: $resp"
+            type_line "$resp"
+            sleep 1.5
+        else
+            echo "  No pattern matched, waiting more..."
+            sleep 3.0
+        fi
+    done
+
+    assert_contains "Brainstorming or design content visible" "design\|brainstorming\|spec\|task\|Task" || true
+    assert_no_panic || return 1
+
+    echo -e "${GREEN}Phase 1 complete${NC} (rounds: $round)"
+}
+
 # --- Main ---
 phase_0_setup || exit 1
+phase_1_brainstorming || exit 1
