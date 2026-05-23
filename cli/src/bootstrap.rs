@@ -85,6 +85,12 @@ pub async fn run() {
     let sidechain_dir = crate::conversation::sidechain::default_sidechain_dir(bus.session_id());
     crate::conversation::sidechain::spawn_sidechain_writer(bus.clone(), sidechain_dir);
 
+    // Spawn root transcript writer so the session is persisted.
+    crate::conversation::transcript::spawn_transcript_writer(
+        bus.clone(),
+        bus.session_id().to_string(),
+    );
+
     let mut engine = crate::conversation::engine::ConversationEngine::new(
         store.clone(),
         config.clone(),
