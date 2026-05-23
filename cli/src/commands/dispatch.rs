@@ -17,7 +17,7 @@ use crate::tui::modals::status_view::{StatusSnapshot, StatusView};
 /// `input` is the entire raw line typed by the user (e.g. "/model haiku"),
 /// `command` is the resolved command from the registry. Any text after the
 /// command name is treated as args.
-pub fn dispatch(command: &Command, input: &str, store: &Store) -> CommandResult {
+pub fn dispatch(command: &Command, input: &str, store: &Store, session_id: &str) -> CommandResult {
     let args = extract_args(command, input);
     match command.name.as_str() {
         "/help" => help(),
@@ -32,7 +32,7 @@ pub fn dispatch(command: &Command, input: &str, store: &Store) -> CommandResult 
         "/context" => context(store),
         "/diff" => diff(),
         "/export" => export(store),
-        "/rename" => rename(args),
+        "/rename" => rename(args, session_id),
         "/resume" => resume(),
         "/login" => login(),
         "/logout" => logout(),
@@ -337,16 +337,20 @@ fn format_export_timestamp(secs: u64) -> String {
     format!("{yr:04}-{mo:02}-{d:02}-{h:02}{m:02}{s:02}")
 }
 
-fn rename(args: &str) -> CommandResult {
+fn rename(args: &str, session_id: &str) -> CommandResult {
     let name = args.trim();
     if name.is_empty() {
-        // CC's no-args path auto-generates a name from context; we can't do that
-        // yet, so surface the same usage hint CC shows when generation fails.
         return CommandResult::Display(
             "Could not generate a name: no conversation context yet. Usage: /rename <name>".into(),
         );
     }
-    // Match CC's exact confirmation format: "Session renamed to: <name>"
+    crate::conversation::transcript::write_meta_entry(
+        session_id,
+        &crate::conversation::transcript::TranscriptMeta::CustomTitle {
+            custom_title: name.to_string(),
+            session_id: session_id.to_string(),
+        },
+    );
     CommandResult::Display(format!("Session renamed to: {name}"))
 }
 

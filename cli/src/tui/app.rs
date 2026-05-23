@@ -212,7 +212,7 @@ impl App {
             let registry = crate::commands::registry::CommandRegistry::new();
             if let Some(cmd) = registry.resolve(&text) {
                 use crate::commands::dispatch::CommandResult;
-                match crate::commands::dispatch::dispatch(cmd, &text, &self.store) {
+                match crate::commands::dispatch::dispatch(cmd, &text, &self.store, self.bus.session_id()) {
                     CommandResult::Display(output) => {
                         self.scroll_area.push(Message::System(output));
                     }
