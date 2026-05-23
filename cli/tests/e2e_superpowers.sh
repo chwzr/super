@@ -303,7 +303,57 @@ phase_2_writing_plans() {
     echo -e "${GREEN}Phase 2 complete${NC}"
 }
 
+phase_3_subagent_dev() {
+    echo "--- Phase 3: Subagent-Driven Development ---"
+
+    local max_wait=600 elapsed=0 interval=5
+
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        capture
+
+        assert_no_panic || return 1
+
+        if [ -f "$TEST_DIR/Cargo.toml" ] && [ -f "$TEST_DIR/src/main.rs" ]; then
+            echo "  Files created after ${elapsed}s, waiting for screen to settle..."
+            sleep 5.0
+            wait_stable 20
+            break
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+        echo "  Waiting for file creation... (${elapsed}s / ${max_wait}s)"
+    done
+
+    if [ ! -f "$TEST_DIR/Cargo.toml" ]; then
+        echo -e "${RED}FAIL: Cargo.toml was not created${NC}"
+        capture
+        echo "$CAPTURE" | tail -40
+        return 1
+    fi
+
+    if [ ! -f "$TEST_DIR/src/main.rs" ]; then
+        echo -e "${RED}FAIL: src/main.rs was not created${NC}"
+        return 1
+    fi
+
+    echo "  Verifying generated code compiles..."
+    cd "$TEST_DIR"
+    if cargo build 2>&1 | tail -10; then
+        echo -e "  ${GREEN}Build succeeded${NC}"
+    else
+        echo -e "${RED}FAIL: cargo build failed${NC}"
+        cd - > /dev/null
+        return 1
+    fi
+    cd - > /dev/null
+
+    assert_no_panic || return 1
+    echo -e "${GREEN}Phase 3 complete${NC}"
+}
+
 # --- Main ---
 phase_0_setup || exit 1
 phase_1_brainstorming || exit 1
 phase_2_writing_plans || exit 1
+phase_3_subagent_dev || exit 1
