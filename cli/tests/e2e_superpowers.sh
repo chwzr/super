@@ -408,9 +408,71 @@ phase_4_resume() {
     echo -e "${GREEN}Phase 4 complete${NC}"
 }
 
+phase_5_rename() {
+    echo "--- Phase 5: Rename, Exit, Reload ---"
+
+    echo "  Sending /rename command..."
+    type_line "/rename e2e-test-session"
+    sleep 1.0
+    wait_stable 10
+
+    assert_contains "Rename confirmation" "e2e-test-session" || return 1
+    assert_no_panic || return 1
+
+    echo "  Exiting super..."
+    type_line "/exit"
+    sleep 2.0
+
+    local max_wait=10 elapsed=0
+    while T capture-pane -t "$SESSION" -p > /dev/null 2>&1; do
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+        [ "$elapsed" -ge "$max_wait" ] && break
+    done
+    T kill-session -t "$SESSION" 2>/dev/null || true
+    sleep 0.5
+
+    echo "  Restarting super with --resume to verify rename..."
+    T new-session -d -s "$SESSION" -x 200 -y 50 \
+        -e "TERM=xterm-256color" \
+        -c "$TEST_DIR" \
+        "$SUPER_BIN" --resume
+    sleep 1.5
+    wait_stable 20
+
+    capture
+    echo "  Resume picker after rename:"
+    echo "$CAPTURE" | head -30
+
+    assert_contains "Custom title in picker" "e2e-test-session" || return 1
+    assert_no_panic || return 1
+
+    echo "  Selecting renamed session..."
+    send_enter
+    sleep 2.0
+    wait_stable 30
+
+    assert_no_panic || return 1
+
+    if [ "${#CAPTURE}" -lt 200 ]; then
+        echo -e "  ${RED}FAIL: Screen too small after rename+resume — history may not have loaded${NC}"
+        echo "--- screen ---"
+        echo "$CAPTURE"
+        echo "--- end screen ---"
+        return 1
+    fi
+    echo -e "  ${GREEN}PASS: Renamed session history loaded (${#CAPTURE} chars)${NC}"
+
+    echo -e "${GREEN}Phase 5 complete${NC}"
+}
+
 # --- Main ---
 phase_0_setup || exit 1
 phase_1_brainstorming || exit 1
 phase_2_writing_plans || exit 1
 phase_3_subagent_dev || exit 1
 phase_4_resume || exit 1
+phase_5_rename || exit 1
+
+echo ""
+echo -e "${GREEN}All phases passed!${NC}"
