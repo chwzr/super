@@ -36,7 +36,10 @@ pub fn initialize_lsp_manager() {
         return;
     }
 
-    let state = *INIT_STATE.blocking_read();
+    // Use try_read/try_write so this is safe to call from within a tokio
+    // runtime (e.g., bootstrap). If the lock is held for writing we
+    // conservatively skip — a later call will handle it.
+    let state = INIT_STATE.try_read().map(|s| *s).unwrap_or(InitState::NotStarted);
     match state {
         InitState::Pending | InitState::Success => {
             debug!("LSP: already initializing or initialized, skipping");
@@ -48,7 +51,17 @@ pub fn initialize_lsp_manager() {
         InitState::NotStarted => {}
     }
 
-    *INIT_STATE.blocking_write() = InitState::Pending;
+    {
+        let mut w = match INIT_STATE.try_write() {
+            Ok(w) => w,
+            Err(_) => {
+                debug!("LSP: could not acquire write lock, skipping init for now");
+                return;
+            }
+        };
+        *w = InitState::Pending;
+    }
+
     let gen = INIT_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
     debug!("LSP: starting async initialization (generation {})", gen);
@@ -75,7 +88,10 @@ pub fn initialize_lsp_manager() {
 }
 
 pub fn get_lsp_manager() -> Option<std::sync::MutexGuard<'static, Option<LspServerManager>>> {
-    let state = *INIT_STATE.blocking_read();
+    // Use try_read() so this is safe to call from within a tokio runtime
+    // (e.g., tool call hooks). If the RwLock is held for writing we
+    // conservatively return None rather than blocking.
+    let state = INIT_STATE.try_read().map(|s| *s).unwrap_or(InitState::NotStarted);
     match state {
         InitState::Failed | InitState::NotStarted => None,
         _ => Some(MANAGER.lock().unwrap()),
@@ -87,7 +103,7 @@ pub async fn get_initialization_status() -> InitState {
 }
 
 pub fn is_lsp_connected() -> bool {
-    let state = *INIT_STATE.blocking_read();
+    let state = INIT_STATE.try_read().map(|s| *s).unwrap_or(InitState::NotStarted);
     if matches!(state, InitState::Failed | InitState::NotStarted) {
         return false;
     }

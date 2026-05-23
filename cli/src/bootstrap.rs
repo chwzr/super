@@ -72,6 +72,9 @@ pub async fn run() {
         skills: all_skills.clone(),
     }));
 
+    // Start LSP server manager initialization in the background.
+    crate::lsp::initialize_lsp_manager();
+
     // Session bus is the spine for all engine events. The TUI will subscribe
     // in a later task; for now we just hand the engine its publishing handle.
     let bus = Arc::new(crate::conversation::session_bus::SessionBus::new(

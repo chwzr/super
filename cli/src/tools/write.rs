@@ -130,6 +130,17 @@ impl Tool for WriteTool {
         let existed_before = path.exists();
         match std::fs::write(path, content) {
             Ok(()) => {
+                // Notify LSP of file save (and open if new)
+                if let Some(ref mut guard) = crate::lsp::get_lsp_manager() {
+                    if let Some(ref mut manager) = guard.as_mut() {
+                        let rt = tokio::runtime::Handle::current();
+                        if !existed_before {
+                            let _ = rt.block_on(manager.open_file(file_path, content));
+                        }
+                        let _ = rt.block_on(manager.save_file(file_path));
+                    }
+                }
+
                 let mut meta = std::collections::HashMap::new();
                 meta.insert("bytes_written".to_string(), content.len().to_string());
                 meta.insert("overwritten".to_string(), existed_before.to_string());
