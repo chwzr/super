@@ -10,7 +10,13 @@ set -euo pipefail
 # Usage: bash cli/tests/e2e_superpowers.sh
 # ============================================================================
 
-TEST_DIR="/tmp/super-e2e-test"
+# macOS: /tmp is a symlink to /private/tmp. Use /private/tmp so 'find'
+# actually traverses the directory (find skips the symlink root by default).
+TMPDIR="${TMPDIR:-/tmp}"
+# Resolve symlinks for the test directory
+TEST_DIR="$(cd "$TMPDIR" && pwd)/super-e2e-test"
+# Ensure /tmp also resolves for the broader search
+RESOLVED_TMP="$(cd "$TMPDIR" && pwd)"
 SOCK="super-e2e"
 SESSION="e2e"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -234,19 +240,9 @@ phase_1_conversation() {
 
         assert_no_panic || return 1
 
-        # Check: has super already created files? (may have done it silently)
-        local cargo_toml
-        cargo_toml="$(find "$TEST_DIR" -name "Cargo.toml" -not -path "*/.git/*" 2>/dev/null | head -1)"
-        if [ -n "$cargo_toml" ] && [ -f "${cargo_toml%/Cargo.toml}/src/main.rs" ]; then
-            echo "  Project already created at $(dirname "$cargo_toml")"
-            break
-        fi
-
-        # Also check home dir — super may have used 'cargo new' elsewhere.
-        cargo_toml="$(find /tmp -name "Cargo.toml" -not -path "*/.git/*" 2>/dev/null | grep -v "/target/" | head -1)"
-        # But prefer TEST_DIR, so skip home check if TEST_DIR has any Cargo.toml
+        # Check: has super created a cargo project anywhere in resolved tmp?
         local found_cargo
-        found_cargo="$(find "$TEST_DIR" /tmp -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
+        found_cargo="$(find "$RESOLVED_TMP" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
         if [ -n "$found_cargo" ]; then
             local proj_dir
             proj_dir="$(dirname "$found_cargo")"
@@ -264,7 +260,7 @@ phase_1_conversation() {
             wait_stable 20
             # Check for files again.
             local check_cargo
-            check_cargo="$(find "$TEST_DIR" /tmp -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
+            check_cargo="$(find "$RESOLVED_TMP" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
             if [ -n "$check_cargo" ]; then
                 local check_dir
                 check_dir="$(dirname "$check_cargo")"
@@ -289,10 +285,6 @@ phase_1_conversation() {
 
     assert_no_panic || return 1
 
-    # Fallback: search broader for the project after Phase 1
-    local final_cargo
-    final_cargo="$(find /tmp /Users/chwzr -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" -not -path "*/Library/*" 2>/dev/null | head -1)"
-
     echo -e "${GREEN}Phase 1 complete${NC} (rounds: $round)"
 }
 
@@ -303,7 +295,7 @@ phase_2_validate() {
     echo "--- Phase 2: Code Validation ---"
 
     local cargo_toml
-    cargo_toml="$(find "$TEST_DIR" /tmp -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
+    cargo_toml="$(find "$RESOLVED_TMP" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
 
     if [ -z "$cargo_toml" ]; then
         # Wider search
