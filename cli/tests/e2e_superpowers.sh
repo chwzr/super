@@ -5,7 +5,9 @@ set -euo pipefail
 TEST_DIR="/tmp/super-e2e-test"
 SOCK="super-e2e"
 SESSION="e2e"
-SUPER_BIN="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/super"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SUPER_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SUPER_BIN="$SUPER_ROOT/target/debug/super"
 PANELOG="/tmp/super-e2e-panelog.txt"
 
 # --- Colors ---
@@ -146,16 +148,14 @@ phase_0_setup() {
     echo "  Preparing test directory..."
     rm -rf "$TEST_DIR"
     mkdir -p "$TEST_DIR"
-    cd "$TEST_DIR"
+    pushd "$TEST_DIR" > /dev/null
     git init
-    cd - > /dev/null
+    popd > /dev/null
 
     echo "  Building super..."
-    local super_root
-    super_root="$(cd "$(dirname "$0")/../.." && pwd)"
-    cd "$super_root"
+    cd "$SUPER_ROOT"
     cargo build --package super-cli 2>&1 | tail -5
-    cd - > /dev/null
+    cd "$SCRIPT_DIR" > /dev/null  # keep cwd near script
 
     if [ ! -x "$SUPER_BIN" ]; then
         echo -e "${RED}FAIL: super binary not found at $SUPER_BIN${NC}"
@@ -345,15 +345,15 @@ phase_3_subagent_dev() {
     fi
 
     echo "  Verifying generated code compiles..."
-    cd "$TEST_DIR"
+    pushd "$TEST_DIR" > /dev/null
     if cargo build 2>&1 | tail -10; then
         echo -e "  ${GREEN}Build succeeded${NC}"
     else
         echo -e "${RED}FAIL: cargo build failed${NC}"
-        cd - > /dev/null
+        popd > /dev/null
         return 1
     fi
-    cd - > /dev/null
+    popd > /dev/null
 
     assert_no_panic || return 1
     echo -e "${GREEN}Phase 3 complete${NC}"
