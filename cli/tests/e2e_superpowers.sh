@@ -68,12 +68,12 @@ wait_for_prompt() {
     return 1
 }
 
-# Wait until tool execution appears (super is actively doing something).
+# Wait until tool execution appears in recent output (super is actively doing something).
 wait_for_tool_activity() {
     local timeout="${1:-300}" elapsed=0 interval=3
     while [ "$elapsed" -lt "$timeout" ]; do
         capture
-        if echo "$CAPTURE" | grep -qE "⏺ (Bash|Write|Read|Edit|Skill|Agent)"; then
+        if echo "$CAPTURE" | tail -20 | grep -qE "⏺ (Bash|Write|Read|Edit|Skill|Agent)"; then
             echo "  Tool activity detected at ${elapsed}s"
             return 0
         fi
@@ -252,8 +252,8 @@ phase_1_conversation() {
             fi
         fi
 
-        # Detect tool execution has started (Write/Bash/Agent visible).
-        if echo "$CAPTURE" | grep -qE "⏺ (Bash|Write|Edit|Skill|Agent)"; then
+        # Detect recent tool execution (last 20 lines only, not scrollback history).
+        if echo "$CAPTURE" | tail -20 | grep -qE "⏺ (Bash|Write|Edit|Skill|Agent)"; then
             echo "  Tool execution detected"
             # Super is writing code. Wait for completion.
             sleep 10.0
