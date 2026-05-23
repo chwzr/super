@@ -440,6 +440,44 @@ impl App {
                     self.pending_interaction = None;
                     return Ok(());
                 }
+                ModalAction::ResumeSession(session_id) => {
+                    self.modal = None;
+
+                    match crate::conversation::transcript::load_session_for_resume(&session_id) {
+                        Ok((meta, history)) => {
+                            crate::conversation::transcript::re_append_metadata(
+                                &session_id,
+                                meta.custom_title.as_deref(),
+                                if meta.first_prompt.is_empty() { None } else { Some(&meta.first_prompt) },
+                            );
+
+                            let registry = self.engine.registry.clone();
+                            let skills = self.engine.skills.clone();
+                            let mut resumed_engine = crate::conversation::engine::ConversationEngine::resume(
+                                self.store.clone(),
+                                self._config.clone(),
+                                registry,
+                                self.bus.clone(),
+                                self.queue.clone(),
+                                history,
+                            );
+                            resumed_engine.skills = skills;
+
+                            self.engine = resumed_engine;
+                            self.reset_scrollback_state();
+                            self.scroll_area.push(Message::System(
+                                format!("Resumed session: {}",
+                                    meta.custom_title.as_deref().unwrap_or(&meta.first_prompt)),
+                            ));
+                        }
+                        Err(e) => {
+                            self.scroll_area.push(Message::System(
+                                format!("Failed to resume session: {e}"),
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
             }
         }
 
