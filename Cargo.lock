@@ -2980,6 +2980,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "crossbeam-channel",
  "crossterm",
  "dirs",
  "futures-util",
