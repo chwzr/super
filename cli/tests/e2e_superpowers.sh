@@ -137,3 +137,49 @@ nuke() {
 
 echo "=== Super E2E Superpowers Test ==="
 echo ""
+
+phase_0_setup() {
+    echo "--- Phase 0: Setup ---"
+
+    nuke
+
+    echo "  Preparing test directory..."
+    rm -rf "$TEST_DIR"
+    mkdir -p "$TEST_DIR"
+    cd "$TEST_DIR"
+    git init
+    cd - > /dev/null
+
+    echo "  Building super..."
+    local super_root
+    super_root="$(cd "$(dirname "$0")/../.." && pwd)"
+    cd "$super_root"
+    cargo build --package super-cli 2>&1 | tail -5
+    cd - > /dev/null
+
+    if [ ! -x "$SUPER_BIN" ]; then
+        echo -e "${RED}FAIL: super binary not found at $SUPER_BIN${NC}"
+        return 1
+    fi
+    echo "  Super binary: $SUPER_BIN"
+
+    echo "  Starting super in tmux..."
+    T new-session -d -s "$SESSION" -x 200 -y 50 \
+        -e "TERM=xterm-256color" \
+        -c "$TEST_DIR" \
+        "$SUPER_BIN"
+    sleep 1.0
+
+    capture
+    echo "  Initial screen captured (${#CAPTURE} chars)"
+
+    if [ -z "$CAPTURE" ]; then
+        echo -e "${RED}FAIL: empty capture after start${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}Phase 0 complete${NC}"
+}
+
+# --- Main ---
+phase_0_setup || exit 1
