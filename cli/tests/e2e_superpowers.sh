@@ -132,7 +132,7 @@ trap cleanup EXIT
 # --- Kill any leftover tmux from previous runs ---
 nuke() {
     T kill-server 2>/dev/null || true
-    sleep 0.2
+    sleep 0.5
 }
 
 echo "=== Super E2E Superpowers Test ==="
@@ -168,10 +168,18 @@ phase_0_setup() {
         -e "TERM=xterm-256color" \
         -c "$TEST_DIR" \
         "$SUPER_BIN"
-    sleep 1.0
+    sleep 3.0
 
-    capture
-    echo "  Initial screen captured (${#CAPTURE} chars)"
+    # Retry capture if empty (super may still be loading)
+    local retries=0
+    while [ "$retries" -lt 5 ]; do
+        capture
+        if [ -n "$CAPTURE" ]; then break; fi
+        retries=$((retries + 1))
+        sleep 1.0
+    done
+
+    echo "  Initial screen captured (${#CAPTURE} chars) after ${retries} retries"
 
     if [ -z "$CAPTURE" ]; then
         echo -e "${RED}FAIL: empty capture after start${NC}"
