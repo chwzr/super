@@ -3,12 +3,55 @@ use std::sync::Arc;
 use crate::config::load_config;
 use crate::conversation::message_queue::MessageQueue;
 
-pub async fn run() {
+pub async fn run(resume: Option<Option<String>>) {
     let config = load_config();
 
     if config.openrouter_api_key.is_none() {
         eprintln!("Not logged in. Run 'super login' first.");
         return;
+    }
+
+    // Determine session ID and optional resume history early.
+    let session_id: String;
+    let resume_history: Option<Vec<crate::conversation::anthropic::HistoryEntry>>;
+
+    if let Some(maybe_id) = &resume {
+        let sessions = crate::conversation::transcript::list_sessions();
+        let target_id = match maybe_id {
+            Some(id) => Some(id.clone()),
+            None => sessions.first().map(|s| s.session_id.clone()),
+        };
+        if let Some(sid) = target_id {
+            match crate::conversation::transcript::load_session_for_resume(&sid) {
+                Ok((meta, history)) => {
+                    if history.is_empty() {
+                        eprintln!("Session {} has no conversation history.", sid);
+                        return;
+                    }
+                    crate::conversation::transcript::re_append_metadata(
+                        &sid,
+                        meta.custom_title.as_deref(),
+                        if meta.first_prompt.is_empty() {
+                            None
+                        } else {
+                            Some(&meta.first_prompt)
+                        },
+                    );
+                    session_id = sid;
+                    resume_history = Some(history);
+                }
+                Err(e) => {
+                    eprintln!("Failed to resume session {}: {e}", sid);
+                    return;
+                }
+            }
+        } else {
+            eprintln!("No previous sessions found to resume.");
+            return;
+        }
+    } else {
+        session_id = uuid::Uuid::new_v4().to_string();
+        resume_history = None;
     }
 
     let store = Arc::new(crate::state::store::Store::new());
@@ -78,7 +121,7 @@ pub async fn run() {
     // Session bus is the spine for all engine events. The TUI will subscribe
     // in a later task; for now we just hand the engine its publishing handle.
     let bus = Arc::new(crate::conversation::session_bus::SessionBus::new(
-        uuid::Uuid::new_v4().to_string(),
+        session_id,
     ));
 
     // Spawn sidechain JSONL writer so any subagent activity gets persisted.
@@ -91,13 +134,25 @@ pub async fn run() {
         bus.session_id().to_string(),
     );
 
-    let mut engine = crate::conversation::engine::ConversationEngine::new(
-        store.clone(),
-        config.clone(),
-        registry.clone(),
-        bus.clone(),
-        queue.clone(),
-    );
+    // Build engine — resume or fresh
+    let mut engine = if let Some(history) = resume_history {
+        crate::conversation::engine::ConversationEngine::resume(
+            store.clone(),
+            config.clone(),
+            registry.clone(),
+            bus.clone(),
+            queue.clone(),
+            history,
+        )
+    } else {
+        crate::conversation::engine::ConversationEngine::new(
+            store.clone(),
+            config.clone(),
+            registry.clone(),
+            bus.clone(),
+            queue.clone(),
+        )
+    };
     engine.skills = Arc::new(all_skills);
 
     // Build system prompt.
