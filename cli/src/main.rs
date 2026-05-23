@@ -5,6 +5,10 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Resume a specific session by ID, or the most recent session if no ID given
+    #[arg(long, num_args = 0..=1)]
+    resume: Option<Option<String>>,
 }
 
 #[derive(Subcommand)]
@@ -28,7 +32,7 @@ async fn main() {
             }
         }
         None => {
-            super_cli::bootstrap::run().await;
+            super_cli::bootstrap::run(cli.resume).await;
         }
     }
 }

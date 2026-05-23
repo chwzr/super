@@ -8,6 +8,7 @@ pub mod commands;
 pub mod config;
 pub mod conversation;
 pub mod executor;
+pub mod lsp;
 pub mod mcp;
 pub mod providers;
 pub mod sdk;

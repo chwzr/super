@@ -8,3 +8,4 @@ pub mod sidechain;
 pub mod sse;
 pub mod system_prompt;
 pub mod tool_loop;
+pub mod transcript;

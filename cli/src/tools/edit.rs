@@ -333,6 +333,15 @@ impl Tool for EditTool {
                     "replace_all": replace_all
                 });
 
+                // Notify LSP of file change + save
+                if let Some(ref mut guard) = crate::lsp::get_lsp_manager() {
+                    if let Some(ref mut manager) = guard.as_mut() {
+                        let rt = tokio::runtime::Handle::current();
+                        let _ = rt.block_on(manager.change_file(file_path, &new_content));
+                        let _ = rt.block_on(manager.save_file(file_path));
+                    }
+                }
+
                 let mut meta = std::collections::HashMap::new();
                 meta.insert("replaced".to_string(), occurrences.to_string());
                 meta.insert("replace_all".to_string(), replace_all.to_string());

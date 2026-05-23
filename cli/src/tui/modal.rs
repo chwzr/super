@@ -25,6 +25,7 @@ pub enum ModalAction {
     SetProvider(String),
     SetEffort(String),
     SubmitAnswers(serde_json::Value),
+    ResumeSession(String),
 }
 
 pub enum Modal {
@@ -78,6 +79,7 @@ impl Modal {
             Modal::Resume(p) => match p.handle_key(key) {
                 ResumeAction::Continue => ModalAction::Continue,
                 ResumeAction::Cancel => ModalAction::Close,
+                ResumeAction::Select(id) => ModalAction::ResumeSession(id),
             },
             Modal::Status(v) => match v.handle_key(key) {
                 StatusAction::Continue => ModalAction::Continue,
