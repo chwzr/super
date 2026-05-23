@@ -4,8 +4,9 @@ use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
-use crossbeam_channel::bounded;
+use crossbeam_channel::{bounded, RecvTimeoutError};
 use lsp_server::{Connection, Message, RequestId};
 use lsp_types::{InitializeParams, InitializeResult, ServerCapabilities};
 use tracing::{debug, error};
@@ -190,7 +191,7 @@ impl LspClient {
         let exit_name = self.name.clone();
         thread::spawn(move || {
             let status = child.wait();
-            if !exit_stopping.load(Ordering::Relaxed) {
+            if !exit_stopping.load(Ordering::Acquire) {
                 match status {
                     Ok(s) if !s.success() => {
                         let msg = format!(
@@ -244,7 +245,7 @@ impl LspClient {
             }))
             .map_err(|e| format!("Send initialize: {}", e))?;
 
-        let result: InitializeResult = match conn.receiver.recv() {
+        let result: InitializeResult = match conn.receiver.recv_timeout(Duration::from_secs(30)) {
             Ok(Message::Response(resp)) => {
                 if let Some(err) = resp.error {
                     return Err(format!("Initialize failed: {}", err.message));
@@ -258,8 +259,17 @@ impl LspClient {
                     other
                 ));
             }
-            Err(e) => {
-                return Err(format!("Receive init response: {}", e));
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(format!(
+                    "LSP server '{}' timed out waiting for response to 'initialize'",
+                    self.name
+                ));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(format!(
+                    "LSP server '{}' disconnected while waiting for response to 'initialize'",
+                    self.name
+                ));
             }
         };
 
@@ -297,7 +307,7 @@ impl LspClient {
             }))
             .map_err(|e| format!("Send request '{}': {}", method, e))?;
 
-        match conn.receiver.recv() {
+        match conn.receiver.recv_timeout(Duration::from_secs(30)) {
             Ok(Message::Response(resp)) => {
                 if let Some(err) = resp.error {
                     return Err(format!(
@@ -314,9 +324,13 @@ impl LspClient {
                 "Unexpected response for '{}': {:?}",
                 method, other
             )),
-            Err(e) => Err(format!(
-                "Failed to receive response for '{}': {}",
-                method, e
+            Err(RecvTimeoutError::Timeout) => Err(format!(
+                "LSP server '{}' timed out waiting for response to '{}'",
+                self.name, method
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(format!(
+                "LSP server '{}' disconnected while waiting for response to '{}'",
+                self.name, method
             )),
         }
     }
@@ -340,8 +354,9 @@ impl LspClient {
 
     /// Stop the server gracefully.
     pub fn stop(&mut self) -> Result<(), String> {
-        self.is_stopping.store(true, Ordering::Relaxed);
+        self.is_stopping.store(true, Ordering::Release);
 
+        // Send shutdown + exit (best-effort)
         if let Some(ref conn) = self.connection {
             let id = RequestId::from(0i32);
             let _ = conn.sender.send(Message::Request(lsp_server::Request {
@@ -357,15 +372,18 @@ impl LspClient {
             ));
         }
 
+        // Drop connection BEFORE joining threads — the writer thread
+        // blocks until all writer_senders are dropped
+        self.connection = None;
+
         if let Some(io) = self.io_threads.take() {
             let _ = io.join();
         }
 
-        self.connection = None;
         self.is_initialized = false;
         self.capabilities = None;
         self.start_failed = false;
-        self.is_stopping.store(false, Ordering::Relaxed);
+        self.is_stopping.store(false, Ordering::Release);
 
         debug!("LSP client stopped for {}", self.name);
         Ok(())
