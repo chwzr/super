@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,7 +25,8 @@ pub struct LspServerInstance {
     pub start_time: Option<Instant>,
     pub last_error: Option<String>,
     pub restart_count: u32,
-    crash_recovery_count: u32,
+    crash_recovery_count: Arc<AtomicU32>,
+    crash_detected: Arc<AtomicBool>,
     client: Arc<Mutex<LspClient>>,
 }
 
@@ -38,7 +40,8 @@ impl LspServerInstance {
             start_time: None,
             last_error: None,
             restart_count: 0,
-            crash_recovery_count: 0,
+            crash_recovery_count: Arc::new(AtomicU32::new(0)),
+            crash_detected: Arc::new(AtomicBool::new(false)),
             client,
         }
     }
@@ -49,8 +52,9 @@ impl LspServerInstance {
         }
 
         // Check crash recovery cap
+        let recovery_count = self.crash_recovery_count.load(Ordering::Acquire);
         if matches!(self.state, LspServerState::Error)
-            && self.crash_recovery_count > self.config.max_restarts
+            && recovery_count > self.config.max_restarts
         {
             let msg = format!(
                 "LSP server '{}' exceeded max crash recovery attempts ({})",
@@ -80,12 +84,13 @@ impl LspServerInstance {
         let _startup_timeout_ms = self.config.startup_timeout_ms;
 
         let client = self.client.clone();
+        let crash_detected = self.crash_detected.clone();
+        let crash_recovery_count = self.crash_recovery_count.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let mut c = client.lock().unwrap();
 
-            // Build crash callback that logs when process exits unexpectedly.
-            // The Instance will detect Error state on the next health check.
+            // Build crash callback that updates shared state on unexpected exit.
             let crash_name = name.clone();
             let crash_cb: super::client::CrashCallback =
                 Arc::new(move |msg: String| {
@@ -93,6 +98,8 @@ impl LspServerInstance {
                         "LSP server '{}' crash detected via callback: {}",
                         crash_name, msg
                     );
+                    crash_detected.store(true, Ordering::Release);
+                    crash_recovery_count.fetch_add(1, Ordering::Release);
                 });
 
             c.start(
@@ -101,10 +108,11 @@ impl LspServerInstance {
                 env.as_ref(),
                 Some(&workspace_folder),
                 Some(crash_cb),
-            )?;
+            )
+            .map_err(|e| e.message)?;
 
             let init_params = build_init_params(&workspace_folder, init_options);
-            c.initialize(init_params)?;
+            c.initialize(init_params).map_err(|e| e.message)?;
 
             Ok::<_, String>(Instant::now())
         })
@@ -115,7 +123,8 @@ impl LspServerInstance {
             Ok(start_time) => {
                 self.state = LspServerState::Running;
                 self.start_time = Some(start_time);
-                self.crash_recovery_count = 0;
+                self.crash_recovery_count.store(0, Ordering::Release);
+                self.crash_detected.store(false, Ordering::Release);
                 debug!("LSP server '{}' started", self.name);
                 Ok(())
             }
@@ -152,19 +161,25 @@ impl LspServerInstance {
             }
             Ok(Err(e)) => {
                 self.state = LspServerState::Error;
-                self.last_error = Some(e.clone());
+                self.last_error = Some(e.message.clone());
                 error!("LSP server '{}' stop error: {}", self.name, e);
-                Err(e)
+                Err(e.message)
             }
         }
     }
 
     pub fn is_healthy(&self) -> bool {
-        self.state == LspServerState::Running
-            && {
-                let c = self.client.lock().unwrap();
-                c.is_initialized
-            }
+        // Check state first
+        if self.state != LspServerState::Running {
+            return false;
+        }
+        // Check crash callback hasn't fired
+        if self.crash_detected.load(Ordering::Acquire) {
+            return false;
+        }
+        // Check client is still initialized
+        let c = self.client.lock().unwrap();
+        c.is_initialized
     }
 
     pub async fn send_request<T: serde::de::DeserializeOwned + Send + 'static>(
@@ -195,13 +210,11 @@ impl LspServerInstance {
             match result {
                 Ok(val) => return Ok(val),
                 Err(e) => {
-                    last_error = e;
-
                     // Check if transient ContentModified error (-32801)
-                    let is_content_modified = last_error.contains("\"code\": -32801")
-                        || last_error.contains("\"code\":-32801");
+                    let is_content_modified = e.code == Some(-32801);
 
                     if is_content_modified && attempt < MAX_TRANSIENT_RETRIES {
+                        last_error = e.message;
                         let delay = RETRY_BASE_DELAY_MS * 2u64.pow(attempt);
                         debug!(
                             "LSP ContentModified for '{}', retrying in {}ms (attempt {}/{})",
@@ -213,6 +226,7 @@ impl LspServerInstance {
                         tokio::time::sleep(Duration::from_millis(delay)).await;
                         continue;
                     }
+                    last_error = e.message;
                     break;
                 }
             }
@@ -238,7 +252,7 @@ impl LspServerInstance {
 
         tokio::task::spawn_blocking(move || {
             let mut c = client.lock().unwrap();
-            c.send_notification(&method_owned, params)
+            c.send_notification(&method_owned, params).map_err(|e| e.message)
         })
         .await
         .map_err(|e| format!("spawn_blocking join: {}", e))?

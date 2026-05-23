@@ -12,6 +12,20 @@ use lsp_types::{InitializeParams, InitializeResult, ServerCapabilities};
 use tracing::{debug, error};
 
 
+/// Structured error from LSP client operations.
+/// Carries the protocol error code when available (e.g. -32801 for ContentModified).
+#[derive(Debug, Clone)]
+pub struct LspError {
+    pub message: String,
+    pub code: Option<i32>,
+}
+
+impl std::fmt::Display for LspError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 pub type CrashCallback = Arc<dyn Fn(String) + Send + Sync>;
 
 /// One LSPClient per spawned language server process.
@@ -139,7 +153,7 @@ impl LspClient {
         env: Option<&HashMap<String, String>>,
         cwd: Option<&str>,
         on_crash: Option<CrashCallback>,
-    ) -> Result<(), String> {
+    ) -> Result<(), LspError> {
         let mut cmd = Command::new(command);
         cmd.args(args);
         cmd.stdin(Stdio::piped());
@@ -155,22 +169,23 @@ impl LspClient {
             cmd.current_dir(dir);
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn '{}': {}", self.name, e))?;
+        let mut child = cmd.spawn().map_err(|e| LspError {
+            message: format!("Failed to spawn '{}': {}", self.name, e),
+            code: None,
+        })?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| format!("'{}': stdin not available", self.name))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| format!("'{}': stdout not available", self.name))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| format!("'{}': stderr not available", self.name))?;
+        let stdin = child.stdin.take().ok_or_else(|| LspError {
+            message: format!("'{}': stdin not available", self.name),
+            code: None,
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| LspError {
+            message: format!("'{}': stdout not available", self.name),
+            code: None,
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| LspError {
+            message: format!("'{}': stderr not available", self.name),
+            code: None,
+        })?;
 
         // Capture stderr in background thread
         let stderr_name = self.name.clone();
@@ -227,15 +242,17 @@ impl LspClient {
     pub fn initialize(
         &mut self,
         params: InitializeParams,
-    ) -> Result<InitializeResult, String> {
+    ) -> Result<InitializeResult, LspError> {
         let conn = self.connection()?;
         let id = RequestId::from(1i32);
         // Clone the sender so we can drop the immutable borrow on `self`
         // before writing to self.capabilities / self.is_initialized.
         let sender = conn.sender.clone();
 
-        let init_params = serde_json::to_value(&params)
-            .map_err(|e| format!("Serialize init params: {}", e))?;
+        let init_params = serde_json::to_value(&params).map_err(|e| LspError {
+            message: format!("Serialize init params: {}", e),
+            code: None,
+        })?;
 
         sender
             .send(Message::Request(lsp_server::Request {
@@ -243,33 +260,47 @@ impl LspClient {
                 method: "initialize".to_string(),
                 params: init_params,
             }))
-            .map_err(|e| format!("Send initialize: {}", e))?;
+            .map_err(|e| LspError {
+                message: format!("Send initialize: {}", e),
+                code: None,
+            })?;
 
         let result: InitializeResult = match conn.receiver.recv_timeout(Duration::from_secs(30)) {
             Ok(Message::Response(resp)) => {
                 if let Some(err) = resp.error {
-                    return Err(format!("Initialize failed: {}", err.message));
+                    return Err(LspError {
+                        message: format!("Initialize failed: {}", err.message),
+                        code: Some(err.code),
+                    });
                 }
-                serde_json::from_value(resp.result.unwrap_or_default())
-                    .map_err(|e| format!("Parse init result: {}", e))?
+                serde_json::from_value(resp.result.unwrap_or_default()).map_err(|e| LspError {
+                    message: format!("Parse init result: {}", e),
+                    code: None,
+                })?
             }
             Ok(other) => {
-                return Err(format!(
-                    "Unexpected response during init: {:?}",
-                    other
-                ));
+                return Err(LspError {
+                    message: format!("Unexpected response during init: {:?}", other),
+                    code: None,
+                });
             }
             Err(RecvTimeoutError::Timeout) => {
-                return Err(format!(
-                    "LSP server '{}' timed out waiting for response to 'initialize'",
-                    self.name
-                ));
+                return Err(LspError {
+                    message: format!(
+                        "LSP server '{}' timed out waiting for response to 'initialize'",
+                        self.name
+                    ),
+                    code: None,
+                });
             }
             Err(RecvTimeoutError::Disconnected) => {
-                return Err(format!(
-                    "LSP server '{}' disconnected while waiting for response to 'initialize'",
-                    self.name
-                ));
+                return Err(LspError {
+                    message: format!(
+                        "LSP server '{}' disconnected while waiting for response to 'initialize'",
+                        self.name
+                    ),
+                    code: None,
+                });
             }
         };
 
@@ -281,7 +312,10 @@ impl LspClient {
                 method: "initialized".to_string(),
                 params: serde_json::Value::Object(Default::default()),
             }))
-            .map_err(|e| format!("Send initialized: {}", e))?;
+            .map_err(|e| LspError {
+                message: format!("Send initialized: {}", e),
+                code: None,
+            })?;
 
         self.is_initialized = true;
         debug!("LSP server '{}' initialized", self.name);
@@ -293,7 +327,7 @@ impl LspClient {
         &mut self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<T, String> {
+    ) -> Result<T, LspError> {
         let conn = self.connection()?;
         self.check_ready()?;
 
@@ -305,33 +339,43 @@ impl LspClient {
                 method: method.to_string(),
                 params,
             }))
-            .map_err(|e| format!("Send request '{}': {}", method, e))?;
+            .map_err(|e| LspError {
+                message: format!("Send request '{}': {}", method, e),
+                code: None,
+            })?;
 
         match conn.receiver.recv_timeout(Duration::from_secs(30)) {
             Ok(Message::Response(resp)) => {
                 if let Some(err) = resp.error {
-                    return Err(format!(
-                        "LSP error {}: {}",
-                        err.code, err.message
-                    ));
+                    return Err(LspError {
+                        message: format!("LSP error {}: {}", err.code, err.message),
+                        code: Some(err.code),
+                    });
                 }
                 let raw = resp.result.unwrap_or(serde_json::Value::Null);
-                serde_json::from_value::<T>(raw).map_err(|e| {
-                    format!("Deserialize response for '{}': {}", method, e)
+                serde_json::from_value::<T>(raw).map_err(|e| LspError {
+                    message: format!("Deserialize response for '{}': {}", method, e),
+                    code: None,
                 })
             }
-            Ok(other) => Err(format!(
-                "Unexpected response for '{}': {:?}",
-                method, other
-            )),
-            Err(RecvTimeoutError::Timeout) => Err(format!(
-                "LSP server '{}' timed out waiting for response to '{}'",
-                self.name, method
-            )),
-            Err(RecvTimeoutError::Disconnected) => Err(format!(
-                "LSP server '{}' disconnected while waiting for response to '{}'",
-                self.name, method
-            )),
+            Ok(other) => Err(LspError {
+                message: format!("Unexpected response for '{}': {:?}", method, other),
+                code: None,
+            }),
+            Err(RecvTimeoutError::Timeout) => Err(LspError {
+                message: format!(
+                    "LSP server '{}' timed out waiting for response to '{}'",
+                    self.name, method
+                ),
+                code: None,
+            }),
+            Err(RecvTimeoutError::Disconnected) => Err(LspError {
+                message: format!(
+                    "LSP server '{}' disconnected while waiting for response to '{}'",
+                    self.name, method
+                ),
+                code: None,
+            }),
         }
     }
 
@@ -340,7 +384,7 @@ impl LspClient {
         &mut self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> Result<(), LspError> {
         let conn = self.connection()?;
         self.check_ready()?;
 
@@ -349,11 +393,14 @@ impl LspClient {
                 method: method.to_string(),
                 params,
             }))
-            .map_err(|e| format!("Send notification '{}': {}", method, e))
+            .map_err(|e| LspError {
+                message: format!("Send notification '{}': {}", method, e),
+                code: None,
+            })
     }
 
     /// Stop the server gracefully.
-    pub fn stop(&mut self) -> Result<(), String> {
+    pub fn stop(&mut self) -> Result<(), LspError> {
         self.is_stopping.store(true, Ordering::Release);
 
         // Send shutdown + exit (best-effort)
@@ -389,22 +436,30 @@ impl LspClient {
         Ok(())
     }
 
-    fn connection(&self) -> Result<&Connection, String> {
+    fn connection(&self) -> Result<&Connection, LspError> {
         self.connection
             .as_ref()
-            .ok_or_else(|| format!("LSP client '{}' not started", self.name))
+            .ok_or_else(|| LspError {
+                message: format!("LSP client '{}' not started", self.name),
+                code: None,
+            })
     }
 
-    fn check_ready(&self) -> Result<(), String> {
+    fn check_ready(&self) -> Result<(), LspError> {
         if self.start_failed {
-            return Err(
-                self.start_error
+            return Err(LspError {
+                message: self
+                    .start_error
                     .clone()
-                    .unwrap_or_else(|| format!("'{}' failed to start", self.name))
-            );
+                    .unwrap_or_else(|| format!("'{}' failed to start", self.name)),
+                code: None,
+            });
         }
         if !self.is_initialized {
-            return Err(format!("'{}' not initialized", self.name));
+            return Err(LspError {
+                message: format!("'{}' not initialized", self.name),
+                code: None,
+            });
         }
         Ok(())
     }
