@@ -110,6 +110,32 @@ impl ConversationEngine {
         }
     }
 
+    /// Construct an engine that resumes an existing session.
+    /// Seeds history from the provided entries instead of starting fresh.
+    pub fn resume(
+        store: Arc<Store>,
+        config: CliConfig,
+        registry: Arc<ToolRegistry>,
+        bus: Arc<SessionBus>,
+        queue: Arc<crate::conversation::message_queue::MessageQueue>,
+        history: Vec<HistoryEntry>,
+    ) -> Self {
+        Self {
+            store,
+            config,
+            registry,
+            bus,
+            abort: None,
+            session_id_override: None,
+            history_override: Some(history),
+            permission_mode_override: None,
+            auto_deny_prompts: false,
+            queue,
+            skills: Arc::new(Vec::new()),
+            skill_listing_sent: Arc::new(AtomicBool::new(true)), // skill listing was sent in original session
+        }
+    }
+
     /// Effective session id for emits: override if set, else bus.session_id().
     pub fn effective_session_id(&self) -> String {
         self.session_id_override
