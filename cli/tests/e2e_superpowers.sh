@@ -268,6 +268,42 @@ phase_1_brainstorming() {
     echo -e "${GREEN}Phase 1 complete${NC} (rounds: $round)"
 }
 
+phase_2_writing_plans() {
+    echo "--- Phase 2: Writing Plans ---"
+
+    local max_rounds=8
+    local round=0
+
+    while [ "$round" -lt "$max_rounds" ]; do
+        round=$((round + 1))
+        wait_stable 40
+
+        assert_no_panic || return 1
+
+        if echo "$CAPTURE" | grep -qi "approve\|proceed\|shall i implement\|look right\|looks good"; then
+            echo "  Plan approval detected, sending approval..."
+            type_line "approved, implement it"
+            sleep 2.0
+        fi
+
+        if echo "$CAPTURE" | grep -qi "Agent\|agent\|subagent\|implement\|execution\|spawn\|dispatching"; then
+            echo "  Implementation starting..."
+            break
+        fi
+
+        if echo "$CAPTURE" | grep -qi "implementation plan\|step\|task\|file.*create\|file.*modify"; then
+            echo "  Plan content visible..."
+            sleep 3.0
+            continue
+        fi
+
+        sleep 3.0
+    done
+
+    echo -e "${GREEN}Phase 2 complete${NC}"
+}
+
 # --- Main ---
 phase_0_setup || exit 1
 phase_1_brainstorming || exit 1
+phase_2_writing_plans || exit 1
