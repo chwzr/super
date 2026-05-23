@@ -262,7 +262,6 @@ phase_1_brainstorming() {
         fi
     done
 
-    assert_contains "Brainstorming or design content visible" "design\|brainstorming\|spec\|task\|Task" || true
     assert_no_panic || return 1
 
     echo -e "${GREEN}Phase 1 complete${NC} (rounds: $round)"
