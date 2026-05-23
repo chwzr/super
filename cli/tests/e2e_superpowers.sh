@@ -240,9 +240,9 @@ phase_1_conversation() {
 
         assert_no_panic || return 1
 
-        # Check: has super created a cargo project anywhere in resolved tmp?
+        # Check for cargo project in tmp OR home dir (super may use either).
         local found_cargo
-        found_cargo="$(find "$RESOLVED_TMP" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
+        found_cargo="$(find "$RESOLVED_TMP" "$HOME" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" -not -path "*/Library/*" 2>/dev/null | head -1)"
         if [ -n "$found_cargo" ]; then
             local proj_dir
             proj_dir="$(dirname "$found_cargo")"
@@ -260,7 +260,7 @@ phase_1_conversation() {
             wait_stable 20
             # Check for files again.
             local check_cargo
-            check_cargo="$(find "$RESOLVED_TMP" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
+            check_cargo="$(find "$RESOLVED_TMP" "$HOME" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" -not -path "*/Library/*" 2>/dev/null | head -1)"
             if [ -n "$check_cargo" ]; then
                 local check_dir
                 check_dir="$(dirname "$check_cargo")"
@@ -295,12 +295,7 @@ phase_2_validate() {
     echo "--- Phase 2: Code Validation ---"
 
     local cargo_toml
-    cargo_toml="$(find "$RESOLVED_TMP" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" 2>/dev/null | head -1)"
-
-    if [ -z "$cargo_toml" ]; then
-        # Wider search
-        cargo_toml="$(find /Users/chwzr -maxdepth 3 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" -not -path "*/Library/*" 2>/dev/null | head -1)"
-    fi
+    cargo_toml="$(find "$RESOLVED_TMP" "$HOME" -maxdepth 5 -name "Cargo.toml" -not -path "*/.git/*" -not -path "*/target/*" -not -path "*/Library/*" 2>/dev/null | head -1)"
 
     if [ -z "$cargo_toml" ]; then
         echo -e "${RED}FAIL: No Cargo.toml found anywhere${NC}"
