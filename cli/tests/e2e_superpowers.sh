@@ -362,34 +362,21 @@ phase_3_resume() {
     T kill-session -t "$SESSION" 2>/dev/null || true
     sleep 0.5
 
-    echo "  Restarting with --resume..."
+    echo "  Restarting with --resume (auto-loads most recent session)..."
     T new-session -d -s "$SESSION" -x 200 -y 50 \
         -e "TERM=xterm-256color" \
         -c "$TEST_DIR" \
         "$SUPER_BIN" --resume
     sleep 2.0
-    wait_stable 20
-
-    capture
-    echo "  Resume picker (top 30 lines):"
-    echo "$CAPTURE" | head -30
-
-    if ! echo "$CAPTURE" | grep -qi "session\|resume\|select"; then
-        echo -e "  ${YELLOW}WARNING: Resume picker may not be visible${NC}"
-    fi
-
-    assert_no_panic || return 1
-
-    echo "  Selecting most recent session..."
-    send_enter
-    sleep 2.0
     wait_stable 30
 
     capture
-    echo "  Screen after resume: ${#CAPTURE} chars"
+    echo "  Screen after --resume: ${#CAPTURE} chars"
 
     assert_no_panic || return 1
 
+    # --resume auto-loads the most recent session without showing a picker.
+    # The screen should show conversation history (substantial content).
     if [ "${#CAPTURE}" -lt 200 ]; then
         echo -e "  ${RED}FAIL: Screen too small — history may not have loaded${NC}"
         echo "$CAPTURE"
@@ -427,25 +414,16 @@ phase_4_rename() {
     T kill-session -t "$SESSION" 2>/dev/null || true
     sleep 0.5
 
-    echo "  Restarting with --resume to verify rename..."
+    echo "  Restarting with --resume (auto-loads renamed session)..."
     T new-session -d -s "$SESSION" -x 200 -y 50 \
         -e "TERM=xterm-256color" \
         -c "$TEST_DIR" \
         "$SUPER_BIN" --resume
     sleep 2.0
-    wait_stable 20
+    wait_stable 30
 
     capture
-    echo "  Picker after rename (top 30):"
-    echo "$CAPTURE" | head -30
-
-    assert_contains "Custom title in picker" "e2e-test-session" || return 1
-    assert_no_panic || return 1
-
-    echo "  Selecting renamed session..."
-    send_enter
-    sleep 2.0
-    wait_stable 30
+    echo "  Screen after rename+resume: ${#CAPTURE} chars"
 
     assert_no_panic || return 1
 
