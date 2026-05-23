@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -107,16 +107,12 @@ pub fn spawn_transcript_writer(bus: Arc<SessionBus>, session_id: String) {
                         ..
                     } = &msg
                     {
-                        let first_text =
-                            message
-                                .content
-                                .iter()
-                                .find_map(|b| match b {
-                                    crate::sdk::protocol::ContentBlockFinal::Text { text } => {
-                                        Some(text.as_str())
-                                    }
-                                    _ => None,
-                                });
+                        let first_text = message.content.iter().find_map(|b| match b {
+                            crate::sdk::protocol::ContentBlockFinal::Text { text } => {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        });
                         if let Some(text) = first_text {
                             write_last_prompt_inline(w, session_id, text);
                         }
@@ -162,11 +158,7 @@ pub fn write_meta_entry(session_id: &str, meta: &TranscriptMeta) {
 /// Re-append custom-title and last-prompt entries so they stay in the tail
 /// window. Called on resume to prevent the most recent metadata from scrolling
 /// out of the 64KB tail scan window.
-pub fn re_append_metadata(
-    session_id: &str,
-    custom_title: Option<&str>,
-    last_prompt: Option<&str>,
-) {
+pub fn re_append_metadata(session_id: &str, custom_title: Option<&str>, last_prompt: Option<&str>) {
     if let Some(title) = custom_title {
         write_meta_entry(
             session_id,
@@ -264,18 +256,36 @@ pub fn list_sessions() -> Vec<SessionMeta> {
         }
     }
 
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    sessions.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
     sessions
 }
 
-/// Read first HEAD_TAIL_BYTES from a file, extract metadata.
+/// Read first HEAD_TAIL_BYTES from the file and the last HEAD_TAIL_BYTES from the
+/// file, then merge metadata: tail takes priority for fields that get re-appended
+/// to EOF (`customTitle`, `lastPrompt`, `gitBranch`), head is used for `cwd` and
+/// as a fallback when the tail has no match.
 /// Returns None if the session is a sidechain file (no root messages).
 fn scan_transcript_meta(path: &PathBuf, file_size: u64) -> Option<RawMeta> {
     let head_size = HEAD_TAIL_BYTES.min(file_size as usize);
-    let mut head_buf = vec![0u8; head_size];
+    let tail_size = HEAD_TAIL_BYTES.min(file_size as usize);
+
+    // Read head.
     let mut f = File::open(path).ok()?;
+    let mut head_buf = vec![0u8; head_size];
     f.read_exact(&mut head_buf).ok()?;
     let head = String::from_utf8_lossy(&head_buf);
+
+    // Read tail.
+    let tail = if file_size > HEAD_TAIL_BYTES as u64 {
+        f.seek(SeekFrom::End(-(tail_size as i64))).ok()?;
+        let mut tail_buf = vec![0u8; tail_size];
+        f.read_exact(&mut tail_buf).ok()?;
+        String::from_utf8_lossy(&tail_buf).to_string()
+    } else {
+        // File is smaller than the tail window — head already covers everything.
+        // No need to read again.
+        String::new()
+    };
 
     // Check first line: if it has a non-null parent_tool_use_id, it's a sidechain.
     if let Some(first_line) = head.lines().next() {
@@ -288,13 +298,33 @@ fn scan_transcript_meta(path: &PathBuf, file_size: u64) -> Option<RawMeta> {
         }
     }
 
-    let first_prompt =
-        extract_last_json_string_field(&head, "lastPrompt").unwrap_or_else(String::new);
+    // custom_title — tail (re-append) first, fall back to head.
+    let custom_title = if !tail.is_empty() {
+        extract_last_json_string_field(&tail, "customTitle")
+            .or_else(|| extract_last_json_string_field(&head, "customTitle"))
+    } else {
+        extract_last_json_string_field(&head, "customTitle")
+    };
 
-    let custom_title = extract_last_json_string_field(&head, "customTitle");
+    // first_prompt — tail `lastPrompt` (most recent user message), fall back to
+    // head's first content text.
+    let first_prompt = if !tail.is_empty() {
+        extract_last_json_string_field(&tail, "lastPrompt").unwrap_or_else(|| {
+            extract_last_json_string_field(&head, "lastPrompt").unwrap_or_default()
+        })
+    } else {
+        extract_last_json_string_field(&head, "lastPrompt").unwrap_or_default()
+    };
 
-    let git_branch = extract_first_json_string_field(&head, "gitBranch");
+    // git_branch — tail first (re-append), fall back to head.
+    let git_branch = if !tail.is_empty() {
+        extract_last_json_string_field(&tail, "gitBranch")
+            .or_else(|| extract_first_json_string_field(&head, "gitBranch"))
+    } else {
+        extract_first_json_string_field(&head, "gitBranch")
+    };
 
+    // cwd — head only (doesn't change across the session).
     let cwd = extract_first_json_string_field(&head, "cwd");
 
     Some(RawMeta {
@@ -389,8 +419,8 @@ pub fn load_session_for_resume(
                     content: message.content,
                 });
             }
-            Ok(_) => {}   // StreamEvent, Result, SystemEvent — skip
-            Err(_) => {}  // TranscriptMeta entry — skip
+            Ok(_) => {}  // StreamEvent, Result, SystemEvent — skip
+            Err(_) => {} // TranscriptMeta entry — skip
         }
     }
 
@@ -438,9 +468,7 @@ mod tests {
         BusMessage::User {
             message: UserPayload {
                 role: "user".into(),
-                content: vec![ContentBlockFinal::Text {
-                    text: text.into(),
-                }],
+                content: vec![ContentBlockFinal::Text { text: text.into() }],
             },
             parent_tool_use_id: None,
             uuid: uuid::Uuid::new_v4(),
@@ -454,9 +482,7 @@ mod tests {
                 id: "msg_1".into(),
                 model: "claude".into(),
                 role: "assistant".into(),
-                content: vec![ContentBlockFinal::Text {
-                    text: text.into(),
-                }],
+                content: vec![ContentBlockFinal::Text { text: text.into() }],
                 stop_reason: Some("end_turn".into()),
                 usage: AnthropicUsage::default(),
             },
@@ -477,7 +503,10 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
         let contents = fs::read_to_string(transcript_path(sid)).unwrap();
-        assert!(contents.contains("root message"), "root message must be in transcript");
+        assert!(
+            contents.contains("root message"),
+            "root message must be in transcript"
+        );
 
         // Cleanup
         let _ = fs::remove_dir_all(session_dir(sid));
@@ -501,8 +530,14 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
         let contents = fs::read_to_string(transcript_path(sid)).unwrap();
-        assert!(contents.contains("root message"), "root message must be in transcript");
-        assert!(!contents.contains("subagent note"), "subagent message must NOT be in transcript");
+        assert!(
+            contents.contains("root message"),
+            "root message must be in transcript"
+        );
+        assert!(
+            !contents.contains("subagent note"),
+            "subagent message must NOT be in transcript"
+        );
 
         // Cleanup
         let _ = fs::remove_dir_all(session_dir(sid));
@@ -519,8 +554,14 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
         let contents = fs::read_to_string(transcript_path(sid)).unwrap();
-        assert!(contents.contains("\"type\":\"last-prompt\""), "should contain last-prompt entry");
-        assert!(contents.contains("hello world"), "should contain the user text");
+        assert!(
+            contents.contains("\"type\":\"last-prompt\""),
+            "should contain last-prompt entry"
+        );
+        assert!(
+            contents.contains("hello world"),
+            "should contain the user text"
+        );
 
         // Cleanup
         let _ = fs::remove_dir_all(session_dir(sid));
@@ -552,7 +593,11 @@ mod tests {
         let sid = "test-load";
         let path = transcript_path(sid);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut f = OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
 
         let msgs: Vec<BusMessage> = vec![
             make_user_msg("first question", sid),
@@ -568,14 +613,24 @@ mod tests {
         let (_meta, history) = load_session_for_resume(sid).unwrap();
         assert_eq!(history.len(), 4);
         match &history[0] {
-            HistoryEntry { role: Role::User, content } => {
-                assert!(content.iter().any(|b| matches!(b, ContentBlockFinal::Text { text } if text == "first question")));
+            HistoryEntry {
+                role: Role::User,
+                content,
+            } => {
+                assert!(content.iter().any(
+                    |b| matches!(b, ContentBlockFinal::Text { text } if text == "first question")
+                ));
             }
             _ => panic!("expected user entry"),
         }
         match &history[1] {
-            HistoryEntry { role: Role::Assistant, content } => {
-                assert!(content.iter().any(|b| matches!(b, ContentBlockFinal::Text { text } if text == "first answer")));
+            HistoryEntry {
+                role: Role::Assistant,
+                content,
+            } => {
+                assert!(content.iter().any(
+                    |b| matches!(b, ContentBlockFinal::Text { text } if text == "first answer")
+                ));
             }
             _ => panic!("expected assistant entry"),
         }
@@ -589,9 +644,23 @@ mod tests {
         let sid = "test-list";
         let path = transcript_path(sid);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut f = OpenOptions::new().create(true).append(true).open(&path).unwrap();
-        writeln!(f, "{}", serde_json::to_string(&make_user_msg("list test prompt", sid)).unwrap()).unwrap();
-        writeln!(f, "{}", serde_json::to_string(&make_assistant_msg("list test answer", sid)).unwrap()).unwrap();
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            f,
+            "{}",
+            serde_json::to_string(&make_user_msg("list test prompt", sid)).unwrap()
+        )
+        .unwrap();
+        writeln!(
+            f,
+            "{}",
+            serde_json::to_string(&make_assistant_msg("list test answer", sid)).unwrap()
+        )
+        .unwrap();
         drop(f);
 
         write_meta_entry(
@@ -617,7 +686,11 @@ mod tests {
         let sid = "test-sidechain-filter";
         let path = transcript_path(sid);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut f = OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
 
         let sc_msg = BusMessage::SystemEvent {
             subtype: SystemSubtype::Notice,
@@ -639,7 +712,8 @@ mod tests {
 
     #[test]
     fn extract_json_string_fields() {
-        let json = r#"{"type":"user","cwd":"/home/alice","content":[{"type":"text","text":"hello"}]}"#;
+        let json =
+            r#"{"type":"user","cwd":"/home/alice","content":[{"type":"text","text":"hello"}]}"#;
         assert_eq!(
             extract_first_json_string_field(json, "cwd").as_deref(),
             Some("/home/alice")

@@ -197,12 +197,10 @@ impl LspClient {
         let stderr_name = self.name.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    let trimmed = line.trim().to_string();
-                    if !trimmed.is_empty() {
-                        debug!("[LSP SERVER {}] {}", stderr_name, trimmed);
-                    }
+            for line in reader.lines().map_while(Result::ok) {
+                let trimmed = line.trim().to_string();
+                if !trimmed.is_empty() {
+                    debug!("[LSP SERVER {}] {}", stderr_name, trimmed);
                 }
             }
         });

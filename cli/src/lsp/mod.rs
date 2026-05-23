@@ -135,7 +135,7 @@ pub fn is_lsp_connected() -> bool {
 pub async fn wait_for_initialization() {
     let state = *INIT_STATE.read().await;
     match state {
-        InitState::Success | InitState::Failed => return,
+        InitState::Success | InitState::Failed => (),
         InitState::Pending => {
             let handle = INIT_TASK.lock().unwrap().take();
             if let Some(h) = handle {

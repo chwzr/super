@@ -212,7 +212,12 @@ impl App {
             let registry = crate::commands::registry::CommandRegistry::new();
             if let Some(cmd) = registry.resolve(&text) {
                 use crate::commands::dispatch::CommandResult;
-                match crate::commands::dispatch::dispatch(cmd, &text, &self.store, self.bus.session_id()) {
+                match crate::commands::dispatch::dispatch(
+                    cmd,
+                    &text,
+                    &self.store,
+                    self.bus.session_id(),
+                ) {
                     CommandResult::Display(output) => {
                         self.scroll_area.push(Message::System(output));
                     }
@@ -448,32 +453,36 @@ impl App {
                             crate::conversation::transcript::re_append_metadata(
                                 &session_id,
                                 meta.custom_title.as_deref(),
-                                if meta.first_prompt.is_empty() { None } else { Some(&meta.first_prompt) },
+                                if meta.first_prompt.is_empty() {
+                                    None
+                                } else {
+                                    Some(&meta.first_prompt)
+                                },
                             );
 
                             let registry = self.engine.registry.clone();
                             let skills = self.engine.skills.clone();
-                            let mut resumed_engine = crate::conversation::engine::ConversationEngine::resume(
-                                self.store.clone(),
-                                self._config.clone(),
-                                registry,
-                                self.bus.clone(),
-                                self.queue.clone(),
-                                history,
-                            );
+                            let mut resumed_engine =
+                                crate::conversation::engine::ConversationEngine::resume(
+                                    self.store.clone(),
+                                    self._config.clone(),
+                                    registry,
+                                    self.bus.clone(),
+                                    self.queue.clone(),
+                                    history,
+                                );
                             resumed_engine.skills = skills;
 
                             self.engine = resumed_engine;
                             self.reset_scrollback_state();
-                            self.scroll_area.push(Message::System(
-                                format!("Resumed session: {}",
-                                    meta.custom_title.as_deref().unwrap_or(&meta.first_prompt)),
-                            ));
+                            self.scroll_area.push(Message::System(format!(
+                                "Resumed session: {}",
+                                meta.custom_title.as_deref().unwrap_or(&meta.first_prompt)
+                            )));
                         }
                         Err(e) => {
-                            self.scroll_area.push(Message::System(
-                                format!("Failed to resume session: {e}"),
-                            ));
+                            self.scroll_area
+                                .push(Message::System(format!("Failed to resume session: {e}")));
                         }
                     }
                     return Ok(());

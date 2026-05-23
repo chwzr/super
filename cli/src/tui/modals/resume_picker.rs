@@ -16,6 +16,12 @@ pub struct ResumePicker {
     pub selected_idx: usize,
 }
 
+impl Default for ResumePicker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResumePicker {
     pub fn new() -> Self {
         let sessions = crate::conversation::transcript::list_sessions();
@@ -116,7 +122,9 @@ impl ResumePicker {
                 )));
             }
         } else {
-            let start = self.selected_idx.saturating_sub(max_items.saturating_sub(1));
+            let start = self
+                .selected_idx
+                .saturating_sub(max_items.saturating_sub(1));
             let end = (start + max_items).min(filtered.len());
 
             for (i, session) in filtered.iter().enumerate().skip(start).take(end - start) {
@@ -135,14 +143,10 @@ impl ResumePicker {
                 };
 
                 let line = if is_selected {
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{}{}", prefix, display_title),
-                            Style::default()
-                                .fg(CC_BLUE)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ])
+                    Line::from(vec![Span::styled(
+                        format!("{}{}", prefix, display_title),
+                        Style::default().fg(CC_BLUE).add_modifier(Modifier::BOLD),
+                    )])
                 } else {
                     Line::from(vec![Span::raw(format!("{}{}", prefix, display_title))])
                 };

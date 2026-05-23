@@ -82,7 +82,7 @@ impl Tool for LspTool {
         input
             .get("filePath")
             .and_then(|v| v.as_str())
-            .map(|p| expand_path(p))
+            .map(expand_path)
     }
 
     // ── Validation + permissions ────────────────────────────────────────
@@ -587,7 +587,7 @@ fn format_result(operation: &str, response: &Option<serde_json::Value>) -> (Stri
                         let kind = sym
                             .get("kind")
                             .and_then(|v| v.as_u64())
-                            .map(|k| symbol_kind_name(k))
+                            .map(symbol_kind_name)
                             .unwrap_or_else(|| "".into());
                         let loc = sym
                             .get("location")
@@ -625,7 +625,7 @@ fn format_result(operation: &str, response: &Option<serde_json::Value>) -> (Stri
                     let kind = item
                         .get("kind")
                         .and_then(|v| v.as_u64())
-                        .map(|k| symbol_kind_name(k))
+                        .map(symbol_kind_name)
                         .unwrap_or_default();
                     lines.push(format!("  {} ({})", name, kind));
                 }
@@ -687,7 +687,7 @@ fn format_call_hierarchy(operation: &str, calls: &Option<serde_json::Value>) -> 
             .or_else(|| call.get("to"))
             .and_then(|item| item.get("kind"))
             .and_then(|v| v.as_u64())
-            .map(|k| symbol_kind_name(k))
+            .map(symbol_kind_name)
             .unwrap_or_default();
 
         let ranges = call.get("fromRanges").or_else(|| call.get("toRanges"));
@@ -730,11 +730,11 @@ fn format_symbol_list(out: &mut String, symbols: Option<&Vec<serde_json::Value>>
         let kind = sym
             .get("kind")
             .and_then(|v| v.as_u64())
-            .map(|k| symbol_kind_name(k))
+            .map(symbol_kind_name)
             .unwrap_or_default();
         out.push_str(&format!("{}{} ({})\n", prefix, name, kind));
         if let Some(children) = sym.get("children").and_then(|v| v.as_array()) {
-            format_symbol_list(out, Some(&children.iter().cloned().collect()), indent + 1);
+            format_symbol_list(out, Some(&children.to_vec()), indent + 1);
         }
     }
 }
