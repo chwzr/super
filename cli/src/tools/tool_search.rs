@@ -124,20 +124,20 @@ impl Tool for ToolSearchTool {
         }
 
         // --- +prefix: require term in name ---
-        let require_in_name: Option<String> = query
-            .strip_prefix('+')
+        let stripped = query.strip_prefix('+');
+        let require_in_name: Option<String> = stripped
             .and_then(|s| s.split_whitespace().next().map(|t| t.to_lowercase()));
 
-        let search_terms: Vec<&str> = if require_in_name.is_some() {
-            let after_plus = query.strip_prefix('+').unwrap();
-            let parts: Vec<&str> = after_plus.splitn(2, ' ').collect();
-            if parts.len() > 1 {
-                parts[1].split_whitespace().collect()
-            } else {
-                vec![]
+        let search_terms: Vec<&str> = match stripped {
+            Some(after_plus) => {
+                let parts: Vec<&str> = after_plus.splitn(2, ' ').collect();
+                if parts.len() > 1 {
+                    parts[1].split_whitespace().collect()
+                } else {
+                    vec![]
+                }
             }
-        } else {
-            query.split_whitespace().collect()
+            None => query.split_whitespace().collect(),
         };
 
         let query_lower = query.to_lowercase();

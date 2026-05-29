@@ -1,4 +1,3 @@
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -274,11 +273,10 @@ fn build_init_params(
     InitializeParams {
         process_id: Some(std::process::id()),
         root_path: Some(workspace_folder.to_string()),
-        root_uri: Some(
-            workspace_uri
-                .parse::<Uri>()
-                .unwrap_or_else(|_| Uri::from_str("file:///").unwrap()),
-        ),
+        root_uri: workspace_uri
+            .parse::<Uri>()
+            .ok()
+            .or_else(|| "file:///".parse::<Uri>().ok()),
         initialization_options,
         capabilities: ClientCapabilities {
             workspace: Some(WorkspaceClientCapabilities {
