@@ -145,6 +145,7 @@ impl CronRuntime {
     }
 
     /// Run the cron scheduler loop. Call via tokio::spawn.
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     pub async fn run(mut self) {
         let tick_interval = Duration::from_secs(30);
         loop {
