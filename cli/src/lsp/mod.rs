@@ -73,7 +73,11 @@ pub fn initialize_lsp_manager() {
         match LspServerManager::initialize().await {
             Ok(manager) => {
                 if INIT_GENERATION.load(Ordering::SeqCst) == gen {
-                    *MANAGER.lock().unwrap() = Some(manager);
+                    {
+                        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
+                        let mut mg = MANAGER.lock().unwrap();
+                        *mg = Some(manager);
+                    }
                     *INIT_STATE.write().await = InitState::Success;
                     debug!("LSP manager initialized successfully");
                 }
@@ -87,7 +91,9 @@ pub fn initialize_lsp_manager() {
         }
     });
 
-    *INIT_TASK.lock().unwrap() = Some(handle);
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
+    let mut tg = INIT_TASK.lock().unwrap();
+    *tg = Some(handle);
 }
 
 pub fn get_lsp_manager() -> Option<std::sync::MutexGuard<'static, Option<LspServerManager>>> {
@@ -100,6 +106,7 @@ pub fn get_lsp_manager() -> Option<std::sync::MutexGuard<'static, Option<LspServ
         .unwrap_or(InitState::NotStarted);
     match state {
         InitState::Failed | InitState::NotStarted => None,
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         _ => Some(MANAGER.lock().unwrap()),
     }
 }
@@ -117,6 +124,7 @@ pub fn is_lsp_connected() -> bool {
         return false;
     }
 
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     let guard = MANAGER.lock().unwrap();
     match guard.as_ref() {
         Some(manager) => {
@@ -137,6 +145,7 @@ pub async fn wait_for_initialization() {
     match state {
         InitState::Success | InitState::Failed => (),
         InitState::Pending => {
+            #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
             let handle = INIT_TASK.lock().unwrap().take();
             if let Some(h) = handle {
                 let _ = h.await;
@@ -147,6 +156,7 @@ pub async fn wait_for_initialization() {
 }
 
 pub async fn shutdown_lsp_manager() {
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     let manager = MANAGER.lock().unwrap().take();
     if let Some(mut m) = manager {
         if let Err(e) = m.shutdown().await {
@@ -156,7 +166,9 @@ pub async fn shutdown_lsp_manager() {
 
     *INIT_STATE.write().await = InitState::NotStarted;
     INIT_GENERATION.fetch_add(1, Ordering::SeqCst);
-    *INIT_TASK.lock().unwrap() = None;
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
+    let mut tg2 = INIT_TASK.lock().unwrap();
+    *tg2 = None;
 
     debug!("LSP manager shutdown complete");
 }
