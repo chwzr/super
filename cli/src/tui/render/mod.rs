@@ -199,9 +199,11 @@ pub fn item_to_lines(
         TranscriptItem::System { subtype, message } => {
             lines.push(Line::from(""));
             let recap_style = Style::default().fg(Color::DarkGray);
+            let error_style = Style::default().fg(Color::Red);
             let (prefix, style) = match subtype {
                 SystemSubtype::PostTurnSummary => ("※ recap: ", recap_style),
                 SystemSubtype::CompactBoundary => ("※ ", recap_style),
+                SystemSubtype::Error => ("⚠ ", error_style),
                 _ => ("※ ", dim),
             };
             for (i, body_line) in message.lines().enumerate() {

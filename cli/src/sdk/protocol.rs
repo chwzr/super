@@ -391,6 +391,7 @@ pub enum SystemSubtype {
     PermissionRequest,
     Notice,
     AsyncAgentDone,
+    Error,
 }
 
 #[cfg(test)]
