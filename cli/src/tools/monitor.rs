@@ -95,7 +95,13 @@ impl Tool for MonitorTool {
         };
 
         // Take stdout for line streaming, then move both reader and child into the spawn
-        let stdout = child.stdout.take().expect("stdout not piped");
+        let Some(stdout) = child.stdout.take() else {
+            return ToolResult {
+                content: "internal error: monitor child stdout not piped".into(),
+                is_error: true,
+                ..Default::default()
+            };
+        };
         let reader = BufReader::new(stdout);
 
         // Spawn background task for line-by-line streaming

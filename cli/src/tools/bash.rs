@@ -149,10 +149,13 @@ impl Tool for BashTool {
                 let _ = std::fs::create_dir_all(parent);
             }
 
-            let queue = context
-                .queue
-                .clone()
-                .expect("MessageQueue must be available in ToolCallContext");
+            let Some(queue) = context.queue.clone() else {
+                return ToolResult {
+                    content: "internal error: MessageQueue not provided to bash tool".into(),
+                    is_error: true,
+                    ..Default::default()
+                };
+            };
 
             match Command::new("bash")
                 .arg("-c")
