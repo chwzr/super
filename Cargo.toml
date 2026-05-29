@@ -5,3 +5,11 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"

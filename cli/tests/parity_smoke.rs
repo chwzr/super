@@ -1,3 +1,12 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unreachable,
+)]
+
 //! End-to-end smoke test for the Batch 1 trait/permission/renderspec migration.
 //!
 //! Verifies that:

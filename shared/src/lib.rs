@@ -1,3 +1,15 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+    )
+)]
+
 pub mod auth;
 pub mod render_spec;
 

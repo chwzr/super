@@ -1,3 +1,15 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+    )
+)]
+
 //! Library entry for the super CLI. Re-exports the public modules so
 //! integration tests (and future external consumers) can reach them.
 

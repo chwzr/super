@@ -1,3 +1,15 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+    )
+)]
+
 mod adapters;
 mod domain;
 mod routes;
