@@ -52,17 +52,26 @@ impl ChildIoThreads {
         // Reader
         match self.reader.join() {
             Ok(r) => r?,
-            Err(err) => std::panic::panic_any(err),
+            Err(err) => {
+                tracing::error!("LSP reader thread panicked: {err:?}");
+                return Err(io::Error::other("LSP reader thread panicked"));
+            }
         }
         // Dropper
         match self.dropper.join() {
             Ok(_) => (),
-            Err(err) => std::panic::panic_any(err),
+            Err(err) => {
+                tracing::error!("LSP dropper thread panicked: {err:?}");
+                return Err(io::Error::other("LSP dropper thread panicked"));
+            }
         }
         // Writer
         match self.writer.join() {
             Ok(r) => r,
-            Err(err) => std::panic::panic_any(err),
+            Err(err) => {
+                tracing::error!("LSP writer thread panicked: {err:?}");
+                Err(io::Error::other("LSP writer thread panicked"))
+            }
         }
     }
 }
