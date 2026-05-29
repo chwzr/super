@@ -179,10 +179,12 @@ impl ToolRegistry {
         registry
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn register(&self, tool: Arc<dyn Tool>) {
         self.tools.write().unwrap().push(tool);
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .read()
@@ -192,6 +194,7 @@ impl ToolRegistry {
             .cloned()
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn list(&self) -> Vec<String> {
         self.tools
             .read()
@@ -201,6 +204,7 @@ impl ToolRegistry {
             .collect()
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn assemble_for_mode(&self, mode: &PermissionMode) -> Vec<Arc<dyn Tool>> {
         let tools = self.tools.read().unwrap();
         let mut pool: Vec<Arc<dyn Tool>> = tools
@@ -215,6 +219,7 @@ impl ToolRegistry {
         pool
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn filter_for_agent(
         &self,
         agent: &crate::agents::definition::AgentDefinition,
