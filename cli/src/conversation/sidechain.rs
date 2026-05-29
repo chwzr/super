@@ -28,16 +28,14 @@ pub fn spawn_sidechain_writer(bus: Arc<SessionBus>, base_dir: PathBuf) {
                     if msg.parent_tool_use_id().is_none() {
                         continue;
                     }
+                    use std::collections::hash_map::Entry;
                     let agent_id = msg.session_id().to_string();
-                    let writer = match writers.get_mut(&agent_id) {
-                        Some(w) => w,
-                        None => {
+                    let writer = match writers.entry(agent_id.clone()) {
+                        Entry::Occupied(o) => o.into_mut(),
+                        Entry::Vacant(v) => {
                             let path = base_dir.join(format!("{agent_id}.jsonl"));
                             match OpenOptions::new().create(true).append(true).open(&path) {
-                                Ok(f) => {
-                                    writers.insert(agent_id.clone(), BufWriter::new(f));
-                                    writers.get_mut(&agent_id).unwrap()
-                                }
+                                Ok(f) => v.insert(BufWriter::new(f)),
                                 Err(e) => {
                                     tracing::warn!("sidechain: cannot open {:?}: {e}", path);
                                     continue;
