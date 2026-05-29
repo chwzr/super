@@ -21,10 +21,12 @@ fn session_lock() -> &'static RwLock<Option<WorktreeSession>> {
     WORKTREE_SESSION.get_or_init(|| RwLock::new(None))
 }
 
+#[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
 pub fn get_session() -> Option<WorktreeSession> {
     session_lock().read().unwrap().clone()
 }
 
+#[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
 pub fn set_session(session: Option<WorktreeSession>) {
     *session_lock().write().unwrap() = session;
 }

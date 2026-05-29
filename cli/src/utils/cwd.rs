@@ -12,11 +12,13 @@ fn init() -> &'static RwLock<PathBuf> {
 
 /// Returns the atomically-tracked CWD. Falls back to `std::env::current_dir()`
 /// on the first call if not yet initialized.
+#[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
 pub fn get_cwd() -> PathBuf {
     init().read().unwrap().clone()
 }
 
 /// Sets the atomically-tracked CWD AND calls `std::env::set_current_dir()`.
+#[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
 pub fn set_cwd(path: PathBuf) -> std::io::Result<()> {
     std::env::set_current_dir(&path)?;
     if let Some(lock) = CURRENT_CWD.get() {

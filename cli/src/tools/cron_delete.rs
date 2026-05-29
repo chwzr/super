@@ -55,6 +55,7 @@ impl Tool for CronDeleteTool {
         _on_progress: Option<ProgressSink>,
     ) -> ToolResult {
         let id = input["id"].as_str().unwrap_or("").to_string();
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let mut jobs = self.jobs.lock().unwrap();
 
         let removed = jobs.remove(&id).is_some();

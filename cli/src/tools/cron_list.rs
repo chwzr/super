@@ -61,6 +61,7 @@ impl Tool for CronListTool {
         _context: &ToolCallContext,
         _on_progress: Option<ProgressSink>,
     ) -> ToolResult {
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let jobs = self.jobs.lock().unwrap();
         if jobs.is_empty() {
             return ToolResult {

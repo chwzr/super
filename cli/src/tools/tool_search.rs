@@ -94,6 +94,7 @@ impl Tool for ToolSearchTool {
         };
 
         let all_tools: Vec<Arc<dyn Tool>> = {
+            #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
             let tools = self.registry.tools.read().unwrap();
             tools.clone()
         };
