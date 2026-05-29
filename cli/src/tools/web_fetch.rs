@@ -106,8 +106,16 @@ impl Tool for WebFetchTool {
         {
             Ok(c) => c,
             Err(e) => {
+                let duration_ms = start.elapsed().as_millis() as f64;
                 return ToolResult {
-                    content: format!("HTTP client init failed: {e}"),
+                    content: json!({
+                        "url": url,
+                        "bytes": 0,
+                        "code": 0,
+                        "codeText": "ClientInitFailed",
+                        "result": format!("HTTP client init failed: {e}"),
+                        "durationMs": duration_ms
+                    }).to_string(),
                     is_error: true,
                     ..Default::default()
                 };
