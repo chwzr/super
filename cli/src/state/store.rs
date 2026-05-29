@@ -113,10 +113,12 @@ impl Store {
         }
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn get_state(&self) -> AppState {
         self.state.read().unwrap().clone()
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn set_state(&self, updater: impl FnOnce(&mut AppState)) {
         {
             let mut state = self.state.write().unwrap();
@@ -126,6 +128,7 @@ impl Store {
         self.notify(&new_state);
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn subscribe<F>(&self, listener: F)
     where
         F: Fn(&AppState) + Send + Sync + 'static,
@@ -133,6 +136,7 @@ impl Store {
         self.subscribers.write().unwrap().push(Box::new(listener));
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     fn notify(&self, state: &AppState) {
         for sub in self.subscribers.read().unwrap().iter() {
             sub(state);
@@ -168,6 +172,7 @@ impl Store {
     }
 
     /// Returns true if an agent was found and signalled.
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn abort_async_agent(&self, agent_id: &str) -> bool {
         // Read out the handle outside set_state so we can call its send()
         let handle = self
@@ -188,6 +193,7 @@ impl Store {
         }
     }
 
+    #[allow(clippy::unwrap_used)] // RwLock poisoning is irrecoverable
     pub fn list_async_agents(&self) -> Vec<AsyncAgentHandle> {
         self.state
             .read()
