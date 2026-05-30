@@ -671,9 +671,9 @@ impl App {
                             self.activity = ActivityState::idle();
                         }
                         BusMessage::RenderEvent { .. } => {
-                            // Batch 1: tools only emit RenderSpec::Nothing,
-                            // which renders to nothing. Batches 2-5 wire this
-                            // into the scrollback / live region.
+                            // Routed into TranscriptItem::ToolCall spec slots
+                            // (or a Render orphan) by `transcript::fold`. The
+                            // next paint picks up the change via push_event below.
                         }
                         BusMessage::InteractionRequested {
                             tool_use_id,

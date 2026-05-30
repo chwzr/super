@@ -157,7 +157,15 @@ impl Tool for EditTool {
             })
             .collect();
 
-        Some(shared::RenderSpec::Diff { file_path, hunks })
+        Some(shared::RenderSpec::Group {
+            children: vec![
+                shared::RenderSpec::Status {
+                    state: shared::StatusState::Success,
+                    message: Some(format!("Updated {file_path}")),
+                },
+                shared::RenderSpec::Diff { file_path, hunks },
+            ],
+        })
     }
 
     async fn call(

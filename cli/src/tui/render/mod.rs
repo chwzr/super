@@ -389,12 +389,12 @@ fn render_tool_result_for(
 ) {
     match tool_name {
         "Bash" => render_bash_result(lines, r, dim),
-        "Edit" => render_edit_result(lines, input, r, dim),
         "Write" => render_write_result(lines, input, dim),
         _ => render_generic_result(lines, r, dim),
     }
 }
 
+#[allow(dead_code)]
 fn render_edit_result(
     lines: &mut Vec<Line<'static>>,
     input: &serde_json::Value,
@@ -800,6 +800,7 @@ pub fn render_spec(spec: &shared::RenderSpec, detailed: bool) -> Vec<Line<'stati
 mod tests {
     use super::*;
     use crate::sdk::protocol::SystemSubtype;
+    use crate::tools::contract::Tool;
 
     fn line_to_string(line: &Line) -> String {
         line.spans
@@ -1193,43 +1194,6 @@ mod tests {
     }
 
     #[test]
-    fn edit_result_summary_uses_added_removed_phrasing() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Edit".into(),
-            input: serde_json::json!({
-                "file_path": "/tmp/a.txt",
-                "old_string": "hello\n",
-                "new_string": "hi\n",
-            }),
-            result: Some(ToolResultRender {
-                content: "Successfully replaced 1 occurrence(s) in /tmp/a.txt".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-            message_spec: None,
-            tag_spec: None,
-            progress_specs: Vec::new(),
-            queued_spec: None,
-            result_spec: None,
-            rejected_spec: None,
-            error_spec: None,
-        };
-        let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("Update"), "display name: {body:?}");
-        assert!(
-            body.contains("Added 1 line, removed 1 line"),
-            "summary: {body:?}"
-        );
-        assert!(body.contains(" 1 -hello"), "removed hunk: {body:?}");
-        assert!(body.contains(" 1 +hi"), "added hunk: {body:?}");
-        assert!(
-            !body.contains("Successfully replaced"),
-            "raw result text should not leak: {body:?}"
-        );
-    }
-
-    #[test]
     fn write_result_renders_wrote_n_lines_with_numbered_content() {
         let item = TranscriptItem::ToolCall {
             tool_use_id: "tu1".into(),
@@ -1263,38 +1227,6 @@ mod tests {
         assert!(
             !body.contains("Successfully wrote"),
             "raw result text should not leak: {body:?}"
-        );
-    }
-
-    #[test]
-    fn create_result_renders_only_additions() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Edit".into(),
-            input: serde_json::json!({
-                "file_path": "/tmp/new.txt",
-                "old_string": "",
-                "new_string": "first line\nsecond line\n",
-            }),
-            result: Some(ToolResultRender {
-                content: "ok".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-            message_spec: None,
-            tag_spec: None,
-            progress_specs: Vec::new(),
-            queued_spec: None,
-            result_spec: None,
-            rejected_spec: None,
-            error_spec: None,
-        };
-        let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("Create"), "display name: {body:?}");
-        assert!(body.contains("Added 2 lines"), "summary: {body:?}");
-        assert!(
-            !body.contains("removed"),
-            "no removed phrase when no removals: {body:?}"
         );
     }
 
@@ -1383,6 +1315,47 @@ mod tests {
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("orphan content"), "orphan rendered: {body:?}");
+    }
+
+    #[test]
+    fn edit_spec_renders_status_and_diff() {
+        let tool = crate::tools::edit::EditTool;
+        let output = serde_json::json!({
+            "content": "ok",
+            "is_error": false,
+            "file_path": "/tmp/a.txt",
+            "hunks": [{
+                "old_start": 1,
+                "new_start": 1,
+                "lines": [
+                    {"kind": "remove", "line": "hello\n"},
+                    {"kind": "add", "line": "hi\n"}
+                ]
+            }]
+        });
+        let spec = tool
+            .render_tool_result_message(&output, &[], &Default::default())
+            .unwrap();
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Status comes first.
+        assert!(body.contains("✓"), "status glyph: {body:?}");
+        assert!(body.contains("Updated /tmp/a.txt"), "status msg: {body:?}");
+        // Diff summary follows.
+        assert!(
+            body.contains("Added 1 line, removed 1 line"),
+            "diff summary: {body:?}"
+        );
+        assert!(body.contains("-hello"), "removed hunk: {body:?}");
+        assert!(body.contains("+hi"), "added hunk: {body:?}");
     }
 }
 
