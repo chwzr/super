@@ -118,6 +118,21 @@ pub enum StatusState {
     Rejected,
 }
 
+/// Which lifecycle hook produced a `RenderSpec`. The transcript folder uses
+/// this to route a `BusMessage::RenderEvent` to the right slot on the
+/// matching `TranscriptItem::ToolCall`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderSlot {
+    Message,
+    Tag,
+    Progress,
+    Queued,
+    Result,
+    Rejected,
+    Error,
+}
+
 /// Closed set of style hints for `RenderSpec::Text`. Renderers map each hint
 /// to a palette entry; tools cannot express arbitrary colors by design.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

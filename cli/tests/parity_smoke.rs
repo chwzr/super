@@ -97,6 +97,7 @@ async fn bus_round_trips_render_event() {
     let mut rx = bus.subscribe();
     bus.emit(BusMessage::RenderEvent {
         tool_use_id: "tu_1".into(),
+        slot: shared::RenderSlot::Message,
         spec: RenderSpec::Nothing,
         parent_tool_use_id: None,
         uuid: uuid::Uuid::new_v4(),

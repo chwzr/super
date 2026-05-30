@@ -182,6 +182,7 @@ pub async fn run_tool_uses(
                 // primary surface, but scrollback parity is useful).
                 bus.emit(BusMessage::RenderEvent {
                     tool_use_id: id.clone(),
+                    slot: shared::RenderSlot::Message,
                     spec: spec.clone(),
                     parent_tool_use_id: parent_tool_use_id.clone(),
                     uuid: uuid::Uuid::new_v4(),
@@ -212,6 +213,7 @@ pub async fn run_tool_uses(
                             // Emit the rejection so the transcript shows it.
                             bus.emit(BusMessage::RenderEvent {
                                 tool_use_id: id.clone(),
+                                slot: shared::RenderSlot::Message,
                                 spec: rejection,
                                 parent_tool_use_id: parent_tool_use_id.clone(),
                                 uuid: uuid::Uuid::new_v4(),

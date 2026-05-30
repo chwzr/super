@@ -283,6 +283,7 @@ pub enum BusMessage {
     #[serde(rename = "render_event")]
     RenderEvent {
         tool_use_id: String,
+        slot: shared::RenderSlot,
         spec: shared::RenderSpec,
         parent_tool_use_id: Option<String>,
         uuid: Uuid,
@@ -581,6 +582,7 @@ mod render_event_tests {
     fn render_event_serializes_with_type_tag() {
         let msg = BusMessage::RenderEvent {
             tool_use_id: "tu_1".into(),
+            slot: shared::RenderSlot::Message,
             spec: shared::RenderSpec::Nothing,
             parent_tool_use_id: None,
             uuid: Uuid::new_v4(),
@@ -596,6 +598,7 @@ mod render_event_tests {
     fn render_event_round_trips() {
         let msg = BusMessage::RenderEvent {
             tool_use_id: "tu_2".into(),
+            slot: shared::RenderSlot::Message,
             spec: shared::RenderSpec::Status {
                 state: shared::StatusState::Success,
                 message: Some("done".into()),
@@ -607,5 +610,26 @@ mod render_event_tests {
         let json = serde_json::to_string(&msg).unwrap();
         let back: BusMessage = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, BusMessage::RenderEvent { .. }));
+    }
+
+    #[test]
+    fn render_event_carries_slot() {
+        let msg = BusMessage::RenderEvent {
+            tool_use_id: "tu_1".into(),
+            slot: shared::RenderSlot::Result,
+            spec: shared::RenderSpec::Nothing,
+            parent_tool_use_id: None,
+            uuid: uuid::Uuid::new_v4(),
+            session_id: "s".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""slot":"result""#), "got: {json}");
+        let back: BusMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            BusMessage::RenderEvent { slot, .. } => {
+                assert_eq!(slot, shared::RenderSlot::Result);
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }
