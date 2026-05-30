@@ -22,8 +22,8 @@ pub enum TranscriptItem {
     ToolCall {
         tool_use_id: String,
         name: String,
-        input: serde_json::Value,
-        result: Option<ToolResultRender>,
+        input: serde_json::Value,         // kept: used by legacy fallback for Read/Grep/Glob
+        result: Option<ToolResultRender>, // kept: used by legacy fallback for Read/Grep/Glob
         elapsed_ms: u64,
         // Spec slots populated by lifecycle RenderEvent routing in `fold`.
         // Each slot holds the latest spec for that hook. `Nothing` is a

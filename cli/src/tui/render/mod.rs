@@ -219,7 +219,7 @@ pub fn item_to_lines(
                     Span::styled(summary, dim),
                 ]));
                 if let Some(r) = result {
-                    render_tool_result_for(name, input, &mut lines, r, &dim);
+                    render_generic_result(&mut lines, r, &dim);
                 }
             }
         }
@@ -260,7 +260,7 @@ pub fn item_to_lines(
                         Span::styled(summary, dim),
                     ]));
                     if let Some(r) = &call.result {
-                        render_tool_result_for(&call.name, &call.input, &mut lines, r, &dim);
+                        render_generic_result(&mut lines, r, &dim);
                     }
                 }
                 lines.push(Line::from(""));
@@ -380,84 +380,6 @@ pub fn osc8_link(path: &str, label: &str) -> String {
     format!("\x1b]8;;file://{path}\x1b\\{label}\x1b]8;;\x1b\\")
 }
 
-fn render_tool_result_for(
-    tool_name: &str,
-    _input: &serde_json::Value,
-    lines: &mut Vec<Line<'static>>,
-    r: &ToolResultRender,
-    dim: &Style,
-) {
-    match tool_name {
-        _ => render_generic_result(lines, r, dim),
-    }
-}
-
-#[allow(dead_code)]
-fn render_edit_result(
-    lines: &mut Vec<Line<'static>>,
-    input: &serde_json::Value,
-    _r: &ToolResultRender,
-    dim: &Style,
-) {
-    let old = input
-        .get("old_string")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let new = input
-        .get("new_string")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let counts = diff::count_changes(old, new);
-
-    // Summary row: `  ⎿  Added N line[s], removed M line[s]`
-    let mut summary: Vec<Span<'static>> = vec![Span::styled("  ⎿  ", *dim)];
-    summary.extend(diff::summary_spans(counts));
-    lines.push(Line::from(summary));
-
-    // Hunk rows.
-    lines.extend(diff::render_hunks(old, new));
-}
-
-#[allow(dead_code)]
-fn render_write_result(lines: &mut Vec<Line<'static>>, input: &serde_json::Value, dim: &Style) {
-    let path = input
-        .get("file_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-    let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let total_lines = content.lines().count();
-    let plural = if total_lines == 1 { "line" } else { "lines" };
-
-    let mut summary: Vec<Span<'static>> = vec![Span::styled("  ⎿  ", *dim)];
-    summary.push(Span::raw("Wrote "));
-    summary.push(Span::styled(
-        total_lines.to_string(),
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
-    summary.push(Span::raw(format!(" {plural} to {path}")));
-    lines.push(Line::from(summary));
-
-    const MAX: usize = 10;
-    let lineno_width = total_lines.to_string().len().max(2);
-    for (i, line) in content.lines().take(MAX).enumerate() {
-        let lineno = i + 1;
-        let body = format!(" {:>width$} {}", lineno, line, width = lineno_width);
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(body, *dim),
-        ]));
-    }
-    if total_lines > MAX {
-        let remaining = total_lines - MAX;
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(
-                format!("… +{remaining} lines (ctrl+o to expand)"),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-        ]));
-    }
-}
 
 /// Generic fallback: behaves like the prior renderer (cap at 20 lines).
 fn render_generic_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
@@ -478,39 +400,6 @@ fn render_generic_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, d
             Span::styled("     ", *dim),
             Span::styled(
                 format!("… +{} lines (ctrl+o to expand)", total - max_lines),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-        ]));
-    }
-}
-
-/// Bash-specific: 3-line truncation, `… +K lines (ctrl+o to expand)` suffix.
-/// Errors render in orange.
-#[allow(dead_code)]
-fn render_bash_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
-    use crate::tui::colors::CC_ORANGE;
-    const MAX: usize = 3;
-    let body_color = if r.is_error {
-        Style::default().fg(CC_ORANGE)
-    } else {
-        Style::default()
-    };
-    let all: Vec<&str> = r.content.lines().collect();
-    let total = all.len();
-
-    for (i, line) in all.iter().take(MAX).enumerate() {
-        let prefix = if i == 0 { "  ⎿  " } else { "     " };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, *dim),
-            Span::styled(line.to_string(), body_color),
-        ]));
-    }
-    if total > MAX {
-        let remaining = total - MAX;
-        lines.push(Line::from(vec![
-            Span::styled("     ", *dim),
-            Span::styled(
-                format!("… +{remaining} lines (ctrl+o to expand)"),
                 Style::default().add_modifier(Modifier::DIM),
             ),
         ]));
@@ -979,77 +868,6 @@ mod tests {
         assert_eq!(lines_height(&lines, 80), 2);
     }
 
-    use crate::tui::colors::{CC_GREEN, CC_ORANGE};
-
-    fn first_span_color(line: &Line) -> Option<ratatui::style::Color> {
-        line.spans.first().and_then(|s| s.style.fg)
-    }
-
-    #[test]
-    fn tool_call_prefix_is_green_on_success() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Bash".into(),
-            input: serde_json::json!({"command": "echo hi"}),
-            result: Some(ToolResultRender {
-                content: "hi".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-            message_spec: None,
-            tag_spec: None,
-            progress_specs: Vec::new(),
-            queued_spec: None,
-            result_spec: None,
-            rejected_spec: None,
-            error_spec: None,
-        };
-        let lines = item_to_lines(&item, 0, false);
-        // Find the line whose first span is the `⏺ ` prefix.
-        let prefix = lines
-            .iter()
-            .find(|l| {
-                l.spans
-                    .first()
-                    .map(|s| s.content.contains('⏺'))
-                    .unwrap_or(false)
-            })
-            .expect("⏺ prefix line");
-        assert_eq!(first_span_color(prefix), Some(CC_GREEN));
-    }
-
-    #[test]
-    fn tool_call_prefix_is_orange_on_error() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Bash".into(),
-            input: serde_json::json!({"command": "false"}),
-            result: Some(ToolResultRender {
-                content: "Error: Exit code 1".into(),
-                is_error: true,
-            }),
-            elapsed_ms: 0,
-            message_spec: None,
-            tag_spec: None,
-            progress_specs: Vec::new(),
-            queued_spec: None,
-            result_spec: None,
-            rejected_spec: None,
-            error_spec: None,
-        };
-        let lines = item_to_lines(&item, 0, false);
-        let prefix = lines
-            .iter()
-            .find(|l| {
-                l.spans
-                    .first()
-                    .map(|s| s.content.contains('⏺'))
-                    .unwrap_or(false)
-            })
-            .expect("⏺ prefix line");
-        assert_eq!(first_span_color(prefix), Some(CC_ORANGE));
-    }
-
     #[test]
     fn osc8_link_wraps_label_with_escape_sequence() {
         let s = osc8_link("/abs/path.txt", "path.txt");
@@ -1126,135 +944,6 @@ mod tests {
         // against their own cwd. The label is what the user clicks on.
         assert!(s.contains("file://"));
         assert!(s.contains("note.md"));
-    }
-
-    #[test]
-    fn bash_result_renders_at_most_3_output_lines_then_ellipsis() {
-        let tool = crate::tools::bash::BashTool {
-            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
-            store: Arc::new(crate::state::store::Store::new()),
-        };
-        let output = serde_json::json!({"content": "1\n2\n3\n4\n5\n6\n7\n8", "is_error": false});
-        let result_spec = tool.render_tool_result_message(&output, &[], &Default::default());
-
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Bash".into(),
-            input: serde_json::json!({"command": "seq 1 8"}),
-            result: Some(ToolResultRender {
-                content: "1\n2\n3\n4\n5\n6\n7\n8".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-            message_spec: None,
-            tag_spec: None,
-            progress_specs: Vec::new(),
-            queued_spec: None,
-            result_spec,
-            rejected_spec: None,
-            error_spec: None,
-        };
-        let lines = item_to_lines(&item, 0, false);
-        let body = rendered_text(&lines);
-        assert!(
-            body.contains("  ⎿  1"),
-            "first output line under corner: {body:?}"
-        );
-        assert!(body.contains("     2"), "second line aligned: {body:?}");
-        assert!(body.contains("     3"), "third line aligned: {body:?}");
-        assert!(
-            body.contains("(ctrl+o to expand)"),
-            "ellipsis present: {body:?}"
-        );
-        assert!(
-            !body.contains("\n4\n") && !body.contains("     4"),
-            "line 4 must be hidden: {body:?}"
-        );
-    }
-
-    #[test]
-    fn bash_result_with_3_or_fewer_lines_shows_no_ellipsis() {
-        let tool = crate::tools::bash::BashTool {
-            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
-            store: Arc::new(crate::state::store::Store::new()),
-        };
-        let output = serde_json::json!({"content": "1\n2\n3", "is_error": false});
-        let result_spec = tool.render_tool_result_message(&output, &[], &Default::default());
-
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Bash".into(),
-            input: serde_json::json!({"command": "seq 1 3"}),
-            result: Some(ToolResultRender {
-                content: "1\n2\n3".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-            message_spec: None,
-            tag_spec: None,
-            progress_specs: Vec::new(),
-            queued_spec: None,
-            result_spec,
-            rejected_spec: None,
-            error_spec: None,
-        };
-        let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("  ⎿  1"));
-        assert!(body.contains("     2"));
-        assert!(body.contains("     3"));
-        assert!(
-            !body.contains("ctrl+o"),
-            "no expand hint when nothing truncated: {body:?}"
-        );
-    }
-
-    #[test]
-    fn write_result_renders_wrote_n_lines_with_numbered_content() {
-        let tool = crate::tools::write::WriteTool;
-        let output = serde_json::json!({
-            "content": "alpha\nbeta\ngamma\n",
-            "is_error": false,
-            "file_path": "/tmp/notes.txt",
-        });
-        let result_spec = tool.render_tool_result_message(&output, &[], &Default::default());
-
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Write".into(),
-            input: serde_json::json!({
-                "file_path": "/tmp/notes.txt",
-                "content": "alpha\nbeta\ngamma\n",
-            }),
-            result: Some(ToolResultRender {
-                content: "Successfully wrote 18 bytes to /tmp/notes.txt".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-            message_spec: Some(shared::RenderSpec::Header {
-                verb: "Write".into(),
-                target: Some("/tmp/notes.txt".into()),
-                tag: None,
-            }),
-            tag_spec: None,
-            progress_specs: Vec::new(),
-            queued_spec: None,
-            result_spec,
-            rejected_spec: None,
-            error_spec: None,
-        };
-        let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("Write"), "display name: {body:?}");
-        assert!(
-            body.contains("Wrote 3 lines to /tmp/notes.txt"),
-            "summary: {body:?}"
-        );
-        assert!(body.contains(" 1 alpha"), "numbered line 1: {body:?}");
-        assert!(body.contains(" 2 beta"), "numbered line 2: {body:?}");
-        assert!(body.contains(" 3 gamma"), "numbered line 3: {body:?}");
-        assert!(
-            !body.contains("Successfully wrote"),
-            "raw result text should not leak: {body:?}"
-        );
     }
 
     #[test]
