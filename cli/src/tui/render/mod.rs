@@ -265,6 +265,9 @@ pub fn item_to_lines(
                 lines.push(Line::from(spans));
             }
         }
+        TranscriptItem::Render { .. } => {
+            // T11 wires the real rendering; stub leaves lines untouched.
+        }
     }
     lines
 }
@@ -714,6 +717,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         };
         let lines = item_to_lines(&item, 0, false);
         // Find the line whose first span is the `⏺ ` prefix.
@@ -740,6 +750,13 @@ mod tests {
                 is_error: true,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         };
         let lines = item_to_lines(&item, 0, false);
         let prefix = lines
@@ -843,6 +860,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         };
         let lines = item_to_lines(&item, 0, false);
         let body = rendered_text(&lines);
@@ -873,6 +897,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("  ⎿  1"));
@@ -899,6 +930,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Update"), "display name: {body:?}");
@@ -928,6 +966,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Write"), "display name: {body:?}");
@@ -959,6 +1004,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("Create"), "display name: {body:?}");

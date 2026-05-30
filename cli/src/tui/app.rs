@@ -140,6 +140,7 @@ fn is_stable(item: &TranscriptItem) -> bool {
         TranscriptItem::ToolCall { result, .. } => result.is_some(),
         TranscriptItem::ToolBatch { calls } => calls.iter().all(|c| c.result.is_some()),
         TranscriptItem::System { .. } => true,
+        TranscriptItem::Render { .. } => true,
     }
 }
 
@@ -1094,6 +1095,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         }
     }
 
