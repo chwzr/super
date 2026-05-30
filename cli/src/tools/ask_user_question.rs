@@ -261,7 +261,10 @@ impl Tool for AskUserQuestionTool {
         };
 
         Some(RenderSpec::Group {
-            children: vec![RenderSpec::Text { body, style: TextStyle::Plain }],
+            children: vec![RenderSpec::Text {
+                body,
+                style: TextStyle::Plain,
+            }],
         })
     }
 

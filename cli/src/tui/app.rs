@@ -1119,7 +1119,7 @@ mod tests {
             message: "x".into(),
         }));
         assert!(is_stable(&TranscriptItem::Render {
-            spec: shared::RenderSpec::Nothing,
+            spec: Box::new(shared::RenderSpec::Nothing),
         }));
     }
 

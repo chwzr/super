@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::conversation::message_queue::MessageQueue;
-use shared;
 use crate::state::store::Store;
 use crate::tools::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
@@ -9,6 +8,7 @@ use crate::tools::contract::{
 };
 use async_trait::async_trait;
 use serde_json::json;
+use shared;
 use tokio::process::Command;
 
 pub struct BashTool {
@@ -115,8 +115,18 @@ impl Tool for BashTool {
         _opts: &crate::tools::contract::RenderOpts,
     ) -> shared::RenderSpec {
         let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-        let first = cmd.lines().next().unwrap_or("").chars().take(80).collect::<String>();
-        shared::RenderSpec::Header { verb: "Bash".into(), target: Some(first), tag: None }
+        let first = cmd
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(80)
+            .collect::<String>();
+        shared::RenderSpec::Header {
+            verb: "Bash".into(),
+            target: Some(first),
+            tag: None,
+        }
     }
 
     fn render_tool_result_message(
@@ -126,7 +136,10 @@ impl Tool for BashTool {
         _opts: &crate::tools::contract::RenderOpts,
     ) -> Option<shared::RenderSpec> {
         let content = output.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        let is_error = output.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_error = output
+            .get("is_error")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         const MAX: usize = 3;
         let all: Vec<&str> = content.lines().collect();
@@ -134,7 +147,10 @@ impl Tool for BashTool {
         let truncated = all.len() > MAX;
 
         if is_error {
-            Some(shared::RenderSpec::Text { body: shown, style: shared::TextStyle::Error })
+            Some(shared::RenderSpec::Text {
+                body: shown,
+                style: shared::TextStyle::Error,
+            })
         } else {
             Some(shared::RenderSpec::Code {
                 language: None,

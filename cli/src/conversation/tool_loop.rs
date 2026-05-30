@@ -102,7 +102,10 @@ pub async fn run_tool_uses(
         let session_for_tick = session_id.clone();
         set.spawn(async move {
             // Emit Message + Tag before the tool runs.
-            let opts = RenderOpts { verbose: false, is_transcript_mode: false };
+            let opts = RenderOpts {
+                verbose: false,
+                is_transcript_mode: false,
+            };
             let message_spec = tool.render_tool_use_message(&input, &opts);
             let tag_spec = tool.render_tool_use_tag(&input);
             emit_render_event(
@@ -158,7 +161,8 @@ pub async fn run_tool_uses(
             // payload here and rebuild a ToolResult tagged with the original
             // tool_use_id.
             let tool_for_call = tool.clone();
-            let inner = tokio::task::spawn(async move { tool_for_call.call(input, &ctx, None).await });
+            let inner =
+                tokio::task::spawn(async move { tool_for_call.call(input, &ctx, None).await });
             let res = match inner.await {
                 Ok(r) => r,
                 Err(e) if e.is_panic() => ToolResult {
@@ -249,7 +253,10 @@ pub async fn run_tool_uses(
             queue: Some(queue.clone()),
         };
 
-        let unsafe_opts = RenderOpts { verbose: false, is_transcript_mode: false };
+        let unsafe_opts = RenderOpts {
+            verbose: false,
+            is_transcript_mode: false,
+        };
 
         // Interactive tools: render the spec, suspend the turn, await the
         // user response, then merge the answers into the tool input.
@@ -276,10 +283,9 @@ pub async fn run_tool_uses(
             {
                 InteractionOutcome::Resolved { updated_input } => updated_input,
                 InteractionOutcome::Denied => {
-                    if let Some(rejection) = tool.render_tool_use_rejected_message(
-                        &input,
-                        &unsafe_opts,
-                    ) {
+                    if let Some(rejection) =
+                        tool.render_tool_use_rejected_message(&input, &unsafe_opts)
+                    {
                         emit_render_event(
                             &bus,
                             &id,
@@ -533,8 +539,14 @@ mod render_emission_tests {
                 _ => None,
             })
             .collect();
-        assert!(slots.contains(&shared::RenderSlot::Message), "expected Message slot, got slots: {slots:?}");
-        assert!(slots.contains(&shared::RenderSlot::Result), "expected Result slot, got slots: {slots:?}");
+        assert!(
+            slots.contains(&shared::RenderSlot::Message),
+            "expected Message slot, got slots: {slots:?}"
+        );
+        assert!(
+            slots.contains(&shared::RenderSlot::Result),
+            "expected Result slot, got slots: {slots:?}"
+        );
     }
 }
 

@@ -170,7 +170,10 @@ impl Tool for WriteTool {
         _progress: &[crate::tools::contract::ProgressEvent],
         _opts: &crate::tools::contract::RenderOpts,
     ) -> Option<shared::RenderSpec> {
-        let path = output.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+        let path = output
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
         let content = output.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let total = content.lines().count();
         let plural = if total == 1 { "line" } else { "lines" };

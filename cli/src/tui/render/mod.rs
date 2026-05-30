@@ -186,7 +186,7 @@ pub fn item_to_lines(
             ..
         } => {
             // Spec-driven path: any terminal slot present (and not Nothing).
-            let has_terminal = !matches!(result_spec, Some(shared::RenderSpec::Nothing))
+            let has_terminal = !matches!(result_spec, Some(ref boxed) if matches!(&**boxed, shared::RenderSpec::Nothing))
                 && (result_spec.is_some() || rejected_spec.is_some() || error_spec.is_some());
             if has_terminal {
                 lines.push(Line::from(""));
@@ -380,7 +380,6 @@ pub fn osc8_link(path: &str, label: &str) -> String {
     format!("\x1b]8;;file://{path}\x1b\\{label}\x1b]8;;\x1b\\")
 }
 
-
 /// Generic fallback: behaves like the prior renderer (cap at 20 lines).
 fn render_generic_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
     let max_lines = 20;
@@ -427,12 +426,14 @@ fn visual_rows(line: &Line, width: u16) -> u16 {
 fn text_style(style: shared::TextStyle) -> Style {
     use shared::TextStyle;
     match style {
-        TextStyle::Plain   => Style::default().fg(Color::White),
-        TextStyle::Dim     => Style::default().fg(Color::DarkGray),
-        TextStyle::Error   => Style::default().fg(Color::Red),
+        TextStyle::Plain => Style::default().fg(Color::White),
+        TextStyle::Dim => Style::default().fg(Color::DarkGray),
+        TextStyle::Error => Style::default().fg(Color::Red),
         TextStyle::Success => Style::default().fg(Color::Indexed(114)),
-        TextStyle::Warn    => Style::default().fg(Color::Indexed(214)),
-        TextStyle::Strong  => Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        TextStyle::Warn => Style::default().fg(Color::Indexed(214)),
+        TextStyle::Strong => Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -506,10 +507,7 @@ pub fn render_spec(spec: &shared::RenderSpec, detailed: bool) -> Vec<Line<'stati
         }
         shared::RenderSpec::Header { verb, target, tag } => {
             let mut spans: Vec<Span<'static>> = Vec::new();
-            spans.push(Span::styled(
-                "⏺ ",
-                Style::default().fg(Color::Indexed(114)),
-            ));
+            spans.push(Span::styled("⏺ ", Style::default().fg(Color::Indexed(114))));
             spans.push(Span::styled(
                 verb.clone(),
                 Style::default().add_modifier(Modifier::BOLD),
@@ -583,10 +581,8 @@ pub fn render_spec(spec: &shared::RenderSpec, detailed: bool) -> Vec<Line<'stati
                     Some(n) => format!("{path_str}:{n}"),
                     None => path_str,
                 };
-                let mut spans: Vec<Span<'static>> = vec![
-                    Span::styled(prefix, dim),
-                    Span::styled(head, dim),
-                ];
+                let mut spans: Vec<Span<'static>> =
+                    vec![Span::styled(prefix, dim), Span::styled(head, dim)];
                 if let Some(p) = &entry.preview {
                     spans.push(Span::styled(format!("  {p}"), dim));
                 }
@@ -618,23 +614,25 @@ pub fn render_spec(spec: &shared::RenderSpec, detailed: bool) -> Vec<Line<'stati
         shared::RenderSpec::Status { state, message } => {
             use shared::StatusState;
             let (glyph, color) = match state {
-                StatusState::Queued     => ("…", Color::DarkGray),
+                StatusState::Queued => ("…", Color::DarkGray),
                 StatusState::InProgress => ("›", Color::DarkGray),
-                StatusState::Success    => ("✓", Color::Indexed(114)),
-                StatusState::Error      => ("✗", Color::Red),
-                StatusState::Rejected   => ("⚠", Color::Indexed(211)),
+                StatusState::Success => ("✓", Color::Indexed(114)),
+                StatusState::Error => ("✗", Color::Red),
+                StatusState::Rejected => ("⚠", Color::Indexed(211)),
             };
-            let mut spans: Vec<Span<'static>> = vec![
-                Span::styled(format!("{glyph} "), Style::default().fg(color)),
-            ];
+            let mut spans: Vec<Span<'static>> = vec![Span::styled(
+                format!("{glyph} "),
+                Style::default().fg(color),
+            )];
             if let Some(m) = message {
                 spans.push(Span::styled(m.clone(), Style::default().fg(color)));
             }
             vec![Line::from(spans)]
         }
-        shared::RenderSpec::Group { children } => {
-            children.iter().flat_map(|c| render_spec(c, detailed)).collect()
-        }
+        shared::RenderSpec::Group { children } => children
+            .iter()
+            .flat_map(|c| render_spec(c, detailed))
+            .collect(),
         shared::RenderSpec::Row { children } => {
             let child_renders: Vec<Vec<Line<'static>>> =
                 children.iter().map(|c| render_spec(c, detailed)).collect();
@@ -650,16 +648,23 @@ pub fn render_spec(spec: &shared::RenderSpec, detailed: bool) -> Vec<Line<'stati
                 vec![Line::from(joined_spans)]
             } else {
                 let dim = dim_style();
-                child_renders.into_iter().flat_map(|child| {
-                    child.into_iter().map(|line| {
-                        let mut spans = vec![Span::styled("│ ", dim)];
-                        spans.extend(line.spans);
-                        Line::from(spans)
+                child_renders
+                    .into_iter()
+                    .flat_map(|child| {
+                        child.into_iter().map(|line| {
+                            let mut spans = vec![Span::styled("│ ", dim)];
+                            spans.extend(line.spans);
+                            Line::from(spans)
+                        })
                     })
-                }).collect()
+                    .collect()
             }
         }
-        shared::RenderSpec::Collapsible { summary, expanded_by_default, children } => {
+        shared::RenderSpec::Collapsible {
+            summary,
+            expanded_by_default,
+            children,
+        } => {
             let dim = dim_style();
             let mut out: Vec<Line<'static>> = Vec::new();
             let is_expanded = *expanded_by_default || detailed;
@@ -976,18 +981,18 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
-            message_spec: Some(shared::RenderSpec::Header {
+            message_spec: Some(Box::new(shared::RenderSpec::Header {
                 verb: "Bash".into(),
                 target: Some("echo hi".into()),
                 tag: None,
-            }),
+            })),
             tag_spec: None,
             progress_specs: Vec::new(),
             queued_spec: None,
-            result_spec: Some(shared::RenderSpec::Text {
+            result_spec: Some(Box::new(shared::RenderSpec::Text {
                 body: "from spec".into(),
                 style: shared::TextStyle::Plain,
-            }),
+            })),
             rejected_spec: None,
             error_spec: None,
         };
@@ -1024,10 +1029,10 @@ mod tests {
     #[test]
     fn item_to_lines_render_orphan_dispatches_spec() {
         let item = TranscriptItem::Render {
-            spec: shared::RenderSpec::Text {
+            spec: Box::new(shared::RenderSpec::Text {
                 body: "orphan content".into(),
                 style: shared::TextStyle::Plain,
-            },
+            }),
         };
         let body = rendered_text(&item_to_lines(&item, 0, false));
         assert!(body.contains("orphan content"), "orphan rendered: {body:?}");
@@ -1082,15 +1087,25 @@ mod tests {
             "is_error": false,
             "file_path": "/tmp/notes.txt",
         });
-        let spec = tool.render_tool_result_message(&output, &[], &Default::default()).unwrap();
+        let spec = tool
+            .render_tool_result_message(&output, &[], &Default::default())
+            .unwrap();
         let body: String = render_spec(&spec, false)
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(body.contains("Wrote 3 lines to /tmp/notes.txt"), "summary: {body:?}");
+        assert!(
+            body.contains("Wrote 3 lines to /tmp/notes.txt"),
+            "summary: {body:?}"
+        );
         assert!(body.contains(" 1 alpha"), "line 1: {body:?}");
-        assert!(body.contains(" 2 beta"),  "line 2: {body:?}");
+        assert!(body.contains(" 2 beta"), "line 2: {body:?}");
         assert!(body.contains(" 3 gamma"), "line 3: {body:?}");
     }
 
@@ -1101,10 +1116,17 @@ mod tests {
             store: Arc::new(crate::state::store::Store::new()),
         };
         let output = serde_json::json!({"content": "1\n2\n3\n4\n5\n6\n7\n8", "is_error": false});
-        let spec = tool.render_tool_result_message(&output, &[], &Default::default()).unwrap();
+        let spec = tool
+            .render_tool_result_message(&output, &[], &Default::default())
+            .unwrap();
         let body: String = render_spec(&spec, false)
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n");
         assert!(body.contains("1"));
@@ -1120,8 +1142,11 @@ mod tests {
             queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
             store: Arc::new(crate::state::store::Store::new()),
         };
-        let output = serde_json::json!({"content": "Error: Exit code 2\nstderr line", "is_error": true});
-        let spec = tool.render_tool_result_message(&output, &[], &Default::default()).unwrap();
+        let output =
+            serde_json::json!({"content": "Error: Exit code 2\nstderr line", "is_error": true});
+        let spec = tool
+            .render_tool_result_message(&output, &[], &Default::default())
+            .unwrap();
         match spec {
             shared::RenderSpec::Text { style, .. } => assert_eq!(style, shared::TextStyle::Error),
             other => panic!("expected Text variant, got {other:?}"),
@@ -1367,8 +1392,14 @@ mod render_spec_tests {
     fn group_renders_each_child_in_order() {
         let spec = RenderSpec::Group {
             children: vec![
-                RenderSpec::Text { body: "a".into(), style: shared::TextStyle::Plain },
-                RenderSpec::Text { body: "b".into(), style: shared::TextStyle::Plain },
+                RenderSpec::Text {
+                    body: "a".into(),
+                    style: shared::TextStyle::Plain,
+                },
+                RenderSpec::Text {
+                    body: "b".into(),
+                    style: shared::TextStyle::Plain,
+                },
             ],
         };
         let lines = render_spec(&spec, false);
@@ -1383,8 +1414,14 @@ mod render_spec_tests {
     fn row_joins_single_line_children_horizontally() {
         let spec = RenderSpec::Row {
             children: vec![
-                RenderSpec::Text { body: "L".into(), style: shared::TextStyle::Plain },
-                RenderSpec::Text { body: "R".into(), style: shared::TextStyle::Plain },
+                RenderSpec::Text {
+                    body: "L".into(),
+                    style: shared::TextStyle::Plain,
+                },
+                RenderSpec::Text {
+                    body: "R".into(),
+                    style: shared::TextStyle::Plain,
+                },
             ],
         };
         let lines = render_spec(&spec, false);
@@ -1397,15 +1434,24 @@ mod render_spec_tests {
     fn row_stacks_multiline_children_with_dim_rule() {
         let spec = RenderSpec::Row {
             children: vec![
-                RenderSpec::Text { body: "a\nb".into(), style: shared::TextStyle::Plain },
-                RenderSpec::Text { body: "x".into(), style: shared::TextStyle::Plain },
+                RenderSpec::Text {
+                    body: "a\nb".into(),
+                    style: shared::TextStyle::Plain,
+                },
+                RenderSpec::Text {
+                    body: "x".into(),
+                    style: shared::TextStyle::Plain,
+                },
             ],
         };
         let lines = render_spec(&spec, false);
         assert!(lines.len() >= 3, "expected stacked: {lines:?}");
         for line in &lines {
             assert!(
-                line.spans.first().map(|s| s.content.starts_with('│')).unwrap_or(false),
+                line.spans
+                    .first()
+                    .map(|s| s.content.starts_with('│'))
+                    .unwrap_or(false),
                 "line missing rule: {line:?}"
             );
         }
@@ -1418,7 +1464,10 @@ mod render_spec_tests {
         let spec = RenderSpec::Collapsible {
             summary: "click to see more".into(),
             expanded_by_default: false,
-            children: vec![RenderSpec::Text { body: "secret".into(), style: shared::TextStyle::Plain }],
+            children: vec![RenderSpec::Text {
+                body: "secret".into(),
+                style: shared::TextStyle::Plain,
+            }],
         };
         let lines = render_spec(&spec, false);
         let body: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
@@ -1432,9 +1481,16 @@ mod render_spec_tests {
         let spec = RenderSpec::Collapsible {
             summary: "summary".into(),
             expanded_by_default: true,
-            children: vec![RenderSpec::Text { body: "inner".into(), style: shared::TextStyle::Plain }],
+            children: vec![RenderSpec::Text {
+                body: "inner".into(),
+                style: shared::TextStyle::Plain,
+            }],
         };
-        let body: String = render_spec(&spec, false).iter().map(line_text).collect::<Vec<_>>().join("\n");
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(body.contains("inner"));
     }
 
@@ -1443,9 +1499,16 @@ mod render_spec_tests {
         let spec = RenderSpec::Collapsible {
             summary: "summary".into(),
             expanded_by_default: false,
-            children: vec![RenderSpec::Text { body: "inner".into(), style: shared::TextStyle::Plain }],
+            children: vec![RenderSpec::Text {
+                body: "inner".into(),
+                style: shared::TextStyle::Plain,
+            }],
         };
-        let body: String = render_spec(&spec, true).iter().map(line_text).collect::<Vec<_>>().join("\n");
+        let body: String = render_spec(&spec, true)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(body.contains("inner"));
     }
 
@@ -1497,10 +1560,7 @@ mod render_spec_tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(body.contains('\u{2713}'), "status glyph: {body:?}");
-        assert!(
-            body.contains("Updated /tmp/a.txt"),
-            "status msg: {body:?}"
-        );
+        assert!(body.contains("Updated /tmp/a.txt"), "status msg: {body:?}");
         assert!(
             body.contains("Added 1 line, removed 1 line"),
             "diff summary: {body:?}"

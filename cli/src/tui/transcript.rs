@@ -22,19 +22,19 @@ pub enum TranscriptItem {
     ToolCall {
         tool_use_id: String,
         name: String,
-        input: serde_json::Value,         // kept: used by legacy fallback for Read/Grep/Glob
+        input: serde_json::Value, // kept: used by legacy fallback for Read/Grep/Glob
         result: Option<ToolResultRender>, // kept: used by legacy fallback for Read/Grep/Glob
         elapsed_ms: u64,
         // Spec slots populated by lifecycle RenderEvent routing in `fold`.
         // Each slot holds the latest spec for that hook. `Nothing` is a
         // distinct, valid value; `None` means "the tool never emitted".
-        message_spec: Option<shared::RenderSpec>,
-        tag_spec: Option<shared::RenderSpec>,
-        progress_specs: Vec<shared::RenderSpec>,
-        queued_spec: Option<shared::RenderSpec>,
-        result_spec: Option<shared::RenderSpec>,
-        rejected_spec: Option<shared::RenderSpec>,
-        error_spec: Option<shared::RenderSpec>,
+        message_spec: Option<Box<shared::RenderSpec>>,
+        tag_spec: Option<Box<shared::RenderSpec>>,
+        progress_specs: Vec<Box<shared::RenderSpec>>,
+        queued_spec: Option<Box<shared::RenderSpec>>,
+        result_spec: Option<Box<shared::RenderSpec>>,
+        rejected_spec: Option<Box<shared::RenderSpec>>,
+        error_spec: Option<Box<shared::RenderSpec>>,
     },
     System {
         subtype: SystemSubtype,
@@ -51,7 +51,9 @@ pub enum TranscriptItem {
     /// Orphan render event with no matching in-flight `ToolCall`. Created
     /// from `BusMessage::RenderEvent`s whose `tool_use_id` is unknown
     /// (server-emitted system specs, hook output, etc.).
-    Render { spec: shared::RenderSpec },
+    Render {
+        spec: Box<shared::RenderSpec>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -292,18 +294,20 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                     {
                         use shared::RenderSlot;
                         match slot {
-                            RenderSlot::Message => *message_spec = Some(spec.clone()),
-                            RenderSlot::Tag => *tag_spec = Some(spec.clone()),
-                            RenderSlot::Progress => progress_specs.push(spec.clone()),
-                            RenderSlot::Queued => *queued_spec = Some(spec.clone()),
-                            RenderSlot::Result => *result_spec = Some(spec.clone()),
-                            RenderSlot::Rejected => *rejected_spec = Some(spec.clone()),
-                            RenderSlot::Error => *error_spec = Some(spec.clone()),
+                            RenderSlot::Message => *message_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Tag => *tag_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Progress => progress_specs.push(Box::new(spec.clone())),
+                            RenderSlot::Queued => *queued_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Result => *result_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Rejected => *rejected_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Error => *error_spec = Some(Box::new(spec.clone())),
                         }
                     }
                 } else {
                     // Orphan — no matching in-flight tool call.
-                    out.push(TranscriptItem::Render { spec: spec.clone() });
+                    out.push(TranscriptItem::Render {
+                        spec: Box::new(spec.clone()),
+                    });
                 }
             }
             BusMessage::InteractionRequested { .. }
@@ -979,7 +983,11 @@ mod tests {
         let items = fold(&events, None);
         assert_eq!(items.len(), 1, "single ToolCall expected: {items:#?}");
         match &items[0] {
-            TranscriptItem::ToolCall { message_spec, result_spec, .. } => {
+            TranscriptItem::ToolCall {
+                message_spec,
+                result_spec,
+                ..
+            } => {
                 assert!(message_spec.is_some(), "message_spec populated");
                 assert!(result_spec.is_some(), "result_spec populated");
             }
@@ -1021,7 +1029,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         match &items[0] {
             TranscriptItem::Render { spec } => {
-                assert!(matches!(spec, shared::RenderSpec::Text { .. }));
+                assert!(matches!(&**spec, shared::RenderSpec::Text { .. }));
             }
             other => panic!("expected Render orphan, got {other:?}"),
         }
