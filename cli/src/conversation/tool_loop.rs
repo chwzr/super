@@ -246,101 +246,94 @@ pub async fn run_tool_uses(
 
         // Interactive tools: render the spec, suspend the turn, await the
         // user response, then merge the answers into the tool input.
-        let effective_input = if tool.requires_user_interaction() {
-            let spec = tool.render_tool_use_message(&input, &unsafe_opts);
-
-            if matches!(&spec, shared::RenderSpec::Interactive { .. }) {
-                // Emit the spec via RenderEvent so the transcript can
-                // optionally render it in scrollback (the modal is the
-                // primary surface, but scrollback parity is useful).
-                emit_render_event(
-                    &bus,
-                    &id,
-                    parent_tool_use_id.as_deref(),
-                    &session_id,
-                    shared::RenderSlot::Message,
-                    spec.clone(),
-                );
-
-                match interactive::await_interaction(
-                    id.clone(),
-                    &spec,
-                    &bus,
-                    parent_tool_use_id.clone(),
-                )
-                .await
-                {
-                    InteractionOutcome::Resolved { updated_input } => {
-                        // Merge answers into the original input so call()
-                        // sees the full picture.
-                        updated_input
-                    }
-                    InteractionOutcome::Denied => {
-                        if let Some(rejection) = tool.render_tool_use_rejected_message(
-                            &input,
-                            &unsafe_opts,
-                        ) {
-                            // Emit the rejection so the transcript shows it.
-                            emit_render_event(
-                                &bus,
-                                &id,
-                                parent_tool_use_id.as_deref(),
-                                &session_id,
-                                shared::RenderSlot::Rejected,
-                                rejection,
-                            );
-                        }
-                        unsafe_results.push((
-                            i,
-                            id,
-                            ToolResult {
-                                content: "User declined to answer questions".into(),
-                                is_error: true,
-                                ..Default::default()
-                            },
-                        ));
-                        continue;
-                    }
-                    InteractionOutcome::Aborted => {
-                        unsafe_results.push((
-                            i,
-                            id,
-                            ToolResult {
-                                content: "Interaction aborted".into(),
-                                is_error: true,
-                                ..Default::default()
-                            },
-                        ));
-                        continue;
-                    }
-                }
-            } else {
-                input
-            }
-        } else {
-            input
-        };
-
-        // Emit Message + Tag before the tool runs.
-        let message_spec = tool.render_tool_use_message(&effective_input, &unsafe_opts);
-        let tag_spec = tool.render_tool_use_tag(&effective_input);
-        emit_render_event(
-            &bus,
-            &id,
-            parent_tool_use_id.as_deref(),
-            &session_id,
-            shared::RenderSlot::Message,
-            message_spec,
-        );
-        if let Some(tag) = tag_spec {
+        let interactive_spec = tool.render_tool_use_message(&input, &unsafe_opts);
+        let already_emitted_interactive = tool.requires_user_interaction()
+            && matches!(&interactive_spec, shared::RenderSpec::Interactive { .. });
+        let effective_input = if already_emitted_interactive {
             emit_render_event(
                 &bus,
                 &id,
                 parent_tool_use_id.as_deref(),
                 &session_id,
-                shared::RenderSlot::Tag,
-                tag,
+                shared::RenderSlot::Message,
+                interactive_spec.clone(),
             );
+
+            match interactive::await_interaction(
+                id.clone(),
+                &interactive_spec,
+                &bus,
+                parent_tool_use_id.clone(),
+            )
+            .await
+            {
+                InteractionOutcome::Resolved { updated_input } => updated_input,
+                InteractionOutcome::Denied => {
+                    if let Some(rejection) = tool.render_tool_use_rejected_message(
+                        &input,
+                        &unsafe_opts,
+                    ) {
+                        emit_render_event(
+                            &bus,
+                            &id,
+                            parent_tool_use_id.as_deref(),
+                            &session_id,
+                            shared::RenderSlot::Rejected,
+                            rejection,
+                        );
+                    }
+                    unsafe_results.push((
+                        i,
+                        id,
+                        ToolResult {
+                            content: "User declined to answer questions".into(),
+                            is_error: true,
+                            ..Default::default()
+                        },
+                    ));
+                    continue;
+                }
+                InteractionOutcome::Aborted => {
+                    unsafe_results.push((
+                        i,
+                        id,
+                        ToolResult {
+                            content: "Interaction aborted".into(),
+                            is_error: true,
+                            ..Default::default()
+                        },
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            input
+        };
+
+        // Emit Message + Tag before the tool runs, but only if we didn't
+        // already emit an Interactive-carrying Message above — otherwise the
+        // generic Header would overwrite the Interactive spec on the bus.
+        if !already_emitted_interactive {
+            let message_spec = tool.render_tool_use_message(&effective_input, &unsafe_opts);
+            let tag_spec = tool.render_tool_use_tag(&effective_input);
+            emit_render_event(
+                &bus,
+                &id,
+                parent_tool_use_id.as_deref(),
+                &session_id,
+                shared::RenderSlot::Message,
+                message_spec,
+            );
+            if let Some(tag) = tag_spec {
+                emit_render_event(
+                    &bus,
+                    &id,
+                    parent_tool_use_id.as_deref(),
+                    &session_id,
+                    shared::RenderSlot::Tag,
+                    tag,
+                );
+            }
         }
 
         // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
