@@ -125,8 +125,8 @@ impl Tool for ToolSearchTool {
 
         // --- +prefix: require term in name ---
         let stripped = query.strip_prefix('+');
-        let require_in_name: Option<String> = stripped
-            .and_then(|s| s.split_whitespace().next().map(|t| t.to_lowercase()));
+        let require_in_name: Option<String> =
+            stripped.and_then(|s| s.split_whitespace().next().map(|t| t.to_lowercase()));
 
         let search_terms: Vec<&str> = match stripped {
             Some(after_plus) => {

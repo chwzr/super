@@ -28,8 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let repo = Arc::new(
-        SqliteAuthRepo::new("super.db")
-            .map_err(|e| format!("failed to open database: {e}"))?,
+        SqliteAuthRepo::new("super.db").map_err(|e| format!("failed to open database: {e}"))?,
     );
     let openrouter = Arc::new(OpenRouterClient::new(
         std::env::var("OPENROUTER_MANAGEMENT_KEY")

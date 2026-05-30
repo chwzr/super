@@ -4,7 +4,7 @@
     clippy::panic,
     clippy::todo,
     clippy::unimplemented,
-    clippy::unreachable,
+    clippy::unreachable
 )]
 
 //! End-to-end smoke test for the Batch 1 trait/permission/renderspec migration.

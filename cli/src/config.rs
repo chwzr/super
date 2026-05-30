@@ -2,11 +2,7 @@ use shared::CliConfig;
 use std::path::PathBuf;
 
 pub fn config_path() -> Option<PathBuf> {
-    Some(
-        dirs::home_dir()?
-            .join(".super")
-            .join("config.json"),
-    )
+    Some(dirs::home_dir()?.join(".super").join("config.json"))
 }
 
 pub fn load_config() -> CliConfig {

@@ -115,7 +115,8 @@ impl Tool for WebFetchTool {
                         "codeText": "ClientInitFailed",
                         "result": format!("HTTP client init failed: {e}"),
                         "durationMs": duration_ms
-                    }).to_string(),
+                    })
+                    .to_string(),
                     is_error: true,
                     ..Default::default()
                 };
