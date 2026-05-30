@@ -1118,6 +1118,9 @@ mod tests {
             subtype: SystemSubtype::Notice,
             message: "x".into(),
         }));
+        assert!(is_stable(&TranscriptItem::Render {
+            spec: shared::RenderSpec::Nothing,
+        }));
     }
 
     #[test]
