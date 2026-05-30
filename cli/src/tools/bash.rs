@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::conversation::message_queue::MessageQueue;
+use shared;
 use crate::state::store::Store;
 use crate::tools::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
@@ -106,6 +107,29 @@ impl Tool for BashTool {
             let rule_stem = rule_content.split_whitespace().next().unwrap_or("");
             rule_stem == command_stem || rule_content == "*"
         }))
+    }
+
+    fn render_tool_use_message(
+        &self,
+        input: &serde_json::Value,
+        _opts: &crate::tools::contract::RenderOpts,
+    ) -> shared::RenderSpec {
+        let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let first = cmd.lines().next().unwrap_or("").chars().take(80).collect::<String>();
+        shared::RenderSpec::Header { verb: "Bash".into(), target: Some(first), tag: None }
+    }
+
+    fn render_tool_result_message(
+        &self,
+        output: &serde_json::Value,
+        _progress: &[crate::tools::contract::ProgressEvent],
+        _opts: &crate::tools::contract::RenderOpts,
+    ) -> Option<shared::RenderSpec> {
+        let content = output.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        Some(shared::RenderSpec::Text {
+            body: content.chars().take(200).collect(),
+            style: shared::TextStyle::Plain,
+        })
     }
 
     fn is_destructive(&self, _input: &serde_json::Value) -> bool {
