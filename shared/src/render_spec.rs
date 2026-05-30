@@ -15,8 +15,9 @@ pub enum RenderSpec {
         tag: Option<Tag>,
     },
 
-    /// Multiline plain text. Used for fallback/raw output.
-    Text { body: String, dim: bool },
+    /// Multiline plain text with a portable style hint. Renderer maps the
+    /// hint to its own palette (CLI: `cli/src/tui/colors.rs`; web: design tokens).
+    Text { body: String, style: TextStyle },
 
     /// A code block with optional language; rendered monospace.
     Code {
@@ -117,6 +118,19 @@ pub enum StatusState {
     Rejected,
 }
 
+/// Closed set of style hints for `RenderSpec::Text`. Renderers map each hint
+/// to a palette entry; tools cannot express arbitrary colors by design.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextStyle {
+    Plain,
+    Dim,
+    Error,
+    Success,
+    Warn,
+    Strong,
+}
+
 // InteractiveWidget is the only variant Batch 1 does not actually emit;
 // included so the enum is forward-compatible with Batch 2.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +206,41 @@ mod tests {
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains(r#""kind":"header""#));
         assert!(json.contains(r#""verb":"Reading""#));
+    }
+
+    #[test]
+    fn text_serializes_with_style_tag() {
+        let spec = RenderSpec::Text {
+            body: "boom".into(),
+            style: TextStyle::Error,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains(r#""kind":"text""#), "got: {json}");
+        assert!(json.contains(r#""style":"error""#), "got: {json}");
+        assert!(json.contains(r#""body":"boom""#), "got: {json}");
+    }
+
+    #[test]
+    fn text_style_round_trips() {
+        for s in [
+            TextStyle::Plain,
+            TextStyle::Dim,
+            TextStyle::Error,
+            TextStyle::Success,
+            TextStyle::Warn,
+            TextStyle::Strong,
+        ] {
+            let spec = RenderSpec::Text {
+                body: "x".into(),
+                style: s,
+            };
+            let json = serde_json::to_string(&spec).unwrap();
+            let back: RenderSpec = serde_json::from_str(&json).unwrap();
+            match back {
+                RenderSpec::Text { style, .. } => assert_eq!(style, s),
+                _ => panic!("wrong variant"),
+            }
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::json;
-use shared::RenderSpec;
+use shared::{RenderSpec, TextStyle};
 
 use super::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, RenderOpts, Tool, ToolCallContext, ToolResult,
@@ -162,7 +162,7 @@ impl Tool for TodoWriteTool {
             None => vec!["(empty)".to_string()],
         };
         let body = format!("Todo list updated:\n{}", lines.join("\n"));
-        Some(RenderSpec::Text { body, dim: false })
+        Some(RenderSpec::Text { body, style: TextStyle::Plain })
     }
 
     async fn check_permissions(

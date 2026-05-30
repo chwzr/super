@@ -5,7 +5,7 @@ use super::contract::{
 use crate::state::store::PermissionMode;
 use async_trait::async_trait;
 use serde_json::json;
-use shared::RenderSpec;
+use shared::{RenderSpec, TextStyle};
 use std::sync::Arc;
 
 pub struct EnterPlanModeTool {
@@ -97,14 +97,14 @@ impl Tool for EnterPlanModeTool {
             children: vec![
                 RenderSpec::Text {
                     body: message.to_string(),
-                    dim: false,
+                    style: TextStyle::Plain,
                 },
                 RenderSpec::Text {
                     body: "Plan mode is active. Only read-only tools are available. \
                           Use AskUserQuestion if you need to clarify the approach. \
                           Write your plan to the plan file and call ExitPlanMode when ready for approval."
                         .to_string(),
-                    dim: true,
+                    style: TextStyle::Dim,
                 },
             ],
         })

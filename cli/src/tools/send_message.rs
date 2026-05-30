@@ -4,7 +4,7 @@ use super::contract::{
 };
 use async_trait::async_trait;
 use serde_json::json;
-use shared::RenderSpec;
+use shared::{RenderSpec, TextStyle};
 
 pub struct SendMessageTool;
 
@@ -126,7 +126,7 @@ impl Tool for SendMessageTool {
         let msg = output["message"].as_str().unwrap_or("Message sent.");
         Some(RenderSpec::Text {
             body: msg.to_string(),
-            dim: false,
+            style: TextStyle::Plain,
         })
     }
 
