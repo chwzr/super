@@ -213,6 +213,7 @@ pub async fn run_tool_uses(
                             // Emit the rejection so the transcript shows it.
                             bus.emit(BusMessage::RenderEvent {
                                 tool_use_id: id.clone(),
+                                // TODO(T5): reclassify to RenderSlot::Rejected.
                                 slot: shared::RenderSlot::Message,
                                 spec: rejection,
                                 parent_tool_use_id: parent_tool_use_id.clone(),
