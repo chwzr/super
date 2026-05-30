@@ -506,14 +506,32 @@ fn visual_rows(line: &Line, width: u16) -> u16 {
     char_count.div_ceil(width as usize) as u16
 }
 
-/// Stub dispatcher: turns a `RenderSpec` into TUI lines. Batch 1 only
-/// handles `Nothing`; every other variant produces a one-line dim
-/// placeholder. Batches 2-5 fill in real renderers per variant.
+/// Map a portable `TextStyle` hint to a concrete ratatui `Style` using the
+/// CLI palette in `colors.rs`.
+fn text_style(style: shared::TextStyle) -> Style {
+    use shared::TextStyle;
+    match style {
+        TextStyle::Plain   => Style::default().fg(Color::White),
+        TextStyle::Dim     => Style::default().fg(Color::DarkGray),
+        TextStyle::Error   => Style::default().fg(Color::Red),
+        TextStyle::Success => Style::default().fg(Color::Indexed(114)),
+        TextStyle::Warn    => Style::default().fg(Color::Indexed(214)),
+        TextStyle::Strong  => Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    }
+}
+
+/// Dispatcher: turns a `RenderSpec` into TUI lines.
 pub fn render_spec(spec: &shared::RenderSpec) -> Vec<Line<'static>> {
     match spec {
         shared::RenderSpec::Nothing => Vec::new(),
-        other => vec![Line::from(Span::styled(
-            format!("[render_spec stub: {:?}]", std::mem::discriminant(other)),
+        shared::RenderSpec::Text { body, style } => {
+            let s = text_style(*style);
+            body.lines()
+                .map(|l| Line::from(Span::styled(l.to_string(), s)))
+                .collect()
+        }
+        _ => vec![Line::from(Span::styled(
+            format!("[render_spec stub: {:?}]", std::mem::discriminant(spec)),
             dim_style(),
         ))],
     }
@@ -1046,6 +1064,13 @@ mod render_spec_tests {
     use super::*;
     use shared::RenderSpec;
 
+    fn line_text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
+
     #[test]
     fn nothing_renders_empty_vec() {
         let lines = render_spec(&RenderSpec::Nothing);
@@ -1063,5 +1088,39 @@ mod render_spec_tests {
         // Batch 1 stub: any non-Nothing variant produces a one-line
         // dim placeholder. Batches 2-5 add real renderers.
         assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn text_plain_renders_each_body_line() {
+        let spec = RenderSpec::Text {
+            body: "alpha\nbeta".into(),
+            style: shared::TextStyle::Plain,
+        };
+        let lines = render_spec(&spec);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(line_text(&lines[0]), "alpha");
+        assert_eq!(line_text(&lines[1]), "beta");
+    }
+
+    #[test]
+    fn text_dim_carries_dark_gray_color() {
+        let spec = RenderSpec::Text {
+            body: "hush".into(),
+            style: shared::TextStyle::Dim,
+        };
+        let lines = render_spec(&spec);
+        let color = lines[0].spans.first().and_then(|s| s.style.fg);
+        assert_eq!(color, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn text_error_carries_red_color() {
+        let spec = RenderSpec::Text {
+            body: "boom".into(),
+            style: shared::TextStyle::Error,
+        };
+        let lines = render_spec(&spec);
+        let color = lines[0].spans.first().and_then(|s| s.style.fg);
+        assert_eq!(color, Some(Color::Red));
     }
 }
