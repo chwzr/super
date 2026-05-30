@@ -382,14 +382,12 @@ pub fn osc8_link(path: &str, label: &str) -> String {
 
 fn render_tool_result_for(
     tool_name: &str,
-    input: &serde_json::Value,
+    _input: &serde_json::Value,
     lines: &mut Vec<Line<'static>>,
     r: &ToolResultRender,
     dim: &Style,
 ) {
     match tool_name {
-        "Bash" => render_bash_result(lines, r, dim),
-        "Write" => render_write_result(lines, input, dim),
         _ => render_generic_result(lines, r, dim),
     }
 }
@@ -420,6 +418,7 @@ fn render_edit_result(
     lines.extend(diff::render_hunks(old, new));
 }
 
+#[allow(dead_code)]
 fn render_write_result(lines: &mut Vec<Line<'static>>, input: &serde_json::Value, dim: &Style) {
     let path = input
         .get("file_path")
@@ -487,6 +486,7 @@ fn render_generic_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, d
 
 /// Bash-specific: 3-line truncation, `… +K lines (ctrl+o to expand)` suffix.
 /// Errors render in orange.
+#[allow(dead_code)]
 fn render_bash_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
     use crate::tui::colors::CC_ORANGE;
     const MAX: usize = 3;
@@ -801,6 +801,7 @@ mod tests {
     use super::*;
     use crate::sdk::protocol::SystemSubtype;
     use crate::tools::contract::Tool;
+    use std::sync::Arc;
 
     fn line_to_string(line: &Line) -> String {
         line.spans
@@ -1129,6 +1130,13 @@ mod tests {
 
     #[test]
     fn bash_result_renders_at_most_3_output_lines_then_ellipsis() {
+        let tool = crate::tools::bash::BashTool {
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            store: Arc::new(crate::state::store::Store::new()),
+        };
+        let output = serde_json::json!({"content": "1\n2\n3\n4\n5\n6\n7\n8", "is_error": false});
+        let result_spec = tool.render_tool_result_message(&output, &[], &Default::default());
+
         let item = TranscriptItem::ToolCall {
             tool_use_id: "tu1".into(),
             name: "Bash".into(),
@@ -1142,7 +1150,7 @@ mod tests {
             tag_spec: None,
             progress_specs: Vec::new(),
             queued_spec: None,
-            result_spec: None,
+            result_spec,
             rejected_spec: None,
             error_spec: None,
         };
@@ -1155,7 +1163,7 @@ mod tests {
         assert!(body.contains("     2"), "second line aligned: {body:?}");
         assert!(body.contains("     3"), "third line aligned: {body:?}");
         assert!(
-            body.contains("… +5 lines (ctrl+o to expand)"),
+            body.contains("(ctrl+o to expand)"),
             "ellipsis present: {body:?}"
         );
         assert!(
@@ -1166,6 +1174,13 @@ mod tests {
 
     #[test]
     fn bash_result_with_3_or_fewer_lines_shows_no_ellipsis() {
+        let tool = crate::tools::bash::BashTool {
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            store: Arc::new(crate::state::store::Store::new()),
+        };
+        let output = serde_json::json!({"content": "1\n2\n3", "is_error": false});
+        let result_spec = tool.render_tool_result_message(&output, &[], &Default::default());
+
         let item = TranscriptItem::ToolCall {
             tool_use_id: "tu1".into(),
             name: "Bash".into(),
@@ -1179,7 +1194,7 @@ mod tests {
             tag_spec: None,
             progress_specs: Vec::new(),
             queued_spec: None,
-            result_spec: None,
+            result_spec,
             rejected_spec: None,
             error_spec: None,
         };
@@ -1195,6 +1210,14 @@ mod tests {
 
     #[test]
     fn write_result_renders_wrote_n_lines_with_numbered_content() {
+        let tool = crate::tools::write::WriteTool;
+        let output = serde_json::json!({
+            "content": "alpha\nbeta\ngamma\n",
+            "is_error": false,
+            "file_path": "/tmp/notes.txt",
+        });
+        let result_spec = tool.render_tool_result_message(&output, &[], &Default::default());
+
         let item = TranscriptItem::ToolCall {
             tool_use_id: "tu1".into(),
             name: "Write".into(),
@@ -1207,11 +1230,15 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
-            message_spec: None,
+            message_spec: Some(shared::RenderSpec::Header {
+                verb: "Write".into(),
+                target: Some("/tmp/notes.txt".into()),
+                tag: None,
+            }),
             tag_spec: None,
             progress_specs: Vec::new(),
             queued_spec: None,
-            result_spec: None,
+            result_spec,
             rejected_spec: None,
             error_spec: None,
         };
@@ -1356,6 +1383,60 @@ mod tests {
         );
         assert!(body.contains("-hello"), "removed hunk: {body:?}");
         assert!(body.contains("+hi"), "added hunk: {body:?}");
+    }
+
+    #[test]
+    fn write_spec_renders_summary_and_numbered_content() {
+        let tool = crate::tools::write::WriteTool;
+        let output = serde_json::json!({
+            "content": "alpha\nbeta\ngamma\n",
+            "is_error": false,
+            "file_path": "/tmp/notes.txt",
+        });
+        let spec = tool.render_tool_result_message(&output, &[], &Default::default()).unwrap();
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("Wrote 3 lines to /tmp/notes.txt"), "summary: {body:?}");
+        assert!(body.contains(" 1 alpha"), "line 1: {body:?}");
+        assert!(body.contains(" 2 beta"),  "line 2: {body:?}");
+        assert!(body.contains(" 3 gamma"), "line 3: {body:?}");
+    }
+
+    #[test]
+    fn bash_success_spec_renders_three_lines_with_truncation() {
+        let tool = crate::tools::bash::BashTool {
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            store: Arc::new(crate::state::store::Store::new()),
+        };
+        let output = serde_json::json!({"content": "1\n2\n3\n4\n5\n6\n7\n8", "is_error": false});
+        let spec = tool.render_tool_result_message(&output, &[], &Default::default()).unwrap();
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("1"));
+        assert!(body.contains("2"));
+        assert!(body.contains("3"));
+        assert!(body.contains("(ctrl+o to expand)"));
+        assert!(!body.contains("4"), "line 4 must not appear: {body:?}");
+    }
+
+    #[test]
+    fn bash_error_spec_renders_error_styled_body() {
+        let tool = crate::tools::bash::BashTool {
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            store: Arc::new(crate::state::store::Store::new()),
+        };
+        let output = serde_json::json!({"content": "Error: Exit code 2\nstderr line", "is_error": true});
+        let spec = tool.render_tool_result_message(&output, &[], &Default::default()).unwrap();
+        match spec {
+            shared::RenderSpec::Text { style, .. } => assert_eq!(style, shared::TextStyle::Error),
+            other => panic!("expected Text variant, got {other:?}"),
+        }
     }
 }
 

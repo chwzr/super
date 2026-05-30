@@ -126,10 +126,30 @@ impl Tool for BashTool {
         _opts: &crate::tools::contract::RenderOpts,
     ) -> Option<shared::RenderSpec> {
         let content = output.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        Some(shared::RenderSpec::Text {
-            body: content.chars().take(200).collect(),
-            style: shared::TextStyle::Plain,
-        })
+        let is_error = output.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        const MAX: usize = 3;
+        let all: Vec<&str> = content.lines().collect();
+        let shown: String = all.iter().take(MAX).copied().collect::<Vec<_>>().join("\n");
+        let truncated = all.len() > MAX;
+
+        if is_error {
+            Some(shared::RenderSpec::Text { body: shown, style: shared::TextStyle::Error })
+        } else {
+            Some(shared::RenderSpec::Code {
+                language: None,
+                body: shown,
+                truncated,
+            })
+        }
+    }
+
+    fn render_tool_use_error_message(
+        &self,
+        output: &serde_json::Value,
+        opts: &crate::tools::contract::RenderOpts,
+    ) -> Option<shared::RenderSpec> {
+        self.render_tool_result_message(output, &[], opts)
     }
 
     fn is_destructive(&self, _input: &serde_json::Value) -> bool {

@@ -174,10 +174,17 @@ pub async fn run_tool_uses(
             };
 
             // Emit Result or Error after the tool completes.
-            let output_json = serde_json::json!({
+            let mut output_json = serde_json::json!({
                 "content": res.content,
                 "is_error": res.is_error,
             });
+            if let Some(ref meta) = res.metadata {
+                if let Some(map) = output_json.as_object_mut() {
+                    for (k, v) in meta {
+                        map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                    }
+                }
+            }
             let slot = if res.is_error {
                 shared::RenderSlot::Error
             } else {
@@ -363,10 +370,17 @@ pub async fn run_tool_uses(
         ticker.abort();
 
         // Emit Result or Error after the tool completes.
-        let output_json = serde_json::json!({
+        let mut output_json = serde_json::json!({
             "content": res.content,
             "is_error": res.is_error,
         });
+        if let Some(ref meta) = res.metadata {
+            if let Some(map) = output_json.as_object_mut() {
+                for (k, v) in meta {
+                    map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                }
+            }
+        }
         let slot = if res.is_error {
             shared::RenderSlot::Error
         } else {
