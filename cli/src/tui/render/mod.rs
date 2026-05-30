@@ -520,6 +520,28 @@ fn text_style(style: shared::TextStyle) -> Style {
     }
 }
 
+/// True when `s` has a path separator or a single dotted extension (e.g.
+/// `foo.rs`, `notes.md`). Used to decide whether to OSC8-link a target.
+fn looks_like_path(s: &str) -> bool {
+    s.contains('/')
+        || s.contains('\\')
+        || s.rsplit('.')
+            .next()
+            .is_some_and(|ext| !ext.is_empty() && ext.len() <= 5 && s.len() > ext.len() + 1)
+}
+
+/// Format a `Tag` into the bracket form shown inline in tool headers.
+fn format_tag(tag: &shared::Tag) -> String {
+    use shared::Tag;
+    match tag {
+        Tag::Timeout { ms } => format!("[timeout {ms}ms]"),
+        Tag::Model { id } => format!("[{id}]"),
+        Tag::Truncated => "[truncated]".to_string(),
+        Tag::ResumeId { value } => format!("[resume:{value}]"),
+        Tag::Custom { value } => format!("[{value}]"),
+    }
+}
+
 /// Dispatcher: turns a `RenderSpec` into TUI lines.
 pub fn render_spec(spec: &shared::RenderSpec) -> Vec<Line<'static>> {
     match spec {
@@ -529,6 +551,31 @@ pub fn render_spec(spec: &shared::RenderSpec) -> Vec<Line<'static>> {
             body.lines()
                 .map(|l| Line::from(Span::styled(l.to_string(), s)))
                 .collect()
+        }
+        shared::RenderSpec::Header { verb, target, tag } => {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            spans.push(Span::styled(
+                "⏺ ",
+                Style::default().fg(Color::Indexed(114)),
+            ));
+            spans.push(Span::styled(
+                verb.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            if let Some(t) = target {
+                spans.push(Span::raw(" "));
+                let rendered = if looks_like_path(t) {
+                    osc8_link(t, t)
+                } else {
+                    t.clone()
+                };
+                spans.push(Span::styled(rendered, dim_style()));
+            }
+            if let Some(tg) = tag {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(format_tag(tg), dim_style()));
+            }
+            vec![Line::from(""), Line::from(spans)]
         }
         _ => vec![Line::from(Span::styled(
             format!("[render_spec stub: {:?}]", std::mem::discriminant(spec)),
@@ -1077,17 +1124,77 @@ mod render_spec_tests {
         assert!(lines.is_empty());
     }
 
+    // ── Header ────────────────────────────────────────────────────────
+
     #[test]
-    fn unhandled_variant_renders_placeholder() {
+    fn header_renders_verb_and_target() {
         let spec = RenderSpec::Header {
             verb: "Reading".into(),
             target: Some("src/foo.rs".into()),
             tag: None,
         };
         let lines = render_spec(&spec);
-        // Batch 1 stub: any non-Nothing variant produces a one-line
-        // dim placeholder. Batches 2-5 add real renderers.
+        // 1 leading blank + 1 body line.
+        assert_eq!(lines.len(), 2);
+        let body = line_text(&lines[1]);
+        assert!(body.contains("Reading"), "got: {body:?}");
+        assert!(body.contains("src/foo.rs"), "got: {body:?}");
+    }
+
+    #[test]
+    fn header_wraps_path_target_with_osc8() {
+        let spec = RenderSpec::Header {
+            verb: "Reading".into(),
+            target: Some("/abs/path.txt".into()),
+            tag: None,
+        };
+        let lines = render_spec(&spec);
+        let body = line_text(&lines[1]);
+        assert!(
+            body.contains("\x1b]8;;file:///abs/path.txt"),
+            "OSC8 open: {body:?}"
+        );
+    }
+
+    #[test]
+    fn header_renders_tag_inline_in_dim_brackets() {
+        let spec = RenderSpec::Header {
+            verb: "Bash".into(),
+            target: Some("ls".into()),
+            tag: Some(shared::Tag::Timeout { ms: 30000 }),
+        };
+        let lines = render_spec(&spec);
+        let body = line_text(&lines[1]);
+        assert!(body.contains("[timeout 30000ms]"), "got: {body:?}");
+    }
+
+    #[test]
+    fn header_renders_truncated_tag() {
+        let spec = RenderSpec::Header {
+            verb: "Read".into(),
+            target: None,
+            tag: Some(shared::Tag::Truncated),
+        };
+        let lines = render_spec(&spec);
+        let body = line_text(&lines[1]);
+        assert!(body.contains("[truncated]"), "got: {body:?}");
+    }
+
+    // ── Still-unimplemented variants hit catch-all ─────────────────────
+
+    #[test]
+    fn unimplemented_variant_renders_placeholder() {
+        let spec = RenderSpec::Code {
+            language: Some("rust".into()),
+            body: "fn main() {}".into(),
+            truncated: false,
+        };
+        let lines = render_spec(&spec);
+        // Catch-all: a single dim placeholder line for variants not yet
+        // implemented. Batches 2-5 fill in real renderers.
         assert_eq!(lines.len(), 1);
+        let body = line_text(&lines[0]);
+        assert!(body.contains("stub"), "got: {body:?}");
     }
 
     #[test]
