@@ -272,9 +272,39 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
             BusMessage::Result { .. } => {
                 // Renderers may show usage in the header; no transcript item.
             }
-            BusMessage::RenderEvent { .. } => {
-                // RenderSpec events are consumed by the TUI render dispatcher;
-                // no transcript item needed.
+            BusMessage::RenderEvent {
+                tool_use_id,
+                slot,
+                spec,
+                ..
+            } => {
+                if let Some(&pos) = tool_use_idx.get(tool_use_id) {
+                    if let TranscriptItem::ToolCall {
+                        message_spec,
+                        tag_spec,
+                        progress_specs,
+                        queued_spec,
+                        result_spec,
+                        rejected_spec,
+                        error_spec,
+                        ..
+                    } = &mut out[pos]
+                    {
+                        use shared::RenderSlot;
+                        match slot {
+                            RenderSlot::Message => *message_spec = Some(spec.clone()),
+                            RenderSlot::Tag => *tag_spec = Some(spec.clone()),
+                            RenderSlot::Progress => progress_specs.push(spec.clone()),
+                            RenderSlot::Queued => *queued_spec = Some(spec.clone()),
+                            RenderSlot::Result => *result_spec = Some(spec.clone()),
+                            RenderSlot::Rejected => *rejected_spec = Some(spec.clone()),
+                            RenderSlot::Error => *error_spec = Some(spec.clone()),
+                        }
+                    }
+                } else {
+                    // Orphan — no matching in-flight tool call.
+                    out.push(TranscriptItem::Render { spec: spec.clone() });
+                }
             }
             BusMessage::InteractionRequested { .. }
             | BusMessage::InteractionResponse { .. }
@@ -906,6 +936,71 @@ mod tests {
                 assert!(*complete);
             }
             other => panic!("wrong sub[1]: {other:?}"),
+        }
+    }
+
+    fn tool_use_event(id: &str) -> BusMessage {
+        BusMessage::StreamEvent {
+            event: StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::ToolUse {
+                    id: id.into(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                },
+            },
+            parent_tool_use_id: None,
+            uuid: uuid::Uuid::new_v4(),
+            session_id: "s".into(),
+        }
+    }
+
+    fn render_event(id: &str, slot: shared::RenderSlot) -> BusMessage {
+        BusMessage::RenderEvent {
+            tool_use_id: id.into(),
+            slot,
+            spec: shared::RenderSpec::Text {
+                body: format!("{:?}", slot),
+                style: shared::TextStyle::Plain,
+            },
+            parent_tool_use_id: None,
+            uuid: uuid::Uuid::new_v4(),
+            session_id: "s".into(),
+        }
+    }
+
+    #[test]
+    fn fold_routes_render_event_to_matching_tool_call_slot() {
+        let events = vec![
+            tool_use_event("tu1"),
+            render_event("tu1", shared::RenderSlot::Message),
+            render_event("tu1", shared::RenderSlot::Result),
+        ];
+        let items = fold(&events, None);
+        assert_eq!(items.len(), 1, "single ToolCall expected: {items:#?}");
+        match &items[0] {
+            TranscriptItem::ToolCall { message_spec, result_spec, .. } => {
+                assert!(message_spec.is_some(), "message_spec populated");
+                assert!(result_spec.is_some(), "result_spec populated");
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fold_appends_progress_specs() {
+        let events = vec![
+            tool_use_event("tu1"),
+            render_event("tu1", shared::RenderSlot::Progress),
+            render_event("tu1", shared::RenderSlot::Progress),
+            render_event("tu1", shared::RenderSlot::Progress),
+        ];
+        let items = fold(&events, None);
+        match &items[0] {
+            TranscriptItem::ToolCall { progress_specs, .. } => {
+                assert_eq!(progress_specs.len(), 3);
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 
