@@ -1,4 +1,3 @@
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -86,6 +85,7 @@ impl LspServerInstance {
         let crash_recovery_count = self.crash_recovery_count.clone();
 
         let result = tokio::task::spawn_blocking(move || {
+            #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
             let mut c = client.lock().unwrap();
 
             // Build crash callback that updates shared state on unexpected exit.
@@ -128,6 +128,7 @@ impl LspServerInstance {
             Err(e) => {
                 // Attempt cleanup of the failed client
                 let cleanup_client = self.client.clone();
+                #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
                 let _ = tokio::task::spawn_blocking(move || cleanup_client.lock().unwrap().stop())
                     .await;
                 self.state = LspServerState::Error;
@@ -149,6 +150,7 @@ impl LspServerInstance {
         self.state = LspServerState::Stopping;
 
         let client = self.client.clone();
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let result = tokio::task::spawn_blocking(move || client.lock().unwrap().stop()).await;
 
         match result {
@@ -176,6 +178,7 @@ impl LspServerInstance {
             return false;
         }
         // Check client is still initialized
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let c = self.client.lock().unwrap();
         c.is_initialized
     }
@@ -199,6 +202,7 @@ impl LspServerInstance {
             let params_clone = params.clone();
 
             let result = tokio::task::spawn_blocking(move || {
+                #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
                 let mut c = client.lock().unwrap();
                 c.send_request::<T>(&method_owned, params_clone)
             })
@@ -249,6 +253,7 @@ impl LspServerInstance {
         let method_owned = method.to_string();
 
         tokio::task::spawn_blocking(move || {
+            #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
             let mut c = client.lock().unwrap();
             c.send_notification(&method_owned, params)
                 .map_err(|e| e.message)
@@ -268,11 +273,10 @@ fn build_init_params(
     InitializeParams {
         process_id: Some(std::process::id()),
         root_path: Some(workspace_folder.to_string()),
-        root_uri: Some(
-            workspace_uri
-                .parse::<Uri>()
-                .unwrap_or_else(|_| Uri::from_str("file:///").unwrap()),
-        ),
+        root_uri: workspace_uri
+            .parse::<Uri>()
+            .ok()
+            .or_else(|| "file:///".parse::<Uri>().ok()),
         initialization_options,
         capabilities: ClientCapabilities {
             workspace: Some(WorkspaceClientCapabilities {

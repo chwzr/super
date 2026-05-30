@@ -1,3 +1,15 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+    )
+)]
+
 mod adapters;
 mod domain;
 mod routes;
@@ -11,13 +23,16 @@ use adapters::sqlite_auth_repo::SqliteAuthRepo;
 use domain::auth::service::AuthService;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let repo = Arc::new(SqliteAuthRepo::new("super.db").expect("failed to open database"));
+    let repo = Arc::new(
+        SqliteAuthRepo::new("super.db").map_err(|e| format!("failed to open database: {e}"))?,
+    );
     let openrouter = Arc::new(OpenRouterClient::new(
-        std::env::var("OPENROUTER_MANAGEMENT_KEY").expect("OPENROUTER_MANAGEMENT_KEY not set"),
+        std::env::var("OPENROUTER_MANAGEMENT_KEY")
+            .map_err(|_| "OPENROUTER_MANAGEMENT_KEY not set")?,
     ));
     let service = Arc::new(AuthService::new(repo, openrouter));
 
@@ -30,7 +45,12 @@ async fn main() {
         .nest("/auth", routes::auth::routes_with_state(service.clone()))
         .layer(cors);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+        .await
+        .map_err(|e| format!("failed to bind :3000: {e}"))?;
     tracing::info!("server listening on :3000");
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| format!("axum serve error: {e}"))?;
+    Ok(())
 }

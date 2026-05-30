@@ -84,10 +84,19 @@ impl Tool for WebSearchTool {
             url_encode(query)
         );
 
-        let client = reqwest::Client::builder()
+        let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .unwrap();
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("HTTP client init failed: {e}"),
+                    is_error: true,
+                    ..Default::default()
+                };
+            }
+        };
 
         match client.get(&url).send().await {
             Ok(resp) => match resp.text().await {

@@ -56,7 +56,7 @@ fn find_frame_boundary(buf: &[u8]) -> Option<(usize, usize)> {
     for (pat, sep_len) in candidates {
         if let Some(idx) = find_subslice(buf, pat) {
             best = Some(match best {
-                Some((b_idx, _)) if b_idx <= idx => best.unwrap(),
+                Some(existing @ (b_idx, _)) if b_idx <= idx => existing,
                 _ => (idx, sep_len),
             });
         }

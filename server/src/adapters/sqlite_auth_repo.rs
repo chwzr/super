@@ -51,6 +51,7 @@ impl AuthRepository for SqliteAuthRepo {
     async fn create_user(&self, email: &str, password_hash: &str) -> Result<User, AuthError> {
         let id = Uuid::new_v4();
         let now = Utc::now().to_rfc3339();
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO users (id, email, password_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -72,6 +73,7 @@ impl AuthRepository for SqliteAuthRepo {
     }
 
     async fn find_user_by_email(&self, email: &str) -> Result<Option<User>, AuthError> {
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare("SELECT id, email, password_hash, created_at FROM users WHERE email = ?1")
@@ -79,11 +81,23 @@ impl AuthRepository for SqliteAuthRepo {
         let mut rows = stmt
             .query_map(params![email], |row| {
                 Ok(User {
-                    id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                    id: Uuid::parse_str(&row.get::<_, String>(0)?).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
                     email: row.get(1)?,
                     password_hash: row.get(2)?,
                     created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(3)?)
-                        .unwrap()
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                3,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
                         .with_timezone(&Utc),
                 })
             })
@@ -95,6 +109,7 @@ impl AuthRepository for SqliteAuthRepo {
     }
 
     async fn find_user_by_id(&self, id: &Uuid) -> Result<Option<User>, AuthError> {
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare("SELECT id, email, password_hash, created_at FROM users WHERE id = ?1")
@@ -102,11 +117,23 @@ impl AuthRepository for SqliteAuthRepo {
         let mut rows = stmt
             .query_map(params![id.to_string()], |row| {
                 Ok(User {
-                    id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                    id: Uuid::parse_str(&row.get::<_, String>(0)?).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
                     email: row.get(1)?,
                     password_hash: row.get(2)?,
                     created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(3)?)
-                        .unwrap()
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                3,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
                         .with_timezone(&Utc),
                 })
             })
@@ -124,6 +151,7 @@ impl AuthRepository for SqliteAuthRepo {
         key_value: &str,
     ) -> Result<(), AuthError> {
         let now = Utc::now().to_rfc3339();
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO api_keys (user_id, openrouter_key_id, openrouter_key_value, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -134,6 +162,7 @@ impl AuthRepository for SqliteAuthRepo {
     }
 
     async fn get_active_api_key(&self, user_id: &Uuid) -> Result<Option<ApiKey>, AuthError> {
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare("SELECT openrouter_key_id, openrouter_key_value, created_at, revoked_at FROM api_keys WHERE user_id = ?1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1")
@@ -144,13 +173,28 @@ impl AuthRepository for SqliteAuthRepo {
                     openrouter_key_id: row.get(0)?,
                     openrouter_key_value: row.get(1)?,
                     _created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(2)?)
-                        .unwrap()
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
                         .with_timezone(&Utc),
-                    _revoked_at: row.get::<_, Option<String>>(3)?.map(|s| {
-                        chrono::DateTime::parse_from_rfc3339(&s)
-                            .unwrap()
-                            .with_timezone(&Utc)
-                    }),
+                    _revoked_at: row
+                        .get::<_, Option<String>>(3)?
+                        .map(|s| -> rusqlite::Result<chrono::DateTime<Utc>> {
+                            chrono::DateTime::parse_from_rfc3339(&s)
+                                .map_err(|e| {
+                                    rusqlite::Error::FromSqlConversionFailure(
+                                        3,
+                                        rusqlite::types::Type::Text,
+                                        Box::new(e),
+                                    )
+                                })
+                                .map(|dt| dt.with_timezone(&Utc))
+                        })
+                        .transpose()?,
                 })
             })
             .map_err(|e| AuthError::Internal(e.to_string()))?;
@@ -162,6 +206,7 @@ impl AuthRepository for SqliteAuthRepo {
 
     async fn revoke_api_key(&self, user_id: &Uuid, key_id: &str) -> Result<(), AuthError> {
         let now = Utc::now().to_rfc3339();
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE api_keys SET revoked_at = ?1 WHERE user_id = ?2 AND openrouter_key_id = ?3",
@@ -172,6 +217,7 @@ impl AuthRepository for SqliteAuthRepo {
     }
 
     async fn store_authorization_code(&self, code: &AuthorizationCode) -> Result<(), AuthError> {
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO auth_codes (code, user_id, code_challenge, expires_at) VALUES (?1, ?2, ?3, ?4)",
@@ -185,6 +231,7 @@ impl AuthRepository for SqliteAuthRepo {
         &self,
         code: &str,
     ) -> Result<Option<AuthorizationCode>, AuthError> {
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -195,10 +242,22 @@ impl AuthRepository for SqliteAuthRepo {
             .query_map(params![code], |row| {
                 Ok(AuthorizationCode {
                     code: row.get(0)?,
-                    user_id: Uuid::parse_str(&row.get::<_, String>(1)?).unwrap(),
+                    user_id: Uuid::parse_str(&row.get::<_, String>(1)?).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
                     code_challenge: row.get(2)?,
                     expires_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(3)?)
-                        .unwrap()
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                3,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
                         .with_timezone(&Utc),
                 })
             })
@@ -215,6 +274,7 @@ impl AuthRepository for SqliteAuthRepo {
     }
 
     async fn store_refresh_token(&self, token: &RefreshToken) -> Result<(), AuthError> {
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO refresh_tokens (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
@@ -232,6 +292,7 @@ impl AuthRepository for SqliteAuthRepo {
         &self,
         token_hash: &str,
     ) -> Result<Option<RefreshToken>, AuthError> {
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -242,9 +303,21 @@ impl AuthRepository for SqliteAuthRepo {
             .query_map(params![token_hash], |row| {
                 Ok(RefreshToken {
                     token_hash: row.get(0)?,
-                    user_id: Uuid::parse_str(&row.get::<_, String>(1)?).unwrap(),
+                    user_id: Uuid::parse_str(&row.get::<_, String>(1)?).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
                     expires_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(2)?)
-                        .unwrap()
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
                         .with_timezone(&Utc),
                 })
             })

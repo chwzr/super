@@ -3,6 +3,9 @@ name = "super-cli"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [lib]
 name = "super_cli"
 path = "src/lib.rs"

@@ -82,7 +82,9 @@ impl ConfigView {
         push("settings", cfg.settings.to_string());
 
         // Also show the config file path as a meta entry.
-        let config_path = crate::config::config_path().display().to_string();
+        let config_path = crate::config::config_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(unknown — HOME not set)".to_string());
         entries.push(ConfigEntry {
             key: "config_file".to_string(),
             value: config_path,

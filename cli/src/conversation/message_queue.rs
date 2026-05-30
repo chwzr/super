@@ -46,6 +46,7 @@ impl MessageQueue {
     }
 
     /// Push a command onto the queue.
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     pub fn enqueue(&self, cmd: QueuedCommand) {
         self.inner.lock().unwrap().queue.push(cmd);
     }
@@ -73,6 +74,7 @@ impl MessageQueue {
     /// - agent_filter None: return all
     /// - agent_filter Some(None): return only main-thread commands (agent_id == None)
     /// - agent_filter Some(Some(id)): return only commands for that agent
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     pub fn drain(
         &self,
         max_priority: QueuePriority,
@@ -99,6 +101,7 @@ impl MessageQueue {
     }
 
     /// Remove commands matching a predicate.
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     pub fn remove_by_filter(&self, pred: impl Fn(&QueuedCommand) -> bool) -> Vec<QueuedCommand> {
         let mut inner = self.inner.lock().unwrap();
         let mut removed = Vec::new();
@@ -114,11 +117,13 @@ impl MessageQueue {
     }
 
     /// Remove all commands.
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     pub fn clear(&self) {
         self.inner.lock().unwrap().queue.clear();
     }
 
     /// Check if any commands are pending at or above the given priority.
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     pub fn has_pending(&self, max_priority: QueuePriority) -> bool {
         let inner = self.inner.lock().unwrap();
         let threshold = max_priority as u8;
@@ -129,6 +134,7 @@ impl MessageQueue {
     }
 
     /// Total number of commands in the queue.
+    #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().queue.len()
     }

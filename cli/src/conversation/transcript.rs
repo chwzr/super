@@ -76,7 +76,13 @@ pub fn transcript_path(session_id: &str) -> PathBuf {
 /// when it sees a User message.
 pub fn spawn_transcript_writer(bus: Arc<SessionBus>, session_id: String) {
     let path = transcript_path(&session_id);
-    if let Err(e) = fs::create_dir_all(path.parent().unwrap()) {
+    let Some(parent) = path.parent() else {
+        let msg = format!("transcript: path has no parent: {:?}", path);
+        tracing::warn!("{msg}");
+        bus.emit_system(crate::sdk::protocol::SystemSubtype::Error, msg);
+        return;
+    };
+    if let Err(e) = fs::create_dir_all(parent) {
         tracing::warn!("transcript: cannot create dir for {:?}: {e}", path);
         return;
     }
@@ -89,16 +95,16 @@ pub fn spawn_transcript_writer(bus: Arc<SessionBus>, session_id: String) {
                     if msg.parent_tool_use_id().is_some() {
                         continue;
                     }
-                    if writer.is_none() {
-                        match OpenOptions::new().create(true).append(true).open(&path) {
-                            Ok(f) => writer = Some(BufWriter::new(f)),
+                    let w = match writer.as_mut() {
+                        Some(w) => w,
+                        None => match OpenOptions::new().create(true).append(true).open(&path) {
+                            Ok(f) => writer.insert(BufWriter::new(f)),
                             Err(e) => {
                                 tracing::warn!("transcript: cannot open {:?}: {e}", path);
                                 continue;
                             }
-                        }
-                    }
-                    let w = writer.as_mut().unwrap();
+                        },
+                    };
 
                     // If user message, also write a last-prompt metadata entry.
                     if let BusMessage::User {

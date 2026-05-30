@@ -147,6 +147,7 @@ impl Tool for CronCreateTool {
             fields,
         };
 
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is irrecoverable
         let mut jobs = self.jobs.lock().unwrap();
         jobs.insert(id.clone(), runtime_job);
         drop(jobs);

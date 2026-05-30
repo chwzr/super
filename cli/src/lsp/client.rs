@@ -52,17 +52,26 @@ impl ChildIoThreads {
         // Reader
         match self.reader.join() {
             Ok(r) => r?,
-            Err(err) => std::panic::panic_any(err),
+            Err(err) => {
+                tracing::error!("LSP reader thread panicked: {err:?}");
+                return Err(io::Error::other("LSP reader thread panicked"));
+            }
         }
         // Dropper
         match self.dropper.join() {
             Ok(_) => (),
-            Err(err) => std::panic::panic_any(err),
+            Err(err) => {
+                tracing::error!("LSP dropper thread panicked: {err:?}");
+                return Err(io::Error::other("LSP dropper thread panicked"));
+            }
         }
         // Writer
         match self.writer.join() {
             Ok(r) => r,
-            Err(err) => std::panic::panic_any(err),
+            Err(err) => {
+                tracing::error!("LSP writer thread panicked: {err:?}");
+                Err(io::Error::other("LSP writer thread panicked"))
+            }
         }
     }
 }
@@ -72,7 +81,7 @@ impl ChildIoThreads {
 fn child_transport(
     child_stdout: ChildStdout,
     child_stdin: ChildStdin,
-) -> (Connection, ChildIoThreads) {
+) -> io::Result<(Connection, ChildIoThreads)> {
     let (drop_sender, drop_receiver) = bounded::<Message>(0);
     let (writer_sender, writer_receiver) = bounded::<Message>(0);
 
@@ -85,15 +94,13 @@ fn child_transport(
                 let _ = drop_sender.send(it);
                 result
             })
-        })
-        .unwrap();
+        })?;
 
     let dropper = thread::Builder::new()
         .name("LspMessageDropper".to_owned())
         .spawn(move || {
             drop_receiver.into_iter().for_each(drop);
-        })
-        .unwrap();
+        })?;
 
     let (reader_sender, reader_receiver) = bounded::<Message>(0);
 
@@ -122,8 +129,7 @@ fn child_transport(
                 }
             }
             Ok(())
-        })
-        .unwrap();
+        })?;
 
     let io_threads = ChildIoThreads {
         reader,
@@ -134,7 +140,7 @@ fn child_transport(
         sender: writer_sender,
         receiver: reader_receiver,
     };
-    (connection, io_threads)
+    Ok((connection, io_threads))
 }
 
 impl LspClient {
@@ -231,7 +237,10 @@ impl LspClient {
             }
         });
 
-        let (connection, io_threads) = child_transport(stdout, stdin);
+        let (connection, io_threads) = child_transport(stdout, stdin).map_err(|e| LspError {
+            message: format!("Spawn LSP I/O threads: {e}"),
+            code: None,
+        })?;
 
         self.connection = Some(connection);
         self.io_threads = Some(io_threads);

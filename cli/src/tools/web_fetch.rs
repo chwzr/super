@@ -100,10 +100,28 @@ impl Tool for WebFetchTool {
 
         // Fetch with timing
         let start = std::time::Instant::now();
-        let client = reqwest::Client::builder()
+        let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .unwrap();
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let duration_ms = start.elapsed().as_millis() as f64;
+                return ToolResult {
+                    content: json!({
+                        "url": url,
+                        "bytes": 0,
+                        "code": 0,
+                        "codeText": "ClientInitFailed",
+                        "result": format!("HTTP client init failed: {e}"),
+                        "durationMs": duration_ms
+                    })
+                    .to_string(),
+                    is_error: true,
+                    ..Default::default()
+                };
+            }
+        };
         match client.get(&url).send().await {
             Ok(resp) => {
                 let status = resp.status();
