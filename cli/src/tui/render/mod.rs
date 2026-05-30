@@ -178,22 +178,49 @@ pub fn item_to_lines(
             name,
             input,
             result,
+            message_spec,
+            tag_spec,
+            result_spec,
+            rejected_spec,
+            error_spec,
             ..
         } => {
-            use crate::tui::colors::{CC_GREEN, CC_ORANGE};
-            let is_error = result.as_ref().map(|r| r.is_error).unwrap_or(false);
-            let prefix_color = if is_error { CC_ORANGE } else { CC_GREEN };
-            let display = tool_display_name(name, input);
-            let summary = summarize_tool_call(name, input);
+            // Spec-driven path: any terminal slot present (and not Nothing).
+            let has_terminal = !matches!(result_spec, Some(shared::RenderSpec::Nothing))
+                && (result_spec.is_some() || rejected_spec.is_some() || error_spec.is_some());
+            if has_terminal {
+                lines.push(Line::from(""));
+                if let Some(spec) = message_spec {
+                    lines.extend(render_spec(spec, detailed));
+                }
+                if let Some(spec) = tag_spec {
+                    lines.extend(render_spec(spec, detailed));
+                }
+                if let Some(spec) = result_spec {
+                    lines.extend(render_spec(spec, detailed));
+                } else if let Some(spec) = rejected_spec {
+                    lines.extend(render_spec(spec, detailed));
+                } else if let Some(spec) = error_spec {
+                    lines.extend(render_spec(spec, detailed));
+                }
+            } else {
+                // Legacy raw-field rendering (used by tools that haven't
+                // migrated to specs yet: Read, Grep, Glob).
+                use crate::tui::colors::{CC_GREEN, CC_ORANGE};
+                let is_error = result.as_ref().map(|r| r.is_error).unwrap_or(false);
+                let prefix_color = if is_error { CC_ORANGE } else { CC_GREEN };
+                let display = tool_display_name(name, input);
+                let summary = summarize_tool_call(name, input);
 
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("⏺ ", Style::default().fg(prefix_color)),
-                Span::styled(display, Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(summary, dim),
-            ]));
-            if let Some(r) = result {
-                render_tool_result_for(name, input, &mut lines, r, &dim);
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("⏺ ", Style::default().fg(prefix_color)),
+                    Span::styled(display, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(summary, dim),
+                ]));
+                if let Some(r) = result {
+                    render_tool_result_for(name, input, &mut lines, r, &dim);
+                }
             }
         }
         TranscriptItem::System { subtype, message } => {
@@ -265,8 +292,8 @@ pub fn item_to_lines(
                 lines.push(Line::from(spans));
             }
         }
-        TranscriptItem::Render { .. } => {
-            // T11 wires the real rendering; stub leaves lines untouched.
+        TranscriptItem::Render { spec } => {
+            lines.extend(render_spec(spec, detailed));
         }
     }
     lines
@@ -1289,6 +1316,74 @@ mod tests {
             "expected >=2 'Read(' occurrences, got {occurrences} in: {body:?}"
         );
     }
+
+    #[test]
+    fn item_to_lines_tool_call_uses_result_spec_when_present() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "echo hi"}),
+            result: Some(ToolResultRender {
+                content: "hi".into(),
+                is_error: false,
+            }),
+            elapsed_ms: 0,
+            message_spec: Some(shared::RenderSpec::Header {
+                verb: "Bash".into(),
+                target: Some("echo hi".into()),
+                tag: None,
+            }),
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: Some(shared::RenderSpec::Text {
+                body: "from spec".into(),
+                style: shared::TextStyle::Plain,
+            }),
+            rejected_spec: None,
+            error_spec: None,
+        };
+        let body = rendered_text(&item_to_lines(&item, 0, false));
+        assert!(body.contains("from spec"), "spec rendered: {body:?}");
+        // Legacy renderer would have produced "  ⎿  hi" via render_bash_result;
+        // since slots win, that should NOT appear.
+        assert!(!body.contains("  ⎿  hi"), "legacy must not run: {body:?}");
+    }
+
+    #[test]
+    fn item_to_lines_tool_call_falls_back_to_legacy_without_slots() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "echo hi"}),
+            result: Some(ToolResultRender {
+                content: "hi".into(),
+                is_error: false,
+            }),
+            elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
+        };
+        let body = rendered_text(&item_to_lines(&item, 0, false));
+        assert!(body.contains("  ⎿  hi"), "legacy must render: {body:?}");
+    }
+
+    #[test]
+    fn item_to_lines_render_orphan_dispatches_spec() {
+        let item = TranscriptItem::Render {
+            spec: shared::RenderSpec::Text {
+                body: "orphan content".into(),
+                style: shared::TextStyle::Plain,
+            },
+        };
+        let body = rendered_text(&item_to_lines(&item, 0, false));
+        assert!(body.contains("orphan content"), "orphan rendered: {body:?}");
+    }
 }
 
 #[cfg(test)]
@@ -1621,5 +1716,57 @@ mod render_spec_tests {
         };
         let body = line_text(&render_spec(&spec, false)[0]);
         assert!(body.contains("awaiting input"), "got: {body:?}");
+    }
+
+    #[test]
+    fn group_of_status_and_diff_renders_in_order() {
+        let spec = RenderSpec::Group {
+            children: vec![
+                RenderSpec::Status {
+                    state: shared::StatusState::Success,
+                    message: Some("Updated /tmp/a.txt".into()),
+                },
+                RenderSpec::Diff {
+                    file_path: "/tmp/a.txt".into(),
+                    hunks: vec![shared::DiffHunk {
+                        old_start: 1,
+                        new_start: 1,
+                        lines: vec![
+                            shared::DiffLine::Remove {
+                                line: "old\n".into(),
+                            },
+                            shared::DiffLine::Add {
+                                line: "new\n".into(),
+                            },
+                        ],
+                    }],
+                },
+            ],
+        };
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains('\u{2713}'), "status glyph: {body:?}");
+        assert!(
+            body.contains("Updated /tmp/a.txt"),
+            "status msg: {body:?}"
+        );
+        assert!(
+            body.contains("Added 1 line, removed 1 line"),
+            "diff summary: {body:?}"
+        );
+        assert!(body.contains("-old"), "removed hunk: {body:?}");
+        assert!(body.contains("+new"), "added hunk: {body:?}");
+        // Status comes before the diff summary in rendered order.
+        let status_pos = body.find("Updated").unwrap();
+        let diff_pos = body.find("Added").unwrap();
+        assert!(status_pos < diff_pos, "order: {body:?}");
     }
 }
