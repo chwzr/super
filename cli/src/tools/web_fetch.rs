@@ -2,8 +2,11 @@ use crate::tools::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
     ToolResultContent,
 };
+use crate::tools::web_fetch_preapproved;
 use async_trait::async_trait;
 use serde_json::json;
+
+const MAX_MARKDOWN_LENGTH: usize = 100_000;
 
 pub struct WebFetchTool;
 
@@ -53,7 +56,7 @@ impl Tool for WebFetchTool {
     async fn call(
         &self,
         input: serde_json::Value,
-        _context: &ToolCallContext,
+        context: &ToolCallContext,
         _on_progress: Option<ProgressSink>,
     ) -> ToolResult {
         let url = input["url"].as_str().unwrap_or("");
@@ -127,26 +130,90 @@ impl Tool for WebFetchTool {
                 let status = resp.status();
                 match resp.text().await {
                     Ok(body) => {
-                        // Simple HTML-to-text: strip tags
-                        let text = strip_html(&body);
-                        let _truncated = if text.len() > 100000 {
-                            format!("{}...\n[content truncated]", &text[..100000])
-                        } else {
-                            text
-                        };
                         let byte_count = body.len();
                         let duration_ms = start.elapsed().as_millis() as f64;
-                        ToolResult {
-                            content: json!({
-                                "url": url,
-                                "bytes": byte_count,
-                                "code": status.as_u16(),
-                                "codeText": status.canonical_reason().unwrap_or("OK"),
-                                "result": format!("Content fetched ({} bytes). Prompt '{}' will be processed in a follow-up.", byte_count, prompt),
-                                "durationMs": duration_ms
-                            }).to_string(),
-                            is_error: false,
-                            ..Default::default()
+
+                        // Convert HTML to markdown
+                        let markdown = html2md::parse_html(&body);
+
+                        // Fast path: preapproved URL with content under 100KB
+                        if web_fetch_preapproved::is_preapproved_url(&url)
+                            && markdown.len() < MAX_MARKDOWN_LENGTH
+                        {
+                            return ToolResult {
+                                content: json!({
+                                    "url": url,
+                                    "bytes": byte_count,
+                                    "code": status.as_u16(),
+                                    "codeText": status.canonical_reason().unwrap_or("OK"),
+                                    "result": markdown,
+                                    "durationMs": duration_ms
+                                })
+                                .to_string(),
+                                is_error: false,
+                                ..Default::default()
+                            };
+                        }
+
+                        // Resolve the small model for AI processing
+                        let model = crate::providers::resolve_slug(&context.provider, "haiku");
+
+                        // Get API key from context — error if unavailable
+                        let api_key = match &context.api_key {
+                            Some(key) => key.clone(),
+                            None => {
+                                return ToolResult {
+                                    content: json!({
+                                        "url": url,
+                                        "bytes": byte_count,
+                                        "code": status.as_u16(),
+                                        "codeText": status.canonical_reason().unwrap_or("Error"),
+                                        "result": "API key not available for WebFetch AI processing",
+                                        "durationMs": duration_ms
+                                    })
+                                    .to_string(),
+                                    is_error: true,
+                                    ..Default::default()
+                                };
+                            }
+                        };
+
+                        // AI processing via small model
+                        match apply_prompt_to_content(
+                            prompt,
+                            &markdown,
+                            &api_key,
+                            &context.api_messages_base_url,
+                            model,
+                        )
+                        .await
+                        {
+                            Ok(result) => ToolResult {
+                                content: json!({
+                                    "url": url,
+                                    "bytes": byte_count,
+                                    "code": status.as_u16(),
+                                    "codeText": status.canonical_reason().unwrap_or("OK"),
+                                    "result": result,
+                                    "durationMs": duration_ms
+                                })
+                                .to_string(),
+                                is_error: false,
+                                ..Default::default()
+                            },
+                            Err(e) => ToolResult {
+                                content: json!({
+                                    "url": url,
+                                    "bytes": byte_count,
+                                    "code": status.as_u16(),
+                                    "codeText": status.canonical_reason().unwrap_or("Error"),
+                                    "result": format!("AI processing failed: {e}"),
+                                    "durationMs": duration_ms
+                                })
+                                .to_string(),
+                                is_error: true,
+                                ..Default::default()
+                            },
                         }
                     }
                     Err(e) => {
@@ -157,7 +224,7 @@ impl Tool for WebFetchTool {
                                 "bytes": 0,
                                 "code": status.as_u16(),
                                 "codeText": status.canonical_reason().unwrap_or("Error"),
-                                "result": format!("Failed to read response: {}", e),
+                                "result": format!("Failed to read response: {e}"),
                                 "durationMs": duration_ms
                             })
                             .to_string(),
@@ -232,4 +299,73 @@ fn strip_html(html: &str) -> String {
     }
     // Collapse whitespace
     result.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+async fn apply_prompt_to_content(
+    prompt: &str,
+    content: &str,
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+) -> Result<String, String> {
+    let truncated = if content.len() > MAX_MARKDOWN_LENGTH {
+        format!(
+            "{}\n\n[Content truncated due to length...]",
+            &content[..MAX_MARKDOWN_LENGTH]
+        )
+    } else {
+        content.to_string()
+    };
+
+    let user_message = format!(
+        "Web page content:\n---\n{}\n---\n\n{}\n\nProvide a concise response based on the content above. Include relevant details, code examples, and documentation excerpts as needed. Enforce a strict 125-character maximum for quotes from any source document. Use quotation marks for exact language from articles; any language outside of the quotation should never be word-for-word the same.",
+        truncated, prompt
+    );
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": user_message
+            }
+        ],
+        "max_tokens": 4096,
+        "stream": false
+    });
+
+    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Secondary model request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Secondary model API error ({}): {}", status, text));
+    }
+
+    let resp_body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+    let text = resp_body["content"]
+        .as_array()
+        .and_then(|blocks| blocks.first())
+        .and_then(|block| block["text"].as_str())
+        .unwrap_or("No response from model");
+
+    Ok(text.to_string())
 }
