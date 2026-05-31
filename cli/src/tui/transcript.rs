@@ -1,6 +1,7 @@
 use crate::sdk::protocol::{
     BlockDelta, BusMessage, ContentBlockFinal, ContentBlockStream, StreamEvent, SystemSubtype,
 };
+use shared;
 
 /// One renderable item in the transcript.
 #[derive(Debug, Clone)]
@@ -21,9 +22,19 @@ pub enum TranscriptItem {
     ToolCall {
         tool_use_id: String,
         name: String,
-        input: serde_json::Value,
-        result: Option<ToolResultRender>,
+        input: serde_json::Value, // kept: used by legacy fallback for Read/Grep/Glob
+        result: Option<ToolResultRender>, // kept: used by legacy fallback for Read/Grep/Glob
         elapsed_ms: u64,
+        // Spec slots populated by lifecycle RenderEvent routing in `fold`.
+        // Each slot holds the latest spec for that hook. `Nothing` is a
+        // distinct, valid value; `None` means "the tool never emitted".
+        message_spec: Option<Box<shared::RenderSpec>>,
+        tag_spec: Option<Box<shared::RenderSpec>>,
+        progress_specs: Vec<Box<shared::RenderSpec>>,
+        queued_spec: Option<Box<shared::RenderSpec>>,
+        result_spec: Option<Box<shared::RenderSpec>>,
+        rejected_spec: Option<Box<shared::RenderSpec>>,
+        error_spec: Option<Box<shared::RenderSpec>>,
     },
     System {
         subtype: SystemSubtype,
@@ -36,6 +47,12 @@ pub enum TranscriptItem {
     /// cli/docs/tool-call-render-spec.md "Render mode 1".
     ToolBatch {
         calls: Vec<BatchCall>,
+    },
+    /// Orphan render event with no matching in-flight `ToolCall`. Created
+    /// from `BusMessage::RenderEvent`s whose `tool_use_id` is unknown
+    /// (server-emitted system specs, hook output, etc.).
+    Render {
+        spec: Box<shared::RenderSpec>,
     },
 }
 
@@ -151,6 +168,13 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
                             input: input.clone(),
                             result: None,
                             elapsed_ms: 0,
+                            message_spec: None,
+                            tag_spec: None,
+                            progress_specs: Vec::new(),
+                            queued_spec: None,
+                            result_spec: None,
+                            rejected_spec: None,
+                            error_spec: None,
                         });
                         block_to_idx.insert(*index, pos);
                         tool_use_idx.insert(id.clone(), pos);
@@ -250,9 +274,41 @@ pub fn fold(events: &[BusMessage], filter: Option<&str>) -> Vec<TranscriptItem> 
             BusMessage::Result { .. } => {
                 // Renderers may show usage in the header; no transcript item.
             }
-            BusMessage::RenderEvent { .. } => {
-                // RenderSpec events are consumed by the TUI render dispatcher;
-                // no transcript item needed.
+            BusMessage::RenderEvent {
+                tool_use_id,
+                slot,
+                spec,
+                ..
+            } => {
+                if let Some(&pos) = tool_use_idx.get(tool_use_id) {
+                    if let TranscriptItem::ToolCall {
+                        message_spec,
+                        tag_spec,
+                        progress_specs,
+                        queued_spec,
+                        result_spec,
+                        rejected_spec,
+                        error_spec,
+                        ..
+                    } = &mut out[pos]
+                    {
+                        use shared::RenderSlot;
+                        match slot {
+                            RenderSlot::Message => *message_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Tag => *tag_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Progress => progress_specs.push(Box::new(spec.clone())),
+                            RenderSlot::Queued => *queued_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Result => *result_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Rejected => *rejected_spec = Some(Box::new(spec.clone())),
+                            RenderSlot::Error => *error_spec = Some(Box::new(spec.clone())),
+                        }
+                    }
+                } else {
+                    // Orphan — no matching in-flight tool call.
+                    out.push(TranscriptItem::Render {
+                        spec: Box::new(spec.clone()),
+                    });
+                }
             }
             BusMessage::InteractionRequested { .. }
             | BusMessage::InteractionResponse { .. }
@@ -396,6 +452,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         }
     }
 
@@ -877,6 +940,98 @@ mod tests {
                 assert!(*complete);
             }
             other => panic!("wrong sub[1]: {other:?}"),
+        }
+    }
+
+    fn tool_use_event(id: &str) -> BusMessage {
+        BusMessage::StreamEvent {
+            event: StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStream::ToolUse {
+                    id: id.into(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                },
+            },
+            parent_tool_use_id: None,
+            uuid: uuid::Uuid::new_v4(),
+            session_id: "s".into(),
+        }
+    }
+
+    fn render_event(id: &str, slot: shared::RenderSlot) -> BusMessage {
+        BusMessage::RenderEvent {
+            tool_use_id: id.into(),
+            slot,
+            spec: shared::RenderSpec::Text {
+                body: format!("{:?}", slot),
+                style: shared::TextStyle::Plain,
+            },
+            parent_tool_use_id: None,
+            uuid: uuid::Uuid::new_v4(),
+            session_id: "s".into(),
+        }
+    }
+
+    #[test]
+    fn fold_routes_render_event_to_matching_tool_call_slot() {
+        let events = vec![
+            tool_use_event("tu1"),
+            render_event("tu1", shared::RenderSlot::Message),
+            render_event("tu1", shared::RenderSlot::Result),
+        ];
+        let items = fold(&events, None);
+        assert_eq!(items.len(), 1, "single ToolCall expected: {items:#?}");
+        match &items[0] {
+            TranscriptItem::ToolCall {
+                message_spec,
+                result_spec,
+                ..
+            } => {
+                assert!(message_spec.is_some(), "message_spec populated");
+                assert!(result_spec.is_some(), "result_spec populated");
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fold_appends_progress_specs() {
+        let events = vec![
+            tool_use_event("tu1"),
+            render_event("tu1", shared::RenderSlot::Progress),
+            render_event("tu1", shared::RenderSlot::Progress),
+            render_event("tu1", shared::RenderSlot::Progress),
+        ];
+        let items = fold(&events, None);
+        match &items[0] {
+            TranscriptItem::ToolCall { progress_specs, .. } => {
+                assert_eq!(progress_specs.len(), 3);
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fold_creates_orphan_render_when_tool_use_id_unknown() {
+        let ev = BusMessage::RenderEvent {
+            tool_use_id: "tu_does_not_exist".into(),
+            slot: shared::RenderSlot::Message,
+            spec: shared::RenderSpec::Text {
+                body: "hello".into(),
+                style: shared::TextStyle::Plain,
+            },
+            parent_tool_use_id: None,
+            uuid: uuid::Uuid::new_v4(),
+            session_id: "s".into(),
+        };
+        let items = fold(&[ev], None);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            TranscriptItem::Render { spec } => {
+                assert!(matches!(&**spec, shared::RenderSpec::Text { .. }));
+            }
+            other => panic!("expected Render orphan, got {other:?}"),
         }
     }
 }

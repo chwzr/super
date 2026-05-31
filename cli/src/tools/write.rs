@@ -3,6 +3,7 @@ use crate::tools::contract::{
     ToolResultContent,
 };
 use async_trait::async_trait;
+use shared;
 
 #[derive(Default)]
 pub struct WriteTool;
@@ -142,19 +143,13 @@ impl Tool for WriteTool {
                 }
 
                 let mut meta = std::collections::HashMap::new();
-                meta.insert("bytes_written".to_string(), content.len().to_string());
-                meta.insert("overwritten".to_string(), existed_before.to_string());
+                meta.insert("file_path".to_string(), file_path.to_string());
+                meta.insert("content".to_string(), content.to_string());
                 ToolResult {
                     content: format!(
-                        "Successfully {} {} bytes to {}{}",
-                        if existed_before { "overwrote" } else { "wrote" },
+                        "Successfully wrote {} bytes to {}",
                         content.len(),
                         file_path,
-                        if existed_before {
-                            " (file was overwritten)"
-                        } else {
-                            ""
-                        }
                     ),
                     is_error: false,
                     metadata: Some(meta),
@@ -167,6 +162,45 @@ impl Tool for WriteTool {
                 ..Default::default()
             },
         }
+    }
+
+    fn render_tool_result_message(
+        &self,
+        output: &serde_json::Value,
+        _progress: &[crate::tools::contract::ProgressEvent],
+        _opts: &crate::tools::contract::RenderOpts,
+    ) -> Option<shared::RenderSpec> {
+        let path = output
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let content = output.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let total = content.lines().count();
+        let plural = if total == 1 { "line" } else { "lines" };
+
+        const MAX: usize = 10;
+        let lineno_width = total.to_string().len().max(2);
+        let numbered: String = content
+            .lines()
+            .take(MAX)
+            .enumerate()
+            .map(|(i, l)| format!(" {:>w$} {}", i + 1, l, w = lineno_width))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Some(shared::RenderSpec::Group {
+            children: vec![
+                shared::RenderSpec::Status {
+                    state: shared::StatusState::Success,
+                    message: Some(format!("Wrote {total} {plural} to {path}")),
+                },
+                shared::RenderSpec::Code {
+                    language: None,
+                    body: numbered,
+                    truncated: total > MAX,
+                },
+            ],
+        })
     }
 
     fn map_tool_result_to_block(

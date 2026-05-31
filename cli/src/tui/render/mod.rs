@@ -178,22 +178,49 @@ pub fn item_to_lines(
             name,
             input,
             result,
+            message_spec,
+            tag_spec,
+            result_spec,
+            rejected_spec,
+            error_spec,
             ..
         } => {
-            use crate::tui::colors::{CC_GREEN, CC_ORANGE};
-            let is_error = result.as_ref().map(|r| r.is_error).unwrap_or(false);
-            let prefix_color = if is_error { CC_ORANGE } else { CC_GREEN };
-            let display = tool_display_name(name, input);
-            let summary = summarize_tool_call(name, input);
+            // Spec-driven path: any terminal slot present (and not Nothing).
+            let has_terminal = !matches!(result_spec, Some(ref boxed) if matches!(&**boxed, shared::RenderSpec::Nothing))
+                && (result_spec.is_some() || rejected_spec.is_some() || error_spec.is_some());
+            if has_terminal {
+                lines.push(Line::from(""));
+                if let Some(spec) = message_spec {
+                    lines.extend(render_spec(spec, detailed));
+                }
+                if let Some(spec) = tag_spec {
+                    lines.extend(render_spec(spec, detailed));
+                }
+                if let Some(spec) = result_spec {
+                    lines.extend(render_spec(spec, detailed));
+                } else if let Some(spec) = rejected_spec {
+                    lines.extend(render_spec(spec, detailed));
+                } else if let Some(spec) = error_spec {
+                    lines.extend(render_spec(spec, detailed));
+                }
+            } else {
+                // Legacy raw-field rendering (used by tools that haven't
+                // migrated to specs yet: Read, Grep, Glob).
+                use crate::tui::colors::{CC_GREEN, CC_ORANGE};
+                let is_error = result.as_ref().map(|r| r.is_error).unwrap_or(false);
+                let prefix_color = if is_error { CC_ORANGE } else { CC_GREEN };
+                let display = tool_display_name(name, input);
+                let summary = summarize_tool_call(name, input);
 
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("⏺ ", Style::default().fg(prefix_color)),
-                Span::styled(display, Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(summary, dim),
-            ]));
-            if let Some(r) = result {
-                render_tool_result_for(name, input, &mut lines, r, &dim);
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("⏺ ", Style::default().fg(prefix_color)),
+                    Span::styled(display, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(summary, dim),
+                ]));
+                if let Some(r) = result {
+                    render_generic_result(&mut lines, r, &dim);
+                }
             }
         }
         TranscriptItem::System { subtype, message } => {
@@ -233,7 +260,7 @@ pub fn item_to_lines(
                         Span::styled(summary, dim),
                     ]));
                     if let Some(r) = &call.result {
-                        render_tool_result_for(&call.name, &call.input, &mut lines, r, &dim);
+                        render_generic_result(&mut lines, r, &dim);
                     }
                 }
                 lines.push(Line::from(""));
@@ -264,6 +291,9 @@ pub fn item_to_lines(
                 lines.push(Line::from(""));
                 lines.push(Line::from(spans));
             }
+        }
+        TranscriptItem::Render { spec } => {
+            lines.extend(render_spec(spec, detailed));
         }
     }
     lines
@@ -350,86 +380,6 @@ pub fn osc8_link(path: &str, label: &str) -> String {
     format!("\x1b]8;;file://{path}\x1b\\{label}\x1b]8;;\x1b\\")
 }
 
-fn render_tool_result_for(
-    tool_name: &str,
-    input: &serde_json::Value,
-    lines: &mut Vec<Line<'static>>,
-    r: &ToolResultRender,
-    dim: &Style,
-) {
-    match tool_name {
-        "Bash" => render_bash_result(lines, r, dim),
-        "Edit" => render_edit_result(lines, input, r, dim),
-        "Write" => render_write_result(lines, input, dim),
-        _ => render_generic_result(lines, r, dim),
-    }
-}
-
-fn render_edit_result(
-    lines: &mut Vec<Line<'static>>,
-    input: &serde_json::Value,
-    _r: &ToolResultRender,
-    dim: &Style,
-) {
-    let old = input
-        .get("old_string")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let new = input
-        .get("new_string")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let counts = diff::count_changes(old, new);
-
-    // Summary row: `  ⎿  Added N line[s], removed M line[s]`
-    let mut summary: Vec<Span<'static>> = vec![Span::styled("  ⎿  ", *dim)];
-    summary.extend(diff::summary_spans(counts));
-    lines.push(Line::from(summary));
-
-    // Hunk rows.
-    lines.extend(diff::render_hunks(old, new));
-}
-
-fn render_write_result(lines: &mut Vec<Line<'static>>, input: &serde_json::Value, dim: &Style) {
-    let path = input
-        .get("file_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-    let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let total_lines = content.lines().count();
-    let plural = if total_lines == 1 { "line" } else { "lines" };
-
-    let mut summary: Vec<Span<'static>> = vec![Span::styled("  ⎿  ", *dim)];
-    summary.push(Span::raw("Wrote "));
-    summary.push(Span::styled(
-        total_lines.to_string(),
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
-    summary.push(Span::raw(format!(" {plural} to {path}")));
-    lines.push(Line::from(summary));
-
-    const MAX: usize = 10;
-    let lineno_width = total_lines.to_string().len().max(2);
-    for (i, line) in content.lines().take(MAX).enumerate() {
-        let lineno = i + 1;
-        let body = format!(" {:>width$} {}", lineno, line, width = lineno_width);
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(body, *dim),
-        ]));
-    }
-    if total_lines > MAX {
-        let remaining = total_lines - MAX;
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(
-                format!("… +{remaining} lines (ctrl+o to expand)"),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-        ]));
-    }
-}
-
 /// Generic fallback: behaves like the prior renderer (cap at 20 lines).
 fn render_generic_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
     let max_lines = 20;
@@ -455,38 +405,6 @@ fn render_generic_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, d
     }
 }
 
-/// Bash-specific: 3-line truncation, `… +K lines (ctrl+o to expand)` suffix.
-/// Errors render in orange.
-fn render_bash_result(lines: &mut Vec<Line<'static>>, r: &ToolResultRender, dim: &Style) {
-    use crate::tui::colors::CC_ORANGE;
-    const MAX: usize = 3;
-    let body_color = if r.is_error {
-        Style::default().fg(CC_ORANGE)
-    } else {
-        Style::default()
-    };
-    let all: Vec<&str> = r.content.lines().collect();
-    let total = all.len();
-
-    for (i, line) in all.iter().take(MAX).enumerate() {
-        let prefix = if i == 0 { "  ⎿  " } else { "     " };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, *dim),
-            Span::styled(line.to_string(), body_color),
-        ]));
-    }
-    if total > MAX {
-        let remaining = total - MAX;
-        lines.push(Line::from(vec![
-            Span::styled("     ", *dim),
-            Span::styled(
-                format!("… +{remaining} lines (ctrl+o to expand)"),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-        ]));
-    }
-}
-
 /// Total visual rows a slice of lines occupies when wrapped at `width` columns.
 pub fn lines_height(lines: &[Line], width: u16) -> u16 {
     lines.iter().map(|l| visual_rows(l, width)).sum()
@@ -503,16 +421,272 @@ fn visual_rows(line: &Line, width: u16) -> u16 {
     char_count.div_ceil(width as usize) as u16
 }
 
-/// Stub dispatcher: turns a `RenderSpec` into TUI lines. Batch 1 only
-/// handles `Nothing`; every other variant produces a one-line dim
-/// placeholder. Batches 2-5 fill in real renderers per variant.
-pub fn render_spec(spec: &shared::RenderSpec) -> Vec<Line<'static>> {
+/// Map a portable `TextStyle` hint to a concrete ratatui `Style` using the
+/// CLI palette in `colors.rs`.
+fn text_style(style: shared::TextStyle) -> Style {
+    use shared::TextStyle;
+    match style {
+        TextStyle::Plain => Style::default().fg(Color::White),
+        TextStyle::Dim => Style::default().fg(Color::DarkGray),
+        TextStyle::Error => Style::default().fg(Color::Red),
+        TextStyle::Success => Style::default().fg(Color::Indexed(114)),
+        TextStyle::Warn => Style::default().fg(Color::Indexed(214)),
+        TextStyle::Strong => Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+/// True when `s` has a path separator or a single dotted extension (e.g.
+/// `foo.rs`, `notes.md`). Used to decide whether to OSC8-link a target.
+fn looks_like_path(s: &str) -> bool {
+    s.contains('/')
+        || s.contains('\\')
+        || s.rsplit('.')
+            .next()
+            .is_some_and(|ext| !ext.is_empty() && ext.len() <= 5 && s.len() > ext.len() + 1)
+}
+
+/// Format a `Tag` into the bracket form shown inline in tool headers.
+fn format_tag(tag: &shared::Tag) -> String {
+    use shared::Tag;
+    match tag {
+        Tag::Timeout { ms } => format!("[timeout {ms}ms]"),
+        Tag::Model { id } => format!("[{id}]"),
+        Tag::Truncated => "[truncated]".to_string(),
+        Tag::ResumeId { value } => format!("[resume:{value}]"),
+        Tag::Custom { value } => format!("[{value}]"),
+    }
+}
+
+/// Reconstruct synthetic `old` / `new` text from a `RenderSpec::Diff`'s hunks
+/// so we can reuse `diff::render_hunks` and `diff::count_changes`.
+fn reconstruct_old_new(hunks: &[shared::DiffHunk]) -> (String, String) {
+    let mut old = String::new();
+    let mut new = String::new();
+    for hunk in hunks {
+        for l in &hunk.lines {
+            match l {
+                shared::DiffLine::Context { line } => {
+                    old.push_str(line);
+                    if !line.ends_with('\n') {
+                        old.push('\n');
+                    }
+                    new.push_str(line);
+                    if !line.ends_with('\n') {
+                        new.push('\n');
+                    }
+                }
+                shared::DiffLine::Remove { line } => {
+                    old.push_str(line);
+                    if !line.ends_with('\n') {
+                        old.push('\n');
+                    }
+                }
+                shared::DiffLine::Add { line } => {
+                    new.push_str(line);
+                    if !line.ends_with('\n') {
+                        new.push('\n');
+                    }
+                }
+            }
+        }
+    }
+    (old, new)
+}
+
+/// Dispatcher: turns a `RenderSpec` into TUI lines.
+pub fn render_spec(spec: &shared::RenderSpec, detailed: bool) -> Vec<Line<'static>> {
     match spec {
         shared::RenderSpec::Nothing => Vec::new(),
-        other => vec![Line::from(Span::styled(
-            format!("[render_spec stub: {:?}]", std::mem::discriminant(other)),
-            dim_style(),
-        ))],
+        shared::RenderSpec::Text { body, style } => {
+            let s = text_style(*style);
+            body.lines()
+                .map(|l| Line::from(Span::styled(l.to_string(), s)))
+                .collect()
+        }
+        shared::RenderSpec::Header { verb, target, tag } => {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            spans.push(Span::styled("⏺ ", Style::default().fg(Color::Indexed(114))));
+            spans.push(Span::styled(
+                verb.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            if let Some(t) = target {
+                spans.push(Span::raw(" "));
+                let rendered = if looks_like_path(t) {
+                    osc8_link(t, t)
+                } else {
+                    t.clone()
+                };
+                spans.push(Span::styled(rendered, dim_style()));
+            }
+            if let Some(tg) = tag {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(format_tag(tg), dim_style()));
+            }
+            vec![Line::from(""), Line::from(spans)]
+        }
+        shared::RenderSpec::Code {
+            language: _,
+            body,
+            truncated,
+        } => {
+            let dim = dim_style();
+            let mut out: Vec<Line<'static>> = Vec::new();
+            for (i, l) in body.lines().enumerate() {
+                let prefix = if i == 0 { "  ⎿  " } else { "     " };
+                out.push(Line::from(vec![
+                    Span::styled(prefix, dim),
+                    Span::styled(l.to_string(), dim),
+                ]));
+            }
+            if *truncated {
+                out.push(Line::from(vec![
+                    Span::styled("     ", dim),
+                    Span::styled(
+                        "\u{2026} (ctrl+o to expand)".to_string(),
+                        Style::default().add_modifier(Modifier::DIM),
+                    ),
+                ]));
+            }
+            out
+        }
+        shared::RenderSpec::Diff {
+            file_path: _,
+            hunks,
+        } => {
+            let (old, new) = reconstruct_old_new(hunks);
+            let counts = diff::count_changes(&old, &new);
+            let dim = dim_style();
+            let mut out: Vec<Line<'static>> = Vec::new();
+            let mut summary: Vec<Span<'static>> = vec![Span::styled("  ⎿  ", dim)];
+            summary.extend(diff::summary_spans(counts));
+            out.push(Line::from(summary));
+            out.extend(diff::render_hunks(&old, &new));
+            out
+        }
+        shared::RenderSpec::PathList {
+            entries,
+            total: _,
+            truncated,
+        } => {
+            let dim = dim_style();
+            let mut out: Vec<Line<'static>> = Vec::new();
+            const MAX: usize = 20;
+            for (i, entry) in entries.iter().take(MAX).enumerate() {
+                let prefix = if i == 0 { "  ⎿  " } else { "     " };
+                let path_str = entry.path.display().to_string();
+                let head = match entry.line {
+                    Some(n) => format!("{path_str}:{n}"),
+                    None => path_str,
+                };
+                let mut spans: Vec<Span<'static>> =
+                    vec![Span::styled(prefix, dim), Span::styled(head, dim)];
+                if let Some(p) = &entry.preview {
+                    spans.push(Span::styled(format!("  {p}"), dim));
+                }
+                out.push(Line::from(spans));
+            }
+            if entries.len() > MAX || *truncated {
+                let remaining = entries.len().saturating_sub(MAX);
+                out.push(Line::from(vec![
+                    Span::styled("     ", dim),
+                    Span::styled(
+                        format!("\u{2026} +{remaining} paths (ctrl+o to expand)"),
+                        Style::default().add_modifier(Modifier::DIM),
+                    ),
+                ]));
+            }
+            out
+        }
+        shared::RenderSpec::KeyValues { rows } => {
+            let dim = dim_style();
+            rows.iter()
+                .map(|(k, v)| {
+                    Line::from(vec![
+                        Span::styled(format!("{k}: "), dim),
+                        Span::styled(v.clone(), Style::default().fg(Color::White)),
+                    ])
+                })
+                .collect()
+        }
+        shared::RenderSpec::Status { state, message } => {
+            use shared::StatusState;
+            let (glyph, color) = match state {
+                StatusState::Queued => ("…", Color::DarkGray),
+                StatusState::InProgress => ("›", Color::DarkGray),
+                StatusState::Success => ("✓", Color::Indexed(114)),
+                StatusState::Error => ("✗", Color::Red),
+                StatusState::Rejected => ("⚠", Color::Indexed(211)),
+            };
+            let mut spans: Vec<Span<'static>> = vec![Span::styled(
+                format!("{glyph} "),
+                Style::default().fg(color),
+            )];
+            if let Some(m) = message {
+                spans.push(Span::styled(m.clone(), Style::default().fg(color)));
+            }
+            vec![Line::from(spans)]
+        }
+        shared::RenderSpec::Group { children } => children
+            .iter()
+            .flat_map(|c| render_spec(c, detailed))
+            .collect(),
+        shared::RenderSpec::Row { children } => {
+            let child_renders: Vec<Vec<Line<'static>>> =
+                children.iter().map(|c| render_spec(c, detailed)).collect();
+            let all_single_line = child_renders.iter().all(|r| r.len() == 1);
+            if all_single_line && !child_renders.is_empty() {
+                let mut joined_spans: Vec<Span<'static>> = Vec::new();
+                for (i, child) in child_renders.iter().enumerate() {
+                    if i > 0 {
+                        joined_spans.push(Span::raw(" "));
+                    }
+                    joined_spans.extend(child[0].spans.iter().cloned());
+                }
+                vec![Line::from(joined_spans)]
+            } else {
+                let dim = dim_style();
+                child_renders
+                    .into_iter()
+                    .flat_map(|child| {
+                        child.into_iter().map(|line| {
+                            let mut spans = vec![Span::styled("│ ", dim)];
+                            spans.extend(line.spans);
+                            Line::from(spans)
+                        })
+                    })
+                    .collect()
+            }
+        }
+        shared::RenderSpec::Collapsible {
+            summary,
+            expanded_by_default,
+            children,
+        } => {
+            let dim = dim_style();
+            let mut out: Vec<Line<'static>> = Vec::new();
+            let is_expanded = *expanded_by_default || detailed;
+            if is_expanded {
+                out.push(Line::from(Span::styled(summary.clone(), dim)));
+                for child in children {
+                    out.extend(render_spec(child, detailed));
+                }
+            } else {
+                out.push(Line::from(vec![
+                    Span::styled(summary.clone(), dim),
+                    Span::styled(" (ctrl+o to expand)".to_string(), dim),
+                ]));
+            }
+            out
+        }
+        shared::RenderSpec::Interactive { .. } => {
+            vec![Line::from(Span::styled(
+                "(awaiting input)".to_string(),
+                dim_style().add_modifier(Modifier::ITALIC),
+            ))]
+        }
     }
 }
 
@@ -520,6 +694,8 @@ pub fn render_spec(spec: &shared::RenderSpec) -> Vec<Line<'static>> {
 mod tests {
     use super::*;
     use crate::sdk::protocol::SystemSubtype;
+    use crate::tools::contract::Tool;
+    use std::sync::Arc;
 
     fn line_to_string(line: &Line) -> String {
         line.spans
@@ -697,63 +873,6 @@ mod tests {
         assert_eq!(lines_height(&lines, 80), 2);
     }
 
-    use crate::tui::colors::{CC_GREEN, CC_ORANGE};
-
-    fn first_span_color(line: &Line) -> Option<ratatui::style::Color> {
-        line.spans.first().and_then(|s| s.style.fg)
-    }
-
-    #[test]
-    fn tool_call_prefix_is_green_on_success() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Bash".into(),
-            input: serde_json::json!({"command": "echo hi"}),
-            result: Some(ToolResultRender {
-                content: "hi".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-        };
-        let lines = item_to_lines(&item, 0, false);
-        // Find the line whose first span is the `⏺ ` prefix.
-        let prefix = lines
-            .iter()
-            .find(|l| {
-                l.spans
-                    .first()
-                    .map(|s| s.content.contains('⏺'))
-                    .unwrap_or(false)
-            })
-            .expect("⏺ prefix line");
-        assert_eq!(first_span_color(prefix), Some(CC_GREEN));
-    }
-
-    #[test]
-    fn tool_call_prefix_is_orange_on_error() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Bash".into(),
-            input: serde_json::json!({"command": "false"}),
-            result: Some(ToolResultRender {
-                content: "Error: Exit code 1".into(),
-                is_error: true,
-            }),
-            elapsed_ms: 0,
-        };
-        let lines = item_to_lines(&item, 0, false);
-        let prefix = lines
-            .iter()
-            .find(|l| {
-                l.spans
-                    .first()
-                    .map(|s| s.content.contains('⏺'))
-                    .unwrap_or(false)
-            })
-            .expect("⏺ prefix line");
-        assert_eq!(first_span_color(prefix), Some(CC_ORANGE));
-    }
-
     #[test]
     fn osc8_link_wraps_label_with_escape_sequence() {
         let s = osc8_link("/abs/path.txt", "path.txt");
@@ -833,143 +952,6 @@ mod tests {
     }
 
     #[test]
-    fn bash_result_renders_at_most_3_output_lines_then_ellipsis() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Bash".into(),
-            input: serde_json::json!({"command": "seq 1 8"}),
-            result: Some(ToolResultRender {
-                content: "1\n2\n3\n4\n5\n6\n7\n8".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-        };
-        let lines = item_to_lines(&item, 0, false);
-        let body = rendered_text(&lines);
-        assert!(
-            body.contains("  ⎿  1"),
-            "first output line under corner: {body:?}"
-        );
-        assert!(body.contains("     2"), "second line aligned: {body:?}");
-        assert!(body.contains("     3"), "third line aligned: {body:?}");
-        assert!(
-            body.contains("… +5 lines (ctrl+o to expand)"),
-            "ellipsis present: {body:?}"
-        );
-        assert!(
-            !body.contains("\n4\n") && !body.contains("     4"),
-            "line 4 must be hidden: {body:?}"
-        );
-    }
-
-    #[test]
-    fn bash_result_with_3_or_fewer_lines_shows_no_ellipsis() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Bash".into(),
-            input: serde_json::json!({"command": "seq 1 3"}),
-            result: Some(ToolResultRender {
-                content: "1\n2\n3".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-        };
-        let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("  ⎿  1"));
-        assert!(body.contains("     2"));
-        assert!(body.contains("     3"));
-        assert!(
-            !body.contains("ctrl+o"),
-            "no expand hint when nothing truncated: {body:?}"
-        );
-    }
-
-    #[test]
-    fn edit_result_summary_uses_added_removed_phrasing() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Edit".into(),
-            input: serde_json::json!({
-                "file_path": "/tmp/a.txt",
-                "old_string": "hello\n",
-                "new_string": "hi\n",
-            }),
-            result: Some(ToolResultRender {
-                content: "Successfully replaced 1 occurrence(s) in /tmp/a.txt".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-        };
-        let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("Update"), "display name: {body:?}");
-        assert!(
-            body.contains("Added 1 line, removed 1 line"),
-            "summary: {body:?}"
-        );
-        assert!(body.contains(" 1 -hello"), "removed hunk: {body:?}");
-        assert!(body.contains(" 1 +hi"), "added hunk: {body:?}");
-        assert!(
-            !body.contains("Successfully replaced"),
-            "raw result text should not leak: {body:?}"
-        );
-    }
-
-    #[test]
-    fn write_result_renders_wrote_n_lines_with_numbered_content() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Write".into(),
-            input: serde_json::json!({
-                "file_path": "/tmp/notes.txt",
-                "content": "alpha\nbeta\ngamma\n",
-            }),
-            result: Some(ToolResultRender {
-                content: "Successfully wrote 18 bytes to /tmp/notes.txt".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-        };
-        let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("Write"), "display name: {body:?}");
-        assert!(
-            body.contains("Wrote 3 lines to /tmp/notes.txt"),
-            "summary: {body:?}"
-        );
-        assert!(body.contains(" 1 alpha"), "numbered line 1: {body:?}");
-        assert!(body.contains(" 2 beta"), "numbered line 2: {body:?}");
-        assert!(body.contains(" 3 gamma"), "numbered line 3: {body:?}");
-        assert!(
-            !body.contains("Successfully wrote"),
-            "raw result text should not leak: {body:?}"
-        );
-    }
-
-    #[test]
-    fn create_result_renders_only_additions() {
-        let item = TranscriptItem::ToolCall {
-            tool_use_id: "tu1".into(),
-            name: "Edit".into(),
-            input: serde_json::json!({
-                "file_path": "/tmp/new.txt",
-                "old_string": "",
-                "new_string": "first line\nsecond line\n",
-            }),
-            result: Some(ToolResultRender {
-                content: "ok".into(),
-                is_error: false,
-            }),
-            elapsed_ms: 0,
-        };
-        let body = rendered_text(&item_to_lines(&item, 0, false));
-        assert!(body.contains("Create"), "display name: {body:?}");
-        assert!(body.contains("Added 2 lines"), "summary: {body:?}");
-        assert!(
-            !body.contains("removed"),
-            "no removed phrase when no removals: {body:?}"
-        );
-    }
-
-    #[test]
     fn toolbatch_detailed_expands_into_per_call_blocks() {
         let item = TranscriptItem::ToolBatch {
             calls: vec![batch_call("Read", "1"), batch_call("Read", "2")],
@@ -987,6 +969,189 @@ mod tests {
             "expected >=2 'Read(' occurrences, got {occurrences} in: {body:?}"
         );
     }
+
+    #[test]
+    fn item_to_lines_tool_call_uses_result_spec_when_present() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "echo hi"}),
+            result: Some(ToolResultRender {
+                content: "hi".into(),
+                is_error: false,
+            }),
+            elapsed_ms: 0,
+            message_spec: Some(Box::new(shared::RenderSpec::Header {
+                verb: "Bash".into(),
+                target: Some("echo hi".into()),
+                tag: None,
+            })),
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: Some(Box::new(shared::RenderSpec::Text {
+                body: "from spec".into(),
+                style: shared::TextStyle::Plain,
+            })),
+            rejected_spec: None,
+            error_spec: None,
+        };
+        let body = rendered_text(&item_to_lines(&item, 0, false));
+        assert!(body.contains("from spec"), "spec rendered: {body:?}");
+        // Legacy renderer would have produced "  ⎿  hi" via render_bash_result;
+        // since slots win, that should NOT appear.
+        assert!(!body.contains("  ⎿  hi"), "legacy must not run: {body:?}");
+    }
+
+    #[test]
+    fn item_to_lines_tool_call_falls_back_to_legacy_without_slots() {
+        let item = TranscriptItem::ToolCall {
+            tool_use_id: "tu1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "echo hi"}),
+            result: Some(ToolResultRender {
+                content: "hi".into(),
+                is_error: false,
+            }),
+            elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
+        };
+        let body = rendered_text(&item_to_lines(&item, 0, false));
+        assert!(body.contains("  ⎿  hi"), "legacy must render: {body:?}");
+    }
+
+    #[test]
+    fn item_to_lines_render_orphan_dispatches_spec() {
+        let item = TranscriptItem::Render {
+            spec: Box::new(shared::RenderSpec::Text {
+                body: "orphan content".into(),
+                style: shared::TextStyle::Plain,
+            }),
+        };
+        let body = rendered_text(&item_to_lines(&item, 0, false));
+        assert!(body.contains("orphan content"), "orphan rendered: {body:?}");
+    }
+
+    #[test]
+    fn edit_spec_renders_status_and_diff() {
+        let tool = crate::tools::edit::EditTool;
+        let output = serde_json::json!({
+            "content": "ok",
+            "is_error": false,
+            "file_path": "/tmp/a.txt",
+            "hunks": [{
+                "old_start": 1,
+                "new_start": 1,
+                "lines": [
+                    {"kind": "remove", "line": "hello\n"},
+                    {"kind": "add", "line": "hi\n"}
+                ]
+            }]
+        });
+        let spec = tool
+            .render_tool_result_message(&output, &[], &Default::default())
+            .unwrap();
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Status comes first.
+        assert!(body.contains("✓"), "status glyph: {body:?}");
+        assert!(body.contains("Updated /tmp/a.txt"), "status msg: {body:?}");
+        // Diff summary follows.
+        assert!(
+            body.contains("Added 1 line, removed 1 line"),
+            "diff summary: {body:?}"
+        );
+        assert!(body.contains("-hello"), "removed hunk: {body:?}");
+        assert!(body.contains("+hi"), "added hunk: {body:?}");
+    }
+
+    #[test]
+    fn write_spec_renders_summary_and_numbered_content() {
+        let tool = crate::tools::write::WriteTool;
+        let output = serde_json::json!({
+            "content": "alpha\nbeta\ngamma\n",
+            "is_error": false,
+            "file_path": "/tmp/notes.txt",
+        });
+        let spec = tool
+            .render_tool_result_message(&output, &[], &Default::default())
+            .unwrap();
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("Wrote 3 lines to /tmp/notes.txt"),
+            "summary: {body:?}"
+        );
+        assert!(body.contains(" 1 alpha"), "line 1: {body:?}");
+        assert!(body.contains(" 2 beta"), "line 2: {body:?}");
+        assert!(body.contains(" 3 gamma"), "line 3: {body:?}");
+    }
+
+    #[test]
+    fn bash_success_spec_renders_three_lines_with_truncation() {
+        let tool = crate::tools::bash::BashTool {
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            store: Arc::new(crate::state::store::Store::new()),
+        };
+        let output = serde_json::json!({"content": "1\n2\n3\n4\n5\n6\n7\n8", "is_error": false});
+        let spec = tool
+            .render_tool_result_message(&output, &[], &Default::default())
+            .unwrap();
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("1"));
+        assert!(body.contains("2"));
+        assert!(body.contains("3"));
+        assert!(body.contains("(ctrl+o to expand)"));
+        assert!(!body.contains("4"), "line 4 must not appear: {body:?}");
+    }
+
+    #[test]
+    fn bash_error_spec_renders_error_styled_body() {
+        let tool = crate::tools::bash::BashTool {
+            queue: Arc::new(crate::conversation::message_queue::MessageQueue::new()),
+            store: Arc::new(crate::state::store::Store::new()),
+        };
+        let output =
+            serde_json::json!({"content": "Error: Exit code 2\nstderr line", "is_error": true});
+        let spec = tool
+            .render_tool_result_message(&output, &[], &Default::default())
+            .unwrap();
+        match spec {
+            shared::RenderSpec::Text { style, .. } => assert_eq!(style, shared::TextStyle::Error),
+            other => panic!("expected Text variant, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -994,22 +1159,417 @@ mod render_spec_tests {
     use super::*;
     use shared::RenderSpec;
 
-    #[test]
-    fn nothing_renders_empty_vec() {
-        let lines = render_spec(&RenderSpec::Nothing);
-        assert!(lines.is_empty());
+    fn line_text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
     }
 
     #[test]
-    fn unhandled_variant_renders_placeholder() {
+    fn nothing_renders_empty_vec() {
+        let lines = render_spec(&RenderSpec::Nothing, false);
+        assert!(lines.is_empty());
+    }
+
+    // ── Header ────────────────────────────────────────────────────────
+
+    #[test]
+    fn header_renders_verb_and_target() {
         let spec = RenderSpec::Header {
             verb: "Reading".into(),
             target: Some("src/foo.rs".into()),
             tag: None,
         };
-        let lines = render_spec(&spec);
-        // Batch 1 stub: any non-Nothing variant produces a one-line
-        // dim placeholder. Batches 2-5 add real renderers.
+        let lines = render_spec(&spec, false);
+        // 1 leading blank + 1 body line.
+        assert_eq!(lines.len(), 2);
+        let body = line_text(&lines[1]);
+        assert!(body.contains("Reading"), "got: {body:?}");
+        assert!(body.contains("src/foo.rs"), "got: {body:?}");
+    }
+
+    #[test]
+    fn header_wraps_path_target_with_osc8() {
+        let spec = RenderSpec::Header {
+            verb: "Reading".into(),
+            target: Some("/abs/path.txt".into()),
+            tag: None,
+        };
+        let lines = render_spec(&spec, false);
+        let body = line_text(&lines[1]);
+        assert!(
+            body.contains("\x1b]8;;file:///abs/path.txt"),
+            "OSC8 open: {body:?}"
+        );
+    }
+
+    #[test]
+    fn header_renders_tag_inline_in_dim_brackets() {
+        let spec = RenderSpec::Header {
+            verb: "Bash".into(),
+            target: Some("ls".into()),
+            tag: Some(shared::Tag::Timeout { ms: 30000 }),
+        };
+        let lines = render_spec(&spec, false);
+        let body = line_text(&lines[1]);
+        assert!(body.contains("[timeout 30000ms]"), "got: {body:?}");
+    }
+
+    #[test]
+    fn header_renders_truncated_tag() {
+        let spec = RenderSpec::Header {
+            verb: "Read".into(),
+            target: None,
+            tag: Some(shared::Tag::Truncated),
+        };
+        let lines = render_spec(&spec, false);
+        let body = line_text(&lines[1]);
+        assert!(body.contains("[truncated]"), "got: {body:?}");
+    }
+
+    // ── Code ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn code_renders_body_with_corner_prefix() {
+        let spec = RenderSpec::Code {
+            language: None,
+            body: "line1\nline2".into(),
+            truncated: false,
+        };
+        let lines = render_spec(&spec, false);
+        let body: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("  ⎿  line1"), "got: {body:?}");
+        assert!(body.contains("     line2"), "got: {body:?}");
+    }
+
+    #[test]
+    fn code_truncated_appends_expand_hint() {
+        let spec = RenderSpec::Code {
+            language: None,
+            body: "a\nb\nc".into(),
+            truncated: true,
+        };
+        let lines = render_spec(&spec, false);
+        let body: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("(ctrl+o to expand)"), "got: {body:?}");
+    }
+
+    // ── Diff ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn diff_renders_summary_and_hunks() {
+        let spec = RenderSpec::Diff {
+            file_path: "/tmp/a".into(),
+            hunks: vec![shared::DiffHunk {
+                old_start: 1,
+                new_start: 1,
+                lines: vec![
+                    shared::DiffLine::Remove {
+                        line: "old\n".into(),
+                    },
+                    shared::DiffLine::Add {
+                        line: "new\n".into(),
+                    },
+                ],
+            }],
+        };
+        let lines = render_spec(&spec, false);
+        let body: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            body.contains("Added 1 line, removed 1 line"),
+            "summary: {body:?}"
+        );
+        assert!(body.contains("-old"), "removed hunk: {body:?}");
+        assert!(body.contains("+new"), "added hunk: {body:?}");
+    }
+
+    // ── PathList ────────────────────────────────────────────────────────
+
+    #[test]
+    fn path_list_renders_entries_with_optional_line_and_preview() {
+        let spec = RenderSpec::PathList {
+            entries: vec![
+                shared::PathEntry {
+                    path: std::path::PathBuf::from("/a/b.txt"),
+                    line: Some(42),
+                    preview: Some("fn foo".into()),
+                },
+                shared::PathEntry {
+                    path: std::path::PathBuf::from("/c/d.txt"),
+                    line: None,
+                    preview: None,
+                },
+            ],
+            total: 2,
+            truncated: false,
+        };
+        let lines = render_spec(&spec, false);
+        let body: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("/a/b.txt:42"), "with line: {body:?}");
+        assert!(body.contains("fn foo"), "preview: {body:?}");
+        assert!(body.contains("/c/d.txt"), "no-line entry: {body:?}");
+    }
+
+    // ── KeyValues ───────────────────────────────────────────────────────
+
+    #[test]
+    fn key_values_renders_each_row_as_key_value_pairs() {
+        let spec = RenderSpec::KeyValues {
+            rows: vec![
+                ("model".into(), "claude-opus-4-7".into()),
+                ("tokens".into(), "1234".into()),
+            ],
+        };
+        let lines = render_spec(&spec, false);
+        let body: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("model: claude-opus-4-7"), "got: {body:?}");
+        assert!(body.contains("tokens: 1234"), "got: {body:?}");
+    }
+
+    #[test]
+    fn text_plain_renders_each_body_line() {
+        let spec = RenderSpec::Text {
+            body: "alpha\nbeta".into(),
+            style: shared::TextStyle::Plain,
+        };
+        let lines = render_spec(&spec, false);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(line_text(&lines[0]), "alpha");
+        assert_eq!(line_text(&lines[1]), "beta");
+    }
+
+    #[test]
+    fn text_dim_carries_dark_gray_color() {
+        let spec = RenderSpec::Text {
+            body: "hush".into(),
+            style: shared::TextStyle::Dim,
+        };
+        let lines = render_spec(&spec, false);
+        let color = lines[0].spans.first().and_then(|s| s.style.fg);
+        assert_eq!(color, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn text_error_carries_red_color() {
+        let spec = RenderSpec::Text {
+            body: "boom".into(),
+            style: shared::TextStyle::Error,
+        };
+        let lines = render_spec(&spec, false);
+        let color = lines[0].spans.first().and_then(|s| s.style.fg);
+        assert_eq!(color, Some(Color::Red));
+    }
+
+    // ── Status ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn status_success_glyph_is_check() {
+        let spec = RenderSpec::Status {
+            state: shared::StatusState::Success,
+            message: Some("done".into()),
+        };
+        let lines = render_spec(&spec, false);
         assert_eq!(lines.len(), 1);
+        let glyph = lines[0].spans.first().unwrap();
+        assert!(glyph.content.contains('✓'), "glyph: {:?}", glyph.content);
+    }
+
+    #[test]
+    fn status_error_glyph_is_cross() {
+        let spec = RenderSpec::Status {
+            state: shared::StatusState::Error,
+            message: Some("nope".into()),
+        };
+        let lines = render_spec(&spec, false);
+        let glyph = lines[0].spans.first().unwrap();
+        assert!(glyph.content.contains('✗'));
+    }
+
+    // ── Group ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn group_renders_each_child_in_order() {
+        let spec = RenderSpec::Group {
+            children: vec![
+                RenderSpec::Text {
+                    body: "a".into(),
+                    style: shared::TextStyle::Plain,
+                },
+                RenderSpec::Text {
+                    body: "b".into(),
+                    style: shared::TextStyle::Plain,
+                },
+            ],
+        };
+        let lines = render_spec(&spec, false);
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[0]).contains('a'));
+        assert!(line_text(&lines[1]).contains('b'));
+    }
+
+    // ── Row ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn row_joins_single_line_children_horizontally() {
+        let spec = RenderSpec::Row {
+            children: vec![
+                RenderSpec::Text {
+                    body: "L".into(),
+                    style: shared::TextStyle::Plain,
+                },
+                RenderSpec::Text {
+                    body: "R".into(),
+                    style: shared::TextStyle::Plain,
+                },
+            ],
+        };
+        let lines = render_spec(&spec, false);
+        assert_eq!(lines.len(), 1);
+        let body = line_text(&lines[0]);
+        assert!(body.contains('L') && body.contains('R'), "body: {body:?}");
+    }
+
+    #[test]
+    fn row_stacks_multiline_children_with_dim_rule() {
+        let spec = RenderSpec::Row {
+            children: vec![
+                RenderSpec::Text {
+                    body: "a\nb".into(),
+                    style: shared::TextStyle::Plain,
+                },
+                RenderSpec::Text {
+                    body: "x".into(),
+                    style: shared::TextStyle::Plain,
+                },
+            ],
+        };
+        let lines = render_spec(&spec, false);
+        assert!(lines.len() >= 3, "expected stacked: {lines:?}");
+        for line in &lines {
+            assert!(
+                line.spans
+                    .first()
+                    .map(|s| s.content.starts_with('│'))
+                    .unwrap_or(false),
+                "line missing rule: {line:?}"
+            );
+        }
+    }
+
+    // ── Collapsible ─────────────────────────────────────────────────────
+
+    #[test]
+    fn collapsible_shows_summary_when_collapsed() {
+        let spec = RenderSpec::Collapsible {
+            summary: "click to see more".into(),
+            expanded_by_default: false,
+            children: vec![RenderSpec::Text {
+                body: "secret".into(),
+                style: shared::TextStyle::Plain,
+            }],
+        };
+        let lines = render_spec(&spec, false);
+        let body: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("click to see more"));
+        assert!(body.contains("(ctrl+o to expand)"));
+        assert!(!body.contains("secret"));
+    }
+
+    #[test]
+    fn collapsible_expands_when_default_true() {
+        let spec = RenderSpec::Collapsible {
+            summary: "summary".into(),
+            expanded_by_default: true,
+            children: vec![RenderSpec::Text {
+                body: "inner".into(),
+                style: shared::TextStyle::Plain,
+            }],
+        };
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("inner"));
+    }
+
+    #[test]
+    fn collapsible_expands_when_detailed_opt_on() {
+        let spec = RenderSpec::Collapsible {
+            summary: "summary".into(),
+            expanded_by_default: false,
+            children: vec![RenderSpec::Text {
+                body: "inner".into(),
+                style: shared::TextStyle::Plain,
+            }],
+        };
+        let body: String = render_spec(&spec, true)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("inner"));
+    }
+
+    // ── Interactive ─────────────────────────────────────────────────────
+
+    #[test]
+    fn interactive_renders_awaiting_input_placeholder() {
+        let spec = RenderSpec::Interactive {
+            widget: shared::InteractiveWidget::MultiQuestion { questions: vec![] },
+            response_schema: serde_json::json!({}),
+        };
+        let body = line_text(&render_spec(&spec, false)[0]);
+        assert!(body.contains("awaiting input"), "got: {body:?}");
+    }
+
+    #[test]
+    fn group_of_status_and_diff_renders_in_order() {
+        let spec = RenderSpec::Group {
+            children: vec![
+                RenderSpec::Status {
+                    state: shared::StatusState::Success,
+                    message: Some("Updated /tmp/a.txt".into()),
+                },
+                RenderSpec::Diff {
+                    file_path: "/tmp/a.txt".into(),
+                    hunks: vec![shared::DiffHunk {
+                        old_start: 1,
+                        new_start: 1,
+                        lines: vec![
+                            shared::DiffLine::Remove {
+                                line: "old\n".into(),
+                            },
+                            shared::DiffLine::Add {
+                                line: "new\n".into(),
+                            },
+                        ],
+                    }],
+                },
+            ],
+        };
+        let body: String = render_spec(&spec, false)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains('\u{2713}'), "status glyph: {body:?}");
+        assert!(body.contains("Updated /tmp/a.txt"), "status msg: {body:?}");
+        assert!(
+            body.contains("Added 1 line, removed 1 line"),
+            "diff summary: {body:?}"
+        );
+        assert!(body.contains("-old"), "removed hunk: {body:?}");
+        assert!(body.contains("+new"), "added hunk: {body:?}");
+        // Status comes before the diff summary in rendered order.
+        let status_pos = body.find("Updated").unwrap();
+        let diff_pos = body.find("Added").unwrap();
+        assert!(status_pos < diff_pos, "order: {body:?}");
     }
 }

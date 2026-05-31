@@ -11,6 +11,30 @@ use crate::tools::contract::{
 };
 use crate::tools::ToolRegistry;
 
+/// Emit a `BusMessage::RenderEvent` if the given spec is `Some` and not
+/// `RenderSpec::Nothing`. Tools whose hook returns `Nothing` mean "no opinion";
+/// we don't push empty events onto the bus.
+fn emit_render_event(
+    bus: &SessionBus,
+    tool_use_id: &str,
+    parent_tool_use_id: Option<&str>,
+    session_id: &str,
+    slot: shared::RenderSlot,
+    spec: shared::RenderSpec,
+) {
+    if matches!(spec, shared::RenderSpec::Nothing) {
+        return;
+    }
+    bus.emit(BusMessage::RenderEvent {
+        tool_use_id: tool_use_id.into(),
+        slot,
+        spec,
+        parent_tool_use_id: parent_tool_use_id.map(String::from),
+        uuid: uuid::Uuid::new_v4(),
+        session_id: session_id.into(),
+    });
+}
+
 /// Execute all tool_use blocks from one assistant turn, returning the
 /// corresponding tool_result blocks in emission order. Concurrency-safe tools
 /// run in parallel via `tokio::task::JoinSet`; others run sequentially.
@@ -77,12 +101,40 @@ pub async fn run_tool_uses(
         let parent_for_tick = parent_tool_use_id.clone();
         let session_for_tick = session_id.clone();
         set.spawn(async move {
+            // Emit Message + Tag before the tool runs.
+            let opts = RenderOpts {
+                verbose: false,
+                is_transcript_mode: false,
+            };
+            let message_spec = tool.render_tool_use_message(&input, &opts);
+            let tag_spec = tool.render_tool_use_tag(&input);
+            emit_render_event(
+                &bus_for_task,
+                &id,
+                parent_for_tick.as_deref(),
+                &session_for_tick,
+                shared::RenderSlot::Message,
+                message_spec,
+            );
+            if let Some(tag) = tag_spec {
+                emit_render_event(
+                    &bus_for_task,
+                    &id,
+                    parent_for_tick.as_deref(),
+                    &session_for_tick,
+                    shared::RenderSlot::Tag,
+                    tag,
+                );
+            }
+
             // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
             // Aborted as soon as the inner call returns so the activity row
             // can flip back to idle (or to the next tool) immediately.
             let bus_for_tick = bus_for_task.clone();
             let id_for_tick = id.clone();
             let name_for_tick = tool_name.clone();
+            let parent_for_ticker = parent_for_tick.clone();
+            let session_for_ticker = session_for_tick.clone();
             let ticker = tokio::spawn(async move {
                 let start = std::time::Instant::now();
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -93,9 +145,9 @@ pub async fn run_tool_uses(
                         tool_use_id: id_for_tick.clone(),
                         tool_name: name_for_tick.clone(),
                         elapsed_seconds: start.elapsed().as_secs_f32(),
-                        parent_tool_use_id: parent_for_tick.clone(),
+                        parent_tool_use_id: parent_for_ticker.clone(),
                         uuid: uuid::Uuid::new_v4(),
-                        session_id: session_for_tick.clone(),
+                        session_id: session_for_ticker.clone(),
                     });
                 }
             });
@@ -108,7 +160,9 @@ pub async fn run_tool_uses(
             // Spawning *inside* the outer task lets us recover the panic
             // payload here and rebuild a ToolResult tagged with the original
             // tool_use_id.
-            let inner = tokio::task::spawn(async move { tool.call(input, &ctx, None).await });
+            let tool_for_call = tool.clone();
+            let inner =
+                tokio::task::spawn(async move { tool_for_call.call(input, &ctx, None).await });
             let res = match inner.await {
                 Ok(r) => r,
                 Err(e) if e.is_panic() => ToolResult {
@@ -122,6 +176,40 @@ pub async fn run_tool_uses(
                     ..Default::default()
                 },
             };
+
+            // Emit Result or Error after the tool completes.
+            let mut output_json = serde_json::json!({
+                "content": res.content,
+                "is_error": res.is_error,
+            });
+            if let Some(ref meta) = res.metadata {
+                if let Some(map) = output_json.as_object_mut() {
+                    for (k, v) in meta {
+                        map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                    }
+                }
+            }
+            let slot = if res.is_error {
+                shared::RenderSlot::Error
+            } else {
+                shared::RenderSlot::Result
+            };
+            let result_spec = if res.is_error {
+                tool.render_tool_use_error_message(&output_json, &opts)
+                    .unwrap_or(shared::RenderSpec::Nothing)
+            } else {
+                tool.render_tool_result_message(&output_json, &[], &opts)
+                    .unwrap_or(shared::RenderSpec::Nothing)
+            };
+            emit_render_event(
+                &bus_for_task,
+                &id,
+                parent_for_tick.as_deref(),
+                &session_for_tick,
+                slot,
+                result_spec,
+            );
+
             ticker.abort();
             (i, id, res)
         });
@@ -165,89 +253,101 @@ pub async fn run_tool_uses(
             queue: Some(queue.clone()),
         };
 
+        let unsafe_opts = RenderOpts {
+            verbose: false,
+            is_transcript_mode: false,
+        };
+
         // Interactive tools: render the spec, suspend the turn, await the
         // user response, then merge the answers into the tool input.
-        let effective_input = if tool.requires_user_interaction() {
-            let spec = tool.render_tool_use_message(
-                &input,
-                &RenderOpts {
-                    verbose: false,
-                    is_transcript_mode: false,
-                },
+        let interactive_spec = tool.render_tool_use_message(&input, &unsafe_opts);
+        let already_emitted_interactive = tool.requires_user_interaction()
+            && matches!(&interactive_spec, shared::RenderSpec::Interactive { .. });
+        let effective_input = if already_emitted_interactive {
+            emit_render_event(
+                &bus,
+                &id,
+                parent_tool_use_id.as_deref(),
+                &session_id,
+                shared::RenderSlot::Message,
+                interactive_spec.clone(),
             );
 
-            if matches!(&spec, shared::RenderSpec::Interactive { .. }) {
-                // Emit the spec via RenderEvent so the transcript can
-                // optionally render it in scrollback (the modal is the
-                // primary surface, but scrollback parity is useful).
-                bus.emit(BusMessage::RenderEvent {
-                    tool_use_id: id.clone(),
-                    spec: spec.clone(),
-                    parent_tool_use_id: parent_tool_use_id.clone(),
-                    uuid: uuid::Uuid::new_v4(),
-                    session_id: session_id.clone(),
-                });
-
-                match interactive::await_interaction(
-                    id.clone(),
-                    &spec,
-                    &bus,
-                    parent_tool_use_id.clone(),
-                )
-                .await
-                {
-                    InteractionOutcome::Resolved { updated_input } => {
-                        // Merge answers into the original input so call()
-                        // sees the full picture.
-                        updated_input
+            match interactive::await_interaction(
+                id.clone(),
+                &interactive_spec,
+                &bus,
+                parent_tool_use_id.clone(),
+            )
+            .await
+            {
+                InteractionOutcome::Resolved { updated_input } => updated_input,
+                InteractionOutcome::Denied => {
+                    if let Some(rejection) =
+                        tool.render_tool_use_rejected_message(&input, &unsafe_opts)
+                    {
+                        emit_render_event(
+                            &bus,
+                            &id,
+                            parent_tool_use_id.as_deref(),
+                            &session_id,
+                            shared::RenderSlot::Rejected,
+                            rejection,
+                        );
                     }
-                    InteractionOutcome::Denied => {
-                        if let Some(rejection) = tool.render_tool_use_rejected_message(
-                            &input,
-                            &RenderOpts {
-                                verbose: false,
-                                is_transcript_mode: false,
-                            },
-                        ) {
-                            // Emit the rejection so the transcript shows it.
-                            bus.emit(BusMessage::RenderEvent {
-                                tool_use_id: id.clone(),
-                                spec: rejection,
-                                parent_tool_use_id: parent_tool_use_id.clone(),
-                                uuid: uuid::Uuid::new_v4(),
-                                session_id: session_id.clone(),
-                            });
-                        }
-                        unsafe_results.push((
-                            i,
-                            id,
-                            ToolResult {
-                                content: "User declined to answer questions".into(),
-                                is_error: true,
-                                ..Default::default()
-                            },
-                        ));
-                        continue;
-                    }
-                    InteractionOutcome::Aborted => {
-                        unsafe_results.push((
-                            i,
-                            id,
-                            ToolResult {
-                                content: "Interaction aborted".into(),
-                                is_error: true,
-                                ..Default::default()
-                            },
-                        ));
-                        continue;
-                    }
+                    unsafe_results.push((
+                        i,
+                        id,
+                        ToolResult {
+                            content: "User declined to answer questions".into(),
+                            is_error: true,
+                            ..Default::default()
+                        },
+                    ));
+                    continue;
                 }
-            } else {
-                input
+                InteractionOutcome::Aborted => {
+                    unsafe_results.push((
+                        i,
+                        id,
+                        ToolResult {
+                            content: "Interaction aborted".into(),
+                            is_error: true,
+                            ..Default::default()
+                        },
+                    ));
+                    continue;
+                }
             }
         } else {
             input
         };
+
+        // Emit Message + Tag before the tool runs, but only if we didn't
+        // already emit an Interactive-carrying Message above — otherwise the
+        // generic Header would overwrite the Interactive spec on the bus.
+        if !already_emitted_interactive {
+            let message_spec = tool.render_tool_use_message(&effective_input, &unsafe_opts);
+            let tag_spec = tool.render_tool_use_tag(&effective_input);
+            emit_render_event(
+                &bus,
+                &id,
+                parent_tool_use_id.as_deref(),
+                &session_id,
+                shared::RenderSlot::Message,
+                message_spec,
+            );
+            if let Some(tag) = tag_spec {
+                emit_render_event(
+                    &bus,
+                    &id,
+                    parent_tool_use_id.as_deref(),
+                    &session_id,
+                    shared::RenderSlot::Tag,
+                    tag,
+                );
+            }
+        }
 
         // 1Hz ticker emits BusMessage::ToolProgress while the tool runs.
         let bus_for_tick = bus.clone();
@@ -274,6 +374,40 @@ pub async fn run_tool_uses(
 
         let res = tool.call(effective_input, &ctx, None).await;
         ticker.abort();
+
+        // Emit Result or Error after the tool completes.
+        let mut output_json = serde_json::json!({
+            "content": res.content,
+            "is_error": res.is_error,
+        });
+        if let Some(ref meta) = res.metadata {
+            if let Some(map) = output_json.as_object_mut() {
+                for (k, v) in meta {
+                    map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                }
+            }
+        }
+        let slot = if res.is_error {
+            shared::RenderSlot::Error
+        } else {
+            shared::RenderSlot::Result
+        };
+        let result_spec = if res.is_error {
+            tool.render_tool_use_error_message(&output_json, &unsafe_opts)
+                .unwrap_or(shared::RenderSpec::Nothing)
+        } else {
+            tool.render_tool_result_message(&output_json, &[], &unsafe_opts)
+                .unwrap_or(shared::RenderSpec::Nothing)
+        };
+        emit_render_event(
+            &bus,
+            &id,
+            parent_tool_use_id.as_deref(),
+            &session_id,
+            slot,
+            result_spec,
+        );
+
         unsafe_results.push((i, id, res));
     }
 
@@ -337,6 +471,82 @@ impl Tool for MissingTool {
             is_error: true,
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod render_emission_tests {
+    use super::*;
+    use crate::conversation::session_bus::SessionBus;
+    use crate::state::store::Store;
+    use shared::CliConfig;
+
+    fn make_test_registry(store: Arc<Store>) -> Arc<ToolRegistry> {
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
+        let jobs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            crate::conversation::cron_runtime::CronJob,
+        >::new()));
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        ToolRegistry::new(
+            store,
+            CliConfig::default(),
+            Arc::new(crate::agents::AgentRegistry::built_in_only()),
+            queue,
+            jobs,
+            tx,
+        )
+    }
+
+    #[tokio::test]
+    async fn safe_loop_emits_message_and_result_for_simple_tool() {
+        let store = Arc::new(Store::new());
+        let registry = make_test_registry(store);
+        let bus = Arc::new(SessionBus::new("s".into()));
+        let queue = Arc::new(crate::conversation::message_queue::MessageQueue::new());
+
+        // Subscribe before the run so we capture all events.
+        let mut rx = bus.subscribe();
+
+        let _ = run_tool_uses(
+            &registry,
+            vec![(
+                "tu_test".into(),
+                "Bash".into(),
+                serde_json::json!({"command": "echo hi"}),
+            )],
+            std::env::temp_dir(),
+            PermissionMode::BypassPermissions,
+            None,
+            bus.clone(),
+            None,
+            "s".into(),
+            true,
+            queue,
+        )
+        .await;
+
+        // Drain all messages that were broadcast.
+        let mut messages = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            messages.push(msg);
+        }
+
+        let slots: Vec<shared::RenderSlot> = messages
+            .iter()
+            .filter_map(|m| match m {
+                BusMessage::RenderEvent { slot, .. } => Some(*slot),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            slots.contains(&shared::RenderSlot::Message),
+            "expected Message slot, got slots: {slots:?}"
+        );
+        assert!(
+            slots.contains(&shared::RenderSlot::Result),
+            "expected Result slot, got slots: {slots:?}"
+        );
     }
 }
 

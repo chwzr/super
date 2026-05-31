@@ -140,6 +140,7 @@ fn is_stable(item: &TranscriptItem) -> bool {
         TranscriptItem::ToolCall { result, .. } => result.is_some(),
         TranscriptItem::ToolBatch { calls } => calls.iter().all(|c| c.result.is_some()),
         TranscriptItem::System { .. } => true,
+        TranscriptItem::Render { .. } => true,
     }
 }
 
@@ -670,9 +671,9 @@ impl App {
                             self.activity = ActivityState::idle();
                         }
                         BusMessage::RenderEvent { .. } => {
-                            // Batch 1: tools only emit RenderSpec::Nothing,
-                            // which renders to nothing. Batches 2-5 wire this
-                            // into the scrollback / live region.
+                            // Routed into TranscriptItem::ToolCall spec slots
+                            // (or a Render orphan) by `transcript::fold`. The
+                            // next paint picks up the change via push_event below.
                         }
                         BusMessage::InteractionRequested {
                             tool_use_id,
@@ -1094,6 +1095,13 @@ mod tests {
                 is_error: false,
             }),
             elapsed_ms: 0,
+            message_spec: None,
+            tag_spec: None,
+            progress_specs: Vec::new(),
+            queued_spec: None,
+            result_spec: None,
+            rejected_spec: None,
+            error_spec: None,
         }
     }
 
@@ -1109,6 +1117,9 @@ mod tests {
         assert!(is_stable(&TranscriptItem::System {
             subtype: SystemSubtype::Notice,
             message: "x".into(),
+        }));
+        assert!(is_stable(&TranscriptItem::Render {
+            spec: Box::new(shared::RenderSpec::Nothing),
         }));
     }
 

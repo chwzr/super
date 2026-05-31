@@ -5,7 +5,7 @@ use super::contract::{
 use crate::tools::permission::PermissionResult;
 use async_trait::async_trait;
 use serde_json::json;
-use shared::{InteractiveWidget, Question, QuestionOption, RenderSpec};
+use shared::{InteractiveWidget, Question, QuestionOption, RenderSpec, TextStyle};
 
 pub struct AskUserQuestionTool;
 
@@ -261,7 +261,10 @@ impl Tool for AskUserQuestionTool {
         };
 
         Some(RenderSpec::Group {
-            children: vec![RenderSpec::Text { body, dim: false }],
+            children: vec![RenderSpec::Text {
+                body,
+                style: TextStyle::Plain,
+            }],
         })
     }
 
@@ -272,7 +275,7 @@ impl Tool for AskUserQuestionTool {
     ) -> Option<RenderSpec> {
         Some(RenderSpec::Text {
             body: "User declined to answer questions".to_string(),
-            dim: false,
+            style: TextStyle::Plain,
         })
     }
 

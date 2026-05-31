@@ -19,6 +19,10 @@ pub const CC_DIFF_DEL_BG: Color = Color::Indexed(52); // removed line bg
 pub const CC_DIFF_ADD_FG: Color = Color::Indexed(77); // added line fg
 pub const CC_DIFF_ADD_BG: Color = Color::Indexed(22); // added line bg
 
+pub const CC_ERROR_FG: Color = Color::Red;
+pub const CC_WARN_FG: Color = Color::Indexed(214);
+pub const CC_STRONG_FG: Color = Color::White;
+
 #[cfg(test)]
 mod tests {
     use super::*;

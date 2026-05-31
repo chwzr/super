@@ -8,6 +8,7 @@ use crate::tools::contract::{
 };
 use async_trait::async_trait;
 use serde_json::json;
+use shared;
 use tokio::process::Command;
 
 pub struct BashTool {
@@ -106,6 +107,65 @@ impl Tool for BashTool {
             let rule_stem = rule_content.split_whitespace().next().unwrap_or("");
             rule_stem == command_stem || rule_content == "*"
         }))
+    }
+
+    fn render_tool_use_message(
+        &self,
+        input: &serde_json::Value,
+        _opts: &crate::tools::contract::RenderOpts,
+    ) -> shared::RenderSpec {
+        let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let first = cmd
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(80)
+            .collect::<String>();
+        shared::RenderSpec::Header {
+            verb: "Bash".into(),
+            target: Some(first),
+            tag: None,
+        }
+    }
+
+    fn render_tool_result_message(
+        &self,
+        output: &serde_json::Value,
+        _progress: &[crate::tools::contract::ProgressEvent],
+        _opts: &crate::tools::contract::RenderOpts,
+    ) -> Option<shared::RenderSpec> {
+        let content = output.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let is_error = output
+            .get("is_error")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        const MAX: usize = 3;
+        let all: Vec<&str> = content.lines().collect();
+        let shown: String = all.iter().take(MAX).copied().collect::<Vec<_>>().join("\n");
+        let truncated = all.len() > MAX;
+
+        if is_error {
+            Some(shared::RenderSpec::Text {
+                body: shown,
+                style: shared::TextStyle::Error,
+            })
+        } else {
+            Some(shared::RenderSpec::Code {
+                language: None,
+                body: shown,
+                truncated,
+            })
+        }
+    }
+
+    fn render_tool_use_error_message(
+        &self,
+        output: &serde_json::Value,
+        opts: &crate::tools::contract::RenderOpts,
+    ) -> Option<shared::RenderSpec> {
+        self.render_tool_result_message(output, &[], opts)
     }
 
     fn is_destructive(&self, _input: &serde_json::Value) -> bool {

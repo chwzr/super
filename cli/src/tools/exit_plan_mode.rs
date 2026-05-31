@@ -6,7 +6,7 @@ use crate::state::store::PermissionMode;
 use crate::tools::permission::PermissionResult;
 use async_trait::async_trait;
 use serde_json::json;
-use shared::{InteractiveWidget, RenderSpec, StatusState};
+use shared::{InteractiveWidget, RenderSpec, StatusState, TextStyle};
 use std::sync::Arc;
 
 pub struct ExitPlanModeTool {
@@ -173,7 +173,7 @@ impl Tool for ExitPlanModeTool {
                 },
                 RenderSpec::Text {
                     body: plan,
-                    dim: true,
+                    style: TextStyle::Dim,
                 },
             ],
         })
@@ -192,7 +192,7 @@ impl Tool for ExitPlanModeTool {
                 },
                 RenderSpec::Text {
                     body: "User rejected the plan. Return to plan mode to revise.".into(),
-                    dim: false,
+                    style: TextStyle::Plain,
                 },
             ],
         })
