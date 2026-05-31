@@ -414,6 +414,9 @@ impl ConversationEngine {
                 session_id.clone(),
                 self.auto_deny_prompts, // root engines never auto-deny; async child engines propagate true
                 self.queue.clone(),
+                self.config.openrouter_api_key.clone(),
+                self.config.api_messages_base_url.clone(),
+                self.config.provider.clone(),
             )
             .await;
 
