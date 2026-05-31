@@ -80,6 +80,9 @@ async fn default_mode_permission_check_returns_allow() {
         tool_use_id: "tu_smoke".into(),
         progress_sink: None,
         queue: None,
+        api_key: None,
+        api_messages_base_url: String::new(),
+        provider: String::new(),
     };
     let result = sys
         .evaluate(
@@ -123,6 +126,9 @@ async fn bypass_mode_short_circuits_to_allow() {
         tool_use_id: "tu_smoke".into(),
         progress_sink: None,
         queue: None,
+        api_key: None,
+        api_messages_base_url: String::new(),
+        provider: String::new(),
     };
     let result = sys
         .evaluate(

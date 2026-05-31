@@ -405,6 +405,9 @@ mod tests {
             tool_use_id: String::new(),
             progress_sink: None,
             queue: None,
+            api_key: None,
+            api_messages_base_url: String::new(),
+            provider: String::new(),
         };
         let result = tool
             .call(
@@ -430,6 +433,9 @@ mod tests {
             tool_use_id: String::new(),
             progress_sink: None,
             queue: None,
+            api_key: None,
+            api_messages_base_url: String::new(),
+            provider: String::new(),
         };
         let result = tool
             .call(

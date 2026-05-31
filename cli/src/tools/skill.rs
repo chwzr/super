@@ -207,6 +207,9 @@ mod tests {
             tool_use_id: "tu_test".into(),
             progress_sink: None,
             queue: None,
+            api_key: None,
+            api_messages_base_url: String::new(),
+            provider: String::new(),
         }
     }
 
