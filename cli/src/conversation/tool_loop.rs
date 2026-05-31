@@ -532,6 +532,9 @@ mod render_emission_tests {
             "s".into(),
             true,
             queue,
+            None,
+            String::new(),
+            String::new(),
         )
         .await;
 
@@ -599,6 +602,9 @@ mod tests {
             "test-session".into(), // session_id
             false,                 // auto_deny_prompts
             queue,
+            None,
+            String::new(),
+            String::new(),
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -641,6 +647,9 @@ mod tests {
             "test-session".into(), // session_id
             false,                 // auto_deny_prompts
             queue,
+            None,
+            String::new(),
+            String::new(),
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -693,6 +702,9 @@ mod tests {
             "test-session".into(), // session_id
             false,                 // auto_deny_prompts
             queue,
+            None,
+            String::new(),
+            String::new(),
         )
         .await;
 
@@ -772,6 +784,9 @@ mod tests {
             "agent-1".into(),
             false,
             queue,
+            None,
+            String::new(),
+            String::new(),
         )
         .await;
 
@@ -837,6 +852,9 @@ mod tests {
             "test-session".into(),
             false,
             queue,
+            None,
+            String::new(),
+            String::new(),
         )
         .await;
 
@@ -899,6 +917,9 @@ mod tests {
             "test-session".into(), // session_id
             false,                 // auto_deny_prompts
             queue,
+            None,
+            String::new(),
+            String::new(),
         )
         .await;
 
