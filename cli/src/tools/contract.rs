@@ -157,6 +157,12 @@ pub struct ToolCallContext {
     /// Message queue for tools that need to enqueue notifications (Monitor,
     /// background Bash, async Agent, Cron).
     pub queue: Option<std::sync::Arc<crate::conversation::message_queue::MessageQueue>>,
+    /// OpenRouter API key for tools that make secondary LLM calls.
+    pub api_key: Option<String>,
+    /// OpenRouter base URL for tools that make secondary LLM calls.
+    pub api_messages_base_url: String,
+    /// Provider id (e.g. "anthropic") for resolving model slugs.
+    pub provider: String,
 }
 
 #[async_trait::async_trait]
@@ -398,6 +404,9 @@ mod tests {
             tool_use_id: "tu_test".into(),
             progress_sink: None,
             queue: None,
+            api_key: None,
+            api_messages_base_url: String::new(),
+            provider: String::new(),
         };
         assert!(ctx.auto_deny_prompts);
         assert_eq!(ctx.tool_use_id, "tu_test");
