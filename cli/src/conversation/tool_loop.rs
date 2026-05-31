@@ -95,6 +95,9 @@ pub async fn run_tool_uses(
             tool_use_id: id.clone(),
             progress_sink: None,
             queue: Some(queue.clone()),
+            api_key: None,
+            api_messages_base_url: String::new(),
+            provider: String::new(),
         };
         let bus_for_task = bus.clone();
         let tool_name = tool.name().to_string();
@@ -251,6 +254,9 @@ pub async fn run_tool_uses(
             tool_use_id: id.clone(),
             progress_sink: None,
             queue: Some(queue.clone()),
+            api_key: None,
+            api_messages_base_url: String::new(),
+            provider: String::new(),
         };
 
         let unsafe_opts = RenderOpts {
