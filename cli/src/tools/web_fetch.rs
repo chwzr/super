@@ -125,10 +125,17 @@ impl Tool for WebFetchTool {
                 };
             }
         };
-        match client.get(&url).send().await {
+        match client
+            .get(&url)
+            .header("Accept", "text/markdown, text/html, */*")
+            .header("User-Agent", "super/0.1")
+            .send()
+            .await
+        {
             Ok(resp) => {
                 let status = resp.status();
-                match resp.text().await {
+                // Read response body with a 10MB cap to prevent OOM
+                match read_response_body(resp).await {
                     Ok(body) => {
                         let byte_count = body.len();
                         let duration_ms = start.elapsed().as_millis() as f64;
@@ -271,36 +278,6 @@ impl Tool for WebFetchTool {
     }
 }
 
-fn strip_html(html: &str) -> String {
-    let mut result = String::new();
-    let mut in_tag = false;
-    let mut in_script = false;
-
-    let chars: Vec<char> = html.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if !in_tag && chars[i] == '<' {
-            // Check if this is a <script tag (or </script)
-            if i + 1 < chars.len() && (chars[i + 1] == '/' || chars[i + 1] != '!') {
-                let rest = chars[i..].iter().collect::<String>().to_lowercase();
-                if rest.starts_with("<script") {
-                    in_script = true;
-                } else if in_script && rest.starts_with("</script") {
-                    in_script = false;
-                }
-            }
-            in_tag = true;
-        } else if in_tag && chars[i] == '>' {
-            in_tag = false;
-        } else if !in_tag && !in_script {
-            result.push(chars[i]);
-        }
-        i += 1;
-    }
-    // Collapse whitespace
-    result.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 async fn apply_prompt_to_content(
     prompt: &str,
     content: &str,
@@ -309,9 +286,10 @@ async fn apply_prompt_to_content(
     model: &str,
 ) -> Result<String, String> {
     let truncated = if content.len() > MAX_MARKDOWN_LENGTH {
+        let safe_cut: String = content.chars().take(MAX_MARKDOWN_LENGTH).collect();
         format!(
             "{}\n\n[Content truncated due to length...]",
-            &content[..MAX_MARKDOWN_LENGTH]
+            safe_cut
         )
     } else {
         content.to_string()
@@ -368,4 +346,25 @@ async fn apply_prompt_to_content(
         .unwrap_or("No response from model");
 
     Ok(text.to_string())
+}
+
+/// Read response body with a 10MB cap to prevent OOM from malicious servers.
+const MAX_HTTP_CONTENT_LENGTH: usize = 10 * 1024 * 1024;
+
+async fn read_response_body(resp: reqwest::Response) -> Result<String, String> {
+    let mut buf = String::with_capacity(8192);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk.map_err(|e| format!("Failed to read response: {e}"))?;
+        if buf.len() + chunk.len() > MAX_HTTP_CONTENT_LENGTH {
+            return Err(format!(
+                "Response body exceeds {}MB limit",
+                MAX_HTTP_CONTENT_LENGTH / (1024 * 1024)
+            ));
+        }
+        let chunk_str =
+            std::str::from_utf8(&chunk).map_err(|e| format!("Invalid UTF-8 in response: {e}"))?;
+        buf.push_str(chunk_str);
+    }
+    Ok(buf)
 }
