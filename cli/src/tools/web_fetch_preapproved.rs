@@ -145,14 +145,20 @@ mod tests {
     #[test]
     fn test_bare_hostname() {
         assert!(is_preapproved_url("https://doc.rust-lang.org/std/vec"));
-        assert!(is_preapproved_url("https://docs.python.org/3/library/os.html"));
-        assert!(is_preapproved_url("https://react.dev/reference/react/useState"));
+        assert!(is_preapproved_url(
+            "https://docs.python.org/3/library/os.html"
+        ));
+        assert!(is_preapproved_url(
+            "https://react.dev/reference/react/useState"
+        ));
     }
 
     #[test]
     fn test_path_prefixed() {
         assert!(is_preapproved_url("https://github.com/anthropics"));
-        assert!(is_preapproved_url("https://github.com/anthropics/superpowers"));
+        assert!(is_preapproved_url(
+            "https://github.com/anthropics/superpowers"
+        ));
         // Path segment boundary: must not match /anthropics-evil
         assert!(!is_preapproved_url("https://github.com/anthropics-evil"));
     }

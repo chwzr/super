@@ -287,10 +287,7 @@ async fn apply_prompt_to_content(
 ) -> Result<String, String> {
     let truncated = if content.len() > MAX_MARKDOWN_LENGTH {
         let safe_cut: String = content.chars().take(MAX_MARKDOWN_LENGTH).collect();
-        format!(
-            "{}\n\n[Content truncated due to length...]",
-            safe_cut
-        )
+        format!("{}\n\n[Content truncated due to length...]", safe_cut)
     } else {
         content.to_string()
     };
