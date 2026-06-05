@@ -56,6 +56,56 @@ pub fn build_request_body(
     })
 }
 
+/// Build an Anthropic-shaped `/v1/messages` request body with additional
+/// server-side tool entries (e.g. `{ "type": "openrouter:web_search" }`).
+/// Server tool entries are appended as-is after the user-defined tools.
+pub fn build_request_body_with_server_tools(
+    model: &str,
+    system: &str,
+    history: &[HistoryEntry],
+    tools: &[Arc<dyn Tool>],
+    server_tools: &[Value],
+    max_tokens: u32,
+    stream: bool,
+) -> Value {
+    let mut tools_json: Vec<Value> = tools
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name(),
+                "description": t.description(None, &DescriptionCtx::default()),
+                "input_schema": t.input_schema(),
+            })
+        })
+        .collect();
+
+    // Append server-side tool entries directly — they are already
+    // fully-formed JSON objects like { "type": "openrouter:web_search" }.
+    tools_json.extend(server_tools.iter().cloned());
+
+    let messages_json: Vec<Value> = history
+        .iter()
+        .map(|m| {
+            json!({
+                "role": match m.role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                },
+                "content": m.content,
+            })
+        })
+        .collect();
+
+    json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": messages_json,
+        "tools": tools_json,
+        "stream": stream,
+    })
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
