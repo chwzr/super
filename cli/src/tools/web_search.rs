@@ -1,6 +1,4 @@
-use crate::conversation::anthropic::{
-    build_request_body_with_server_tools, HistoryEntry, Role,
-};
+use crate::conversation::anthropic::{build_request_body_with_server_tools, HistoryEntry, Role};
 use crate::sdk::protocol::ContentBlockFinal;
 use crate::tools::contract::{
     DescriptionCtx, ProgressSink, PromptCtx, Tool, ToolCallContext, ToolResult, ToolResultBlock,
@@ -104,9 +102,7 @@ impl Tool for WebSearchTool {
 
         let history = vec![HistoryEntry {
             role: Role::User,
-            content: vec![ContentBlockFinal::Text {
-                text: user_message,
-            }],
+            content: vec![ContentBlockFinal::Text { text: user_message }],
         }];
 
         // Build server tool parameters with domain filtering
@@ -182,9 +178,9 @@ impl Tool for WebSearchTool {
                         let text = resp_body["content"]
                             .as_array()
                             .and_then(|blocks| {
-                                blocks.iter().find_map(|block| {
-                                    block["text"].as_str().map(String::from)
-                                })
+                                blocks
+                                    .iter()
+                                    .find_map(|block| block["text"].as_str().map(String::from))
                             })
                             .unwrap_or_default();
 
