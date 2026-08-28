@@ -36,21 +36,32 @@ TypeScript extension runtime.
 Tagged releases publish archives for macOS on Apple Silicon and Intel, Linux
 on aarch64 and x86_64 with GNU or musl, and Windows on x86_64. Download an
 archive from the [GitHub Releases](https://github.com/chwzr/super/releases)
-page, or use the generated installer:
+page, or use the checked-in installer. Because this repository is private,
+the command uses your active GitHub CLI login:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/chwzr/super/releases/latest/download/super-installer.sh | sh
+(
+  set -e
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  gh api -H "Accept: application/vnd.github.raw+json" \
+    repos/chwzr/super/contents/install.sh > "$installer"
+  sh "$installer"
+)
 ```
 
 On Windows PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/chwzr/super/releases/latest/download/super-installer.ps1 | iex"
+$installer = gh api -H "Accept: application/vnd.github.raw+json" repos/chwzr/super/contents/install.ps1
+if ($LASTEXITCODE -ne 0) { throw "Could not download the SUPER installer" }
+$installer | Invoke-Expression
 ```
 
-Each archive has a matching `.sha256` file. You can also install the current
-source checkout with Cargo:
+The installer verifies the release archive against its `.sha256` file. Set
+`SUPER_VERSION`, `SUPER_TARGET`, or `SUPER_INSTALL_DIR` to override the release,
+target, or default `$HOME/.local/bin` destination. You can also install the
+current source checkout with Cargo:
 
 ```bash
 cargo install --path crates/super
