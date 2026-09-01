@@ -21,13 +21,13 @@ plugin runtime.
 macOS and Linux:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/chwzr/super/main/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/chwzr/super/main/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/chwzr/super/main/install.ps1 | iex
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/chwzr/super/main/install.ps1 | iex"
 ```
 
 The installer selects the correct release, verifies its SHA-256 checksum, and
