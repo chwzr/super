@@ -33,6 +33,12 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/chw
 The installer selects the correct release, verifies its SHA-256 checksum, and
 installs `super` in your user binary directory.
 
+Update an existing installation with:
+
+```bash
+super update
+```
+
 ## Performance
 
 SUPER is built to stay responsive during everyday work, from file discovery in
