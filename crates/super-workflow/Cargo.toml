@@ -1,0 +1,20 @@
+[package]
+name = "super-workflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Deterministic workflow orchestration scripts for SUPER"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+tokio-util.workspace = true
+
+[dev-dependencies]
+super-bench.workspace = true
