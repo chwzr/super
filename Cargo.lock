@@ -2036,6 +2036,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "super-workflow"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "super-bench",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

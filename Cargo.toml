@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/super-bench",
     "crates/super-ai",
+    "crates/super-workflow",
     "crates/super-agent",
     "crates/super-coding",
     "crates/super-mcp",
@@ -51,6 +52,7 @@ super-bench = { path = "crates/super-bench" }
 super-coding = { path = "crates/super-coding" }
 super-mcp = { path = "crates/super-mcp" }
 super-tui = { path = "crates/super-tui" }
+super-workflow = { path = "crates/super-workflow" }
 libc = "0.2"
 mdwright-latex = "0.1.3"
 mermaid-text = "0.57"
