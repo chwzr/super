@@ -23,6 +23,7 @@ super-agent.workspace = true
 super-ai.workspace = true
 super-coding.workspace = true
 super-mcp.workspace = true
+super-sdk = { workspace = true, features = ["rpc"] }
 super-tui.workspace = true
 libc.workspace = true
 reqwest.workspace = true
