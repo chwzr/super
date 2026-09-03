@@ -1893,6 +1893,7 @@ dependencies = [
  "super-bench",
  "super-coding",
  "super-mcp",
+ "super-sdk",
  "super-tui",
  "libc",
  "reqwest 0.12.28",
