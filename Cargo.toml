@@ -7,8 +7,19 @@ members = [
     "crates/super-agent",
     "crates/super-coding",
     "crates/super-mcp",
+    "crates/super-sdk",
     "crates/super-tui",
     "crates/super",
+]
+
+# Language-binding crates are deliberately outside the workspace. Building a
+# PyO3 test harness links libpython, napi needs a Node toolchain, and web-sys
+# is only meaningful on a wasm32 target; none of those belong in the plain
+# `cargo test --workspace` this repository's CI runs.
+exclude = [
+    "crates/super-py",
+    "crates/super-node",
+    "crates/super-wasm",
 ]
 
 [workspace.package]
@@ -51,6 +62,7 @@ super-ai = { path = "crates/super-ai" }
 super-bench = { path = "crates/super-bench" }
 super-coding = { path = "crates/super-coding" }
 super-mcp = { path = "crates/super-mcp" }
+super-sdk = { path = "crates/super-sdk" }
 super-tui = { path = "crates/super-tui" }
 super-workflow = { path = "crates/super-workflow" }
 libc = "0.2"
