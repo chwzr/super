@@ -70,7 +70,7 @@ For any other language, `super --mode rpc --no-session` accepts JSON commands on
 stdin and streams JSON responses/events on stdout.
 
 See [SDK documentation](docs/sdk.md), [RPC protocol documentation](docs/rpc.md),
-and the [FX WebAssembly architecture review](docs/fx-wasm-review.md).
+and the [browser WebAssembly documentation](crates/super-core-wasm/README.md).
 
 ## Performance
 
