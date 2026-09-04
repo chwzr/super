@@ -2027,6 +2027,7 @@ dependencies = [
  "futures",
  "super-agent",
  "super-ai",
+ "super-bench",
  "super-coding",
  "super-mcp",
  "serde",
