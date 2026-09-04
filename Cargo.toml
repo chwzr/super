@@ -20,6 +20,7 @@ exclude = [
     "crates/super-py",
     "crates/super-node",
     "crates/super-wasm",
+    "crates/super-core-wasm",
 ]
 
 [workspace.package]
@@ -58,7 +59,7 @@ http = "1"
 ignore = "0.4"
 jsonschema = { version = "0.33", default-features = false }
 super-agent = { path = "crates/super-agent" }
-super-ai = { path = "crates/super-ai" }
+super-ai = { path = "crates/super-ai", default-features = false }
 super-bench = { path = "crates/super-bench" }
 super-coding = { path = "crates/super-coding" }
 super-mcp = { path = "crates/super-mcp" }

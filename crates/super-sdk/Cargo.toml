@@ -12,6 +12,7 @@ default = ["native"]
 native = [
     "dep:super-agent",
     "dep:super-ai",
+    "super-ai/native",
     "dep:super-coding",
     "dep:super-mcp",
     "dep:tokio",
