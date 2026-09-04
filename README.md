@@ -60,10 +60,14 @@ const session = await Session.create({ tools: ["read", "bash"] });
 await session.prompt("What files are here?");
 ```
 
+For browsers, `@super-sdk/core-wasm` runs the agent conversation and model/tool
+loop directly inside WebAssembly using explicit JavaScript model and tool
+capabilities—no SUPER server or WebSocket is required. `@super-sdk/wasm` remains
+the remote client when an application specifically needs native filesystem and
+shell tools.
+
 For any other language, `super --mode rpc --no-session` accepts JSON commands on
-stdin and streams JSON responses/events on stdout. `--rpc-listen
-127.0.0.1:9944` serves the same protocol over WebSocket for the WASM browser
-client.
+stdin and streams JSON responses/events on stdout.
 
 See [SDK documentation](docs/sdk.md), [RPC protocol documentation](docs/rpc.md),
 and the [FX WebAssembly architecture review](docs/fx-wasm-review.md).

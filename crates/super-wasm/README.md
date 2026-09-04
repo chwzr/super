@@ -1,6 +1,8 @@
 # @super-sdk/wasm
 
-A browser WebAssembly client for the language-neutral SUPER RPC protocol.
+A browser WebAssembly client for the language-neutral SUPER RPC protocol. This
+package controls a native SUPER process; it does not run the agent in the module.
+Use `@super-sdk/core-wasm` when the agent loop itself must run in the browser.
 
 Browsers cannot run SUPER's filesystem and shell tools inside their sandbox. Run
 the native agent explicitly and connect to it:

@@ -20,7 +20,7 @@ dirs.workspace = true
 futures.workspace = true
 ignore.workspace = true
 super-agent.workspace = true
-super-ai.workspace = true
+super-ai = { workspace = true, features = ["native"] }
 super-coding.workspace = true
 super-mcp.workspace = true
 super-sdk = { workspace = true, features = ["rpc"] }

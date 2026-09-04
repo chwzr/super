@@ -19,7 +19,7 @@ grep-searcher.workspace = true
 ignore.workspace = true
 jsonschema.workspace = true
 super-agent.workspace = true
-super-ai.workspace = true
+super-ai = { workspace = true, features = ["native"] }
 super-workflow.workspace = true
 rand.workspace = true
 regex.workspace = true
