@@ -363,7 +363,7 @@ settings.
 
 ## Pi compatibility
 
-SUPER currently tracks [Pi v0.84.4](https://github.com/earendil-works/pi/releases/tag/v0.84.4).
+SUPER currently tracks [Pi v0.85.1](https://github.com/earendil-works/pi/releases/tag/v0.85.1).
 It keeps Pi-compatible session files, model data, core commands, compaction,
 and OpenAI Codex WebSocket transport. The tracked Pi release is recorded in
 `Cargo.toml`.
