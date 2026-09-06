@@ -77,6 +77,8 @@ pub use super_agent::{AgentMessage, DynTool, StreamFn};
 #[cfg(feature = "native")]
 pub use super_ai::{Model, ThinkingLevel};
 #[cfg(feature = "native")]
+pub use super_coding::SessionEntry;
+#[cfg(feature = "native")]
 pub use options::{SessionOptions, SessionSource};
 #[cfg(feature = "native")]
 pub use session::{
