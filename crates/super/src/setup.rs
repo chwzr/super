@@ -181,7 +181,11 @@ pub fn resolve_model(
         }
     }
     for model in registry.all() {
-        if super_ai::auth::resolve_api_key_local(&model.provider, &registry.declared_keys).is_some()
+        if super_ai::auth::resolve_api_key_local(
+            registry.credential_provider(&model.provider),
+            &registry.declared_keys,
+        )
+        .is_some()
         {
             return Ok((model.clone(), None));
         }
@@ -191,15 +195,19 @@ pub fn resolve_model(
     let external = super_ai::auth::external::discover();
     let mut checked = std::collections::HashSet::new();
     for model in registry.all() {
-        if !checked.insert(model.provider.as_str()) {
+        let credential_provider = registry.credential_provider(&model.provider);
+        if !checked.insert(credential_provider) {
             continue;
         }
-        if super_ai::auth::external::auto_import_unique_from_sources(&model.provider, &external)
+        if super_ai::auth::external::auto_import_unique_from_sources(credential_provider, &external)
             .ok()
             .flatten()
             .is_some()
-            && super_ai::auth::resolve_api_key_local(&model.provider, &registry.declared_keys)
-                .is_some()
+            && super_ai::auth::resolve_api_key_local(
+                registry.credential_provider(&model.provider),
+                &registry.declared_keys,
+            )
+            .is_some()
         {
             return Ok((model.clone(), None));
         }

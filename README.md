@@ -15,6 +15,7 @@ plugin runtime.
 - **Focused:** `read`, `write`, `edit`, and `bash` are the default tools.
 - **Persistent:** resume, branch, compact, import, and export sessions.
 - **Connected:** use local or remote MCP servers, including OAuth servers.
+- **Readable:** Catppuccin Mocha is the default dark theme.
 
 ## Install
 
@@ -80,7 +81,7 @@ cat error.log | super -p "find the cause"
 - Use the Up arrow to restore earlier prompts.
 
 Useful commands include `/login`, `/model`, `/mcp`, `/compact`, `/resume`,
-`/export`, `/settings`, and `/hotkeys`.
+`/provider`, `/export`, `/settings`, and `/hotkeys`.
 
 SUPER can accept a new instruction while the agent works. Press `Enter` to
 steer the current task, or `Alt+Enter` to queue a follow-up task.
@@ -366,6 +367,57 @@ super logout openai-codex
 super --list-models
 super --model sonnet:high
 ```
+
+### Custom OpenAI-compatible providers
+
+Add a provider for Chat Completions, the Responses API, or the Codex Responses
+API. The new model then works with the normal model selector.
+
+```bash
+super provider add local \
+  --base-url http://127.0.0.1:8000/v1 \
+  --api chat-completions \
+  --model local-model
+super provider list
+super --model local/local-model
+super provider remove local
+```
+
+Use `--api responses` for a Responses API server. Use `--api-key-env NAME` to
+read a proxy key from an environment variable, or run
+`super login <provider> --api-key KEY` to save a key.
+
+CodexLB can reuse the OpenAI Codex login already stored by SUPER:
+
+```bash
+super login openai-codex
+super provider add codex-lb \
+  --base-url http://127.0.0.1:2455/backend-api/codex \
+  --api codex \
+  --model gpt-5.6-sol \
+  --reasoning
+super --model codex-lb/gpt-5.6-sol
+```
+
+If CodexLB requires its own key, add `--api-key-env CODEX_LB_API_KEY`.
+Use `--header KEY=VALUE` more than once when a gateway needs custom headers.
+
+The TUI has the same basic operations:
+
+```text
+/provider add <id> <chat-completions|responses|codex> <base-url> <model> [KEY_ENV|auth:<provider>]
+/provider list
+/provider remove <id>
+```
+
+Restart the TUI after an add or remove operation so the current session loads
+the changed model catalog.
+
+### Themes
+
+SUPER uses Catppuccin Mocha as its default dark theme. Open `/settings` to
+switch between the built-in dark and light themes. A custom theme can still be
+selected in `~/.super/agent/settings.json`.
 
 ## MCP
 
