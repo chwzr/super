@@ -15,9 +15,19 @@ mkdir -p "$release_directory" "$payload_directory" "$install_directory"
 
 write_archive() {
     local payload="$1"
-    printf '%s\n' "$payload" >"$payload_directory/super"
-    chmod +x "$payload_directory/super"
-    tar -czf "$release_directory/$archive_name" -C "$temporary_root/payload" "super-$target"
+    local archive_target="${2:-$target}"
+    local archive_payload_directory="$temporary_root/payload/super-$archive_target"
+    local archive_name="super-$archive_target.tar.gz"
+    mkdir -p "$archive_payload_directory"
+    cat >"$archive_payload_directory/super" <<EOF
+#!/bin/sh
+if [ "\${1:-}" = "--version" ]; then
+    exit 0
+fi
+printf '%s\\n' "$payload"
+EOF
+    chmod +x "$archive_payload_directory/super"
+    tar -czf "$release_directory/$archive_name" -C "$temporary_root/payload" "super-$archive_target"
     if command -v sha256sum >/dev/null 2>&1; then
         hash="$(sha256sum "$release_directory/$archive_name" | awk '{ print $1 }')"
     else
@@ -36,13 +46,13 @@ run_installer() {
 
 write_archive "first"
 run_installer
-[[ "$(cat "$install_directory/super")" == "first" ]]
+[[ "$("$install_directory/super")" == "first" ]]
 [[ -x "$install_directory/super" ]]
 echo "ok: shell installer installs a verified archive"
 
 write_archive "replacement"
 run_installer
-[[ "$(cat "$install_directory/super")" == "replacement" ]]
+[[ "$("$install_directory/super")" == "replacement" ]]
 echo "ok: shell installer replaces an existing binary"
 
 printf '%064d  %s\n' 0 "$archive_name" >"$release_directory/$archive_name.sha256"
@@ -50,8 +60,30 @@ if run_installer >/dev/null 2>&1; then
     echo "checksum failure unexpectedly succeeded" >&2
     exit 1
 fi
-[[ "$(cat "$install_directory/super")" == "replacement" ]]
+[[ "$("$install_directory/super")" == "replacement" ]]
 echo "ok: checksum failure keeps the existing binary"
+
+cat >"$temporary_root/glibc-super" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+    echo "super version GLIBC_2.38 not found required by super" >&2
+    exit 1
+fi
+printf '%s\n' "glibc"
+EOF
+chmod +x "$temporary_root/glibc-super"
+cp "$temporary_root/glibc-super" "$payload_directory/super"
+tar -czf "$release_directory/$archive_name" -C "$temporary_root/payload" "super-$target"
+hash="$(sha256sum "$release_directory/$archive_name" | awk '{ print $1 }')"
+printf '%s  %s\n' "$hash" "$archive_name" >"$release_directory/$archive_name.sha256"
+write_archive "musl" "x86_64-unknown-linux-musl"
+SUPER_VERSION="0.0.1" \
+    SUPER_TARGET="$target" \
+    SUPER_INSTALL_DIR="$install_directory" \
+    SUPER_RELEASES_URL="file://$temporary_root/releases" \
+    sh "$repo_root/install.sh"
+[[ "$("$install_directory/super")" == "musl" ]]
+echo "ok: glibc runtime failure selects musl release"
 
 if SUPER_VERSION="0.0.1" \
     SUPER_TARGET="unsupported-target" \
@@ -96,5 +128,5 @@ FAKE_RELEASE_DIRECTORY="$release_directory" \
     SUPER_TARGET="$target" \
     SUPER_INSTALL_DIR="$install_directory" \
     sh "$repo_root/install.sh"
-[[ "$(cat "$install_directory/super")" == "private-release" ]]
+[[ "$("$install_directory/super")" == "private-release" ]]
 echo "ok: authenticated gh path installs a private release"
