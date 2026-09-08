@@ -40,7 +40,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/chw
 ```
 
 The installer selects the correct release, verifies its SHA-256 checksum, and
-installs `super` in your user binary directory.
+installs `super` in your user binary directory. On Linux, if the glibc
+release needs a newer `GLIBC_*` version than the system provides, it
+automatically installs the matching musl release.
 
 Update later with:
 
