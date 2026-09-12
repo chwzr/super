@@ -3732,6 +3732,7 @@ fn open_login_picker_with_filter(app: &mut App, filter: Option<&str>) {
                 let methods = super_ai::auth::login_methods(provider);
                 let status = match super_ai::auth::stored_auth_kind(provider) {
                     Some(super_ai::auth::StoredAuthKind::OAuth) => "saved OAuth",
+                    Some(super_ai::auth::StoredAuthKind::AzureEntraId) => "saved Microsoft Entra ID",
                     Some(super_ai::auth::StoredAuthKind::ApiKey) => "saved API key",
                     None => "not configured",
                 };
@@ -3797,6 +3798,9 @@ fn open_login_methods_picker(app: &mut App, provider: &str) {
                         "Paste the final callback into Super".into()
                     }
                     super_ai::auth::LoginMethod::ApiKey => "Stores a provider API key".into(),
+                    super_ai::auth::LoginMethod::AzureEntraId => {
+                        "Uses the Microsoft Entra default credential chain".into()
+                    }
                     super_ai::auth::LoginMethod::GoogleApplicationDefault => {
                         "Uses gcloud application-default credentials".into()
                     }
@@ -5706,6 +5710,14 @@ fn start_login_method(
                 value: String::new(),
             });
         }
+        LoginMethod::AzureEntraId => match super_ai::auth::store_azure_entra_id() {
+            Ok(()) => app.cells.push(Cell::Notice(
+                "enabled Microsoft Entra ID default credentials for Azure OpenAI".into(),
+            )),
+            Err(error) => app.cells.push(Cell::Error(format!(
+                "could not save Azure authentication: {error:#}"
+            ))),
+        },
         LoginMethod::BrowserOAuth => start_provider_browser_login(app, provider, command_tx),
         LoginMethod::DeviceOAuth if provider == "github-copilot" => {
             app.secret_prompt = Some(SecretPrompt {
@@ -7451,6 +7463,7 @@ mod tests {
         )));
         let mut app = test_app();
         let mut resources = test_resources();
+
         let selected = session.registry.all().first().expect("model").clone();
         let selected_value = 0;
 
