@@ -5627,10 +5627,7 @@ fn switch_session(app: &mut App, session: &Arc<super_coding::AgentSession>, reco
             }
             let session_dir = session.manager.lock().unwrap().session_dir().to_path_buf();
             let mut manager = super_coding::SessionManager::create(&record.cwd, Some(session_dir))?;
-            for message in messages {
-                manager.append_message(message)?;
-            }
-            manager.append_session_info(&record.title)?;
+            manager.append_messages_with_session_info(messages, &record.title)?;
             Ok(manager)
         }),
     };
