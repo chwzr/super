@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "super"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "super-agent"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "super-ai"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -2286,11 +2286,11 @@ dependencies = [
 
 [[package]]
 name = "super-bench"
-version = "0.0.8"
+version = "0.0.9"
 
 [[package]]
 name = "super-coding"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2321,7 +2321,7 @@ dependencies = [
 
 [[package]]
 name = "super-mcp"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "super-sdk"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "super-tui"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -2387,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "super-workflow"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "async-trait",
