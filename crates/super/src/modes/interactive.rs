@@ -3148,14 +3148,22 @@ fn cycle_model(
     enabled_models: &[super_ai::Model],
     direction: isize,
 ) {
-    let source = if enabled_models.is_empty() {
-        session.registry.all()
+    let available = session.registry.available_models();
+    let source: Vec<&super_ai::Model> = if enabled_models.is_empty() {
+        available.iter().map(|(_, model)| *model).collect()
     } else {
         enabled_models
+            .iter()
+            .filter(|model| {
+                available.iter().any(|(_, candidate)| {
+                    candidate.provider == model.provider && candidate.id == model.id
+                })
+            })
+            .collect()
     };
     let copilot_models = super_ai::auth::stored_oauth_model_ids("github-copilot");
     let models = source
-        .iter()
+        .into_iter()
         .filter(|model| account_allows_model(model, copilot_models.as_deref()))
         .collect::<Vec<_>>();
     if models.is_empty() {
@@ -3482,9 +3490,8 @@ fn open_model_picker_with_filter(
     let copilot_models = super_ai::auth::stored_oauth_model_ids("github-copilot");
     let items: Vec<SelectItem> = session
         .registry
-        .all()
-        .iter()
-        .enumerate()
+        .available_models()
+        .into_iter()
         .filter(|(_, model)| account_allows_model(model, copilot_models.as_deref()))
         .map(|(value, model)| SelectItem {
             label: format!("{}/{}", model.provider, model.id),
@@ -3494,7 +3501,7 @@ fn open_model_picker_with_filter(
         .collect();
     let mut list = SelectList::new(
         format!(
-            "Select model (enter uses, {} saves default)",
+            "Select model from connected providers · /login connects more (enter uses, {} saves default)",
             save_default_hint(&app.keybindings)
         ),
         items,
@@ -3572,9 +3579,8 @@ fn scoped_models_picker(
     let copilot_models = super_ai::auth::stored_oauth_model_ids("github-copilot");
     let items = session
         .registry
-        .all()
-        .iter()
-        .enumerate()
+        .available_models()
+        .into_iter()
         .filter(|(_, model)| account_allows_model(model, copilot_models.as_deref()))
         .map(|(value, model)| {
             let enabled = resources
@@ -6917,6 +6923,13 @@ mod tests {
 
     fn test_session(manager: super_coding::SessionManager) -> Arc<super_coding::AgentSession> {
         let registry = super_ai::Registry::from_builtin();
+        test_session_with_registry(manager, registry)
+    }
+
+    fn test_session_with_registry(
+        manager: super_coding::SessionManager,
+        registry: super_ai::Registry,
+    ) -> Arc<super_coding::AgentSession> {
         let model = registry.all().first().expect("built-in model").clone();
         super_coding::AgentSession::new(
             manager,
@@ -7458,14 +7471,26 @@ mod tests {
 
     #[test]
     fn rebuilt_scoped_models_picker_keeps_filter_and_selection() {
-        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
-            "/synthetic",
-        )));
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = directory.path().join("models.json");
+        std::fs::write(
+            &catalog,
+            r#"{"providers":{"local":{"baseUrl":"http://localhost","api":"openai-completions","models":[{"id":"local-model"}]}}}"#,
+        )
+        .unwrap();
+        let registry = super_ai::Registry::load(Some(&catalog));
+        let selected_value = registry
+            .all()
+            .iter()
+            .position(|model| model.provider == "local")
+            .unwrap();
+        let selected = registry.all()[selected_value].clone();
+        let session = test_session_with_registry(
+            super_coding::SessionManager::in_memory(Path::new("/synthetic")),
+            registry,
+        );
         let mut app = test_app();
         let mut resources = test_resources();
-
-        let selected = session.registry.all().first().expect("model").clone();
-        let selected_value = 0;
 
         resources.enabled_models.push(selected);
         reopen_scoped_models_picker(
@@ -7477,7 +7502,10 @@ mod tests {
         );
 
         let picker = app.picker.as_mut().expect("scoped model picker");
-        assert_eq!(picker.list.current().map(|item| item.value), Some(0));
+        assert_eq!(
+            picker.list.current().map(|item| item.value),
+            Some(selected_value)
+        );
         assert!(
             picker
                 .list
