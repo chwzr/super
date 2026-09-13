@@ -1,6 +1,6 @@
 {
   "name": "@super-sdk/core-wasm",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Full SUPER agent kernel running inside browser WebAssembly",
   "type": "module",
   "module": "./browser.js",
