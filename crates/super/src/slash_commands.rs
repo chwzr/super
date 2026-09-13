@@ -90,6 +90,8 @@ pub(crate) const LLAMA_SLASH_COMMAND: SlashCommand =
 
 /// SUPER-local commands that preserve Pi's core command inventory.
 pub(crate) const SUPER_SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand::new("fast", "Manage provider fast mode", Some("[on|off]")),
+    SlashCommand::new("update", "Update the SUPER binary", None),
     SlashCommand::new("mcp", "Manage MCP servers", None),
     SlashCommand::new(
         "provider",
@@ -249,9 +251,11 @@ mod tests {
     fn user_visible_surface_includes_shipped_llama_command() {
         let names: Vec<&str> = commands().map(|command| command.name).collect();
         assert_eq!(
-            &names[names.len() - 11..],
+            &names[names.len() - 1 - SUPER_SLASH_COMMANDS.len()..],
             [
                 "llama",
+                "fast",
+                "update",
                 "mcp",
                 "provider",
                 "providers",
@@ -268,5 +272,15 @@ mod tests {
             names.len(),
             PI_CORE_SLASH_COMMANDS.len() + 1 + SUPER_SLASH_COMMANDS.len()
         );
+    }
+
+    #[test]
+    fn super_catalog_includes_fast_and_update() {
+        let names = SUPER_SLASH_COMMANDS
+            .iter()
+            .map(|command| command.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"fast"));
+        assert!(names.contains(&"update"));
     }
 }
