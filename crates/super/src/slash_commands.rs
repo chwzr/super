@@ -90,7 +90,7 @@ pub(crate) const LLAMA_SLASH_COMMAND: SlashCommand =
 
 /// SUPER-local commands that preserve Pi's core command inventory.
 pub(crate) const SUPER_SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand::new("fast", "Manage provider fast mode", Some("[on|off]")),
+    SlashCommand::new("fast", "Toggle provider fast mode", None),
     SlashCommand::new("update", "Update the SUPER binary", None),
     SlashCommand::new("mcp", "Manage MCP servers", None),
     SlashCommand::new(
