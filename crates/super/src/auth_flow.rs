@@ -16,6 +16,9 @@ pub async fn login_browser(
         "anthropic" => {
             super_ai::auth::anthropic::login_browser(&Default::default(), cancel, show_url).await?
         }
+        "cursor" => {
+            super_ai::auth::cursor::login_browser(&Default::default(), cancel, show_url).await?
+        }
         "openrouter" => {
             super_ai::auth::openrouter::login_browser(&Default::default(), cancel, show_url).await?
         }

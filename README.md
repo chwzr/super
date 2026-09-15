@@ -3,9 +3,10 @@
 A fast terminal coding agent that keeps the interface simple and gives you
 control of the model, tools, sessions, and automation.
 
-SUPER has 40 built-in providers, including OpenAI Codex, Anthropic, Google,
-OpenRouter, Bedrock, and GitHub Copilot. You can also add OpenAI-compatible
-providers. SUPER is built in Rust and based on [Pi](https://github.com/earendil-works/pi).
+SUPER has 41 built-in providers, including OpenAI Codex, Cursor, Anthropic,
+Google, OpenRouter, Bedrock, and GitHub Copilot. You can also add
+OpenAI-compatible providers. SUPER is built in Rust and based on
+[Pi](https://github.com/earendil-works/pi).
 
 ## Why SUPER
 
@@ -226,6 +227,19 @@ super logout openai-codex
 super --list-models
 super --model sonnet:high
 ```
+
+Use a Cursor subscription through SUPER's native HTTP/2 provider:
+
+```bash
+super login cursor
+super --model cursor/auto
+```
+
+SUPER talks directly to Cursor's Agent service. It does not start Cursor's
+`agent` command, Cursor desktop, Node.js, Bun, or a local proxy. You can also
+set `CURSOR_ACCESS_TOKEN` instead of saving a login. When Cursor is selected,
+SUPER refreshes the model list for the signed-in account and keeps a built-in
+fallback list if discovery is not available.
 
 ### Your own OpenAI-compatible provider
 
