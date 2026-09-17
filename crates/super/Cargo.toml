@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+agent-client-protocol.workspace = true
 base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -28,6 +29,7 @@ super-coding.workspace = true
 super-mcp.workspace = true
 super-sdk = { workspace = true, features = ["rpc"] }
 super-tui.workspace = true
+super-webmcp.workspace = true
 libc.workspace = true
 reqwest.workspace = true
 rpassword.workspace = true
@@ -43,4 +45,5 @@ url.workspace = true
 
 [dev-dependencies]
 super-bench.workspace = true
+super-sdk = { workspace = true, features = ["mock", "rpc"] }
 tempfile.workspace = true

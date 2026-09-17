@@ -9,6 +9,7 @@ members = [
     "crates/super-mcp",
     "crates/super-sdk",
     "crates/super-tui",
+    "crates/super-webmcp",
     "crates/super",
 ]
 
@@ -45,6 +46,7 @@ catalog_package = "@earendil-works/pi-ai@0.85.1"
 
 [workspace.dependencies]
 anyhow = "1"
+agent-client-protocol = "2.1.0"
 async-trait = "0.1"
 azure_core = { version = "0.21", default-features = false, features = ["enable_reqwest_rustls"] }
 azure_identity = { version = "0.21", default-features = false, features = ["enable_reqwest_rustls"] }
@@ -73,6 +75,7 @@ super-mcp = { path = "crates/super-mcp" }
 super-sdk = { path = "crates/super-sdk" }
 super-tui = { path = "crates/super-tui" }
 super-workflow = { path = "crates/super-workflow" }
+super-webmcp = { path = "crates/super-webmcp" }
 libc = "0.2"
 mdwright-latex = "0.1.3"
 mermaid-text = "0.57"
