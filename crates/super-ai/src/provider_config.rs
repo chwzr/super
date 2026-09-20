@@ -83,7 +83,7 @@ pub fn catalog_path() -> Result<PathBuf> {
     std::env::var_os("SUPER_MODELS_FILE")
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".super/agent/models.json")))
-        .context("no home directory; set SUPER_MODELS_FILE")
+        .context("no home directory. Set SUPER_MODELS_FILE")
 }
 
 pub fn add(request: &AddProvider) -> Result<PathBuf> {

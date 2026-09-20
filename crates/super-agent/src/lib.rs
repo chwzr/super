@@ -1,4 +1,4 @@
-//! super-agent: the agent runtime — turn loop, events, tool contract, and
+//! super-agent runtime: turn loop, events, tool contract, and
 //! the four harness-core tools (read, bash, edit, write).
 
 pub mod agent_loop;
