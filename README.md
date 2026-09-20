@@ -5,7 +5,9 @@ control of the model, tools, sessions, and automation.
 
 SUPER has 43 built-in providers, including OpenAI Codex, Cursor, Anthropic,
 Google, OpenRouter, Bedrock, Databricks, Snowflake, and GitHub Copilot. You can also add
-OpenAI-compatible providers. SUPER is built in Rust and based on
+OpenAI-compatible providers. 
+
+SUPER is built in Rust and based on
 [Pi](https://github.com/earendil-works/pi).
 
 ## Why SUPER
