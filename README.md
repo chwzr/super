@@ -5,7 +5,7 @@ control of the model, tools, sessions, and automation.
 
 SUPER has 43 built-in providers, including OpenAI Codex, Cursor, Anthropic,
 Google, OpenRouter, Bedrock, Databricks, Snowflake, and GitHub Copilot. You can also add
-OpenAI-compatible providers. 
+OpenAI-compatible providers.
 
 SUPER is built in Rust and based on
 [Pi](https://github.com/earendil-works/pi).
@@ -172,8 +172,8 @@ Autoresearch establishes a baseline, tests one small change at a time, keeps
 improvements, and reverts regressions. It is also unlimited by default:
 
 ```text
-/autoresearch reduce Markdown render time; verify with the existing benchmark
-/autoresearch reduce Markdown render time; verify with the existing benchmark --iterations 20
+/autoresearch reduce Markdown render time and verify it with the existing benchmark
+/autoresearch reduce Markdown render time and verify it with the existing benchmark --iterations 20
 ```
 
 A loop interval and `--iterations` are mutually exclusive. Autoresearch does

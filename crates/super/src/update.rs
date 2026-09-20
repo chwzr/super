@@ -30,7 +30,7 @@ struct VersionCache {
 pub async fn run() -> Result<i32> {
     if cfg!(debug_assertions) {
         anyhow::bail!(
-            "`super update` is not available in debug builds; install a SUPER release to use this command"
+            "`super update` is not available in debug builds. Install a SUPER release to use this command"
         );
     }
     run_release_update().await?;

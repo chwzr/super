@@ -1,5 +1,5 @@
 // This imports and executes the actual wasm-pack artifact. The small local
-// WebSocket endpoint emulates the SUPER RPC transport; Rust's RPC server has its
+// WebSocket endpoint emulates the SUPER RPC transport. Rust's RPC server has its
 // own end-to-end tests in crates/super-sdk/tests/rpc_end_to_end.rs.
 import init, { SuperClient } from "../pkg/super_wasm.js"
 
