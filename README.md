@@ -3,7 +3,7 @@
 A fast terminal coding agent that keeps the interface simple and gives you
 control of the model, tools, sessions, and automation.
 
-SUPER has 43 built-in providers, including OpenAI Codex, Cursor, Anthropic,
+SUPER has 43 built-in providers, including OpenAI Codex (ChatGPT Subscription), OpenAI API, Anthropic OAuth (Claude Subscription), Anthropic API, Cursor, 
 Google, OpenRouter, Bedrock, Databricks, Snowflake, and GitHub Copilot. You can also add
 OpenAI-compatible providers.
 
