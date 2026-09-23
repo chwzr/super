@@ -5,7 +5,7 @@
 A fast terminal coding agent that keeps the interface simple and gives you
 control of the model, tools, sessions, and automation.
 
-SUPER has 43 built-in providers, including OpenAI Codex (ChatGPT Subscription), OpenAI API, Anthropic OAuth (Claude Subscription), Anthropic API, Cursor, 
+SUPER has 44 built-in providers, including OpenAI Codex (ChatGPT Subscription), OpenAI API, Anthropic OAuth (Claude Subscription), Anthropic API, Meta Muse, Cursor,
 Google, OpenRouter, Bedrock, Databricks, Snowflake, and GitHub Copilot. You can also add
 OpenAI-compatible providers.
 
@@ -653,7 +653,7 @@ options. Custom themes live in `~/.super/agent/settings.json`.
 
 ## Compatibility
 
-SUPER tracks [Pi v0.85.1](https://github.com/earendil-works/pi/releases/tag/v0.85.1).
+SUPER tracks [Pi v0.87.1](https://github.com/earendil-works/pi/releases/tag/v0.87.1).
 It keeps Pi-compatible session files, model data, core commands, compaction,
 and OpenAI Responses WebSocket transport. `Cargo.toml` records the tracked
 release.
