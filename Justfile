@@ -7,7 +7,7 @@ fmt:
 
 # Test the Rust SDK, shared protocol, mock provider, and RPC transport.
 sdk-test:
-    @cargo test -p super-sdk --features "mock rpc"
+    @cargo test -p super-agent-sdk --features "mock rpc"
 
 # Build and test the Python 3.11+ PyO3 package in its managed environment.
 sdk-test-python:
@@ -29,7 +29,7 @@ bench:
     @cargo build --release -p super
     @python3 scripts/benchmark_super_harness.py --json target/harness-benchmark.json
     @cargo nextest run --workspace --release --run-ignored only --no-capture -E 'test(~benchmark_performance_)'
-    @cargo nextest run -p super-sdk --features 'mock rpc' --release --run-ignored only --no-capture -E 'test(~benchmark_performance_)'
+    @cargo nextest run -p super-agent-sdk --features 'mock rpc' --release --run-ignored only --no-capture -E 'test(~benchmark_performance_)'
     @cd crates/super-core-wasm && wasm-pack build --target web --release && deno test --allow-read test/performance_test.ts && node test/size.mjs && node test/wasm_memory.mjs
 
 # Test the cross-platform PGO build and benchmark helpers.

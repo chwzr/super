@@ -1,10 +1,13 @@
 [package]
-name = "super-sdk"
+name = "super-agent-sdk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Embeddable SDK and JSON-line RPC protocol for the super coding agent"
+
+[lib]
+name = "super_sdk"
 
 [lints]
 workspace = true

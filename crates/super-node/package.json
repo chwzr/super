@@ -1,6 +1,6 @@
 {
-  "name": "@super-sdk/node",
-  "version": "0.0.20",
+  "name": "super-agent-sdk",
+  "version": "0.0.21",
   "description": "N-API TypeScript SDK for the super coding agent (Node.js, Bun, and Deno)",
   "license": "MIT",
   "repository": "github:chwzr/super",

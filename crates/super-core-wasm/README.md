@@ -1,4 +1,4 @@
-# @super-sdk/core-wasm
+# super-agent-sdk-wasm
 
 The complete SUPER agent loop for browser WebAssembly. Conversation state,
 model/tool turn sequencing, tool argument validation, normalized events,
@@ -14,7 +14,7 @@ import init, {
   SuperAgent,
   createOpenAICompatibleProvider,
   type ModelProvider,
-} from "@super-sdk/core-wasm"
+} from "super-agent-sdk-wasm"
 
 await init()
 

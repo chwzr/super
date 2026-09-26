@@ -241,12 +241,12 @@ dependencies = [
 
 [[package]]
 name = "super-agent"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "anyhow",
  "async-trait",
  "futures",
- "super-ai",
+ "super-agent-ai",
  "serde",
  "serde_json",
  "tokio",
@@ -254,8 +254,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "super-ai"
-version = "0.0.20"
+name = "super-agent-ai"
+version = "0.0.21"
 dependencies = [
  "chrono",
  "serde",
@@ -267,14 +267,14 @@ dependencies = [
 
 [[package]]
 name = "super-core-wasm"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "anyhow",
  "async-trait",
  "futures",
  "js-sys",
  "super-agent",
- "super-ai",
+ "super-agent-ai",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
