@@ -3,7 +3,7 @@ requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "super-sdk"
+name = "super-agent-sdk"
 requires-python = ">=3.11"
 description = "Embed the super coding agent in a Python program"
 readme = "README.md"
