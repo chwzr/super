@@ -1,10 +1,13 @@
 [package]
-name = "super-ai"
+name = "super-agent-ai"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Unified multi-provider LLM streaming API for the super coding harness"
+
+[lib]
+name = "super_ai"
 
 [lints]
 workspace = true

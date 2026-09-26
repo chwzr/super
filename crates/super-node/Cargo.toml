@@ -4,7 +4,7 @@
 
 [package]
 name = "super-node"
-version = "0.0.20"
+version = "0.0.21"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/chwzr/super"
@@ -18,7 +18,7 @@ default = ["mock"]
 mock = ["super-sdk/mock"]
 
 [dependencies]
-super-sdk = { path = "../super-sdk", features = ["rpc"] }
+super-sdk = { package = "super-agent-sdk", path = "../super-sdk", features = ["rpc"] }
 napi = { version = "3", features = ["napi9", "tokio_rt"] }
 napi-derive = "3"
 serde_json = { version = "1", features = ["preserve_order"] }

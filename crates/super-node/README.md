@@ -1,10 +1,10 @@
-# @super-sdk/node
+# super-agent-sdk
 
 A native N-API TypeScript SDK for the SUPER coding agent. It runs on Node.js,
 Bun, and Deno's Node-compatibility layer.
 
 ```ts
-import { Session } from "@super-sdk/node"
+import { Session } from "super-agent-sdk"
 
 const session = await Session.create({ tools: ["read", "bash"] })
 const events = session.events()

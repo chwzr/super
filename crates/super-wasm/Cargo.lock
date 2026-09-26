@@ -84,8 +84,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "super-sdk"
-version = "0.0.20"
+name = "super-agent-sdk"
+version = "0.0.21"
 dependencies = [
  "anyhow",
  "serde",
@@ -95,10 +95,10 @@ dependencies = [
 
 [[package]]
 name = "super-wasm"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "js-sys",
- "super-sdk",
+ "super-agent-sdk",
  "serde",
  "serde-wasm-bindgen",
  "wasm-bindgen",

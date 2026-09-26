@@ -66,7 +66,7 @@ jobs:
           deno-version: v2.x
       - name: Check portable agent crates
         run: |
-          cargo clippy -p super-ai --no-default-features --features portable --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy -p super-agent-ai --no-default-features --features portable --target wasm32-unknown-unknown -- -D warnings
           cargo clippy -p super-agent --no-default-features --features portable --target wasm32-unknown-unknown -- -D warnings
       - name: Format standalone browser crate
         run: cargo fmt --manifest-path crates/super-core-wasm/Cargo.toml -- --check

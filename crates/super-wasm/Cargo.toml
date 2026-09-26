@@ -3,7 +3,7 @@
 
 [package]
 name = "super-wasm"
-version = "0.0.20"
+version = "0.0.21"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/chwzr/super"
@@ -13,7 +13,7 @@ description = "WebAssembly browser client for the super agent RPC protocol"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-super-sdk = { path = "../super-sdk", default-features = false }
+super-sdk = { package = "super-agent-sdk", path = "../super-sdk", default-features = false }
 js-sys = "0.3"
 serde = "1"
 serde-wasm-bindgen = "0.6"
