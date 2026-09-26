@@ -20,7 +20,7 @@ members = [
 exclude = ["crates/super-py", "crates/super-node", "crates/super-wasm", "crates/super-core-wasm"]
 
 [workspace.package]
-version = "0.0.19"
+version = "0.0.20"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/chwzr/super"
@@ -64,14 +64,14 @@ grep-searcher = "0.1"
 http = "1"
 ignore = "0.4"
 jsonschema = { version = "0.33", default-features = false }
-super-agent = { path = "crates/super-agent", version = "0.0.19" }
-super-ai = { path = "crates/super-ai", version = "0.0.19", default-features = false }
-super-bench = { path = "crates/super-bench", version = "0.0.19" }
-super-coding = { path = "crates/super-coding", version = "0.0.19" }
-super-mcp = { path = "crates/super-mcp", version = "0.0.19" }
-super-sdk = { path = "crates/super-sdk", version = "0.0.19" }
+super-agent = { path = "crates/super-agent", version = "0.0.20" }
+super-ai = { path = "crates/super-ai", version = "0.0.20", default-features = false }
+super-bench = { path = "crates/super-bench", version = "0.0.20" }
+super-coding = { path = "crates/super-coding", version = "0.0.20" }
+super-mcp = { path = "crates/super-mcp", version = "0.0.20" }
+super-sdk = { path = "crates/super-sdk", version = "0.0.20" }
 super-tui = { path = "crates/super-tui" }
-super-workflow = { path = "crates/super-workflow", version = "0.0.19" }
+super-workflow = { path = "crates/super-workflow", version = "0.0.20" }
 super-webmcp = { path = "crates/super-webmcp" }
 libc = "0.2"
 mdwright-latex = "0.1.3"
