@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "super-agent"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "super-ai"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "chrono",
  "serde",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "super-core-wasm"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "async-trait",
