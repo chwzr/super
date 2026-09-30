@@ -790,7 +790,7 @@ options. Custom themes live in `~/.super/agent/settings.json`.
 
 ## Compatibility
 
-SUPER tracks [Pi v0.87.1](https://github.com/earendil-works/pi/releases/tag/v0.87.1).
+SUPER tracks [Pi v0.99.1](https://github.com/earendil-works/pi/releases/tag/v0.99.1).
 It keeps Pi-compatible session files, model data, core commands, compaction,
 and OpenAI Responses WebSocket transport. `Cargo.toml` records the tracked
 release.
@@ -822,3 +822,14 @@ release workflow.
 ## License
 
 MIT. SUPER is inspired by Pi, which is also licensed under MIT.
+
+The OpenAI provider supports `super login openai` for ChatGPT browser login.
+API-key login remains available. The OpenAI Codex provider retains its legacy
+subscription flow.
+
+Set `defaultTools` in global or trusted project settings to select tools.
+A list such as `["read", "bash"]` replaces the defaults. A list such as
+`["+grep", "-write"]` changes the defaults. Project modifier lists apply after
+user settings. `--tools`, `--exclude-tools`, and `--no-tools` take precedence.
+Use `+mcp` to include configured MCP servers when you set `defaultTools`.
+SUPER does not provide Pi's JavaScript codemode; see [the parity audit](PI_UPSTREAM.md).
