@@ -540,6 +540,13 @@ event protocol.
 
 ### Rust
 
+Add the [Rust SDK crate from crates.io](https://crates.io/crates/super-agent-sdk)
+to your project.
+
+```bash
+cargo add super-agent-sdk
+```
+
 ```rust
 let session = super_sdk::Session::builder().tools(["read", "bash"]).build().await?;
 session.prompt("What files are here?").await?;
