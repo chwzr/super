@@ -2,16 +2,18 @@
 
 <img width="766" height="244" alt="image" src="https://github.com/user-attachments/assets/08e96d6e-7409-419b-b9db-0149f2465083" />
 
-A terminal coding agent built in Rust. Choose your model, tools, sessions,
-and automation. See the [performance results](#performance) for local benchmarks.
+A [ridiculously fast](#performance) terminal coding agent that keeps the interface simple and gives you
+control of the model, tools, sessions, and automation.
 
-SUPER supports OpenAI and Anthropic subscriptions and API keys, Meta Muse,
-Cursor, Google, OpenRouter, Bedrock, Databricks, Snowflake, GitHub Copilot,
-and other built-in providers.
+SUPER has 44 built-in providers. These include OpenAI Codex (ChatGPT
+subscription), OpenAI API, Anthropic OAuth (Claude subscription), Anthropic
+API, Meta Muse, Cursor, Google, OpenRouter, Bedrock, Databricks, Snowflake,
+and GitHub Copilot.
 
 You can also add OpenAI-compatible providers.
 
-SUPER is based on [Pi](https://github.com/earendil-works/pi).
+SUPER is built in Rust and based on incredible work from
+[Pi](https://github.com/earendil-works/pi).
 
 ## Why SUPER
 
