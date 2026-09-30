@@ -10,7 +10,10 @@ const names =
 for (const name of names) {
   const source = join("target", "release", name)
   if (existsSync(source)) {
-    const destination = join("native", process.env.SUPER_NODE_PLATFORM ?? `${process.platform}-${process.arch}`)
+    const destination = join(
+      "native",
+      process.env.SUPER_NODE_PLATFORM ?? `${process.platform}-${process.arch}`,
+    )
     mkdirSync(destination, { recursive: true })
     copyFileSync(source, join(destination, "super.node"))
     process.exit(0)
