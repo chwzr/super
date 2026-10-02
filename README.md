@@ -316,6 +316,17 @@ super --list-models
 super --model sonnet:high
 ```
 
+#### Corporate proxies
+
+Set `HTTPS_PROXY` to your HTTP proxy URL. Use `NO_PROXY` for hosts that must
+connect directly. Install the corporate root certificate in the operating
+system trust store, or set `SSL_CERT_FILE` to a PEM certificate file.
+SUPER checks server certificates for HTTP and WebSocket connections. Bedrock
+uses the AWS SDK proxy settings from the environment.
+
+The automatic test suite checks each built-in provider with a local TLS
+interception proxy.
+
 #### Cursor
 
 Use a Cursor subscription through SUPER's native HTTP/2 provider:
