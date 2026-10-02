@@ -1,6 +1,6 @@
 {
   "name": "super-agent-sdk-wasm",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "description": "Full SUPER agent kernel running inside browser WebAssembly",
   "license": "MIT",
   "repository": {
