@@ -78,6 +78,16 @@ For a server or SSH session, use the legacy Codex device login:
 super login openai-codex --device-auth
 ```
 
+For Cursor on Windows or Linux without a browser, use:
+
+```bash
+super login cursor --no-browser
+```
+
+Keep SUPER running. Open the complete printed URL on a computer with a browser
+and sign in. SUPER checks for completion and saves the credentials. No local
+callback port is required. The request times out after ten minutes.
+
 Anthropic login and credential import are also available:
 
 ```bash
