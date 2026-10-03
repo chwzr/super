@@ -346,6 +346,11 @@ the built-in list if model discovery is not available.
 `cursor/auto` resolves to the account's current default model before SUPER
 sends input. It does not send `auto` as a backend model name. SUPER sends its
 tools and system instructions through Cursor's request-context handshake.
+In the TUI, `/model`, `/model cursor`, and Ctrl+L load the Cursor account
+model list once and reuse it for the active SUPER session. A Cursor login or
+logout clears this cache. This also works after `/login cursor` in the same session.
+The picker uses the model IDs returned by Cursor. Discovery errors appear
+in the TUI; retry `/model` after you fix the connection or login.
 Cursor also supplies its own agent prompt and native tool list. Those tools
 can appear in model answers, but SUPER only executes its registered tools.
 SUPER instructions are sent as Cursor rules, not as a replacement for the
