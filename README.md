@@ -2,7 +2,6 @@
 
 [![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://github.com/chwzr/super/blob/main/rust-toolchain.toml)
 [![Downloads](https://img.shields.io/github/downloads/chwzr/super/total)](https://github.com/chwzr/super/releases)
-[![PyPI downloads](https://img.shields.io/pypi/dm/super-agent-sdk?label=PyPI%20downloads)](https://pypi.org/project/super-agent-sdk/)
 [![npm SDK downloads](https://img.shields.io/npm/dm/super-agent-sdk?label=npm%20SDK%20downloads)](https://www.npmjs.com/package/super-agent-sdk)
 [![npm WASM downloads](https://img.shields.io/npm/dm/super-agent-sdk-wasm?label=npm%20WASM%20downloads)](https://www.npmjs.com/package/super-agent-sdk-wasm)
 [![crates.io SDK downloads](https://img.shields.io/crates/d/super-agent-sdk?label=crates.io%20SDK%20downloads)](https://crates.io/crates/super-agent-sdk)
@@ -609,7 +608,7 @@ Install the [native JavaScript SDK from npm](https://www.npmjs.com/package/super
 to use SUPER in a Node, Bun, or Deno application.
 
 ```bash
-npm install super-agent-sdk
+bun add super-agent-sdk
 ```
 
 ```typescript
@@ -627,7 +626,7 @@ Install the [browser SDK from npm](https://www.npmjs.com/package/super-agent-sdk
 to run the agent and model/tool loop in your browser without a SUPER server.
 
 ```bash
-npm install super-agent-sdk-wasm
+bun add super-agent-sdk-wasm
 ```
 
 For applications that need native filesystem and shell tools, use the
