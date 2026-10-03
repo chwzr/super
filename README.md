@@ -329,60 +329,19 @@ interception proxy.
 
 #### Cursor
 
-Use a Cursor subscription through SUPER's native provider:
+Use your Cursor subscription in SUPER:
 
 ```bash
 super login cursor
 super --model cursor/auto
 ```
 
-SUPER connects directly to Cursor's Agent service. It does not start Cursor's
-`agent` command, Cursor desktop, Node.js, Bun, or a local proxy.
+Start with Auto, or use `/model cursor` to choose from the models available
+to your account. You can also sign in with `CURSOR_ACCESS_TOKEN`.
 
-You can set `CURSOR_ACCESS_TOKEN` instead of saving a login.
-
-When you select Cursor, SUPER refreshes the model list for your account. It uses
-the built-in list if model discovery is not available.
-`cursor/auto` resolves to the account's current default model before SUPER
-sends input. It does not send `auto` as a backend model name. SUPER sends its
-tools and system instructions through Cursor's request-context handshake.
-In the TUI, `/model`, `/model cursor`, and Ctrl+L load the Cursor account
-model list once and reuse it for the active SUPER session. A Cursor login or
-logout clears this cache. This also works after `/login cursor` in the same session.
-The picker uses the model IDs returned by Cursor. Discovery errors appear
-in the TUI; retry `/model` after you fix the connection or login.
-Cursor also supplies its own agent prompt and native tool list. Those tools
-can appear in model answers, but SUPER only executes its registered tools.
-SUPER instructions are sent as Cursor rules, not as a replacement for the
-Cursor system prompt.
-
-SUPER selects the Cursor transport before it sends your prompt. By default,
-normal TLS ALPN negotiation selects HTTP/2 `Run` when H2 is available.
-If the connection uses HTTP/1.1, including when ALPN is absent, SUPER selects
-HTTP/1 `RunSSE` and `BidiAppend`. It keeps the selection for that endpoint
-until SUPER exits. Model discovery supplies the selection when possible;
-otherwise SUPER makes one model-list request that contains no prompt.
-
-Set `SUPER_CURSOR_TRANSPORT` to control this behavior:
-
-| Value | Behavior |
-| --- | --- |
-| `auto` (default) | Select H2 or HTTP/1 before sending input. |
-| `http1` | Always use HTTP/1, equivalent to Cursor CLI's `network.useHttp1ForAgent: true`. |
-| `http2` | Require H2 through normal ALPN negotiation. Report an error if H2 is unavailable. |
-
-Some corporate proxies select H2 but then close the agent connection. For
-these proxies, select `http1`. In PowerShell, run:
-
-```powershell
-$env:SUPER_CURSOR_TRANSPORT = "http1"
-super
-```
-
-On Linux or macOS, run `SUPER_CURSOR_TRANSPORT=http1 super`.
-SUPER does not retry a prompt or tool result after submission. It uses normal
-proxy settings and trusted root certificates. No Cursor CLI configuration
-or separate provider is required.
+SUPER selects the connection type automatically. If your corporate proxy requires HTTP/1,
+set `SUPER_CURSOR_TRANSPORT=http1` (`$env:SUPER_CURSOR_TRANSPORT = "http1"`
+in PowerShell).
 
 #### Databricks
 
