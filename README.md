@@ -17,6 +17,8 @@ SUPER is built in Rust and based on incredible work from
 
 ## Why SUPER
 
+- **Private by design.** The SUPER harness runs locally and collects no
+  telemetry.
 - **Start quickly.** The native terminal interface reaches its first warm frame
   in about 5 ms.
 - **Keep your work.** Resume, branch, compact, import, and export persistent
