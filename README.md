@@ -1,5 +1,8 @@
 # SUPER
 
+[![Downloads](https://img.shields.io/github/downloads/chwzr/super/total)](https://github.com/chwzr/super/releases)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://github.com/chwzr/super/blob/main/rust-toolchain.toml)
+
 <img width="766" height="244" alt="image" src="https://github.com/user-attachments/assets/08e96d6e-7409-419b-b9db-0149f2465083" />
 
 A [ridiculously fast](#performance) terminal coding agent that keeps the interface simple and gives you
