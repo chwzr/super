@@ -21,6 +21,10 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+// Use the same allocator as the `super` binary. See crates/super/src/main.rs.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pyo3::create_exception!(_super, SuperError, pyo3::exceptions::PyException);
 
 fn runtime_error(error: impl std::fmt::Display) -> PyErr {
