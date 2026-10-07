@@ -71,6 +71,15 @@ Update later with:
 super update
 ```
 
+Homebrew on macOS and Linux:
+
+```bash
+brew install chwzr/tap/super
+```
+
+Homebrew owns this binary, so update it with
+`brew upgrade chwzr/tap/super` instead of `super update`.
+
 ## Start in two commands
 
 Sign in with a ChatGPT subscription and open SUPER:
