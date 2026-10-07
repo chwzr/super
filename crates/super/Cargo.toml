@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "super: a fast, minimal terminal coding agent"
+homepage = "https://github.com/chwzr/super"
 
 [lints]
 workspace = true

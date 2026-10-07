@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Publish a Homebrew formula on each stable release. Install SUPER with
+  `brew install chwzr/tap/super`. On Linux, the formula installs the
+  static musl build, so SUPER does not require glibc. For a Homebrew
+  install, `super update` stops and tells you to run
+  `brew upgrade chwzr/tap/super`.
+
 ## 0.0.35 - 2026-10-06
 
 ### Changed
