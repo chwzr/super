@@ -39,7 +39,7 @@ SUPER is built in Rust and based on incredible work from
   telemetry.
 
 SUPER uses four focused tools by default: `read`, `write`, `edit`, and `bash`.
-Catppuccin Mocha is the default dark theme.
+Neo Citrus Dark is the default dark theme.
 
 ## Install
 

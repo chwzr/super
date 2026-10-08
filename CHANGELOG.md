@@ -10,6 +10,11 @@
   settings picker cycles through every available theme, and `/reload` picks
   up theme file changes.
 
+### Changed
+
+- The built-in dark theme is now Neo Citrus Dark (deep green base, lime
+  accent) instead of Catppuccin Mocha.
+
 ## 0.0.36 - 2026-10-08
 
 ### Added
