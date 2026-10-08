@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.37 - 2026-10-09
+
 ### Added
 
 - Custom themes now work. Load a theme file with `--theme <file>`, the
