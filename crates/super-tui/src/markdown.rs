@@ -260,10 +260,8 @@ impl MarkdownRenderer {
                         }
                         heading = Some(level);
                     }
-                    Tag::Paragraph => {
-                        if !out.is_empty() && !in_table {
-                            out.push(String::new());
-                        }
+                    Tag::Paragraph if !out.is_empty() && !in_table => {
+                        out.push(String::new());
                     }
                     Tag::Strong => {
                         current.push_str("\x1b[1m");

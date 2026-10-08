@@ -263,17 +263,11 @@ impl Editor {
                     self.state.cursor = (row + 1, 0);
                 }
             }
-            Key::Up => {
-                if row > 0 {
-                    self.state.cursor =
-                        (row - 1, col.min(grapheme_count(&self.state.lines[row - 1])));
-                }
+            Key::Up if row > 0 => {
+                self.state.cursor = (row - 1, col.min(grapheme_count(&self.state.lines[row - 1])));
             }
-            Key::Down => {
-                if row + 1 < self.state.lines.len() {
-                    self.state.cursor =
-                        (row + 1, col.min(grapheme_count(&self.state.lines[row + 1])));
-                }
+            Key::Down if row + 1 < self.state.lines.len() => {
+                self.state.cursor = (row + 1, col.min(grapheme_count(&self.state.lines[row + 1])));
             }
             Key::Home => self.state.cursor.1 = 0,
             Key::End => self.state.cursor.1 = grapheme_count(&self.state.lines[row]),

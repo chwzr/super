@@ -482,9 +482,9 @@ async fn connect_websocket(
                     .split(',')
                     .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
             })
-            || !headers
+            || headers
                 .get("sec-websocket-accept")
-                .is_some_and(|value| value == expected_accept.as_str())
+                .is_none_or(|value| value != expected_accept.as_str())
             || headers.contains_key("sec-websocket-extensions")
             || !valid_protocol
         {
@@ -1123,29 +1123,27 @@ pub(crate) fn response_input(context: &Context) -> Vec<Value> {
                         ContentBlock::Text {
                             text,
                             text_signature,
-                        } => {
-                            if !text.is_empty() {
-                                let mut item = json!({
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "content": [{"type": "output_text", "text": text, "annotations": []}],
-                                    "status": "completed",
-                                });
-                                if let Some(signature) = text_signature {
-                                    if let Ok(parsed) = serde_json::from_str::<Value>(signature)
-                                        && parsed["v"] == 1
-                                        && parsed["id"].is_string()
-                                    {
-                                        item["id"] = parsed["id"].clone();
-                                        if parsed["phase"].is_string() {
-                                            item["phase"] = parsed["phase"].clone();
-                                        }
-                                    } else {
-                                        item["id"] = json!(signature);
+                        } if !text.is_empty() => {
+                            let mut item = json!({
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": text, "annotations": []}],
+                                "status": "completed",
+                            });
+                            if let Some(signature) = text_signature {
+                                if let Ok(parsed) = serde_json::from_str::<Value>(signature)
+                                    && parsed["v"] == 1
+                                    && parsed["id"].is_string()
+                                {
+                                    item["id"] = parsed["id"].clone();
+                                    if parsed["phase"].is_string() {
+                                        item["phase"] = parsed["phase"].clone();
                                     }
+                                } else {
+                                    item["id"] = json!(signature);
                                 }
-                                input.push(item);
                             }
+                            input.push(item);
                         }
                         ContentBlock::ToolCall(tc) => {
                             let (call_id, item_id) = tc
