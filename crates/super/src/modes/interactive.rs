@@ -436,7 +436,7 @@ impl ResizeState {
     }
 
     fn settle(&mut self, now: Instant) -> bool {
-        if !self.settle_at.is_some_and(|deadline| now >= deadline) {
+        if self.settle_at.is_none_or(|deadline| now < deadline) {
             return false;
         }
         self.settle_at = None;

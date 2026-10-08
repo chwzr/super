@@ -234,10 +234,10 @@ async fn exchange_code(
     .await?;
     let token = read_token_response(response, "exchange").await?;
     if config.direct_token
-        && !token
+        && token
             .id_token
             .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
+            .is_none_or(|value| value.trim().is_empty())
     {
         anyhow::bail!(
             "ChatGPT login returned no ID token. A non-empty ID token is required. Run `super login openai` again."

@@ -2,7 +2,7 @@
 
 use crate::compaction::estimate_message_tokens;
 use crate::session::manager::SessionManager;
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -119,14 +119,13 @@ fn validate_messages(messages: &[AgentMessage]) -> Result<()> {
     let messages = super_agent::convert_to_llm(messages);
     for message in &messages {
         match message {
-            super_ai::Message::ToolResult(result) => {
-                if pending.remove(result.tool_call_id.as_str()) != Some(result.tool_name.as_str()) {
-                    bail!(
-                        "tool result '{}' has no matching call and tool name",
-                        result.tool_call_id
-                    );
-                }
-            }
+            // Not a match guard: a matching result must consume this arm so it
+            // does not fall through to the "missing results" check below.
+            super_ai::Message::ToolResult(result) => ensure!(
+                pending.remove(result.tool_call_id.as_str()) == Some(result.tool_name.as_str()),
+                "tool result '{}' has no matching call and tool name",
+                result.tool_call_id
+            ),
             _ if !pending.is_empty() => bail!("a tool call group is missing its results"),
             super_ai::Message::Assistant(assistant) => {
                 for call in assistant.tool_calls() {
