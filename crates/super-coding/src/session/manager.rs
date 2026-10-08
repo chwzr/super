@@ -5,13 +5,13 @@ use super::entry::{
     EntryBase, SESSION_VERSION, SessionEntry, SessionHeader, iso_now, new_entry_id,
 };
 use anyhow::{Context as _, Result};
-use super_agent::{AgentMessage, BranchSummaryMessage, CompactionSummaryMessage, CustomMessage};
-use super_ai::{Model, ThinkingLevel, Usage};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use super_agent::{AgentMessage, BranchSummaryMessage, CompactionSummaryMessage, CustomMessage};
+use super_ai::{Model, ThinkingLevel, Usage};
 
 pub struct SessionManager {
     header: SessionHeader,
@@ -1033,8 +1033,8 @@ fn entry_timestamp(base: &EntryBase) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super_ai::{AssistantMessage, ContentBlock, ModelCost, StopReason};
     use std::collections::BTreeMap;
+    use super_ai::{AssistantMessage, ContentBlock, ModelCost, StopReason};
 
     fn manager() -> SessionManager {
         SessionManager::in_memory(Path::new("/tmp/project"))

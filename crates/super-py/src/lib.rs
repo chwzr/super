@@ -12,14 +12,14 @@
 mod convert;
 
 use convert::{Json, json_to_py, py_to_json};
-use super_sdk::options::{SessionOptions, SessionSource};
-use super_sdk::protocol::Command;
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::path::PathBuf;
 use std::sync::Arc;
+use super_sdk::options::{SessionOptions, SessionSource};
+use super_sdk::protocol::Command;
 
 // Use the same allocator as the `super` binary. See crates/super/src/main.rs.
 #[global_allocator]

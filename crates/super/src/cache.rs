@@ -1,11 +1,11 @@
 //! Historical provider KV-cache rates from persisted session usage.
 
 use anyhow::{Context as _, Result};
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 use super_agent::AgentMessage;
 use super_ai::Usage;
 use super_coding::{SessionEntry, SessionManager};
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
 
 const GRAPH_WIDTH: usize = 32;
 const GRAPH_HEIGHT: usize = 4;

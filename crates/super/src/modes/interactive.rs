@@ -9,6 +9,12 @@ use crate::setup::{Startup, build_startup, reload_runtime};
 use crate::slash_commands;
 use crate::workflow_ui::{self, ViewAction, WorkflowView};
 use anyhow::{Context as _, Result};
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use super_agent::{AgentEvent, AgentMessage};
 use super_ai::{AssistantEvent, ContentBlock, StopReason, ThinkingLevel, Transport};
 use super_coding::session_runner::{PromptMode, SessionEvent};
@@ -19,12 +25,6 @@ use super_tui::{
     KeyEvent, Keybindings, MarkdownRenderer, MermaidMode, SelectItem, SelectList,
     StreamingMarkdownCache, Terminal, Theme,
 };
-use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -4664,7 +4664,9 @@ fn open_login_picker_with_filter(app: &mut App, filter: Option<&str>) {
                 let methods = super_ai::auth::login_methods(provider);
                 let status = match super_ai::auth::stored_auth_kind(provider) {
                     Some(super_ai::auth::StoredAuthKind::OAuth) => "saved OAuth",
-                    Some(super_ai::auth::StoredAuthKind::AzureEntraId) => "saved Microsoft Entra ID",
+                    Some(super_ai::auth::StoredAuthKind::AzureEntraId) => {
+                        "saved Microsoft Entra ID"
+                    }
                     Some(super_ai::auth::StoredAuthKind::ApiKey) => "saved API key",
                     None => "not configured",
                 };
@@ -4749,7 +4751,9 @@ fn open_login_methods_picker(app: &mut App, provider: &str) {
                     super_ai::auth::LoginMethod::GoogleApplicationDefault => {
                         "Uses gcloud application-default credentials".into()
                     }
-                    super_ai::auth::LoginMethod::AwsProfile => "Uses a named AWS SDK profile".into(),
+                    super_ai::auth::LoginMethod::AwsProfile => {
+                        "Uses a named AWS SDK profile".into()
+                    }
                     super_ai::auth::LoginMethod::AwsAmbient => {
                         "Uses the AWS SDK default chain".into()
                     }
@@ -6671,7 +6675,11 @@ fn apply_settings_selection(
     save_interactive_settings(app, session, resources);
 }
 
-fn switch_session(app: &mut App, session: &Arc<super_coding::AgentSession>, record: &SessionRecord) {
+fn switch_session(
+    app: &mut App,
+    session: &Arc<super_coding::AgentSession>,
+    record: &SessionRecord,
+) {
     let result = match &record.source {
         SessionSource::Super(path) => super_coding::SessionManager::open(path),
         source => session_sources::import(source).and_then(|messages| {
@@ -6953,7 +6961,8 @@ fn start_provider_device_login(
                         code: device.user_code.clone(),
                         opened,
                     });
-                    let credential = super_ai::auth::meta::finish(&config, &device, &cancel).await?;
+                    let credential =
+                        super_ai::auth::meta::finish(&config, &device, &cancel).await?;
                     super_ai::auth::store_oauth(&provider, credential)
                 }
                 "xai" => {
@@ -7198,7 +7207,9 @@ fn provider_tui_usage() -> &'static str {
     "Usage:\n/provider add <id> <chat-completions|responses|codex> <base-url> <model> [KEY_ENV|auth:<provider>|--no-auth]\n/provider list\n/provider remove <id>"
 }
 
-fn webmcp_manager(settings: &super_coding::settings::WebMcpSettings) -> super_webmcp::WebMcpManager {
+fn webmcp_manager(
+    settings: &super_coding::settings::WebMcpSettings,
+) -> super_webmcp::WebMcpManager {
     super_webmcp::WebMcpManager::new(super_webmcp::WebMcpConfig {
         allowed_origins: settings.allowed_origins.clone(),
         disallowed_origins: settings.disallowed_origins.clone(),
@@ -8036,7 +8047,8 @@ async fn share_session_async(
     html_path: &std::path::Path,
     cancel: &CancellationToken,
 ) -> Result<String> {
-    if let Some(token) = super_ai::auth::resolve_api_key_async("radius", &Default::default()).await?
+    if let Some(token) =
+        super_ai::auth::resolve_api_key_async("radius", &Default::default()).await?
     {
         let gateway =
             std::env::var("RADIUS_GATEWAY").unwrap_or_else(|_| "https://radius.pi.dev".into());

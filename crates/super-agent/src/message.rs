@@ -1,11 +1,11 @@
 //! Session-level message union: provider messages plus harness roles.
 
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use super_ai::{
     AssistantMessage, ContentBlock, Message, TimestampMs, ToolResultMessage, UserContent,
     UserMessage,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

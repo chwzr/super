@@ -4,11 +4,11 @@
 //! their tool list from here, so "which tools does `super` have" has exactly one
 //! answer no matter how the agent was started.
 
+use std::path::Path;
+use std::sync::Arc;
 use super_agent::DynTool;
 use super_coding::settings::Settings;
 use super_mcp::McpManager;
-use std::path::Path;
-use std::sync::Arc;
 
 /// Tools enabled when the caller does not choose.
 pub const DEFAULT_TOOLS: &[&str] = &["read", "write", "edit", "bash"];

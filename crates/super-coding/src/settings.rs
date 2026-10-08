@@ -1,11 +1,11 @@
 //! Settings: global `~/.super/agent/settings.json` deep-merged with project
 //! `.super/settings.json` (project wins).
 
-use super_ai::Transport;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use super_ai::Transport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

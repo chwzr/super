@@ -5,9 +5,9 @@ use crate::tool::{AgentTool, ToolResult, ToolUpdateSink};
 use crate::tools::path::resolve;
 use crate::tools::truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, format_size, truncate_head};
 use base64::Engine;
-use super_ai::ContentBlock;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use super_ai::ContentBlock;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 

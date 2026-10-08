@@ -6,12 +6,12 @@
 //! token. Every operation still reaches the same `super_sdk::Session::execute`
 //! dispatcher used by Rust, Python, and RPC mode.
 
-use super_sdk::{Command, SessionOptions, SessionSource};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
+use super_sdk::{Command, SessionOptions, SessionSource};
 
 // Use the same allocator as the `super` binary. See crates/super/src/main.rs.
 #[global_allocator]

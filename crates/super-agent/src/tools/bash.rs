@@ -4,11 +4,11 @@
 
 use crate::tool::{AgentTool, ToolResult, ToolUpdateSink};
 use crate::tools::truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, format_size, truncate_tail};
-use super_ai::ContentBlock;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
+use super_ai::ContentBlock;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 

@@ -363,8 +363,12 @@ async fn slow_host_drops_old_states_and_does_not_delay_other_hosts() {
         hosts.update(State::Blocked("Old decision"), &session, &args);
     }
     hosts.update(State::Idle, &session, &args);
-    fast.wait(|calls| calls.iter().any(|call| call.contains(&"SUPER: idle".into())))
-        .await;
+    fast.wait(|calls| {
+        calls
+            .iter()
+            .any(|call| call.contains(&"SUPER: idle".into()))
+    })
+    .await;
     assert!(
         started.elapsed() < COMMAND_TIMEOUT,
         "Fast host waited for the slow host"
@@ -429,8 +433,12 @@ async fn cmux_delivers_status_when_resume_is_unavailable_and_retries_resume() {
     }]);
     let session = session(directory.path());
     hosts.update(State::Idle, &session, &Args::parse_from(["super"]));
-    log.wait(|calls| calls.iter().any(|call| call.contains(&"SUPER: idle".into())))
-        .await;
+    log.wait(|calls| {
+        calls
+            .iter()
+            .any(|call| call.contains(&"SUPER: idle".into()))
+    })
+    .await;
     std::fs::write(ready, "ready").unwrap();
     log.wait(|calls| {
         calls

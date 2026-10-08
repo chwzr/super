@@ -1,15 +1,15 @@
 #![cfg(feature = "native")]
 
 use base64::Engine as _;
-use super_ai::{
-    Context, Message, Registry, ResolvedCredential, StopReason, StreamOptions, Transport,
-    UserContent, UserMessage,
-};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use super_ai::{
+    Context, Message, Registry, ResolvedCredential, StopReason, StreamOptions, Transport,
+    UserContent, UserMessage,
+};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -543,7 +543,8 @@ fn record_receipt(
 #[tokio::test]
 #[ignore = "child process used by the TLS transport matrix"]
 async fn provider_probe() {
-    let endpoint = std::env::var("SUPER_PROXY_TEST_URL").expect("run the parent provider TLS tests");
+    let endpoint =
+        std::env::var("SUPER_PROXY_TEST_URL").expect("run the parent provider TLS tests");
     let mut cases = BTreeMap::new();
     for model in Registry::from_builtin().all() {
         cases

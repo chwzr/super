@@ -2,11 +2,11 @@
 
 use crate::args::{McpCommand, McpScope, McpServerArgs};
 use anyhow::{Context as _, Result, bail};
-use super_mcp::config::{self, AuthMode, AuthSetting, ConfigScope, OAuthConfig, OAuthGrantType};
-use super_mcp::{McpManager, ServerEntry};
 use serde::Serialize;
 use std::io::Write as _;
 use std::time::Duration;
+use super_mcp::config::{self, AuthMode, AuthSetting, ConfigScope, OAuthConfig, OAuthGrantType};
+use super_mcp::{McpManager, ServerEntry};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::sync::CancellationToken;
 

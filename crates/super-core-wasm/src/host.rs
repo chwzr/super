@@ -7,15 +7,15 @@ use futures::FutureExt as _;
 use futures::channel::oneshot;
 use futures::future::{Either, select};
 use js_sys::{Function, Promise};
+use serde::Serialize;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
 use super_agent::{AgentEvent, ToolResult, ToolUpdateSink};
 use super_ai::{
     AssistantEvent, AssistantMessage, ContentBlock, Context, EventStream, Model, StopReason,
     StreamOptions,
 };
-use serde::Serialize;
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::rc::Rc;
 use tokio_util::sync::CancellationToken;
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;

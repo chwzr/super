@@ -4,13 +4,13 @@
 //! counter moves, so a run with hundreds of agents costs nothing to display
 //! while it is idle.
 
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+use std::time::Duration;
 use super_coding::workflows::{
     AgentSnapshot, AgentStatus, RunRecord, RunSnapshot, RunStatus, RunSummary, WorkflowPlan,
 };
 use super_tui::{Key, KeyEvent, Theme, text};
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-use std::time::Duration;
 
 /// What the user is looking at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

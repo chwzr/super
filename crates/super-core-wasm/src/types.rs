@@ -1,11 +1,11 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use super_agent::AgentMessage;
 use super_ai::{
     ContentBlock, Context, Message, Model, ModelCost, OpenAICompat, PromptCache, StopReason,
     ThinkingLevel, ToolDef, Usage, UserContent,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::BTreeMap;
 
 pub const MAX_INSTRUCTIONS_BYTES: usize = 64 * 1024;
 pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;

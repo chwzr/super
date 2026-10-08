@@ -2,14 +2,14 @@
 
 use crate::message::AgentMessage;
 use crate::tool::{DynTool, ExecutionMode, ToolResult};
-use super_ai::{
-    ContentBlock, Message, Model, ResolvedCredential, StreamOptions, ThinkingLevel, ToolChoice,
-    Transport, Usage,
-};
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use super_ai::{
+    ContentBlock, Message, Model, ResolvedCredential, StreamOptions, ThinkingLevel, ToolChoice,
+    Transport, Usage,
+};
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 

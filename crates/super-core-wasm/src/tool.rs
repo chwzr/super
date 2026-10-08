@@ -1,7 +1,7 @@
 use crate::host;
 use crate::types::{ToolDefinitionInput, ToolExecutionMode};
-use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
 use serde_json::Value;
+use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
 use tokio_util::sync::CancellationToken;
 
 pub struct HostTool {

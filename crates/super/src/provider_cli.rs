@@ -1,7 +1,7 @@
 use crate::args::ProviderCommand;
 use anyhow::{Context as _, Result, bail};
-use super_ai::provider_config::{self, AddProvider};
 use std::collections::BTreeMap;
+use super_ai::provider_config::{self, AddProvider};
 
 pub fn run(command: &ProviderCommand) -> Result<i32> {
     match command {

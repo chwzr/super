@@ -7,9 +7,9 @@
 use crate::args::Args;
 use crate::setup::build_startup;
 use anyhow::Result;
-use super_coding::session_runner::SessionEvent;
 use std::io::Read;
 use std::sync::Arc;
+use super_coding::session_runner::SessionEvent;
 
 pub use super_sdk::events::session_event_json as event_json;
 
@@ -47,8 +47,8 @@ pub async fn run(args: &Args) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super_coding::session_runner::WorkflowTurnStatus;
     use serde_json::json;
+    use super_coding::session_runner::WorkflowTurnStatus;
 
     #[test]
     fn this_mode_uses_the_shared_encoder() {

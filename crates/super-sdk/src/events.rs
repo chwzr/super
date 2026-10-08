@@ -10,10 +10,10 @@
 //! and treats `message_end.message` as authoritative. Sending the snapshot on
 //! every token would multiply the bytes on the wire by the length of the reply.
 
+use serde_json::{Value, json};
 use super_agent::AgentEvent;
 use super_ai::AssistantEvent;
 use super_coding::session_runner::{SessionEvent, WorkflowTurnStatus};
-use serde_json::{Value, json};
 
 /// Encode one streaming assistant delta.
 pub fn assistant_event_json(event: &AssistantEvent) -> Value {

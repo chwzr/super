@@ -654,7 +654,8 @@ mod tests {
             }) if name == "demo" && server.stdio == ["demo-server", "--stdio"]
         ));
 
-        let login = Args::try_parse_from(["super", "mcp", "login", "demo", "--no-browser"]).unwrap();
+        let login =
+            Args::try_parse_from(["super", "mcp", "login", "demo", "--no-browser"]).unwrap();
         assert!(matches!(
             login.command,
             Some(Command::Mcp {

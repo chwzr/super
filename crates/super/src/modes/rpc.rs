@@ -12,8 +12,8 @@
 
 use crate::args::Args;
 use anyhow::Result;
-use super_sdk::options::{SessionOptions, SessionSource};
 use std::path::PathBuf;
+use super_sdk::options::{SessionOptions, SessionSource};
 
 /// Translate command-line arguments into SDK session options.
 pub fn options_from_args(args: &Args) -> Result<SessionOptions> {

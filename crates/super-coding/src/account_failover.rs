@@ -6,10 +6,10 @@
 //! next ready account and sends the same request again. The agent loop, the
 //! transcript, and the session file never see the failed attempt.
 
+use std::sync::Arc;
 use super_agent::StreamFn;
 use super_ai::auth::accounts::{self, AccountSwitch};
 use super_ai::{AssistantEvent, EventStream, Registry};
-use std::sync::Arc;
 
 pub(crate) type SwitchFn = Arc<dyn Fn(AccountSwitch) + Send + Sync>;
 

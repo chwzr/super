@@ -1,10 +1,10 @@
 //! Ls tool: directory listing, directories first with a trailing slash.
 
+use serde_json::{Value, json};
+use std::path::PathBuf;
 use super_agent::tool::{AgentTool, ToolResult, ToolUpdateSink};
 use super_agent::tools::path::resolve;
 use super_agent::tools::truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_head};
-use serde_json::{Value, json};
-use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_LIMIT: usize = 500;

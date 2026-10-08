@@ -1,9 +1,9 @@
 //! The compact progress view for `/loop` and `/autoresearch` jobs.
 
 use crate::workflow_ui::{format_elapsed, format_tokens};
+use std::sync::Arc;
 use super_coding::iterative::{IterativeRuntime, JobRecord, JobStatus, format_interval};
 use super_tui::{Key, KeyEvent, Theme, text};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JobViewAction {
@@ -215,8 +215,8 @@ pub(crate) fn progress_line(runtime: &IterativeRuntime, theme: &Theme, width: us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super_coding::iterative::{JobKind, JobSnapshot};
     use std::time::Duration;
+    use super_coding::iterative::{JobKind, JobSnapshot};
 
     #[test]
     fn status_colors_cover_every_terminal_state() {

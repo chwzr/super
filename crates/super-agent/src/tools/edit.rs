@@ -4,9 +4,9 @@
 use crate::tool::{AgentTool, ToolResult, ToolUpdateSink};
 use crate::tools::mutation_queue::lock_path;
 use crate::tools::path::resolve;
-use super_ai::ContentBlock;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use super_ai::ContentBlock;
 use tokio_util::sync::CancellationToken;
 
 pub struct EditTool {

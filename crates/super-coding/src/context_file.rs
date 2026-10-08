@@ -3,11 +3,11 @@
 use crate::compaction::estimate_message_tokens;
 use crate::session::manager::SessionManager;
 use anyhow::{Context as _, Result, bail};
-use super_agent::AgentMessage;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use super_agent::AgentMessage;
 
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -22,7 +22,9 @@ pub(crate) struct ContextFile {
 
 impl ContextFile {
     pub(crate) fn new() -> Result<Self> {
-        let directory = tempfile::Builder::new().prefix("super-context-").tempdir()?;
+        let directory = tempfile::Builder::new()
+            .prefix("super-context-")
+            .tempdir()?;
         let path = directory.path().join("context.json");
         Ok(Self {
             directory,

@@ -1,11 +1,11 @@
 //! The wire format is a contract with client authors in other languages, so it
 //! is pinned by exact-string assertions rather than round-trip-only checks.
 
+use serde_json::json;
 use super_sdk::protocol::{
     Command, Incoming, ProtocolError, QueueMode, Request, Response, StreamingBehavior, decode_line,
     decode_request,
 };
-use serde_json::json;
 
 #[test]
 fn every_command_serializes_with_a_snake_case_type() {

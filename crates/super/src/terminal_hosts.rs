@@ -2,11 +2,11 @@
 //! of the input loop and prevents a slow host from accumulating old states.
 
 use crate::args::Args;
-use super_coding::AgentSession;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use super_coding::AgentSession;
 use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;

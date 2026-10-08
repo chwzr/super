@@ -2,11 +2,11 @@
 
 #![cfg(all(feature = "mock", feature = "rpc"))]
 
-use super_sdk::mock::{MockProvider, MockScript};
-use super_sdk::{Client, Command, Session, SessionOptions};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Instant;
+use super_sdk::mock::{MockProvider, MockScript};
+use super_sdk::{Client, Command, Session, SessionOptions};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 const SAMPLES: usize = 15;
