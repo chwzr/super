@@ -512,8 +512,8 @@ jobs:
           bun install --frozen-lockfile
           bun run build:ts
           npm install -g 'npm@^11.5.1'
-          if npm view "super-agent-sdk@$version" version > /dev/null 2>&1; then
-            echo "super-agent-sdk $version already published"
+          if npm view "@chwzr/super-agent-sdk@$version" version > /dev/null 2>&1; then
+            echo "@chwzr/super-agent-sdk $version already published"
           else
             npm publish --access public
           fi
@@ -552,8 +552,8 @@ jobs:
           test -s pkg/super_core_wasm_bg.wasm
           bun test/size.mjs
           npm install -g 'npm@^11.5.1'
-          if npm view "super-agent-sdk-wasm@$version" version > /dev/null 2>&1; then
-            echo "super-agent-sdk-wasm $version already published"
+          if npm view "@chwzr/super-agent-sdk-wasm@$version" version > /dev/null 2>&1; then
+            echo "@chwzr/super-agent-sdk-wasm $version already published"
           else
             npm publish --access public
           fi

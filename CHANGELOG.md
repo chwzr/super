@@ -12,6 +12,11 @@
   install, `super update` stops and tells you to run
   `brew upgrade chwzr/tap/super`.
 
+### Changed
+
+- Publish the JavaScript SDKs on npm as `@chwzr/super-agent-sdk` and
+  `@chwzr/super-agent-sdk-wasm`.
+
 ## 0.0.35 - 2026-10-06
 
 ### Changed
