@@ -295,6 +295,8 @@ struct InteractiveResources {
     enabled_models: Vec<super_ai::Model>,
     /// Workflows saved on disk, each of which is a slash command.
     saved_workflows: Vec<super_coding::workflows::SavedWorkflow>,
+    /// Every selectable theme: the built-ins plus discovered theme files.
+    themes: Vec<Theme>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1248,6 +1250,8 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         enabled_models,
         mut initial_message,
         needs_login,
+        theme,
+        themes,
     } = startup;
     let mut resources = InteractiveResources {
         settings: settings.clone(),
@@ -1256,12 +1260,9 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         context_file_paths,
         enabled_models,
         saved_workflows: discover_saved_workflows(&session),
+        themes,
     };
 
-    let theme = match settings.theme.as_deref() {
-        Some("light") => Theme::light(),
-        _ => Theme::dark(),
-    };
     provisional_editor.set_theme(theme.clone());
     if submit_after_startup {
         let draft = provisional_editor.take();
@@ -4842,7 +4843,7 @@ fn settings_picker(
     resources: &InteractiveResources,
 ) -> Picker {
     let settings = &resources.settings;
-    let theme = settings.theme.as_deref().unwrap_or("dark");
+    let theme = app.theme.name.as_str();
     let items = vec![
         SelectItem {
             label: "Thinking level".into(),
@@ -6567,9 +6568,15 @@ fn apply_settings_selection(
             update_thinking_border(app, next);
         }
         1 => {
-            let light = resources.settings.theme.as_deref() != Some("light");
-            resources.settings.theme = Some(if light { "light" } else { "dark" }.into());
-            app.apply_theme(if light { Theme::light() } else { Theme::dark() });
+            // Cycle through every available theme (built-ins first).
+            let position = resources
+                .themes
+                .iter()
+                .position(|theme| theme.name == app.theme.name)
+                .unwrap_or(0);
+            let next = resources.themes[(position + 1) % resources.themes.len()].clone();
+            resources.settings.theme = Some(next.name.clone());
+            app.apply_theme(next);
             update_thinking_border(app, session.thinking_level());
         }
         2 => {
@@ -8165,13 +8172,9 @@ fn reload_interactive(
     resources.settings = reloaded.settings.clone();
     session.reload_runtime(reloaded.settings, reloaded.system_prompt, reloaded.tools);
     resources.saved_workflows = discover_saved_workflows(session);
+    resources.themes = reloaded.themes;
 
-    let theme = if resources.settings.theme.as_deref() == Some("light") {
-        Theme::light()
-    } else {
-        Theme::dark()
-    };
-    app.apply_theme(theme);
+    app.apply_theme(reloaded.theme);
     app.hide_thinking = resources.settings.hide_thinking_block;
     app.mermaid_mode = mermaid_mode(resources.settings.markdown.mermaid);
     app.md.code_indent = resources
@@ -8305,6 +8308,7 @@ mod tests {
             context_file_paths: Vec::new(),
             enabled_models: Vec::new(),
             saved_workflows: Vec::new(),
+            themes: vec![Theme::dark(), Theme::light()],
         }
     }
 

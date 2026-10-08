@@ -30,3 +30,4 @@ crossterm_winapi = "0.9.1"
 
 [dev-dependencies]
 super-bench.workspace = true
+tempfile.workspace = true

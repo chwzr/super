@@ -4332,6 +4332,7 @@ dependencies = [
  "serde_json",
  "super-bench",
  "syntect",
+ "tempfile",
  "tokio",
  "two-face",
  "unicode-segmentation",

@@ -15,6 +15,7 @@ use super_coding::skills::Skill;
 use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt};
 use super_coding::trust;
 use super_mcp::McpManager;
+use super_tui::Theme;
 
 pub struct Startup {
     pub session: Arc<AgentSession>,
@@ -22,6 +23,8 @@ pub struct Startup {
     pub skills: Vec<Skill>,
     pub prompt_templates: Vec<super_coding::prompts::PromptTemplate>,
     pub context_file_paths: Vec<PathBuf>,
+    pub theme: Theme,
+    pub themes: Vec<Theme>,
     pub enabled_models: Vec<Model>,
     pub initial_message: Option<String>,
     pub needs_login: bool,
@@ -32,6 +35,8 @@ pub struct ReloadedRuntime {
     pub skills: Vec<Skill>,
     pub prompt_templates: Vec<super_coding::prompts::PromptTemplate>,
     pub context_file_paths: Vec<PathBuf>,
+    pub theme: Theme,
+    pub themes: Vec<Theme>,
     pub tools: Vec<DynTool>,
     pub system_prompt: String,
 }
@@ -137,14 +142,57 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
     });
     let tools = build_tools(&tool_names, cwd, &settings, mcp.as_ref());
 
+    let (theme, themes) = load_themes(args, cwd, trusted, &settings);
+
     Ok(ReloadedRuntime {
         settings,
         skills,
         prompt_templates,
         context_file_paths: context.into_iter().map(|item| item.path).collect(),
+        theme,
+        themes,
         tools,
         system_prompt,
     })
+}
+
+/// Discover theme files from `--theme`, the `themes` setting, and the
+/// user/project theme directories, then pick the active one. Returns the
+/// active theme and every available theme (built-ins included).
+pub fn load_themes(
+    args: &Args,
+    cwd: &std::path::Path,
+    trusted: bool,
+    settings: &Settings,
+) -> (Theme, Vec<Theme>) {
+    // `--no-themes` disables directory discovery and the `themes` setting but
+    // still honors files passed explicitly with `--theme`.
+    let loaded = if args.no_themes {
+        let explicit: Vec<PathBuf> = args.themes.iter().map(PathBuf::from).collect();
+        explicit
+            .iter()
+            .filter_map(|path| match Theme::load(path) {
+                Ok(theme) => Some(theme),
+                Err(error) => {
+                    eprintln!("warning: failed to load theme {}: {error}", path.display());
+                    None
+                }
+            })
+            .collect()
+    } else {
+        let explicit: Vec<PathBuf> = args
+            .themes
+            .iter()
+            .chain(settings.themes.iter())
+            .map(PathBuf::from)
+            .collect();
+        super_tui::theme::discover(cwd, trusted, &explicit)
+    };
+    let active =
+        super_tui::theme::resolve(settings.theme.as_deref(), &loaded, !args.themes.is_empty());
+    let mut themes = vec![Theme::dark(), Theme::light()];
+    themes.extend(loaded);
+    (active, themes)
 }
 
 pub fn resolve_model(
@@ -476,12 +524,16 @@ pub async fn build_startup(
         Some(parts.join("\n\n"))
     };
 
+    let (theme, themes) = load_themes(args, &cwd, trusted, &settings);
+
     Ok(Startup {
         session,
         settings,
         skills,
         prompt_templates,
         context_file_paths: context.into_iter().map(|c| c.path).collect(),
+        theme,
+        themes,
         enabled_models,
         initial_message,
         needs_login,
