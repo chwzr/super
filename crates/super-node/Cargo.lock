@@ -2015,159 +2015,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "super-agent"
-version = "0.0.35"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "dirs",
- "futures",
- "jsonschema",
- "super-agent-ai",
- "libc",
- "serde",
- "serde_json",
- "similar",
- "tempfile",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "super-agent-ai"
-version = "0.0.35"
-dependencies = [
- "anyhow",
- "aws-config",
- "aws-sdk-bedrockruntime",
- "aws-smithy-types",
- "azure_core",
- "azure_identity",
- "base64 0.22.1",
- "chrono",
- "dirs",
- "fs2",
- "futures",
- "http 1.5.0",
- "prost",
- "prost-types",
- "rand 0.9.5",
- "reqwest 0.12.28",
- "rustls 0.23.43",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.20",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "url",
- "uuid",
- "xxhash-rust",
-]
-
-[[package]]
-name = "super-agent-sdk"
-version = "0.0.35"
-dependencies = [
- "anyhow",
- "dirs",
- "futures",
- "super-agent",
- "super-agent-ai",
- "super-coding",
- "super-mcp",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
-name = "super-coding"
-version = "0.0.35"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "dirs",
- "futures",
- "globset",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "jsonschema",
- "super-agent",
- "super-agent-ai",
- "super-workflow",
- "rand 0.9.5",
- "regex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
-name = "super-mcp"
-version = "0.0.35"
-dependencies = [
- "anyhow",
- "async-trait",
- "dirs",
- "fs2",
- "http 1.5.0",
- "super-agent",
- "super-agent-ai",
- "reqwest 0.13.4",
- "rmcp",
- "rustls 0.23.43",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tokio-util",
- "url",
- "which",
-]
-
-[[package]]
-name = "super-node"
-version = "0.0.35"
-dependencies = [
- "super-agent-sdk",
- "mimalloc",
- "napi",
- "napi-build",
- "napi-derive",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "super-workflow"
-version = "0.0.35"
-dependencies = [
- "anyhow",
- "async-trait",
- "futures",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3535,6 +3382,159 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "super-agent"
+version = "0.0.36"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "dirs",
+ "futures",
+ "jsonschema",
+ "libc",
+ "serde",
+ "serde_json",
+ "similar",
+ "super-agent-ai",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "super-agent-ai"
+version = "0.0.36"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-sdk-bedrockruntime",
+ "aws-smithy-types",
+ "azure_core",
+ "azure_identity",
+ "base64 0.22.1",
+ "chrono",
+ "dirs",
+ "fs2",
+ "futures",
+ "http 1.5.0",
+ "prost",
+ "prost-types",
+ "rand 0.9.5",
+ "reqwest 0.12.28",
+ "rustls 0.23.43",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "url",
+ "uuid",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "super-agent-sdk"
+version = "0.0.36"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "futures",
+ "serde",
+ "serde_json",
+ "super-agent",
+ "super-agent-ai",
+ "super-coding",
+ "super-mcp",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "super-coding"
+version = "0.0.36"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "futures",
+ "globset",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "jsonschema",
+ "rand 0.9.5",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "super-agent",
+ "super-agent-ai",
+ "super-workflow",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "super-mcp"
+version = "0.0.36"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dirs",
+ "fs2",
+ "http 1.5.0",
+ "reqwest 0.13.4",
+ "rmcp",
+ "rustls 0.23.43",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "super-agent",
+ "super-agent-ai",
+ "tokio",
+ "tokio-util",
+ "url",
+ "which",
+]
+
+[[package]]
+name = "super-node"
+version = "0.0.36"
+dependencies = [
+ "mimalloc",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "serde_json",
+ "super-agent-sdk",
+ "tokio",
+]
+
+[[package]]
+name = "super-workflow"
+version = "0.0.36"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "syn"
