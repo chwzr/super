@@ -88,11 +88,11 @@ converted directly into Python dict/list objects in Rust, without a per-token
 ## TypeScript: Node, Bun, and Deno
 
 ```sh
-bun add super-agent-sdk
+bun add @chwzr/super-agent-sdk
 ```
 
 ```ts
-import { Session } from "super-agent-sdk"
+import { Session } from "@chwzr/super-agent-sdk"
 
 const session = await Session.create({ tools: ["read", "bash"] })
 const events = session.events()
@@ -116,7 +116,7 @@ SUPER offers two separate browser topologies.
 
 ### Local agent kernel
 
-`super-agent-sdk-wasm` runs the conversation, model/tool turn loop, schema
+`@chwzr/super-agent-sdk-wasm` runs the conversation, model/tool turn loop, schema
 validation, events, cancellation, limits, and checkpoints inside WebAssembly.
 It needs no native SUPER process, WebSocket, or JSPI support. The host explicitly
 provides model and tool capabilities:
@@ -126,7 +126,7 @@ wasm-pack build crates/super-core-wasm --target web --release
 ```
 
 ```ts
-import init, { SuperAgent, createOpenAICompatibleProvider } from "super-agent-sdk-wasm"
+import init, { SuperAgent, createOpenAICompatibleProvider } from "@chwzr/super-agent-sdk-wasm"
 await init()
 
 const provider = createOpenAICompatibleProvider({

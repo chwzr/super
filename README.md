@@ -2,8 +2,8 @@
 
 [![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://github.com/chwzr/super/blob/main/rust-toolchain.toml)
 [![Downloads](https://img.shields.io/github/downloads/chwzr/super/total)](https://github.com/chwzr/super/releases)
-[![npm SDK downloads](https://img.shields.io/npm/dm/super-agent-sdk?label=npm%20SDK%20downloads)](https://www.npmjs.com/package/super-agent-sdk)
-[![npm WASM downloads](https://img.shields.io/npm/dm/super-agent-sdk-wasm?label=npm%20WASM%20downloads)](https://www.npmjs.com/package/super-agent-sdk-wasm)
+[![npm SDK downloads](https://img.shields.io/npm/dm/@chwzr/super-agent-sdk?label=npm%20SDK%20downloads)](https://www.npmjs.com/package/@chwzr/super-agent-sdk)
+[![npm WASM downloads](https://img.shields.io/npm/dm/@chwzr/super-agent-sdk-wasm?label=npm%20WASM%20downloads)](https://www.npmjs.com/package/@chwzr/super-agent-sdk-wasm)
 [![crates.io SDK downloads](https://img.shields.io/crates/d/super-agent-sdk?label=crates.io%20SDK%20downloads)](https://crates.io/crates/super-agent-sdk)
 
 <img width="766" height="244" alt="image" src="https://github.com/user-attachments/assets/08e96d6e-7409-419b-b9db-0149f2465083" />
@@ -653,15 +653,15 @@ async with await super_sdk.Session.create(tools=[super_sdk.ToolName.READ]) as se
 
 ### Node, Bun, and Deno
 
-Install the [native JavaScript SDK from npm](https://www.npmjs.com/package/super-agent-sdk)
+Install the [native JavaScript SDK from npm](https://www.npmjs.com/package/@chwzr/super-agent-sdk)
 to use SUPER in a Node, Bun, or Deno application.
 
 ```bash
-bun add super-agent-sdk
+bun add @chwzr/super-agent-sdk
 ```
 
 ```typescript
-import { Session } from "super-agent-sdk"
+import { Session } from "@chwzr/super-agent-sdk"
 
 const session = await Session.create({ tools: ["read", "bash"] })
 await session.prompt("What files are here?")
@@ -671,11 +671,11 @@ console.log(stats.tokens.cacheRead, stats.tokens.cacheWrite, stats.tokens.cacheW
 
 ### Browser WebAssembly
 
-Install the [browser SDK from npm](https://www.npmjs.com/package/super-agent-sdk-wasm)
+Install the [browser SDK from npm](https://www.npmjs.com/package/@chwzr/super-agent-sdk-wasm)
 to run the agent and model/tool loop in your browser without a SUPER server.
 
 ```bash
-bun add super-agent-sdk-wasm
+bun add @chwzr/super-agent-sdk-wasm
 ```
 
 For applications that need native filesystem and shell tools, use the
