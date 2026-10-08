@@ -1,5 +1,5 @@
 //! Themes: JSON files mapping color tokens to hex/256-color values, with a
-//! `vars` indirection layer. Built-in dark and light themes.
+//! `vars` indirection layer. Built-in dark (Neo Citrus Dark) and light themes.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -134,39 +134,55 @@ impl Theme {
         })
     }
 
+    /// The default dark theme, "Neo Citrus Dark": a deep green base with a
+    /// lime accent.
     pub fn dark() -> Theme {
+        // Palette.
+        const PANEL: Color = Color::Rgb(0x1e, 0x2a, 0x1a);
+        const SELECTED: Color = Color::Rgb(0x3b, 0x50, 0x20);
+        const BORDER: Color = Color::Rgb(0x5b, 0x71, 0x38);
+        const ACCENT: Color = Color::Rgb(0xc6, 0xe6, 0x4a);
+        const CYAN: Color = Color::Rgb(0x58, 0xd7, 0xc8);
+        const GREEN: Color = Color::Rgb(0xa6, 0xd9, 0x57);
+        const RED: Color = Color::Rgb(0xff, 0x82, 0x74);
+        const YELLOW: Color = Color::Rgb(0xf2, 0xd3, 0x6b);
+        const ORANGE: Color = Color::Rgb(0xf3, 0xa0, 0x60);
+        const PURPLE: Color = Color::Rgb(0xd7, 0xa3, 0xd8);
+        const MUTED: Color = Color::Rgb(0xbb, 0xc8, 0xa0);
+        const DIM: Color = Color::Rgb(0x7f, 0x8e, 0x68);
+
         let mut colors = BTreeMap::new();
         let mut set = |k: &str, c: Color| colors.insert(k.to_string(), c);
-        set("accent", Color::Rgb(0xcb, 0xa6, 0xf7));
-        set("border", Color::Rgb(0x58, 0x5b, 0x70));
-        set("borderAccent", Color::Rgb(0xcb, 0xa6, 0xf7));
-        set("borderMuted", Color::Rgb(0x31, 0x32, 0x44));
-        set("success", Color::Rgb(0xa6, 0xe3, 0xa1));
-        set("error", Color::Rgb(0xf3, 0x8b, 0xa8));
-        set("warning", Color::Rgb(0xf9, 0xe2, 0xaf));
-        set("muted", Color::Rgb(0x7f, 0x84, 0x9c));
-        set("dim", Color::Rgb(0x58, 0x5b, 0x70));
-        set("text", Color::Rgb(0xcd, 0xd6, 0xf4));
-        set("thinkingText", Color::Rgb(0x93, 0x99, 0xb2));
-        set("thinkingOff", Color::Rgb(0x58, 0x5b, 0x70));
-        set("thinkingMinimal", Color::Rgb(0x6c, 0x70, 0x86));
-        set("thinkingLow", Color::Rgb(0x74, 0xc7, 0xec));
-        set("thinkingMedium", Color::Rgb(0x89, 0xb4, 0xfa));
-        set("thinkingHigh", Color::Rgb(0xb4, 0xbe, 0xfe));
-        set("thinkingXhigh", Color::Rgb(0xcb, 0xa6, 0xf7));
-        set("thinkingMax", Color::Rgb(0xf5, 0xc2, 0xe7));
-        set("bashMode", Color::Rgb(0xa6, 0xe3, 0xa1));
-        set("selectedBg", Color::Rgb(0x45, 0x47, 0x5a));
-        set("userMessageBg", Color::Rgb(0x31, 0x32, 0x44));
-        set("userMessageText", Color::Rgb(0xcd, 0xd6, 0xf4));
-        set("toolTitle", Color::Rgb(0x89, 0xb4, 0xfa));
-        set("toolOutput", Color::Rgb(0xba, 0xc2, 0xde));
-        set("diffAdded", Color::Rgb(0xa6, 0xe3, 0xa1));
-        set("diffRemoved", Color::Rgb(0xf3, 0x8b, 0xa8));
-        set("mdHeading", Color::Rgb(0xcb, 0xa6, 0xf7));
-        set("mdCode", Color::Rgb(0xfa, 0xb3, 0x87));
-        set("mdLink", Color::Rgb(0x89, 0xdc, 0xeb));
-        set("mdQuote", Color::Rgb(0x93, 0x99, 0xb2));
+        set("accent", ACCENT);
+        set("border", BORDER);
+        set("borderAccent", CYAN);
+        set("borderMuted", DIM);
+        set("success", GREEN);
+        set("error", RED);
+        set("warning", YELLOW);
+        set("muted", MUTED);
+        set("dim", DIM);
+        set("text", Color::Default);
+        set("thinkingText", MUTED);
+        set("thinkingOff", DIM);
+        set("thinkingMinimal", BORDER);
+        set("thinkingLow", ACCENT);
+        set("thinkingMedium", CYAN);
+        set("thinkingHigh", PURPLE);
+        set("thinkingXhigh", RED);
+        set("thinkingMax", ORANGE);
+        set("bashMode", GREEN);
+        set("selectedBg", SELECTED);
+        set("userMessageBg", PANEL);
+        set("userMessageText", Color::Default);
+        set("toolTitle", ACCENT);
+        set("toolOutput", MUTED);
+        set("diffAdded", GREEN);
+        set("diffRemoved", RED);
+        set("mdHeading", ORANGE);
+        set("mdCode", CYAN);
+        set("mdLink", ACCENT);
+        set("mdQuote", MUTED);
         Theme {
             name: "dark".into(),
             colors,
@@ -308,16 +324,17 @@ mod tests {
     }
 
     #[test]
-    fn dark_theme_uses_catppuccin_mocha() {
+    fn dark_theme_uses_neo_citrus_dark() {
         let dark = Theme::dark();
-        assert_eq!(dark.color("text"), Color::Rgb(0xcd, 0xd6, 0xf4));
-        assert_eq!(dark.color("accent"), Color::Rgb(0xcb, 0xa6, 0xf7));
-        assert_eq!(dark.color("selectedBg"), Color::Rgb(0x45, 0x47, 0x5a));
-        assert_eq!(dark.color("success"), Color::Rgb(0xa6, 0xe3, 0xa1));
-        assert_eq!(dark.color("warning"), Color::Rgb(0xf9, 0xe2, 0xaf));
-        assert_eq!(dark.color("error"), Color::Rgb(0xf3, 0x8b, 0xa8));
-        assert_eq!(dark.color("thinkingMax"), Color::Rgb(0xf5, 0xc2, 0xe7));
-        assert_eq!(dark.color("bashMode"), Color::Rgb(0xa6, 0xe3, 0xa1));
+        assert_eq!(dark.name, "dark");
+        assert_eq!(dark.color("accent"), Color::Rgb(0xc6, 0xe6, 0x4a));
+        assert_eq!(dark.color("selectedBg"), Color::Rgb(0x3b, 0x50, 0x20));
+        assert_eq!(dark.color("success"), Color::Rgb(0xa6, 0xd9, 0x57));
+        assert_eq!(dark.color("warning"), Color::Rgb(0xf2, 0xd3, 0x6b));
+        assert_eq!(dark.color("error"), Color::Rgb(0xff, 0x82, 0x74));
+        assert_eq!(dark.color("text"), Color::Default);
+        assert_eq!(dark.color("thinkingXhigh"), Color::Rgb(0xff, 0x82, 0x74));
+        assert_eq!(dark.color("bashMode"), Color::Rgb(0xa6, 0xd9, 0x57));
 
         // The built-in light theme remains available.
         let light = Theme::light();
