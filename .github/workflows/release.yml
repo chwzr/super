@@ -470,7 +470,7 @@ jobs:
           test "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name | IN("super-bench", "super-agent-ai", "super-agent", "super-workflow", "super-coding", "super-mcp", "super-agent-sdk")) | .version' | sort -u)" = "$version"
           for crate in super-bench super-agent-ai super-agent super-workflow super-coding super-mcp super-agent-sdk; do
             # Reruns after a partial release must not try to republish versions.
-            if curl -fsS "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
+            if curl -fsS -A "super release workflow (https://github.com/chwzr/super)" "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
               echo "$crate $version already published"
             else
               cargo publish -p "$crate" --locked
