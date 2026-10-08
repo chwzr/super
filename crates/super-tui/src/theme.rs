@@ -1,5 +1,5 @@
 //! Themes: JSON files mapping color tokens to hex/256-color values, with a
-//! `vars` indirection layer. Built-in dark (Neo Citrus Dark) and light themes.
+//! `vars` indirection layer. Built-in dark (Super Neo Citrus Dark) and light themes.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -134,7 +134,7 @@ impl Theme {
         })
     }
 
-    /// The default dark theme, "Neo Citrus Dark": a deep green base with a
+    /// The default dark theme, "Super Neo Citrus Dark": a deep green base with a
     /// lime accent.
     pub fn dark() -> Theme {
         // Palette.
