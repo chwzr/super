@@ -5,14 +5,14 @@ use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::SearcherBuilder;
 use grep_searcher::sinks::UTF8;
+use serde_json::{Value, json};
+use std::path::PathBuf;
+use std::sync::Mutex;
 use super_agent::tool::{AgentTool, ToolResult, ToolUpdateSink};
 use super_agent::tools::path::resolve;
 use super_agent::tools::truncate::{
     DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, GREP_MAX_LINE_LENGTH, truncate_head, truncate_line,
 };
-use serde_json::{Value, json};
-use std::path::PathBuf;
-use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_LIMIT: usize = 100;

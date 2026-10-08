@@ -1,11 +1,11 @@
 //! Cached, asynchronous file and directory search for editor `@` mentions.
 
-use super_tui::fuzzy::PreparedFuzzyQuery;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
+use super_tui::fuzzy::PreparedFuzzyQuery;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 

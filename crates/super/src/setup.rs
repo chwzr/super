@@ -3,6 +3,8 @@
 
 use crate::args::Args;
 use anyhow::{Context as _, Result};
+use std::path::PathBuf;
+use std::sync::Arc;
 use super_agent::DynTool;
 use super_ai::{Model, Registry, ThinkingLevel};
 use super_coding::context_files;
@@ -13,8 +15,6 @@ use super_coding::skills::Skill;
 use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt};
 use super_coding::trust;
 use super_mcp::McpManager;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 pub struct Startup {
     pub session: Arc<AgentSession>,

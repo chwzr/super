@@ -2,10 +2,10 @@
 
 use crate::session_runner::AgentSession;
 use crate::subagents::{AgentStatus, turn_outcome};
-use super_agent::AgentMessage;
-use super_ai::Usage;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+use super_agent::AgentMessage;
+use super_ai::Usage;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ChildTurnOutcome {

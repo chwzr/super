@@ -7,11 +7,11 @@
 
 use super::{ApprovalDecision, WorkflowPlan, WorkflowRuntime};
 use crate::session_runner::WorkflowTurnStatus;
-use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
-use super_workflow::Script;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
+use super_workflow::Script;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct RunWorkflowTool(Arc<WorkflowRuntime>);

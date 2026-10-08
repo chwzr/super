@@ -8,12 +8,12 @@
 //! runs with the permissions of the explicit `super` process the user started.
 
 use js_sys::{Function, Promise};
-use super_sdk::client::Client;
-use super_sdk::protocol::{Command, Incoming, Response};
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use super_sdk::client::Client;
+use super_sdk::protocol::{Command, Incoming, Response};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
 use web_sys::{CloseEvent, ErrorEvent, Event, MessageEvent, WebSocket};

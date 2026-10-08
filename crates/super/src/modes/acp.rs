@@ -17,6 +17,11 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Responder, Stdio};
 use anyhow::Result;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use super_agent::{AgentEvent, AgentMessage, ToolResult};
 use super_ai::{
     AssistantEvent, ContentBlock as SuperContentBlock, ThinkingLevel, UserContent, UserMessage,
@@ -24,11 +29,6 @@ use super_ai::{
 use super_coding::session::manager::{SessionManager, default_session_dir};
 use super_coding::session_runner::{AgentSession, SessionEvent};
 use super_sdk::{SessionOptions, SessionSource};
-use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 enum AcpEvent {
@@ -969,7 +969,8 @@ fn send_update(
 
 fn output_content(block: &SuperContentBlock) -> Option<ContentBlock> {
     match block {
-        SuperContentBlock::Text { text, .. } | SuperContentBlock::Thinking { thinking: text, .. } => {
+        SuperContentBlock::Text { text, .. }
+        | SuperContentBlock::Thinking { thinking: text, .. } => {
             Some(ContentBlock::Text(TextContent::new(text)))
         }
         SuperContentBlock::Image { data, mime_type } => Some(ContentBlock::Image(
@@ -1053,8 +1054,8 @@ mod tests {
         SetSessionConfigOptionRequest, TextResourceContents,
     };
     use agent_client_protocol::{Client, SessionMessage};
-    use super_sdk::mock::{MockProvider, MockScript, MockTurn};
     use serde_json::json;
+    use super_sdk::mock::{MockProvider, MockScript, MockTurn};
 
     #[test]
     fn prompt_keeps_images_and_embeds_resources() {

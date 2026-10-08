@@ -1,9 +1,9 @@
 //! Session -> standalone HTML export.
 
 use anyhow::Result;
+use std::path::Path;
 use super_agent::AgentMessage;
 use super_coding::{SessionEntry, SessionManager};
-use std::path::Path;
 
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")

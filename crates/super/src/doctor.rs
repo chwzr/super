@@ -1,8 +1,8 @@
 use futures::{StreamExt as _, stream};
-use super_ai::{Model, Registry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal as _;
 use std::time::{Duration, Instant};
+use super_ai::{Model, Registry};
 use url::Url;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);

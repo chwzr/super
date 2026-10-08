@@ -10,6 +10,9 @@
 
 use crate::tools::{build_tools, select_tool_names};
 use anyhow::{Context as _, Result};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use super_agent::{DynTool, StreamFn};
 use super_ai::{Model, Registry, ThinkingLevel};
 use super_coding::session::manager::{SessionManager, default_session_dir};
@@ -17,9 +20,6 @@ use super_coding::session_runner::{AgentSession, SessionEventSink};
 use super_coding::settings::Settings;
 use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt};
 use super_coding::{context_files, trust};
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Where the session's history comes from and whether it is written to disk.
 #[derive(Debug, Clone, Default, PartialEq)]

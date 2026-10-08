@@ -468,8 +468,8 @@ fn iteration_prompt(kind: JobKind, goal: &str, iteration: u32, limit: Option<u32
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super_ai::{AssistantEvent, AssistantMessage, ContentBlock, EventStream, StopReason};
     use std::sync::atomic::AtomicUsize;
+    use super_ai::{AssistantEvent, AssistantMessage, ContentBlock, EventStream, StopReason};
 
     #[test]
     fn unlimited_prompts_do_not_claim_a_limit() {

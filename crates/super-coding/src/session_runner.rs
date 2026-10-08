@@ -11,13 +11,13 @@ use crate::settings::{CacheWarmingMode, CompactionMode, QueueMode, ReasoningEffo
 use crate::subagents::{ForkTurns, SUBAGENT_SYSTEM_PROMPT, SubagentRuntime, fork_messages};
 use crate::workflows::{WorkflowApprover, WorkflowRuntime};
 use anyhow::Context as _;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, OnceLock};
 use super_agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, StreamFn,
     TurnUpdate,
 };
 use super_ai::{Model, Registry, StopReason, ThinkingLevel, Usage};
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
 use tokio_util::sync::CancellationToken;
 
 /// Harness-level events layered over the loop's AgentEvents.
@@ -1688,7 +1688,8 @@ impl AgentSession {
 
         if settings.compaction.mode == CompactionMode::Jev
             && let Ok(Some(api_key)) =
-                super_ai::auth::resolve_api_key_async("typesafe", &self.registry.declared_keys).await
+                super_ai::auth::resolve_api_key_async("typesafe", &self.registry.declared_keys)
+                    .await
         {
             let cancel = self.cancel.lock().unwrap().clone();
             let pinned_start = ctx.messages.len().saturating_sub(plan.kept.len());

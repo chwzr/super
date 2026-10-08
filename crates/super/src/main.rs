@@ -24,9 +24,9 @@ mod workflow_ui;
 
 use args::{Args, Command};
 use clap::Parser;
-use super_ai::auth::{LoginMethod, login_methods};
 use std::io::{IsTerminal as _, Write as _};
 use std::process::ExitCode;
+use super_ai::auth::{LoginMethod, login_methods};
 
 // mimalloc was faster than the system allocator and jemalloc in the release
 // benchmarks. The Python and Node modules set it too. The library crates do
@@ -246,7 +246,9 @@ async fn run_command(args: &Args, command: &Command) -> anyhow::Result<i32> {
             for provider in providers {
                 let source = match super_ai::auth::stored_auth_kind(provider) {
                     Some(super_ai::auth::StoredAuthKind::OAuth) => "saved OAuth",
-                    Some(super_ai::auth::StoredAuthKind::AzureEntraId) => "saved Microsoft Entra ID",
+                    Some(super_ai::auth::StoredAuthKind::AzureEntraId) => {
+                        "saved Microsoft Entra ID"
+                    }
                     Some(super_ai::auth::StoredAuthKind::ApiKey) => "saved API key",
                     None => {
                         let environment = super_ai::auth::env_var_names(provider)

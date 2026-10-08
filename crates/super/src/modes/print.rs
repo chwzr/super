@@ -4,10 +4,10 @@
 use crate::args::Args;
 use crate::setup::build_startup;
 use anyhow::Result;
-use super_agent::{AgentEvent, AgentMessage};
-use super_coding::session_runner::{SessionEvent, WorkflowTurnStatus};
 use std::io::Read;
 use std::sync::{Arc, Mutex};
+use super_agent::{AgentEvent, AgentMessage};
+use super_coding::session_runner::{SessionEvent, WorkflowTurnStatus};
 
 pub async fn run(args: &Args) -> Result<i32> {
     let final_text: Arc<Mutex<Vec<String>>> = Default::default();

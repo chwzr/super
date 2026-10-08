@@ -1,5 +1,9 @@
 //! Agent-loop tests driven by a scripted fake provider.
 
+use serde_json::{Value, json};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use super_agent::config::{AgentContext, AgentLoopConfig};
 use super_agent::message::AgentMessage;
 use super_agent::tool::{AgentTool, ToolResult, ToolUpdateSink};
@@ -7,10 +11,6 @@ use super_agent::{AgentEvent, run_agent_loop};
 use super_ai::{
     AssistantEvent, AssistantMessage, ContentBlock, EventStream, Model, StopReason, ToolCall,
 };
-use serde_json::{Value, json};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 fn fake_model() -> Model {

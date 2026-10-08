@@ -1,9 +1,9 @@
 //! Compaction: summarize older context when the window fills, keeping a
 //! recent tail. Also branch summarization support for /tree navigation.
 
+use serde_json::json;
 use super_agent::{AgentMessage, convert_to_llm};
 use super_ai::{ContentBlock, Message, Model, StreamOptions, ThinkingLevel, UserContent};
-use serde_json::json;
 
 const TOOL_RESULT_SERIALIZE_CAP: usize = 2000;
 

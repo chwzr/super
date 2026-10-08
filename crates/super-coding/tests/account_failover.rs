@@ -3,11 +3,11 @@
 //! because Windows resolves the profile directory without HOME.
 #![cfg(unix)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use super_agent::AgentMessage;
 use super_ai::{AssistantEvent, AssistantMessage, ContentBlock, EventStream, StopReason};
 use super_coding::{AgentSession, SessionEvent, SessionManager, Settings};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 const LIMITED: &str = r#"HTTP 429 Too Many Requests: {"error":{"type":"usage_limit_reached","resets_in_seconds":3600}}"#;
 

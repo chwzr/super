@@ -7,12 +7,12 @@
 
 #![cfg(all(feature = "mock", feature = "native"))]
 
-use super_sdk::mock::{MockProvider, MockScript, MockTurn};
-use super_sdk::protocol::{Command, StreamingBehavior};
-use super_sdk::{PromptArgs, Session, SessionOptions, ThinkingLevel};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+use super_sdk::mock::{MockProvider, MockScript, MockTurn};
+use super_sdk::protocol::{Command, StreamingBehavior};
+use super_sdk::{PromptArgs, Session, SessionOptions, ThinkingLevel};
 
 /// Build a session whose only reachable model is the mock provider.
 async fn session_with(

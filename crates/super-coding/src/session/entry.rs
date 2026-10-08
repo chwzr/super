@@ -1,9 +1,9 @@
 //! Session JSONL entry types, wire-compatible with pi's session format v3.
 
-use super_agent::AgentMessage;
-use super_ai::{ThinkingLevel, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use super_agent::AgentMessage;
+use super_ai::{ThinkingLevel, Usage};
 
 pub const SESSION_VERSION: u32 = 3;
 

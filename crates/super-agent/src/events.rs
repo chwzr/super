@@ -2,8 +2,8 @@
 
 use crate::message::AgentMessage;
 use crate::tool::ToolResult;
-use super_ai::{AssistantEvent, ToolResultMessage};
 use serde_json::Value;
+use super_ai::{AssistantEvent, ToolResultMessage};
 
 #[derive(Debug, Clone)]
 // Event payloads are consumed immediately and the harness boxes AgentEvent at

@@ -4,14 +4,14 @@ mod client;
 
 use crate::client::{CdpClient, CdpEvent};
 use anyhow::{Context as _, Result, bail};
-use super_agent::tool::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
-use super_ai::ContentBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
+use super_agent::tool::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
+use super_ai::ContentBlock;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

@@ -6,12 +6,12 @@
 
 #![cfg(all(feature = "mock", feature = "rpc"))]
 
-use super_sdk::mock::{MockProvider, MockScript, MockTurn};
-use super_sdk::protocol::{Incoming, Response, decode_line};
-use super_sdk::{Session, SessionOptions};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
+use super_sdk::mock::{MockProvider, MockScript, MockTurn};
+use super_sdk::protocol::{Incoming, Response, decode_line};
+use super_sdk::{Session, SessionOptions};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 struct Harness {

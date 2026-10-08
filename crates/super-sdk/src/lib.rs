@@ -73,14 +73,14 @@ pub mod rpc;
 // Re-exported so a binding crate needs only one dependency to name the types
 // that appear in this crate's public API.
 #[cfg(feature = "native")]
-pub use super_agent::{AgentMessage, DynTool, StreamFn};
-#[cfg(feature = "native")]
-pub use super_ai::{Model, ThinkingLevel};
-#[cfg(feature = "native")]
-pub use super_coding::SessionEntry;
-#[cfg(feature = "native")]
 pub use options::{SessionOptions, SessionSource};
 #[cfg(feature = "native")]
 pub use session::{
     BashResult, EventStream, PromptArgs, SdkError, Session, SessionBuilder, SessionState,
 };
+#[cfg(feature = "native")]
+pub use super_agent::{AgentMessage, DynTool, StreamFn};
+#[cfg(feature = "native")]
+pub use super_ai::{Model, ThinkingLevel};
+#[cfg(feature = "native")]
+pub use super_coding::SessionEntry;

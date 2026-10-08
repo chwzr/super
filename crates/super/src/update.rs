@@ -8,8 +8,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration as StdDuration;
 
-const GITHUB_LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/chwzr/super/releases/latest";
+const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/chwzr/super/releases/latest";
 const GITHUB_RELEASES_URL: &str = "https://github.com/chwzr/super/releases";
 const RAW_REPOSITORY_URL: &str = "https://raw.githubusercontent.com/chwzr/super";
 const HOMEBREW_UPGRADE_COMMAND: &str = "brew upgrade chwzr/tap/super";
@@ -165,7 +164,8 @@ async fn download_installer(
         .context("create a temporary installer file")?;
     file.write_all(&bytes)
         .context("write the temporary SUPER installer")?;
-    file.flush().context("flush the temporary SUPER installer")?;
+    file.flush()
+        .context("flush the temporary SUPER installer")?;
     Ok(file.into_temp_path())
 }
 

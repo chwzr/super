@@ -1,11 +1,11 @@
 use anyhow::Result;
-use super_agent::AgentMessage;
-use super_ai::{AssistantMessage, ContentBlock, StopReason};
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use super_agent::AgentMessage;
+use super_ai::{AssistantMessage, ContentBlock, StopReason};
 
 /// Metadata needed for the picker without loading the full session history.
 #[derive(Debug, Clone)]

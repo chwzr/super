@@ -10,16 +10,16 @@ mod tool;
 mod types;
 
 use js_sys::{Function, Promise, Uint8Array};
-use super_agent::{
-    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, StreamFn,
-};
-use super_ai::{AssistantMessage, Model, StopReason, UserMessage};
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use super_agent::{
+    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, StreamFn,
+};
+use super_ai::{AssistantMessage, Model, StopReason, UserMessage};
 use tokio_util::sync::CancellationToken;
 use types::{
     AgentOptions, AgentStateView, Checkpoint, MAX_CHECKPOINT_BYTES, MAX_HISTORY_BYTES,
@@ -525,7 +525,8 @@ fn validate_tool(definition: &ToolDefinitionInput) -> Result<(), String> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
     {
         return Err(
-            "SUPER_INVALID_TOOL: name must be 1-128 ASCII letters, numbers, '_', '-', or '.'".into(),
+            "SUPER_INVALID_TOOL: name must be 1-128 ASCII letters, numbers, '_', '-', or '.'"
+                .into(),
         );
     }
     if definition.description.len() > 64 * 1024 {

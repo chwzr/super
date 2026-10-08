@@ -1,8 +1,8 @@
 //! The tool contract used by the agent runtime.
 
-use super_ai::{ContentBlock, ToolDef, Usage};
 use serde_json::Value;
 use std::sync::Arc;
+use super_ai::{ContentBlock, ToolDef, Usage};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

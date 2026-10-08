@@ -3,13 +3,13 @@
 use crate::child_turn;
 use crate::session_runner::AgentSession;
 use anyhow::{Context as _, Result};
-use super_agent::{AgentMessage, AgentTool, DynTool, ToolResult, ToolUpdateSink};
-use super_ai::StopReason;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
+use super_agent::{AgentMessage, AgentTool, DynTool, ToolResult, ToolUpdateSink};
+use super_ai::StopReason;
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 

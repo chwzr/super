@@ -5,8 +5,8 @@
 //! `crate::prompts`: the user's own directory always, and the project's only
 //! when the project is trusted.
 
-use super_workflow::Script;
 use std::path::{Path, PathBuf};
+use super_workflow::Script;
 
 /// A workflow found on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]

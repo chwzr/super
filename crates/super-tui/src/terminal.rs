@@ -317,10 +317,7 @@ mod tests {
 
         output.clear();
         terminal.write_activity(&mut output, false, 2).unwrap();
-        assert_eq!(
-            output,
-            b"\x1b]9;4;0;0\x1b\\\x1b]0;\xe2\x9a\xa1 super\x07"
-        );
+        assert_eq!(output, b"\x1b]9;4;0;0\x1b\\\x1b]0;\xe2\x9a\xa1 super\x07");
 
         output.clear();
         terminal.progress_enabled = false;

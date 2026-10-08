@@ -1,6 +1,6 @@
+use serde_json::{Value, json};
 use super_agent::AgentEvent;
 use super_ai::AssistantEvent;
-use serde_json::{Value, json};
 
 pub fn assistant_event_json(event: &AssistantEvent) -> Value {
     match event {

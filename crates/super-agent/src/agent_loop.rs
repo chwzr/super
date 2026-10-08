@@ -6,12 +6,12 @@ use crate::events::AgentEvent;
 use crate::message::AgentMessage;
 use crate::tool::{DynTool, ExecutionMode, ToolResult, ToolUpdateSink};
 use crate::validate::validate_arguments;
+use serde_json::Value;
+use std::sync::Arc;
 use super_ai::{
     AssistantEvent, AssistantMessage, ContentBlock, StopReason, StreamOptions, ToolCall,
     ToolResultMessage,
 };
-use serde_json::Value;
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// Async event sink. Awaited so persistence keeps ordering guarantees.

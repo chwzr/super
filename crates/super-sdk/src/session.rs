@@ -8,14 +8,14 @@
 use crate::events::{agent_settled, bash_execution_update, event_lag, session_event_json};
 use crate::options::SessionOptions;
 use crate::protocol::{Command, Event, ImageInput, QueueMode, Response, StreamingBehavior};
-use super_agent::{AgentMessage, BashExecutionMessage};
-use super_ai::{ContentBlock, Model, ThinkingLevel, UserContent, UserMessage};
-use super_coding::session_runner::{AgentSession, SessionEvent};
-use super_coding::settings::QueueMode as SettingsQueueMode;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use super_agent::{AgentMessage, BashExecutionMessage};
+use super_ai::{ContentBlock, Model, ThinkingLevel, UserContent, UserMessage};
+use super_coding::session_runner::{AgentSession, SessionEvent};
+use super_coding::settings::QueueMode as SettingsQueueMode;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 

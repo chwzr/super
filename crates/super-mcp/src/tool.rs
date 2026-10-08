@@ -2,10 +2,10 @@
 
 use crate::manager::McpManager;
 use anyhow::{Context as _, Result, bail};
-use super_agent::tool::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
-use super_ai::ContentBlock as SuperContent;
 use rmcp::model::ContentBlock as McpContent;
 use serde_json::{Value, json};
+use super_agent::tool::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
+use super_ai::ContentBlock as SuperContent;
 use tokio_util::sync::CancellationToken;
 
 const MAX_TEXT_BYTES: usize = 100_000;
@@ -203,9 +203,9 @@ fn convert_content(content: Vec<McpContent>) -> Result<Vec<SuperContent>> {
                 "MCP resource: {} ({})",
                 resource.name, resource.uri
             ))),
-            other => converted.push(SuperContent::text(limit_text(serde_json::to_string_pretty(
-                &other,
-            )?))),
+            other => converted.push(SuperContent::text(limit_text(
+                serde_json::to_string_pretty(&other)?,
+            ))),
         }
     }
     if converted.is_empty() {

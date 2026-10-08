@@ -832,9 +832,9 @@ fn save_cache(path: &Path, cache: &CacheFile) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::{ConfigPaths, McpConfig};
-    use super_agent::AgentTool as _;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use super_agent::AgentTool as _;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     fn loaded(temp: &tempfile::TempDir, server: ServerEntry) -> LoadedConfig {
