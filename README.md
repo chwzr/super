@@ -932,7 +932,23 @@ configuration only after you trust the project.
 | `.super/workflows/`            | Trusted project workflow scripts |
 
 Open `/settings` for common TUI settings. Run `super --help` for all command-line
-options. Custom themes live in `~/.super/agent/settings.json`.
+options.
+
+### Themes
+
+Place theme JSON files in `~/.super/agent/themes/` or `.super/themes/`, list
+them under `themes` in `settings.json`, or pass `--theme <file>` on the command
+line. Set `"theme"` to a theme's `name` (or `dark` / `light`) to select it. When
+`--theme` is given and no `theme` setting matches, the first `--theme` file is
+used.
+
+```json
+{
+  "name": "my-theme",
+  "vars": { "primary": "#00aaff" },
+  "colors": { "accent": "primary", "error": "#ff0000", "text": "" }
+}
+```
 
 ### Tool selection
 

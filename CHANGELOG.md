@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Custom themes now work. Load a theme file with `--theme <file>`, the
+  `themes` setting, or by placing JSON files in `~/.super/agent/themes/` or
+  `.super/themes/`. Set `"theme"` to a theme's `name` to select it; the
+  settings picker cycles through every available theme, and `/reload` picks
+  up theme file changes.
+
 ## 0.0.36 - 2026-10-08
 
 ### Added

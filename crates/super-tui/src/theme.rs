@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Color {
@@ -211,6 +211,80 @@ impl Theme {
             colors,
         }
     }
+
+    /// Built-in theme by name, if any.
+    pub fn builtin(name: &str) -> Option<Theme> {
+        match name {
+            "dark" => Some(Theme::dark()),
+            "light" => Some(Theme::light()),
+            _ => None,
+        }
+    }
+}
+
+/// Load theme files from the user and project theme directories plus any
+/// explicit paths (files or directories). Explicit paths are loaded first so
+/// that `--theme` files win when names collide. Unparseable files are skipped
+/// with a warning on stderr.
+pub fn discover(cwd: &Path, project_trusted: bool, extra_paths: &[PathBuf]) -> Vec<Theme> {
+    let mut out = Vec::new();
+    for path in extra_paths {
+        if path.is_dir() {
+            scan(path, &mut out);
+        } else {
+            load_into(path, &mut out);
+        }
+    }
+    if project_trusted {
+        scan(&cwd.join(".super/themes"), &mut out);
+    }
+    if let Some(home) = dirs::home_dir() {
+        scan(&home.join(".super/agent/themes"), &mut out);
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|theme| seen.insert(theme.name.clone()));
+    out
+}
+
+/// Pick the active theme. `preferred` is the `theme` setting; it may name a
+/// built-in (`dark`, `light`) or a discovered theme. When it is unset or
+/// unknown, the first explicitly requested theme (if any) is used, falling
+/// back to the built-in dark theme.
+pub fn resolve(preferred: Option<&str>, loaded: &[Theme], explicit_first: bool) -> Theme {
+    if let Some(name) = preferred {
+        if let Some(theme) = loaded.iter().find(|theme| theme.name == name) {
+            return theme.clone();
+        }
+        if let Some(theme) = Theme::builtin(name) {
+            return theme;
+        }
+    }
+    if let Some(theme) = loaded.first().filter(|_| explicit_first) {
+        return theme.clone();
+    }
+    Theme::dark()
+}
+
+fn scan(dir: &Path, out: &mut Vec<Theme>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        load_into(&path, out);
+    }
+}
+
+fn load_into(path: &Path, out: &mut Vec<Theme>) {
+    match Theme::load(path) {
+        Ok(theme) => out.push(theme),
+        Err(error) => eprintln!("warning: failed to load theme {}: {error}", path.display()),
+    }
 }
 
 #[cfg(test)]
@@ -255,5 +329,34 @@ mod tests {
         assert_eq!(light.color("thinkingXhigh"), Color::Rgb(0x8b, 0x00, 0x8b));
         assert_eq!(light.color("thinkingMax"), Color::Rgb(0xaf, 0x00, 0x5f));
         assert_eq!(light.color("bashMode"), Color::Rgb(0x58, 0x84, 0x58));
+    }
+
+    #[test]
+    fn resolve_prefers_named_then_explicit_then_dark() {
+        let custom = Theme::parse(r##"{"name":"citrus","colors":{"accent":"#c6e64a"}}"##).unwrap();
+        let loaded = vec![custom.clone()];
+        assert_eq!(resolve(Some("citrus"), &loaded, false).name, "citrus");
+        assert_eq!(resolve(Some("light"), &loaded, true).name, "light");
+        assert_eq!(resolve(Some("missing"), &loaded, true).name, "citrus");
+        assert_eq!(resolve(None, &loaded, true).name, "citrus");
+        assert_eq!(resolve(None, &loaded, false).name, "dark");
+        assert_eq!(resolve(None, &[], true).name, "dark");
+    }
+
+    #[test]
+    fn discover_loads_explicit_files_and_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.json");
+        std::fs::write(&file, r##"{"name":"a","colors":{"accent":"#fff"}}"##).unwrap();
+        let sub = dir.path().join("themes");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("b.json"), r##"{"name":"b","colors":{}}"##).unwrap();
+        std::fs::write(sub.join("bad.json"), "not json").unwrap();
+        std::fs::write(sub.join("ignored.txt"), "{}").unwrap();
+        let themes = discover(dir.path(), false, &[file, sub]);
+        let names: Vec<&str> = themes.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"a"));
+        assert!(names.contains(&"b"));
+        assert!(!names.contains(&"bad"));
     }
 }
