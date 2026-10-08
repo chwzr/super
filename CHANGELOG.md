@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.36 - 2026-10-08
+
 ### Added
 
 - Publish a Homebrew formula on each stable release. Install SUPER with
