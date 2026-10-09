@@ -1,4 +1,4 @@
-# SUPER
+# ◆ SUPER
 
 [![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://github.com/chwzr/super/blob/main/rust-toolchain.toml)
 [![Downloads](https://img.shields.io/github/downloads/chwzr/super/total)](https://github.com/chwzr/super/releases)
