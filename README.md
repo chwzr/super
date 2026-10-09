@@ -6,7 +6,6 @@
 [![npm WASM downloads](https://img.shields.io/npm/dm/@chwzr/super-agent-sdk-wasm?label=npm%20WASM%20downloads)](https://www.npmjs.com/package/@chwzr/super-agent-sdk-wasm)
 [![crates.io SDK downloads](https://img.shields.io/crates/d/super-agent-sdk?label=crates.io%20SDK%20downloads)](https://crates.io/crates/super-agent-sdk)
 
-<img width="766" height="244" alt="image" src="https://github.com/user-attachments/assets/08e96d6e-7409-419b-b9db-0149f2465083" />
 
 A [ridiculously fast](#performance) terminal coding agent that keeps the interface simple and gives you
 control of the model, tools, sessions, and automation.
