@@ -708,6 +708,36 @@ and events as JSONL RPC. All connected clients share one SUPER session.
 See the [SDK guide](docs/sdk.md), [RPC protocol](docs/rpc.md), and
 [browser WebAssembly guide](crates/super-core-wasm/README.md).
 
+### Remote control
+
+Signed in to the SUPER platform (`/login`, provider `SUPER`), every saved
+session is mirrored to your account: the SUPER app for iOS and macOS and the
+web at super.flxkpe.io show it live, and they can steer it, queue follow-ups,
+stop it, change the model, and answer workflow and trust questions. Signed
+out, nothing is mirrored and no request leaves the machine.
+
+The footer shows `♦ remote` while mirrored, `♦ remote…` while reconnecting,
+and `♦ local` while signed in but not mirrored. Remote input appears in the
+transcript with its origin, for example `♦ steer from iPhone`. Commands that
+arrive after their expiry (five minutes by default) are dropped and counted
+in one notice.
+
+- `/remote` shows the status; `/remote off` and `/remote on` toggle it for the
+  session; `/remote name <name>` renames this machine.
+- `--no-remote` starts a session without mirroring. `--no-session` sessions
+  are never mirrored.
+- Settings: `remote.enabled` (default on while signed in), `remote.allowShell`
+  (default on) to accept the RPC `bash` command from controllers, and
+  `platform.url` or `SUPER_PLATFORM_URL` for a different platform.
+- `super --mode rpc` mirrors too, so a desktop app can drive a headless
+  session over stdio while phones follow along.
+- One `super` process mirrors a session file at a time; a second one runs
+  locally and says so.
+- `SUPER_LOG=remote` writes transport diagnostics to
+  `~/.super/agent/logs/remote.log` without tokens or message bodies.
+
+The machine identity lives in `~/.super/agent/host.json`.
+
 ## Performance
 
 SUPER benchmarks local work, not model or network latency. Results below are

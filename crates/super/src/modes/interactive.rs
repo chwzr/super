@@ -4,6 +4,7 @@
 use crate::args::Args;
 use crate::file_search::{FileSearchMatch, FileSearchQuery, FileSearchResult, FileSearchService};
 use crate::job_ui::{self, JobView, JobViewAction};
+use crate::remote::{RemoteControl, RemoteEvent};
 use crate::session_sources::{self, SessionRecord, SessionSource};
 use crate::setup::{Startup, build_startup, reload_runtime};
 use crate::slash_commands;
@@ -20,6 +21,8 @@ use super_ai::{AssistantEvent, ContentBlock, StopReason, ThinkingLevel, Transpor
 use super_coding::session_runner::{PromptMode, SessionEvent};
 use super_coding::settings::{CompactionMode, MermaidRendering, QueueMode, ReasoningEffortMode};
 use super_coding::workflows::workflow_trigger;
+use super_remote::{RemoteNotice, SessionState};
+use super_sdk::{ApprovalChoice, ApprovalKind, ApprovalRequest, SessionNotice};
 use super_tui::{
     Action, Component, DiffRenderer, Editor, EditorSubmission, InputDecoder, InputEvent, Key,
     KeyEvent, Keybindings, MarkdownRenderer, MermaidMode, SelectItem, SelectList,
@@ -120,6 +123,20 @@ struct App {
     /// `/accounts add` in progress: provider and optional label. The next
     /// successful login for that provider becomes a new pooled account.
     pending_account_add: Option<(String, Option<String>)>,
+    /// The SDK view of this session, shared with remote controllers.
+    sdk: Option<Arc<super_sdk::Session>>,
+    /// Mirrors the session to the SUPER platform while signed in.
+    remote: Option<RemoteControl>,
+    /// Whether a `super` sign-in existed at startup; drives the footer label.
+    remote_signed_in: bool,
+    /// The picker question remote controllers may answer too.
+    open_approval: Option<OpenApproval>,
+}
+
+/// A question registered with the SDK so every surface can answer it.
+struct OpenApproval {
+    id: String,
+    kind: ApprovalKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,6 +328,11 @@ struct LlamaStatus {
 }
 
 enum CommandEvent {
+    /// Something happened through the SDK surface: a remote command ran or
+    /// an approval was answered.
+    Remote(SessionNotice),
+    /// The remote transport changed.
+    RemoteEvent(RemoteEvent),
     BrowserLoginUrl {
         url: String,
         opened: bool,
@@ -506,6 +528,23 @@ enum CommandMenuAction {
 }
 
 impl App {
+    /// ` · ♦ remote` while mirrored, ` · ♦ local` while signed in but not
+    /// mirrored, nothing while signed out.
+    fn remote_label(&self) -> String {
+        match &self.remote {
+            Some(remote) => format!(
+                " · {}",
+                crate::remote::footer_label(
+                    remote.status(),
+                    remote.is_held(),
+                    remote.is_starting()
+                )
+            ),
+            None if self.remote_signed_in => " · ♦ local".to_string(),
+            None => String::new(),
+        }
+    }
+
     fn render(&mut self, width: usize, session: &Arc<super_coding::AgentSession>) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
         lines.extend(self.startup_lines.iter().cloned());
@@ -885,8 +924,9 @@ impl App {
             VoiceMode::Tap => " · voice tap".to_owned(),
         };
         let accounts = account_indicator(session.registry.credential_provider(&model.provider));
+        let remote = self.remote_label();
         let right = format!(
-            "({}) {}{thinking}{accounts}{voice}",
+            "({}) {}{thinking}{accounts}{voice}{remote}",
             model.provider, model.id
         );
         let left_width = super_tui::text::display_width(&left);
@@ -1137,12 +1177,15 @@ pub async fn run(args: &Args) -> Result<i32> {
 
 async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHosts) -> Result<i32> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SessionEvent>();
-    let sink = {
+    let tui_sink: super_coding::SessionEventSink = {
         let tx = event_tx.clone();
         Arc::new(move |event: SessionEvent| {
             let _ = tx.send(event);
         })
     };
+    // Every harness event also reaches the SDK stream, where remote
+    // controllers read it. Encoding is skipped while nobody listens.
+    let (sink, mirrored_events) = super_sdk::mirrored_sink(1024, Some(tui_sink));
     Terminal::install_panic_hook();
     let mut terminal = Terminal::new()?;
     terminal.set_activity(true, 0)?;
@@ -1384,6 +1427,10 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         workflow_version: 0,
         workflow_outcomes: Vec::new(),
         pending_account_add: None,
+        sdk: None,
+        remote: None,
+        remote_signed_in: false,
+        open_approval: None,
     };
     if let Some(indent) = &settings.markdown.code_block_indent {
         app.md.code_indent = indent.clone();
@@ -1401,6 +1448,24 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
 
     // Install the cost approval gate before any prompt can call a workflow.
     session.set_workflow_approver(workflow_approver(&command_tx));
+
+    // The SDK view of this session: remote controllers and approvals go
+    // through it. Attaching costs nothing until something subscribes.
+    let sdk = {
+        let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
+        super_sdk::Session::attach(session.clone(), cwd, mirrored_events)
+    };
+    {
+        let tx = command_tx.clone();
+        sdk.set_observer(Some(Arc::new(move |notice| {
+            let _ = tx.send(CommandEvent::Remote(notice));
+        })));
+    }
+    app.sdk = Some(sdk.clone());
+    app.remote_signed_in = crate::remote::signed_in();
+    if crate::remote::wanted(args, &resources.settings) {
+        start_remote(&mut app, &session, &resources.settings, &command_tx);
+    }
 
     // Kick off initial message if provided.
     if let Some(message) = initial_message {
@@ -1434,6 +1499,18 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
     'main: loop {
         if hosts.enabled() {
             hosts.update(terminal_host_state(&app, &session), &session, args);
+        }
+        if let Some(remote) = &app.remote {
+            let (state, reason) = match terminal_host_state(&app, &session) {
+                crate::terminal_hosts::State::Idle => (SessionState::Idle, None),
+                crate::terminal_hosts::State::Working => (SessionState::Working, None),
+                crate::terminal_hosts::State::Blocked(reason) => {
+                    (SessionState::Blocked, Some(reason))
+                }
+            };
+            remote.publish(crate::remote::session_record(
+                state, reason, &session, args, false,
+            ));
         }
         let resize_deadline = resize_state
             .next_deadline()
@@ -1493,6 +1570,9 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
                 {
                     running_task = None;
                     app.working = false;
+                    if let Some(sdk) = &app.sdk {
+                        sdk.notify_settled();
+                    }
                     dirty = true;
                 }
                 if should_start_idle_recap(&app, &resources.settings, Instant::now())
@@ -1546,6 +1626,7 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
                         Flow::Quit => break 'main,
                     }
                 }
+                close_dismissed_approval(&mut app);
                 dirty = true;
                 next_render_at = Instant::now();
             }
@@ -1553,6 +1634,10 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
     }
 
     terminal.restore();
+    if let Some(remote) = app.remote.take() {
+        // Flush what is queued and announce the end; bounded, never hangs.
+        remote.stop().await;
+    }
     if let Some(file) = session.manager.lock().unwrap().session_file() {
         println!(
             "session saved: {}",
@@ -2157,6 +2242,8 @@ fn handle_command_event(
     session: &Arc<super_coding::AgentSession>,
 ) {
     match event {
+        CommandEvent::Remote(notice) => handle_remote_notice(app, notice, session),
+        CommandEvent::RemoteEvent(event) => handle_remote_event(app, event),
         CommandEvent::VoicePreview { generation, text } => {
             if generation == app.voice_generation {
                 app.voice_preview = Some(text);
@@ -5416,10 +5503,310 @@ fn open_workflow_approval(
         },
     ];
     let title = workflow_ui::plan_summary(&plan);
+    let estimate = plan.agent_estimate();
     app.picker = Some(Picker {
         kind: PickerKind::WorkflowApproval(plan, Some(reply)),
-        list: SelectList::new(title, items, app.theme.clone()),
+        list: SelectList::new(title.clone(), items, app.theme.clone()),
     });
+    // "View the script" reopens this picker; keep the one registered question.
+    if app.open_approval.is_none() {
+        register_approval(
+            app,
+            ApprovalRequest {
+                kind: ApprovalKind::Workflow,
+                title,
+                detail: Some(estimate),
+                choices: vec![
+                    ApprovalChoice::new("approve", "Run it"),
+                    ApprovalChoice::new("cancel", "Cancel"),
+                ],
+            },
+        );
+    }
+}
+
+/// Register a picker question with the SDK so remote controllers see it and
+/// may answer it.
+fn register_approval(app: &mut App, request: ApprovalRequest) {
+    let Some(sdk) = &app.sdk else { return };
+    let kind = request.kind;
+    let (id, _answer) = sdk.open_approval(request);
+    app.open_approval = Some(OpenApproval { id, kind });
+}
+
+/// The terminal answered its picker; tell every other surface.
+fn answer_approval_locally(app: &mut App, choice: &str) {
+    if let Some(open) = app.open_approval.take()
+        && let Some(sdk) = &app.sdk
+    {
+        let _ = sdk.answer_approval(&open.id, choice, "local");
+    }
+}
+
+/// A picker went away without a decision (Esc): withdraw its question.
+fn close_dismissed_approval(app: &mut App) {
+    if app.picker.is_none()
+        && let Some(open) = app.open_approval.take()
+        && let Some(sdk) = &app.sdk
+        && sdk.answer_approval(&open.id, "cancel", "local").is_err()
+    {
+        sdk.close_approval(&open.id);
+    }
+}
+
+/// A remote controller answered the open picker question.
+fn resolve_remote_approval(
+    app: &mut App,
+    session: &Arc<super_coding::AgentSession>,
+    approval_id: &str,
+    choice: &str,
+    by: &str,
+) {
+    if app.open_approval.as_ref().map(|open| open.id.as_str()) != Some(approval_id) {
+        return;
+    }
+    let open = app.open_approval.take();
+    let Some(picker) = app.picker.take() else {
+        return;
+    };
+    match (open.map(|open| open.kind), picker.kind) {
+        (Some(ApprovalKind::Workflow), PickerKind::WorkflowApproval(plan, mut reply)) => {
+            let approved = choice == "approve";
+            if let Some(reply) = reply.take() {
+                let _ = reply.send(if approved {
+                    super_coding::workflows::ApprovalDecision::Approve
+                } else {
+                    super_coding::workflows::ApprovalDecision::Cancel
+                });
+            }
+            app.cells.push(Cell::Notice(if approved {
+                format!("♦ workflow {} approved from {by}", plan.name)
+            } else {
+                format!("♦ workflow {} cancelled from {by}", plan.name)
+            }));
+        }
+        (Some(ApprovalKind::Trust), PickerKind::Trust) => {
+            let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
+            let trusted = choice == "trust";
+            match super_coding::trust::save_decision(&cwd, trusted) {
+                Ok(()) => app.cells.push(Cell::Notice(format!(
+                    "♦ project trust saved as {} from {by}. Run /reload to apply it",
+                    if trusted { "trusted" } else { "untrusted" }
+                ))),
+                Err(error) => app.cells.push(Cell::Error(format!(
+                    "could not save project trust: {error:#}"
+                ))),
+            }
+        }
+        (_, kind) => {
+            // Not the picker the question was about; leave it open.
+            app.picker = Some(Picker {
+                kind,
+                list: picker.list,
+            });
+        }
+    }
+}
+
+fn handle_remote_notice(
+    app: &mut App,
+    notice: SessionNotice,
+    session: &Arc<super_coding::AgentSession>,
+) {
+    match notice {
+        SessionNotice::RemoteInput { origin, kind, .. } => {
+            let label = match kind {
+                "steer" => "steer",
+                "follow_up" => "follow-up",
+                _ => "prompt",
+            };
+            app.cells
+                .push(Cell::Notice(format!("♦ {label} from {origin}")));
+        }
+        SessionNotice::RemoteCommand {
+            origin,
+            command,
+            success,
+        } => {
+            if command == "answer_approval" {
+                return;
+            }
+            app.cells.push(Cell::Notice(if success {
+                format!("♦ {command} from {origin}")
+            } else {
+                format!("♦ {command} from {origin} failed")
+            }));
+        }
+        SessionNotice::ApprovalAnswered {
+            approval_id,
+            choice,
+            by,
+        } => {
+            if by != "local" {
+                resolve_remote_approval(app, session, &approval_id, &choice, &by);
+            }
+        }
+    }
+}
+
+fn handle_remote_event(app: &mut App, event: RemoteEvent) {
+    match event {
+        RemoteEvent::Started { .. } | RemoteEvent::Notice(RemoteNotice::Status(_)) => {}
+        RemoteEvent::Notice(RemoteNotice::ExpiredCommands(count)) => {
+            app.cells.push(Cell::Notice(format!(
+                "Skipped {count} remote command{} that expired while offline.",
+                if count == 1 { "" } else { "s" }
+            )));
+        }
+        RemoteEvent::Notice(RemoteNotice::DroppedEvents(_)) => {}
+        RemoteEvent::Notice(RemoteNotice::Refused { origin, command }) => {
+            app.cells.push(Cell::Notice(format!(
+                "♦ {command} from {origin} refused: remote.allowShell is off"
+            )));
+        }
+        RemoteEvent::Failed(reason) => {
+            app.cells.push(Cell::Notice(format!(
+                "Remote control unavailable: {reason}. The session runs locally."
+            )));
+        }
+        RemoteEvent::Held => {
+            app.cells.push(Cell::Notice(
+                "Remote control is held by another super process for this session.".into(),
+            ));
+        }
+    }
+}
+
+/// Begin mirroring this session. Network work happens on a task; the
+/// terminal learns the outcome through `CommandEvent::RemoteEvent`.
+fn start_remote(
+    app: &mut App,
+    session: &Arc<super_coding::AgentSession>,
+    settings: &super_coding::Settings,
+    command_tx: &mpsc::UnboundedSender<CommandEvent>,
+) {
+    let Some(sdk) = app.sdk.clone() else { return };
+    let (tx, mut rx) = mpsc::unbounded_channel::<RemoteEvent>();
+    let forward = command_tx.clone();
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if forward.send(CommandEvent::RemoteEvent(event)).is_err() {
+                break;
+            }
+        }
+    });
+    let session_file = session
+        .manager
+        .lock()
+        .unwrap()
+        .session_file()
+        .map(Path::to_path_buf);
+    app.remote = Some(RemoteControl::start(sdk, session_file, settings, tx));
+    if crate::remote::first_run_notice_due() {
+        app.cells.push(Cell::Notice(
+            "This session is visible in the SUPER app and at super.flxkpe.io. /remote off to hide it."
+                .into(),
+        ));
+    }
+}
+
+fn run_remote_command(
+    app: &mut App,
+    session: &Arc<super_coding::AgentSession>,
+    rest: &str,
+    args: &Args,
+    resources: &InteractiveResources,
+    command_tx: &mpsc::UnboundedSender<CommandEvent>,
+) {
+    let mut parts = rest.splitn(2, ' ');
+    let verb = parts.next().unwrap_or("").trim();
+    let value = parts.next().unwrap_or("").trim();
+    match verb {
+        "" | "status" => {
+            if !crate::remote::signed_in() {
+                app.cells.push(Cell::Notice(
+                    "Not signed in to SUPER. /login to enable remote control.".into(),
+                ));
+            } else if let Some(remote) = &app.remote {
+                let label = crate::remote::footer_label(
+                    remote.status(),
+                    remote.is_held(),
+                    remote.is_starting(),
+                );
+                let host = remote
+                    .host()
+                    .map(|host| format!(" · host {} ({})", host.name, host.host_id))
+                    .unwrap_or_default();
+                let basin = remote
+                    .basin()
+                    .map(|basin| format!(" · basin {basin}"))
+                    .unwrap_or_default();
+                let state = remote
+                    .status()
+                    .map(|status| format!(" · {}", status.label()))
+                    .unwrap_or_default();
+                app.cells
+                    .push(Cell::Notice(format!("{label}{state}{host}{basin}")));
+            } else {
+                app.cells.push(Cell::Notice(
+                    "Remote control is off for this session. /remote on to enable it.".into(),
+                ));
+            }
+        }
+        "on" => {
+            if !crate::remote::signed_in() {
+                app.cells.push(Cell::Notice(
+                    "Not signed in to SUPER. /login to enable remote control.".into(),
+                ));
+            } else if args.no_session {
+                app.cells.push(Cell::Notice(
+                    "Ephemeral sessions (--no-session) are never mirrored.".into(),
+                ));
+            } else if app.remote.is_some() {
+                app.cells
+                    .push(Cell::Notice("Remote control is already on.".into()));
+            } else {
+                start_remote(app, session, &resources.settings, command_tx);
+                app.cells
+                    .push(Cell::Notice("Remote control on for this session.".into()));
+            }
+        }
+        "off" => {
+            if let Some(remote) = app.remote.take() {
+                tokio::spawn(remote.stop());
+                app.cells
+                    .push(Cell::Notice("Remote control off for this session.".into()));
+            } else {
+                app.cells
+                    .push(Cell::Notice("Remote control is already off.".into()));
+            }
+        }
+        "name" => {
+            if value.is_empty() {
+                app.cells
+                    .push(Cell::Notice("usage: /remote name <name>".into()));
+            } else {
+                let result = super_remote::HostIdentity::default_path()
+                    .ok_or_else(|| anyhow::anyhow!("no home directory"))
+                    .and_then(|path| {
+                        let mut host = super_remote::HostIdentity::load_or_create(&path)?;
+                        host.rename(value, &path)?;
+                        Ok(host.name)
+                    });
+                match result {
+                    Ok(name) => app.cells.push(Cell::Notice(format!(
+                        "Host renamed to {name}. New sessions announce the new name."
+                    ))),
+                    Err(error) => app
+                        .cells
+                        .push(Cell::Error(format!("could not rename host: {error:#}"))),
+                }
+            }
+        }
+        _ => app.cells.push(Cell::Notice(
+            "usage: /remote [status|on|off|name <name>]".into(),
+        )),
+    }
 }
 
 /// Build the callback the workflow runtime uses to ask for approval.
@@ -5470,6 +5857,18 @@ fn open_trust_picker(app: &mut App, session: &Arc<super_coding::AgentSession>) {
         kind: PickerKind::Trust,
         list: SelectList::new(format!("Trust for {cwd}"), items, app.theme.clone()),
     });
+    register_approval(
+        app,
+        ApprovalRequest {
+            kind: ApprovalKind::Trust,
+            title: format!("Trust the project in {cwd}?"),
+            detail: Some("Trusted projects load their settings, prompts and skills".into()),
+            choices: vec![
+                ApprovalChoice::new("trust", "Trust project"),
+                ApprovalChoice::new("untrust", "Do not trust"),
+            ],
+        },
+    );
 }
 
 fn open_llama_picker(app: &mut App, models: Vec<LlamaModel>) {
@@ -6404,6 +6803,7 @@ fn apply_picker_selection(
         PickerKind::Trust => {
             let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
             let trusted = value == 0;
+            answer_approval_locally(app, if trusted { "trust" } else { "untrust" });
             match super_coding::trust::save_decision(&cwd, trusted) {
                 Ok(()) => app.cells.push(Cell::Notice(format!(
                     "saved project trust as {}. Run /reload to apply it",
@@ -6443,6 +6843,7 @@ fn apply_picker_selection(
                 if let Some(reply) = reply.take() {
                     let _ = reply.send(super_coding::workflows::ApprovalDecision::Approve);
                 }
+                answer_approval_locally(app, "approve");
                 app.cells.push(Cell::Notice(format!(
                     "running workflow {} · /workflows opens the progress view",
                     plan.name
@@ -6461,6 +6862,7 @@ fn apply_picker_selection(
                 if let Some(reply) = reply.take() {
                     let _ = reply.send(super_coding::workflows::ApprovalDecision::Cancel);
                 }
+                answer_approval_locally(app, "cancel");
                 app.cells.push(Cell::Notice("workflow cancelled".into()));
             }
         },
@@ -7599,6 +8001,7 @@ fn run_slash_command(
             }
         }
         "trust" => open_trust_picker(app, session),
+        "remote" => run_remote_command(app, session, &rest, args, resources, command_tx),
         "accounts" => run_accounts_command(app, &rest),
         "login" => {
             app.pending_account_add = None;
@@ -8259,6 +8662,10 @@ mod tests {
             workflow_version: 0,
             workflow_outcomes: Vec::new(),
             pending_account_add: None,
+            sdk: None,
+            remote: None,
+            remote_signed_in: false,
+            open_approval: None,
         }
     }
 

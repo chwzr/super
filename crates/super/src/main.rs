@@ -14,6 +14,7 @@ mod modes {
 }
 mod mcp_cli;
 mod provider_cli;
+mod remote;
 mod session_sources;
 mod setup;
 mod slash_commands;

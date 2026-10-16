@@ -171,6 +171,17 @@ pub enum Command {
     },
     GetForkMessages {},
 
+    // --- approvals ---
+    /// List the prompts that wait for a human decision.
+    GetApprovals {},
+    /// Answer one of them. `choice` is a choice id from the `approval_request`
+    /// event (for example `approve`, `cancel`, `trust`).
+    #[serde(rename_all = "camelCase")]
+    AnswerApproval {
+        approval_id: String,
+        choice: String,
+    },
+
     // --- liveness ---
     Ping {},
 }
@@ -209,6 +220,8 @@ impl Command {
             Command::SwitchSession { .. } => "switch_session",
             Command::Fork { .. } => "fork",
             Command::GetForkMessages {} => "get_fork_messages",
+            Command::GetApprovals {} => "get_approvals",
+            Command::AnswerApproval { .. } => "answer_approval",
             Command::Ping {} => "ping",
         }
     }
