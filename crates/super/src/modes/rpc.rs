@@ -114,15 +114,31 @@ pub async fn run(args: &Args) -> Result<i32> {
         })
     });
 
-    match &args.rpc_listen {
-        Some(address) => {
-            let address: std::net::SocketAddr = address.parse().map_err(|error| {
-                anyhow::anyhow!("invalid --rpc-listen address '{address}': {error}")
-            })?;
-            super_sdk::rpc::serve_websocket(session, address).await?;
+    let serve = async {
+        match &args.rpc_listen {
+            Some(address) => {
+                let address: std::net::SocketAddr = address.parse().map_err(|error| {
+                    anyhow::anyhow!("invalid --rpc-listen address '{address}': {error}")
+                })?;
+                super_sdk::rpc::serve_websocket(session, address).await
+            }
+            None => super_sdk::rpc::serve_stdio(session).await,
         }
-        None => super_sdk::rpc::serve_stdio(session).await?,
+    };
+    // A parent that terminates the process (the macOS app does, after
+    // closing stdin) must still see the session announced as ended, so
+    // SIGTERM ends serving and falls through to the same shutdown as EOF.
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = serve => result?,
+            _ = terminate.recv() => {}
+        }
     }
+    #[cfg(not(unix))]
+    serve.await?;
     if let Some(task) = presence {
         task.abort();
     }
