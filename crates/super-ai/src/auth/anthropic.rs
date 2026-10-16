@@ -148,6 +148,7 @@ fn credential_from_token(token: TokenResponse) -> OAuthCredential {
             - 5 * 60 * 1000,
         account_id: String::new(),
         available_model_ids: None,
+        device_id: None,
         client_id: None,
     }
 }
@@ -492,6 +493,7 @@ mod tests {
             expires: 0,
             account_id: String::new(),
             available_model_ids: None,
+            device_id: None,
             client_id: None,
         };
         let error = refresh(

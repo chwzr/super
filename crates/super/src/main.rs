@@ -13,6 +13,7 @@ mod modes {
     pub mod rpc;
 }
 mod mcp_cli;
+mod platform;
 mod provider_cli;
 mod remote;
 mod session_sources;
@@ -220,6 +221,10 @@ async fn run_command(args: &Args, command: &Command) -> anyhow::Result<i32> {
             Ok(0)
         }
         Command::Logout { provider } => {
+            if provider == platform::PROVIDER {
+                platform::sign_out_cli().await?;
+                return Ok(0);
+            }
             if super_ai::auth::remove_api_key(provider)? {
                 println!("Removed saved credentials for {provider}.");
             } else {
@@ -286,6 +291,11 @@ async fn run_oauth_login(provider: &str, headless: bool) -> anyhow::Result<()> {
             signal_cancel.cancel();
         }
     });
+    if provider == platform::PROVIDER {
+        let result = platform::sign_in_cli(headless, &cancel).await;
+        signal_task.abort();
+        return result;
+    }
     if (!headless || provider == "cursor")
         && login_methods(provider).contains(&LoginMethod::BrowserOAuth)
     {

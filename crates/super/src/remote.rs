@@ -21,30 +21,20 @@ use super_remote::{
 };
 use tokio::sync::{mpsc, watch};
 
-pub const PROVIDER_ID: &str = "super";
-pub const DEFAULT_PLATFORM_URL: &str = "https://super.flxkpe.io";
+pub const PROVIDER_ID: &str = super_ai::auth::super_platform::PROVIDER;
 
 /// Is there a stored sign-in for the SUPER platform?
 pub fn signed_in() -> bool {
-    super_ai::auth::stored_auth_kind(PROVIDER_ID).is_some()
+    super_ai::auth::super_platform::is_signed_in()
 }
 
 /// Where the platform lives: `SUPER_PLATFORM_URL`, then the `platform.url`
 /// setting, then the default.
 pub fn platform_url(settings: &Settings) -> String {
-    if let Ok(value) = std::env::var("SUPER_PLATFORM_URL")
-        && !value.trim().is_empty()
-    {
-        return value.trim().trim_end_matches('/').to_string();
-    }
-    settings
-        .extra
-        .get("platform")
-        .and_then(|platform| platform.get("url"))
-        .and_then(|url| url.as_str())
-        .map(|url| url.trim().trim_end_matches('/').to_string())
-        .filter(|url| !url.is_empty())
-        .unwrap_or_else(|| DEFAULT_PLATFORM_URL.to_string())
+    super_ai::auth::super_platform::resolve_base_url(
+        settings.platform.url.as_deref(),
+        std::env::var("SUPER_PLATFORM_URL").ok().as_deref(),
+    )
 }
 
 /// Should this process mirror its session? Flags and settings can say no;
@@ -404,13 +394,8 @@ mod tests {
 
     #[test]
     fn the_platform_url_comes_from_settings_before_the_default() {
-        let settings = Settings::default();
-        assert_eq!(platform_url(&settings), DEFAULT_PLATFORM_URL);
         let mut custom = Settings::default();
-        custom.extra.insert(
-            "platform".into(),
-            serde_json::json!({"url": "http://127.0.0.1:8080/"}),
-        );
+        custom.platform.url = Some("http://127.0.0.1:8080/".into());
         assert_eq!(platform_url(&custom), "http://127.0.0.1:8080");
     }
 
