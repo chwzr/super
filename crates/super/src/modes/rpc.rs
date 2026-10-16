@@ -98,4 +98,111 @@ pub async fn run(args: &Args) -> Result<i32> {
                 let Some(event) = events.recv().await else {
                     break;
                 };
-                let state = match event.0["type"].as_str
+                let state = match event.0["type"].as_str() {
+                    Some("agent_start") => super_remote::SessionState::Working,
+                    Some("agent_settled") | Some("agent_end") => super_remote::SessionState::Idle,
+                    _ => continue,
+                };
+                publish(crate::remote::session_record(
+                    state,
+                    None,
+                    sdk.agent_session(),
+                    &args,
+                    true,
+                ));
+            }
+        })
+    });
+
+    match &args.rpc_listen {
+        Some(address) => {
+            let address: std::net::SocketAddr = address.parse().map_err(|error| {
+                anyhow::anyhow!("invalid --rpc-listen address '{address}': {error}")
+            })?;
+            super_sdk::rpc::serve_websocket(session, address).await?;
+        }
+        None => super_sdk::rpc::serve_stdio(session).await?,
+    }
+    if let Some(task) = presence {
+        task.abort();
+    }
+    if let Some((control, _)) = remote {
+        control.stop().await;
+    }
+    Ok(0)
+}
+
+/// A publisher that outlives the borrow of the control.
+fn control_publisher(
+    control: &crate::remote::RemoteControl,
+) -> impl Fn(super_remote::SessionRecord) + Send + 'static {
+    let publish = control.publisher();
+    move |record| publish(record)
+}
+
+/// Workflows ask for approval; without a terminal the question goes to the
+/// RPC and remote clients as an `approval_request` event.
+fn install_approval_gate(session: &std::sync::Arc<super_sdk::Session>) {
+    let sdk = session.clone();
+    session
+        .agent_session()
+        .set_workflow_approver(std::sync::Arc::new(move |plan| {
+            let sdk = sdk.clone();
+            Box::pin(async move {
+                let (_, answer) = sdk.open_approval(super_sdk::ApprovalRequest {
+                    kind: super_sdk::ApprovalKind::Workflow,
+                    title: format!("Run workflow {}?", plan.name),
+                    detail: Some(plan.agent_estimate()),
+                    choices: vec![
+                        super_sdk::ApprovalChoice::new("approve", "Run it"),
+                        super_sdk::ApprovalChoice::new("cancel", "Cancel"),
+                    ],
+                });
+                match answer.await {
+                    Ok(answer) if answer.choice == "approve" => {
+                        super_coding::workflows::ApprovalDecision::Approve
+                    }
+                    _ => super_coding::workflows::ApprovalDecision::Cancel,
+                }
+            })
+        }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser as _;
+
+    #[test]
+    fn no_session_means_nothing_is_written_to_disk() {
+        let args = Args::parse_from(["super", "--mode", "rpc", "--no-session"]);
+        let options = options_from_args(&args).expect("options");
+        assert_eq!(options.session, SessionSource::InMemory);
+    }
+
+    #[test]
+    fn a_session_is_persisted_by_default() {
+        let args = Args::parse_from(["super", "--mode", "rpc"]);
+        let options = options_from_args(&args).expect("options");
+        assert_eq!(options.session, SessionSource::Create);
+    }
+
+    #[test]
+    fn tool_flags_are_carried_across() {
+        let args = Args::parse_from([
+            "super",
+            "--mode",
+            "rpc",
+            "--tools",
+            "read,bash",
+            "--exclude-tools",
+            "bash",
+        ]);
+        let options = options_from_args(&args).expect("options");
+        assert_eq!(
+            options.tools.as_deref(),
+            Some(&["read".to_string(), "bash".to_string()][..])
+        );
+        assert_eq!(options.exclude_tools, ["bash"]);
+    }
+}

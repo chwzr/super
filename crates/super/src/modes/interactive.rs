@@ -131,7 +131,18 @@ struct App {
     remote_signed_in: bool,
     /// The picker question remote controllers may answer too.
     open_approval: Option<OpenApproval>,
+    /// What the last published registry record was built from.
+    remote_record_key: Option<RemoteRecordKey>,
 }
+
+type RemoteRecordKey = (
+    SessionState,
+    Option<&'static str>,
+    usize,
+    String,
+    ThinkingLevel,
+    Option<String>,
+);
 
 /// A question registered with the SDK so every surface can answer it.
 struct OpenApproval {
@@ -1431,6 +1442,7 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         remote: None,
         remote_signed_in: false,
         open_approval: None,
+        remote_record_key: None,
     };
     if let Some(indent) = &settings.markdown.code_block_indent {
         app.md.code_indent = indent.clone();
@@ -1500,7 +1512,7 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         if hosts.enabled() {
             hosts.update(terminal_host_state(&app, &session), &session, args);
         }
-        if let Some(remote) = &app.remote {
+        if app.remote.is_some() {
             let (state, reason) = match terminal_host_state(&app, &session) {
                 crate::terminal_hosts::State::Idle => (SessionState::Idle, None),
                 crate::terminal_hosts::State::Working => (SessionState::Working, None),
@@ -1508,9 +1520,28 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
                     (SessionState::Blocked, Some(reason))
                 }
             };
-            remote.publish(crate::remote::session_record(
-                state, reason, &session, args, false,
-            ));
+            // Building the record scans the session; only do it when something
+            // that goes into it changed.
+            let key = {
+                let model = session.model();
+                let manager = session.manager.lock().unwrap();
+                (
+                    state,
+                    reason,
+                    manager.entries().len(),
+                    format!("{}/{}", model.provider, model.id),
+                    session.thinking_level(),
+                    manager.session_name(),
+                )
+            };
+            if app.remote_record_key.as_ref() != Some(&key) {
+                if let Some(remote) = &app.remote {
+                    remote.publish(crate::remote::session_record(
+                        state, reason, &session, args, false,
+                    ));
+                }
+                app.remote_record_key = Some(key);
+            }
         }
         let resize_deadline = resize_state
             .next_deadline()
@@ -8666,6 +8697,7 @@ mod tests {
             remote: None,
             remote_signed_in: false,
             open_approval: None,
+            remote_record_key: None,
         }
     }
 

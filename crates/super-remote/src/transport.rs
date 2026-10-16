@@ -265,9 +265,16 @@ impl Pump {
             {
                 break;
             }
+            // After a lag the message_end that would have triggered a sync may
+            // be gone, so a lag syncs too.
             if matches!(
                 kind.as_str(),
-                "message_end" | "turn_end" | "agent_settled" | "compaction_end" | "model_changed"
+                "message_end"
+                    | "turn_end"
+                    | "agent_settled"
+                    | "compaction_end"
+                    | "model_changed"
+                    | "event_lag"
             ) && self.queue.send(Outgoing::SyncEntries).is_err()
             {
                 break;
@@ -279,8 +286,8 @@ impl Pump {
 /// Encode one RPC event or response as a record, truncated to fit.
 pub fn event_record(mut value: Value) -> AppendRecord {
     let kind = value["type"].as_str().unwrap_or("").to_string();
-    let truncated = shrink_to_fit(&mut value, MAX_RECORD_BYTES);
-    let mut record = AppendRecord::new(value.to_string()).header("t", kind);
+    let (body, truncated) = fit_to_bytes(&mut value, MAX_RECORD_BYTES);
+    let mut record = AppendRecord::new(body).header("t", kind);
     if truncated {
         record = record.header("trunc", "1");
     }
@@ -291,10 +298,16 @@ pub fn event_record(mut value: Value) -> AppendRecord {
 /// Returns whether anything was cut. The note left behind names the size so a
 /// reader can tell what happened.
 pub fn shrink_to_fit(value: &mut Value, limit: usize) -> bool {
+    fit_to_bytes(value, limit).1
+}
+
+/// Like [`shrink_to_fit`], returning the serialized body so callers do not
+/// encode twice.
+pub fn fit_to_bytes(value: &mut Value, limit: usize) -> (String, bool) {
     let mut truncated = false;
+    let mut body = value.to_string();
     for _ in 0..64 {
-        let size = value.to_string().len();
-        if size <= limit {
+        if body.len() <= limit {
             break;
         }
         let Some(path) = largest_string(value) else {
@@ -314,11 +327,15 @@ pub fn shrink_to_fit(value: &mut Value, limit: usize) -> bool {
         } else {
             break;
         }
+        body = value.to_string();
     }
-    if truncated && let Value::Object(map) = value {
-        map.insert("truncated".into(), Value::Bool(true));
+    if truncated {
+        if let Value::Object(map) = value {
+            map.insert("truncated".into(), Value::Bool(true));
+        }
+        body = value.to_string();
     }
-    truncated
+    (body, truncated)
 }
 
 #[derive(Clone)]
@@ -609,8 +626,8 @@ impl Flusher {
         for mut entry in entries {
             let id = entry["id"].as_str().unwrap_or("").to_string();
             let kind = entry["type"].as_str().unwrap_or("entry").to_string();
-            let truncated = shrink_to_fit(&mut entry, MAX_RECORD_BYTES);
-            let mut record = AppendRecord::new(entry.to_string())
+            let (body, truncated) = fit_to_bytes(&mut entry, MAX_RECORD_BYTES);
+            let mut record = AppendRecord::new(body)
                 .header("t", kind)
                 .header("eid", id.clone());
             if truncated {
