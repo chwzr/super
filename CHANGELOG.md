@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- Remote control. While signed in to the SUPER platform, saved sessions are
+  mirrored to the account's S2 streams, so the SUPER app and the web can
+  follow and steer them. The footer shows `♦ remote`, remote input is
+  attributed in the transcript, `/remote` inspects or toggles it, and
+  `--no-remote` opts a session out. `super --mode rpc` mirrors as well.
+- RPC approvals: `approval_request` and `approval_resolved` events plus
+  `get_approvals` and `answer_approval` commands let any client answer a
+  workflow or project trust question.
+- SDK: `Session::attach` wraps a harness session something else built, and
+  `mirrored_sink` publishes its events to SDK subscribers. `Session::execute_from`
+  names the surface a command came from.
+
 ## 0.0.37 - 2026-10-09
 
 ### Added

@@ -4150,6 +4150,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "fs2",
  "futures",
  "ignore",
  "libc",
@@ -4167,6 +4168,7 @@ dependencies = [
  "super-bench",
  "super-coding",
  "super-mcp",
+ "super-remote",
  "super-tui",
  "super-webmcp",
  "tempfile",
@@ -4315,6 +4317,25 @@ dependencies = [
  "tokio-util",
  "url",
  "which",
+]
+
+[[package]]
+name = "super-remote"
+version = "0.0.37"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "futures",
+ "rand 0.9.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "super-agent-sdk",
+ "super-coding",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

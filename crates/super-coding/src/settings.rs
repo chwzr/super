@@ -206,6 +206,26 @@ pub struct WebMcpSettings {
     pub cdp: Option<Value>,
 }
 
+/// Remote control through the SUPER platform. Only effective while signed in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RemoteSettings {
+    /// `None` keeps the default: on while signed in.
+    pub enabled: Option<bool>,
+    /// Accept the RPC `bash` command from remote controllers.
+    pub allow_shell: Option<bool>,
+}
+
+impl RemoteSettings {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn shell_allowed(&self) -> bool {
+        self.allow_shell.unwrap_or(true)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -243,6 +263,7 @@ pub struct Settings {
     pub voice_backend: Option<String>,
     pub markdown: MarkdownSettings,
     pub webmcp: WebMcpSettings,
+    pub remote: RemoteSettings,
     /// Unknown keys survive load/save.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,

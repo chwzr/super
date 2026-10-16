@@ -74,6 +74,11 @@ pub(crate) const PI_CORE_SLASH_COMMANDS: &[SlashCommand] = &[
         Some("<provider>"),
     ),
     SlashCommand::new("logout", "Remove provider authentication", None),
+    SlashCommand::new(
+        "remote",
+        "Remote control: status, on, off, name <name>",
+        Some("[status|on|off|name <name>]"),
+    ),
     SlashCommand::new("new", "Start a new session", None),
     SlashCommand::new("compact", "Manually compact the session context", None),
     SlashCommand::new("resume", "Resume a different session", None),
@@ -193,6 +198,7 @@ mod tests {
                 "trust",
                 "login",
                 "logout",
+                "remote",
                 "new",
                 "compact",
                 "resume",
@@ -262,6 +268,11 @@ mod tests {
                     Some("<provider>")
                 ),
                 ("logout", "Remove provider authentication", None),
+                (
+                    "remote",
+                    "Remote control: status, on, off, name <name>",
+                    Some("[status|on|off|name <name>]")
+                ),
                 ("new", "Start a new session", None),
                 ("compact", "Manually compact the session context", None),
                 ("resume", "Resume a different session", None),

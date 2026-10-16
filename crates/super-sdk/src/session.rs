@@ -5,6 +5,9 @@
 //! thin, typed wrapper around it. The RPC server and the Python and TypeScript
 //! bindings call `execute` too, which is why the four surfaces cannot drift.
 
+use crate::approvals::{
+    ApprovalAnswer, ApprovalRequest, Approvals, approval_request_event, approval_resolved_event,
+};
 use crate::events::{agent_settled, bash_execution_update, event_lag, session_event_json};
 use crate::options::SessionOptions;
 use crate::protocol::{Command, Event, ImageInput, QueueMode, Response, StreamingBehavior};
@@ -116,6 +119,34 @@ pub struct SessionState {
     pub tools: Vec<String>,
 }
 
+/// Something a surface embedding the session wants to know about commands that
+/// arrived through another surface, for example a remote controller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionNotice {
+    /// A prompt, steer or follow-up was accepted from `origin`.
+    RemoteInput {
+        origin: String,
+        /// `prompt`, `steer` or `follow_up`.
+        kind: &'static str,
+        text: String,
+    },
+    /// Any other command ran from `origin`: `set_model`, `abort`, ...
+    RemoteCommand {
+        origin: String,
+        command: &'static str,
+        success: bool,
+    },
+    /// An approval was answered, by the terminal (`local`) or a remote device.
+    ApprovalAnswered {
+        approval_id: String,
+        choice: String,
+        by: String,
+    },
+}
+
+/// Receives [`SessionNotice`]s. Must not block.
+pub type SessionObserver = Arc<dyn Fn(SessionNotice) + Send + Sync>;
+
 /// One embeddable conversation with the agent.
 pub struct Session {
     inner: Arc<AgentSession>,
@@ -126,6 +157,35 @@ pub struct Session {
     bash_cancel: Mutex<Option<CancellationToken>>,
     cwd: PathBuf,
     closed: AtomicBool,
+    approvals: Approvals,
+    observer: Mutex<Option<SessionObserver>>,
+}
+
+/// Build the event sink a harness session needs so that every event is also
+/// published to the SDK event stream returned alongside it.
+///
+/// `forward` receives the original event after it was encoded, so a terminal
+/// can keep consuming typed events while remote clients see the JSON form.
+/// Encoding is skipped while nobody subscribes, so an idle mirror costs one
+/// atomic load per event.
+pub fn mirrored_sink(
+    capacity: usize,
+    forward: Option<super_coding::SessionEventSink>,
+) -> (super_coding::SessionEventSink, broadcast::Sender<Event>) {
+    let (sender, _) = broadcast::channel(capacity.max(1));
+    let publish = sender.clone();
+    let sink: super_coding::SessionEventSink = Arc::new(move |event: SessionEvent| {
+        if publish.receiver_count() > 0
+            && let Some(value) = session_event_json(&event)
+        {
+            // A send error only means nobody is listening any more.
+            let _ = publish.send(Event(value));
+        }
+        if let Some(forward) = &forward {
+            forward(event);
+        }
+    });
+    (sink, sender)
 }
 
 /// Fluent construction of a [`Session`].
@@ -269,24 +329,84 @@ impl Session {
     /// Start a session. This performs disk and (for some model catalogs)
     /// network work, so it is async even though most of the body is not.
     pub async fn create(options: SessionOptions) -> Result<Arc<Session>, SdkError> {
-        let (sender, _) = broadcast::channel(options.event_capacity.max(1));
-        let forward = sender.clone();
-        let sink: super_coding::SessionEventSink = Arc::new(move |event: SessionEvent| {
-            if let Some(value) = session_event_json(&event) {
-                // A send error only means nobody is listening.
-                let _ = forward.send(Event(value));
-            }
-        });
+        let (sink, sender) = mirrored_sink(options.event_capacity, None);
         let built = options.build(sink)?;
-        Ok(Arc::new(Session {
-            inner: built.session,
-            events: sender,
+        Ok(Self::attach(built.session, options.cwd.clone(), sender))
+    }
+
+    /// Wrap a harness session that something else built and drives, such as
+    /// the interactive terminal, so RPC and remote clients can observe and
+    /// control it. `events` must be the sender half returned by
+    /// [`mirrored_sink`] for that session's sink, otherwise clients see no
+    /// events.
+    pub fn attach(
+        inner: Arc<AgentSession>,
+        cwd: PathBuf,
+        events: broadcast::Sender<Event>,
+    ) -> Arc<Session> {
+        Arc::new(Session {
+            inner,
+            events,
             running: Arc::new(AtomicBool::new(false)),
             run_lock: Arc::new(tokio::sync::Mutex::new(())),
             bash_cancel: Mutex::new(None),
-            cwd: options.cwd.clone(),
+            cwd,
             closed: AtomicBool::new(false),
-        }))
+            approvals: Approvals::default(),
+            observer: Mutex::new(None),
+        })
+    }
+
+    /// Tell clients the agent is idle after a run that another surface drove.
+    ///
+    /// Runs started through the SDK emit `agent_settled` on their own. A
+    /// terminal that calls the harness directly must call this when its own
+    /// run finishes so remote clients learn the same thing.
+    pub fn notify_settled(&self) {
+        self.emit(agent_settled());
+    }
+
+    /// Install the observer that hears about remote commands and approvals.
+    pub fn set_observer(&self, observer: Option<SessionObserver>) {
+        *self.observer.lock().unwrap() = observer;
+    }
+
+    fn notify(&self, notice: SessionNotice) {
+        let observer = self.observer.lock().unwrap().clone();
+        if let Some(observer) = observer {
+            observer(notice);
+        }
+    }
+
+    /// Register a question for a human. Every subscriber receives an
+    /// `approval_request` event; the returned receiver resolves with the first
+    /// answer from any surface.
+    pub fn open_approval(
+        &self,
+        request: ApprovalRequest,
+    ) -> (String, tokio::sync::oneshot::Receiver<ApprovalAnswer>) {
+        let (id, answer) = self.approvals.open(request.clone());
+        self.emit(approval_request_event(&id, &request));
+        (id, answer)
+    }
+
+    /// Answer an open approval on behalf of `by` (`local` for the terminal).
+    pub fn answer_approval(&self, id: &str, choice: &str, by: &str) -> Result<(), SdkError> {
+        self.approvals
+            .answer(id, choice, by)
+            .map_err(SdkError::Command)?;
+        self.emit(approval_resolved_event(id, choice, by));
+        self.notify(SessionNotice::ApprovalAnswered {
+            approval_id: id.to_string(),
+            choice: choice.to_string(),
+            by: by.to_string(),
+        });
+        Ok(())
+    }
+
+    /// Drop an approval nobody can answer any more.
+    pub fn close_approval(&self, id: &str) {
+        self.approvals.close(id);
     }
 
     /// Subscribe to the event stream. Each subscriber gets every event emitted
@@ -562,15 +682,59 @@ impl Session {
         command: Command,
         id: Option<String>,
     ) -> Response {
+        self.execute_from(command, id, None).await
+    }
+
+    /// Execute a command that arrived from another surface, naming it so the
+    /// embedding terminal can attribute what happens (`♦ from iPhone`).
+    pub async fn execute_from(
+        self: &Arc<Self>,
+        command: Command,
+        id: Option<String>,
+        origin: Option<String>,
+    ) -> Response {
         let name = command.name();
+        if let Some(origin) = &origin {
+            let input = match &command {
+                Command::Prompt { message, .. } => Some(("prompt", message.clone())),
+                Command::Steer { message, .. } => Some(("steer", message.clone())),
+                Command::FollowUp { message, .. } => Some(("follow_up", message.clone())),
+                _ => None,
+            };
+            if let Some((kind, text)) = input {
+                self.notify(SessionNotice::RemoteInput {
+                    origin: origin.clone(),
+                    kind,
+                    text,
+                });
+            }
+        }
+        let by = origin.clone().unwrap_or_else(|| "rpc".to_string());
         let result = match command {
             Command::Bash { command } => self
                 .bash_with_id(&command, id.clone())
                 .await
                 .map(|result| Some(result.to_json()))
                 .map_err(SdkErrorText::from),
+            Command::AnswerApproval {
+                approval_id,
+                choice,
+            } => self
+                .answer_approval(&approval_id, &choice, &by)
+                .map(|()| None)
+                .map_err(SdkErrorText::from),
             other => self.execute_inner(other).await,
         };
+        if let Some(origin) = origin
+            && !matches!(name, "prompt" | "steer" | "follow_up" | "ping")
+            && !name.starts_with("get_")
+        {
+            self.notify(SessionNotice::RemoteCommand {
+                origin,
+                command: name,
+                success: result.is_ok(),
+            });
+        }
         match result {
             Ok(Some(data)) => Response::ok_data(name, data).with_id(id),
             Ok(None) => Response::ok(name).with_id(id),
@@ -847,6 +1011,23 @@ impl Session {
                     .collect();
                 Ok(Some(json!({"messages": messages})))
             }
+            Command::GetApprovals {} => {
+                let approvals: Vec<Value> = self
+                    .approvals
+                    .list()
+                    .iter()
+                    .map(|(id, request)| {
+                        let mut event = approval_request_event(id, request);
+                        if let Value::Object(map) = &mut event {
+                            map.remove("type");
+                        }
+                        event
+                    })
+                    .collect();
+                Ok(Some(json!({"approvals": approvals})))
+            }
+            // Handled in `execute_from`, where the answering surface is known.
+            Command::AnswerApproval { .. } => Err(SdkErrorText("unreachable".into())),
             Command::Ping {} => Ok(Some(json!({"pong": true}))),
         }
     }
