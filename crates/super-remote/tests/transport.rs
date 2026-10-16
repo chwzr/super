@@ -261,12 +261,13 @@ fn percent_decode(text: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(value) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
-                out.push(value);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(value) = u8::from_str_radix(&text[i + 1..i + 3], 16)
+        {
+            out.push(value);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
@@ -367,14 +368,14 @@ async fn events_entries_and_commands_flow_through_the_streams() {
         Arc::new(move |notice| sink.lock().unwrap().push(notice)),
     );
 
-    // Connected once the tail is open; appends happen on demand.
+    // The status leaves `Starting` once the commands tail is open; it only
+    // becomes `Connected` after the first append, which happens on demand.
     wait_until(|| {
         notices
             .lock()
             .unwrap()
             .iter()
             .any(|notice| matches!(notice, RemoteNotice::Status(RemoteStatus::Reconnecting)))
-            || true
     })
     .await;
 

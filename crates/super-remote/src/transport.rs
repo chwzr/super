@@ -347,11 +347,10 @@ enum PathStep {
 fn largest_string(value: &Value) -> Option<Vec<PathStep>> {
     fn walk(value: &Value, path: &mut Vec<PathStep>, best: &mut (usize, Vec<PathStep>)) {
         match value {
-            Value::String(text) => {
-                if text.len() > best.0 {
-                    *best = (text.len(), path.clone());
-                }
+            Value::String(text) if text.len() > best.0 => {
+                *best = (text.len(), path.clone());
             }
+            Value::String(_) => {}
             Value::Array(items) => {
                 for (index, item) in items.iter().enumerate() {
                     path.push(PathStep::Index(index));
