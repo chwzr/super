@@ -83,6 +83,9 @@ struct App {
     title_generation_pending: bool,
     picker: Option<Picker>,
     model_catalog: Option<Arc<super_ai::Registry>>,
+    /// The SUPER platform models after the last refresh, sign-in, or
+    /// sign-out. Applied to every catalog the pickers build.
+    platform_models: Option<Vec<super_ai::Model>>,
     command_menu: Option<CommandCompletion>,
     file_menu: Option<FileCompletion>,
     file_search_request: Option<u64>,
@@ -325,6 +328,12 @@ enum CommandEvent {
         code: String,
         opened: bool,
     },
+    /// The SUPER platform device flow finished.
+    PlatformSignIn(std::result::Result<crate::platform::SignInSummary, String>),
+    /// The SUPER model catalog was refreshed from the platform.
+    PlatformModels(std::result::Result<Vec<super_ai::Model>, String>),
+    /// `/logout super` finished.
+    PlatformSignOut(std::result::Result<crate::platform::SignOut, String>),
     ModelCatalog {
         result: std::result::Result<Arc<super_ai::Registry>, String>,
         pattern: Option<String>,
@@ -1353,6 +1362,7 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         title_generation_pending: false,
         picker: None,
         model_catalog: None,
+        platform_models: None,
         command_menu: None,
         file_menu: None,
         file_search_request: None,
@@ -1430,6 +1440,9 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
     let (file_search_tx, mut file_search_rx) = mpsc::unbounded_channel::<FileSearchResult>();
     let mut file_search = FileSearchService::new(file_search_tx);
     file_search.warm(session.manager.lock().unwrap().cwd().to_path_buf());
+    // The first frame is already on screen; a signed-in user's SUPER model
+    // list refreshes in the background from here on.
+    spawn_platform_model_refresh(&command_tx);
 
     'main: loop {
         if hosts.enabled() {
@@ -2223,6 +2236,64 @@ fn handle_command_event(
                 "{} {url} and enter code {code}",
                 if opened { "Use" } else { "Open" }
             )));
+        }
+        CommandEvent::PlatformSignIn(result) => {
+            app.command_status = None;
+            app.command_cancel = None;
+            match result {
+                Ok(summary) => {
+                    let count = summary.models.len();
+                    apply_platform_models(app, summary.models);
+                    app.cells
+                        .push(Cell::Notice(crate::platform::signed_in_message(
+                            &summary.email,
+                            &[crate::platform::models_part(count)],
+                        )));
+                    complete_account_add(app, crate::platform::PROVIDER, true);
+                }
+                Err(error) => {
+                    complete_account_add(app, crate::platform::PROVIDER, false);
+                    app.cells.push(Cell::Error(format!(
+                        "login failed for {}: {error}",
+                        crate::platform::PROVIDER
+                    )));
+                }
+            }
+        }
+        CommandEvent::PlatformModels(result) => match result {
+            Ok(models) => apply_platform_models(app, models),
+            // Offline, the catalog saved by the last refresh stays in use.
+            // Only a sign-in that cannot be restored is worth a notice.
+            Err(error) if error == crate::platform::SIGN_IN_EXPIRED => {
+                app.cells.push(Cell::Notice(error));
+            }
+            Err(_) => {}
+        },
+        CommandEvent::PlatformSignOut(result) => {
+            app.command_status = None;
+            app.command_cancel = None;
+            match result {
+                Ok(outcome) => {
+                    apply_platform_models(app, Vec::new());
+                    if let Some(error) = outcome.revoke_error {
+                        app.cells.push(Cell::Notice(format!(
+                            "the device was not revoked on the platform: {error}"
+                        )));
+                    }
+                    app.cells.push(Cell::Notice(if outcome.had_credential {
+                        format!(
+                            "signed out of {}. The {} models were removed from /model",
+                            crate::platform::DISPLAY_NAME,
+                            crate::platform::PROVIDER
+                        )
+                    } else {
+                        format!("no stored credentials for {}", crate::platform::PROVIDER)
+                    }));
+                }
+                Err(error) => app
+                    .cells
+                    .push(Cell::Error(format!("logout failed: {error}"))),
+            }
         }
         CommandEvent::ModelCatalog { result, pattern } => {
             app.command_status = None;
@@ -4379,6 +4450,7 @@ fn open_model_picker(
         return;
     }
     let mut registry = (*session.registry).clone();
+    let platform_models = app.platform_models.clone();
     let cancel = CancellationToken::new();
     app.command_cancel = Some(cancel.clone());
     app.command_status = Some("reading account models".into());
@@ -4387,7 +4459,12 @@ fn open_model_picker(
         let result = tokio::select! {
             result = tokio::time::timeout(Duration::from_secs(30), registry.refresh_cursor()) => {
                 match result {
-                    Ok(Ok(())) => Ok(Arc::new(registry)),
+                    Ok(Ok(())) => {
+                        if let Some(models) = platform_models {
+                            registry.replace_provider_models(crate::platform::PROVIDER, models);
+                        }
+                        Ok(Arc::new(registry))
+                    }
                     Ok(Err(error)) => Err(format!("Cursor model discovery failed: {error:#}. Check your connection or use /login cursor, then run /model again")),
                     Err(_) => Err("Cursor model discovery timed out. Check your connection, then run /model again".into()),
                 }
@@ -4649,16 +4726,24 @@ fn open_login_picker(app: &mut App) {
 }
 
 fn open_login_picker_with_filter(app: &mut App, filter: Option<&str>) {
-    let mut providers: Vec<String> = super_ai::registry::BUILTIN_PROVIDER_IDS
-        .iter()
-        .map(|provider| (*provider).to_string())
-        .collect();
+    // The SUPER platform comes first; the other providers keep their order.
+    let mut providers: Vec<String> = vec![crate::platform::PROVIDER.into()];
+    providers.extend(
+        super_ai::registry::BUILTIN_PROVIDER_IDS
+            .iter()
+            .filter(|provider| **provider != crate::platform::PROVIDER)
+            .map(|provider| (*provider).to_string()),
+    );
     providers.extend(["typesafe".into(), "llama.cpp".into()]);
     let items = providers
         .iter()
         .enumerate()
         .map(|(value, provider)| SelectItem {
-            label: provider.clone(),
+            label: if provider == crate::platform::PROVIDER {
+                format!("♦ {}", crate::platform::DISPLAY_NAME)
+            } else {
+                provider.clone()
+            },
             detail: Some(if provider == "llama.cpp" {
                 "Router URL and optional API key".into()
             } else {
@@ -4671,14 +4756,18 @@ fn open_login_picker_with_filter(app: &mut App, filter: Option<&str>) {
                     Some(super_ai::auth::StoredAuthKind::ApiKey) => "saved API key",
                     None => "not configured",
                 };
-                format!(
-                    "{} · {status}",
-                    methods
-                        .iter()
-                        .map(|method| method.label())
-                        .collect::<Vec<_>>()
-                        .join(" / ")
-                )
+                if provider == crate::platform::PROVIDER {
+                    format!("{} · {status}", crate::platform::login_subtitle())
+                } else {
+                    format!(
+                        "{} · {status}",
+                        methods
+                            .iter()
+                            .map(|method| method.label())
+                            .collect::<Vec<_>>()
+                            .join(" / ")
+                    )
+                }
             }),
             value,
         })
@@ -6381,6 +6470,10 @@ fn apply_picker_selection(
         }
         PickerKind::Logout(providers) => {
             if let Some(provider) = providers.get(value) {
+                if provider == crate::platform::PROVIDER {
+                    start_platform_sign_out(app, command_tx);
+                    return;
+                }
                 if provider == "cursor" {
                     app.model_catalog = None;
                 }
@@ -6908,6 +7001,22 @@ fn start_provider_device_login(
     app.command_status = Some(format!("starting device login for {provider}"));
     let tx = command_tx.clone();
     tokio::spawn(async move {
+        if provider == crate::platform::PROVIDER {
+            let notice_tx = tx.clone();
+            let result = crate::platform::sign_in(&cancel, move |device| {
+                let opened = crate::auth_flow::open_browser(device.browser_url());
+                let _ = notice_tx.send(CommandEvent::DeviceLoginNotice {
+                    provider: crate::platform::PROVIDER.into(),
+                    url: device.verification_uri.clone(),
+                    code: device.display_code(),
+                    opened,
+                });
+            })
+            .await
+            .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(CommandEvent::PlatformSignIn(result));
+            return;
+        }
         let result: Result<()> = async {
             match provider.as_str() {
                 "openai-codex" => {
@@ -7007,6 +7116,47 @@ fn start_provider_device_login(
         .await;
         let result = result.map_err(|error| format!("{error:#}"));
         let _ = tx.send(CommandEvent::BrowserLoginFinished { provider, result });
+    });
+}
+
+/// Put the SUPER platform's models into the registry the pickers use. An
+/// empty list removes them.
+fn apply_platform_models(app: &mut App, models: Vec<super_ai::Model>) {
+    // Later catalog builds (the first `/model` refreshes Cursor's account
+    // models) apply this list too, so the startup catalog stays untouched.
+    app.platform_models = Some(models.clone());
+    if let Some(catalog) = app.model_catalog.as_deref() {
+        let mut registry = catalog.clone();
+        registry.replace_provider_models(crate::platform::PROVIDER, models);
+        app.model_catalog = Some(Arc::new(registry));
+    }
+}
+
+/// Refresh the SUPER model list once per start. Signed out, nothing runs
+/// and no request is made.
+fn spawn_platform_model_refresh(command_tx: &mpsc::UnboundedSender<CommandEvent>) {
+    if !super_ai::auth::super_platform::is_signed_in() {
+        return;
+    }
+    let tx = command_tx.clone();
+    tokio::spawn(async move {
+        let result = crate::platform::refresh_models(&CancellationToken::new())
+            .await
+            .map_err(|error| format!("{error:#}"));
+        let _ = tx.send(CommandEvent::PlatformModels(result));
+    });
+}
+
+/// `/logout super`: revoke the device on the platform, then forget the
+/// credential and the models. The session keeps running locally.
+fn start_platform_sign_out(app: &mut App, command_tx: &mpsc::UnboundedSender<CommandEvent>) {
+    app.command_status = Some(format!("signing out of {}", crate::platform::DISPLAY_NAME));
+    let tx = command_tx.clone();
+    tokio::spawn(async move {
+        let result = crate::platform::sign_out()
+            .await
+            .map_err(|error| format!("{error:#}"));
+        let _ = tx.send(CommandEvent::PlatformSignOut(result));
     });
 }
 
@@ -7620,6 +7770,8 @@ fn run_slash_command(
         "logout" => {
             if rest.is_empty() {
                 open_logout_picker(app);
+            } else if rest == crate::platform::PROVIDER {
+                start_platform_sign_out(app, command_tx);
             } else {
                 if rest == "cursor" {
                     app.model_catalog = None;
@@ -8228,6 +8380,7 @@ mod tests {
             title_generation_pending: false,
             picker: None,
             model_catalog: None,
+            platform_models: None,
             command_menu: None,
             file_menu: None,
             file_search_request: None,
