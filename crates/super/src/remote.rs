@@ -95,7 +95,10 @@ pub struct RemoteControl {
     _lock: Option<std::fs::File>,
     held: bool,
     starting: bool,
-    last_record: Mutex<Option<SessionRecord>>,
+    /// The newest record handed to [`publish`](Self::publish). Shared with the
+    /// start task so a record published before the platform answered is sent
+    /// as soon as the registry writer exists.
+    last_record: Arc<Mutex<Option<SessionRecord>>>,
 }
 
 impl RemoteControl {
@@ -146,13 +149,14 @@ impl RemoteControl {
         };
         let live: Arc<Mutex<Option<Live>>> = Arc::new(Mutex::new(None));
         let status: Arc<Mutex<Option<watch::Receiver<RemoteStatus>>>> = Arc::new(Mutex::new(None));
+        let last_record: Arc<Mutex<Option<SessionRecord>>> = Arc::new(Mutex::new(None));
         let control = Self {
             live: live.clone(),
             status: status.clone(),
             _lock: lock,
             held: false,
             starting: true,
-            last_record: Mutex::new(None),
+            last_record: last_record.clone(),
         };
         let session_id = sdk.state().session_id;
         let notices: NoticeSink = {
@@ -179,6 +183,10 @@ impl RemoteControl {
             );
             *status.lock().unwrap() = Some(transport.status_watch());
             let basin = remote.config.s2.basin.clone();
+            // Anything published while the platform was still answering.
+            if let Some(record) = last_record.lock().unwrap().clone() {
+                registry.publish(record);
+            }
             *live.lock().unwrap() = Some(Live {
                 remote,
                 transport,
@@ -196,7 +204,7 @@ impl RemoteControl {
             _lock: None,
             held,
             starting: false,
-            last_record: Mutex::new(None),
+            last_record: Arc::new(Mutex::new(None)),
         }
     }
 
