@@ -192,7 +192,10 @@ async fn append<T: Serialize>(client: &S2Client, kind: &str, body: &T) -> bool {
         .append(REGISTRY_STREAM, &[record], &AppendOptions::default())
         .await
     {
-        Ok(_) => true,
+        Ok(ack) => {
+            crate::log::line(format!("registry append {kind} seq {}", ack.start.seq_num));
+            true
+        }
         Err(error) => {
             crate::log::line(format!("registry append {kind} failed: {error}"));
             false

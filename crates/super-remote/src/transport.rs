@@ -233,6 +233,7 @@ fn publish_status(status: &watch::Sender<RemoteStatus>, link: &LinkState, notice
         }
     });
     if changed {
+        crate::log::line(format!("status {}", next.label()));
         notices(RemoteNotice::Status(next));
     }
 }
@@ -571,12 +572,17 @@ impl Flusher {
             }
         }
         let had_lag = self.dropped > 0;
+        let count = batch.len();
         match self
             .client
             .append(&self.streams.events, &batch, &AppendOptions::default())
             .await
         {
-            Ok(_) => {
+            Ok(ack) => {
+                crate::log::line(format!(
+                    "events append {count} records, seq {}..{}",
+                    ack.start.seq_num, ack.end.seq_num
+                ));
                 if had_lag {
                     self.dropped = 0;
                 }
@@ -660,7 +666,14 @@ impl Flusher {
         self.client
             .append(&self.streams.entries, batch, &options)
             .await
-            .map(|_| ())
+            .map(|ack| {
+                crate::log::line(format!(
+                    "entries append {} records, seq {}..{}",
+                    batch.len(),
+                    ack.start.seq_num,
+                    ack.end.seq_num
+                ));
+            })
     }
 
     async fn new_entries(&mut self) -> Vec<Value> {
@@ -742,6 +755,7 @@ impl Tailer {
         while let Some(event) = reader.recv().await {
             match event {
                 ReadEvent::Connected => {
+                    crate::log::line(format!("commands tail open: {}", self.stream));
                     self.link.tail_ok.store(true, Relaxed);
                     publish_status(&self.status, &self.link, &self.notices);
                 }

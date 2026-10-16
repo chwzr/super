@@ -92,6 +92,14 @@ impl Remote {
             .user_agent(concat!("super-remote/", env!("CARGO_PKG_VERSION")))
             .build()?;
         let config = RemoteConfig::fetch(&http, credentials.as_ref()).await?;
+        log::line(format!(
+            "remote start: platform {} basin {} device {} host {} ({})",
+            credentials.platform_url(),
+            config.s2.basin,
+            config.device_id,
+            host.host_id,
+            host.name
+        ));
         let client = Arc::new(S2Client::new(
             http,
             config.s2.base_url.clone(),
