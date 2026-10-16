@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- The SUPER platform (`super.flxkpe.io`) is a built-in provider. `/login`
+  lists `♦ SUPER` first and signs in with a device code; `super login super`
+  does the same from the command line. The platform's models appear in
+  `/model` as `super/…` and stream through its OpenAI-compatible gateway. The
+  list refreshes on sign-in and once per start, in the background, and the
+  saved list is used offline. `/logout super` revokes the device and removes
+  the models. The `platform.url` setting and the `SUPER_PLATFORM_URL`
+  variable select another platform for development. Signed out, nothing
+  changes and the platform is never contacted.
+
 ## 0.0.37 - 2026-10-09
 
 ### Added
