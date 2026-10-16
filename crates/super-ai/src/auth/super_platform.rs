@@ -179,29 +179,40 @@ pub fn format_user_code(code: &str) -> String {
     }
 }
 
-/// The name this device registers with: the host name when it is known.
+/// The name this device registers with: the machine's host name without its
+/// domain (`mbp`, not `mbp.local`), like the registry host identity.
 pub fn device_name() -> String {
     for variable in ["HOSTNAME", "COMPUTERNAME"] {
         if let Ok(value) = std::env::var(variable)
             && !value.trim().is_empty()
         {
-            return value.trim().to_string();
+            return short_host_name(&value);
         }
     }
     if let Ok(text) = std::fs::read_to_string("/etc/hostname")
         && !text.trim().is_empty()
     {
-        return text.trim().to_string();
+        return short_host_name(&text);
     }
     if let Ok(output) = std::process::Command::new("hostname").output()
         && output.status.success()
     {
         let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !name.is_empty() {
-            return name;
+            return short_host_name(&name);
         }
     }
     "super".into()
+}
+
+fn short_host_name(name: &str) -> String {
+    let name = name.trim();
+    let label = name.split('.').next().unwrap_or(name).trim();
+    if label.is_empty() {
+        name.to_string()
+    } else {
+        label.to_string()
+    }
 }
 
 /// `macos`, `linux`, or `windows` for the platform's device record.
@@ -810,6 +821,14 @@ mod tests {
             "contextWindow": 400000,
             "maxTokens": 128000
         })
+    }
+
+    #[test]
+    fn device_names_drop_the_domain() {
+        assert_eq!(short_host_name("mbp.local"), "mbp");
+        assert_eq!(short_host_name(" studio.example.com\n"), "studio");
+        assert_eq!(short_host_name("plain"), "plain");
+        assert_eq!(short_host_name(".weird"), ".weird");
     }
 
     #[test]
