@@ -389,9 +389,9 @@ mod tests {
     #[test]
     fn signed_out_or_opted_out_means_no_remote() {
         let settings = Settings::default();
-        // Not signed in here, so even the plain invocation says no.
+        // The plain invocation follows the stored sign-in of this machine.
         let args = Args::parse_from(["super"]);
-        assert!(!wanted(&args, &settings));
+        assert_eq!(wanted(&args, &settings), signed_in());
         let args = Args::parse_from(["super", "--no-remote"]);
         assert!(!wanted(&args, &settings));
         let mut off = Settings::default();
