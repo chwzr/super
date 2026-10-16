@@ -22,6 +22,7 @@ pub mod meta;
 pub mod openai_codex;
 pub mod openrouter;
 pub mod radius;
+pub mod super_platform;
 pub mod xai;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,9 @@ pub struct OAuthCredential {
     pub client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available_model_ids: Option<Vec<String>>,
+    /// Device registered with the SUPER platform by this login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 }
 
 impl OAuthCredential {
@@ -156,6 +160,7 @@ pub fn login_methods(provider: &str) -> Vec<LoginMethod> {
         "github-copilot" | "kimi-coding" | "meta" | "xai" => vec![DeviceOAuth, ApiKey],
         "openrouter" => vec![BrowserOAuth, ManualOAuth, ApiKey],
         "radius" => vec![BrowserOAuth, DeviceOAuth, ApiKey],
+        super_platform::PROVIDER => vec![DeviceOAuth],
         azure::PROVIDER => vec![ApiKey, AzureEntraId],
         "google-vertex" => vec![ApiKey, GoogleApplicationDefault],
         "amazon-bedrock" => vec![ApiKey, AwsProfile, AwsAmbient],
@@ -359,6 +364,100 @@ fn update_auth_file<T>(update: impl FnOnce(&mut AuthFile) -> Result<T>) -> Resul
     update_auth_file_at(&path, update)
 }
 
+/// The OAuth credential stored for `provider`, if the entry is one.
+pub fn stored_oauth(provider: &str) -> Option<OAuthCredential> {
+    match read_auth_file().entries.get(provider) {
+        Some(AuthEntry::OAuth(credential)) => Some(credential.clone()),
+        _ => None,
+    }
+}
+
+pub(crate) fn stored_oauth_at(path: &Path, provider: &str) -> Option<OAuthCredential> {
+    match read_auth_file_at(path).entries.get(provider) {
+        Some(AuthEntry::OAuth(credential)) => Some(credential.clone()),
+        _ => None,
+    }
+}
+
+pub(crate) fn store_oauth_at(
+    path: &Path,
+    provider: &str,
+    credential: OAuthCredential,
+) -> Result<()> {
+    update_auth_file_at(path, |file| {
+        file.entries
+            .insert(provider.to_string(), AuthEntry::OAuth(credential));
+        Ok(())
+    })
+}
+
+/// Providers whose stored OAuth credential this module can refresh.
+fn supports_oauth_refresh(provider: &str) -> bool {
+    matches!(
+        provider,
+        "openai"
+            | "openai-codex"
+            | "anthropic"
+            | "github-copilot"
+            | "kimi-coding"
+            | "meta"
+            | "xai"
+            | "radius"
+            | "cursor"
+            | super_platform::PROVIDER
+    )
+}
+
+async fn refresh_provider_oauth(
+    provider: &str,
+    current: &OAuthCredential,
+) -> Result<OAuthCredential> {
+    match provider {
+        "openai-codex" => openai_codex::refresh(current, &Default::default()).await,
+        "openai" => openai_codex::refresh(current, &openai_codex::OAuthConfig::chatgpt(None)).await,
+        "anthropic" => anthropic::refresh(current, &Default::default()).await,
+        "github-copilot" => github_copilot::refresh(current, &Default::default()).await,
+        "kimi-coding" => kimi_coding::refresh(current, &Default::default()).await,
+        "meta" => meta::refresh(current, &Default::default()).await,
+        "xai" => xai::refresh(current, &Default::default()).await,
+        "radius" => radius::refresh(current, &Default::default()).await,
+        "cursor" => cursor::refresh(current, &Default::default()).await,
+        super_platform::PROVIDER => super_platform::refresh(current, &Default::default()).await,
+        _ => anyhow::bail!("{provider} has no OAuth token refresh"),
+    }
+}
+
+/// One refresh at a time per process, so concurrent requests do not race
+/// a rotating refresh token.
+fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
+    static REFRESH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Refresh `provider`'s stored OAuth credential after the provider rejected
+/// `rejected_access`, and return the replacement access token. When another
+/// request already replaced the token, that token is returned without a
+/// network request. `Ok(None)` means no OAuth credential is stored.
+pub async fn refresh_rejected_oauth(
+    provider: &str,
+    rejected_access: &str,
+) -> Result<Option<String>> {
+    if !supports_oauth_refresh(provider) {
+        return Ok(None);
+    }
+    let _guard = refresh_lock().lock().await;
+    let Some(current) = stored_oauth(provider) else {
+        return Ok(None);
+    };
+    if current.access != rejected_access {
+        return Ok(Some(current.access));
+    }
+    let refreshed = refresh_provider_oauth(provider, &current).await?;
+    let access = refreshed.access.clone();
+    store_oauth(provider, refreshed)?;
+    Ok(Some(access))
+}
+
 /// Resolve a credential without network access. An OAuth access token is
 /// returned even when it needs refresh. Use `resolve_api_key_async` before an
 /// API request.
@@ -492,25 +591,9 @@ async fn resolve_api_key_async_generic(
                 return Ok(Some(google_application_access_token().await?));
             }
             AuthEntry::OAuth(credential)
-                if matches!(
-                    provider,
-                    "openai"
-                        | "openai-codex"
-                        | "anthropic"
-                        | "github-copilot"
-                        | "kimi-coding"
-                        | "meta"
-                        | "xai"
-                        | "radius"
-                        | "cursor"
-                ) && credential.is_expired() =>
+                if supports_oauth_refresh(provider) && credential.is_expired() =>
             {
-                static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
-                    std::sync::OnceLock::new();
-                let _guard = REFRESH_LOCK
-                    .get_or_init(|| tokio::sync::Mutex::new(()))
-                    .lock()
-                    .await;
+                let _guard = refresh_lock().lock().await;
                 // Another request can complete the refresh while this request
                 // waits for the lock. Read the file again before network I/O.
                 file = read_auth_file();
@@ -522,23 +605,7 @@ async fn resolve_api_key_async_generic(
                 if !current.is_expired() {
                     return Ok(Some(current.access));
                 }
-                let refreshed = match provider {
-                    "openai-codex" => openai_codex::refresh(&current, &Default::default()).await?,
-                    "openai" => {
-                        openai_codex::refresh(&current, &openai_codex::OAuthConfig::chatgpt(None))
-                            .await?
-                    }
-                    "anthropic" => anthropic::refresh(&current, &Default::default()).await?,
-                    "github-copilot" => {
-                        github_copilot::refresh(&current, &Default::default()).await?
-                    }
-                    "kimi-coding" => kimi_coding::refresh(&current, &Default::default()).await?,
-                    "meta" => meta::refresh(&current, &Default::default()).await?,
-                    "xai" => xai::refresh(&current, &Default::default()).await?,
-                    "radius" => radius::refresh(&current, &Default::default()).await?,
-                    "cursor" => cursor::refresh(&current, &Default::default()).await?,
-                    _ => unreachable!(),
-                };
+                let refreshed = refresh_provider_oauth(provider, &current).await?;
                 let access = refreshed.access.clone();
                 update_auth_file(|file| {
                     file.entries
@@ -975,6 +1042,7 @@ mod tests {
                     expires: 2_000_000_000_000,
                     account_id: format!("account-{index}"),
                     available_model_ids: None,
+                    device_id: None,
                     client_id: None,
                 }),
             );
