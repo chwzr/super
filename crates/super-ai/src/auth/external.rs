@@ -251,6 +251,7 @@ fn read_codex(path: &Path) -> Result<OAuthCredential> {
         expires,
         account_id,
         available_model_ids: None,
+        device_id: None,
         client_id: None,
     })
 }
@@ -289,6 +290,7 @@ fn parse_claude_value(value: &Value) -> Result<OAuthCredential> {
         expires: expiry_millis(oauth.get("expiresAt")),
         account_id: String::new(),
         available_model_ids: None,
+        device_id: None,
         client_id: None,
     })
 }
@@ -464,6 +466,7 @@ fn shared_oauth(format: SourceFormat, entry: &Value) -> Option<OAuthCredential> 
             })
         }),
         client_id: None,
+        device_id: None,
     })
 }
 

@@ -61,36 +61,60 @@ pub async fn stream(model: &Model, context: &Context, options: &StreamOptions, s
         );
         return;
     };
-    let api_key = credential.value().to_string();
+    let mut api_key = credential.value().to_string();
     let compat = detect_compat(model);
     let body = build_request(model, context, options, &compat);
-    let base_url = provider_base_url(model, &api_key);
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let mut request = http_client()
-        .post(&url)
-        .bearer_auth(&api_key)
-        .header("content-type", "application/json")
-        .json(&body);
-    for (k, v) in &model.headers {
-        request = request.header(k, v);
-    }
-    request = apply_provider_headers(request, model, context, options);
+    let mut retried = false;
+    let response = loop {
+        let base_url = provider_base_url(model, &api_key);
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        let mut request = http_client()
+            .post(&url)
+            .bearer_auth(&api_key)
+            .header("content-type", "application/json")
+            .json(&body);
+        for (k, v) in &model.headers {
+            request = request.header(k, v);
+        }
+        request = apply_provider_headers(request, model, context, options);
 
-    let response = tokio::select! {
-        r = request.send() => r,
-        _ = options.cancel.cancelled() => { builder.fail("Request aborted", true, model); return; }
-    };
-    let response = match response {
-        Ok(r) => r,
-        Err(e) => {
-            builder.fail(format!("request failed: {e}"), false, model);
+        let response = tokio::select! {
+            r = request.send() => r,
+            _ = options.cancel.cancelled() => { builder.fail("Request aborted", true, model); return; }
+        };
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => {
+                builder.fail(format!("request failed: {e}"), false, model);
+                return;
+            }
+        };
+        // A SUPER platform token the gateway rejects is refreshed once and
+        // the request sent again. Other providers see their 401 as before.
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED && !retried {
+            retried = true;
+            match crate::auth::super_platform::replacement_token(&api_key).await {
+                Ok(Some(token)) => {
+                    api_key = token;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    builder.fail(
+                        crate::auth::super_platform::SIGN_IN_EXPIRED.to_string(),
+                        false,
+                        model,
+                    );
+                    return;
+                }
+            }
+        }
+        if !response.status().is_success() {
+            builder.fail(super::http_error(response).await, false, model);
             return;
         }
+        break response;
     };
-    if !response.status().is_success() {
-        builder.fail(super::http_error(response).await, false, model);
-        return;
-    }
 
     let mut parser = SseParser::new();
     let mut events: Vec<SseEvent> = Vec::new();
