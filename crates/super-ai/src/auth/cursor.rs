@@ -119,6 +119,7 @@ pub async fn login_browser(
             expires: token_expiry(access),
             account_id: String::new(),
             available_model_ids: None,
+            device_id: None,
             client_id: None,
         });
     }
@@ -156,6 +157,7 @@ pub async fn refresh(
         account_id: credential.account_id.clone(),
         available_model_ids: credential.available_model_ids.clone(),
         client_id: None,
+        device_id: credential.device_id.clone(),
     })
 }
 

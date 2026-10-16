@@ -10,10 +10,10 @@
 A [ridiculously fast](#performance) terminal coding agent that keeps the interface simple and gives you
 control of the model, tools, sessions, and automation.
 
-SUPER has 44 built-in providers. These include OpenAI Codex (ChatGPT
-subscription), OpenAI API, Anthropic OAuth (Claude subscription), Anthropic
-API, Meta Muse, Cursor, Google, OpenRouter, Bedrock, Databricks, Snowflake,
-and GitHub Copilot.
+SUPER has 45 built-in providers. These include the SUPER platform
+(`super.flxkpe.io`), OpenAI Codex (ChatGPT subscription), OpenAI API,
+Anthropic OAuth (Claude subscription), Anthropic API, Meta Muse, Cursor,
+Google, OpenRouter, Bedrock, Databricks, Snowflake, and GitHub Copilot.
 
 You can also add OpenAI-compatible providers.
 
@@ -331,6 +331,37 @@ super logout openai
 super --list-models
 super --model sonnet:high
 ```
+
+#### SUPER platform
+
+One sign-in to the SUPER platform gives you its model list and inference
+gateway. `/login` lists `♦ SUPER` first; from the command line:
+
+```bash
+super login super
+super --model super/gpt-5
+super logout super
+```
+
+Sign-in uses a device code: SUPER prints the verification URL and a code
+such as `ABCD-EFGH`, opens the browser when one is available, and waits for
+your approval. Esc cancels. The last line of a successful sign-in reads
+`Signed in to SUPER as you@example.com · 12 models`.
+
+The platform's models appear in `/model` under `super/…` and stream through
+the OpenAI-compatible gateway, including tool calls, images, and reasoning
+effort. SUPER refreshes the list on sign-in and once per start, in the
+background after the first frame; offline, the list from the last refresh is
+used. The sign-in refreshes itself one minute before it expires. When it can
+no longer be refreshed, SUPER keeps working with your other providers and
+shows `SUPER sign-in expired. /login to restore remote control.`
+
+`super logout super` revokes this device on the platform and removes the
+`super` models. Signed out, SUPER never contacts the platform.
+
+The platform URL is `https://super.flxkpe.io`. For development, set the
+`platform.url` setting or the `SUPER_PLATFORM_URL` environment variable.
+See [docs/super-platform.md](docs/super-platform.md).
 
 #### Corporate proxies
 

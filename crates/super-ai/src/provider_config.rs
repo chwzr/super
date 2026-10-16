@@ -164,17 +164,64 @@ pub fn list() -> Result<Vec<ProviderSummary>> {
 }
 
 pub fn remove(id: &str) -> Result<bool> {
-    validate_id("provider", id)?;
     let path = catalog_path()?;
+    remove_at(&path, id)
+}
+
+pub fn remove_at(path: &Path, id: &str) -> Result<bool> {
+    validate_id("provider", id)?;
     if !path.exists() {
         return Ok(false);
     }
     let mut removed = false;
-    update_catalog(&path, |root| {
+    update_catalog(path, |root| {
         removed = providers_mut(root)?.remove(id).is_some();
         Ok(())
     })?;
     Ok(removed)
+}
+
+/// Replace every model of `provider_id` in the catalog at `path` with
+/// `models`, keeping other providers and any unknown keys. The provider
+/// entry is created when it does not exist. Each model is written with its
+/// own fields (`baseUrl`, `api`, cost, limits, compat), so the registry
+/// loads it exactly as given; `base_url` and `api` are the provider-level
+/// defaults for models that lack their own.
+pub fn replace_provider_models_at(
+    path: &Path,
+    provider_id: &str,
+    name: &str,
+    base_url: &str,
+    api: &str,
+    models: &[crate::Model],
+) -> Result<()> {
+    validate_id("provider", provider_id)?;
+    update_catalog(path, |root| {
+        let providers = providers_mut(root)?;
+        let entry = providers
+            .entry(provider_id.to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
+        let provider = entry.as_object_mut().expect("object entry");
+        provider.insert("name".into(), json!(name));
+        provider.insert("baseUrl".into(), json!(base_url));
+        provider.insert("api".into(), json!(api));
+        provider.remove("apiKey");
+        provider.remove("authProvider");
+        let mut entries = Vec::with_capacity(models.len());
+        for model in models {
+            let mut value = serde_json::to_value(model)?;
+            if let Some(object) = value.as_object_mut() {
+                // The catalog key names the provider.
+                object.remove("provider");
+            }
+            entries.push(value);
+        }
+        provider.insert("models".into(), Value::Array(entries));
+        Ok(())
+    })
 }
 
 fn validate(request: &AddProvider) -> Result<()> {
@@ -381,6 +428,83 @@ mod tests {
             request.auth_provider = auth_provider;
             assert!(add_at(&path, &request).is_err());
         }
+    }
+
+    #[test]
+    fn replacing_provider_models_keeps_other_providers_and_unknown_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("models.json");
+        std::fs::write(
+            &path,
+            r#"{"future":true,"providers":{"keep":{"baseUrl":"http://localhost","api":"openai-responses","models":[{"id":"one"}]},"super":{"baseUrl":"https://old.example/v1","api":"openai-completions","custom":1,"models":[{"id":"stale"}]}}}"#,
+        )
+        .unwrap();
+        let model = |id: &str| crate::Model {
+            id: id.into(),
+            name: id.to_uppercase(),
+            api: "openai-completions".into(),
+            provider: "super".into(),
+            base_url: "https://gateway.example/v1".into(),
+            reasoning: true,
+            input: vec!["text".into(), "image".into()],
+            cost: crate::ModelCost {
+                input: 1.25,
+                output: 10.0,
+                cache_read: 0.125,
+                cache_write: 0.0,
+                tiers: Vec::new(),
+            },
+            prompt_cache: None,
+            context_window: 400_000,
+            max_tokens: 128_000,
+            compat: None,
+            thinking_level_map: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            sampling_params: BTreeMap::new(),
+        };
+        replace_provider_models_at(
+            &path,
+            "super",
+            "SUPER",
+            "https://platform.example/v1",
+            "openai-completions",
+            &[model("gpt-5"), model("claude-x")],
+        )
+        .unwrap();
+
+        let root = read_catalog(&path).unwrap();
+        assert_eq!(root["future"], true);
+        assert_eq!(root["providers"]["keep"]["models"][0]["id"], "one");
+        let provider = &root["providers"]["super"];
+        assert_eq!(provider["custom"], 1);
+        assert_eq!(provider["name"], "SUPER");
+        assert_eq!(provider["baseUrl"], "https://platform.example/v1");
+        let models = provider["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["id"], "gpt-5");
+        assert_eq!(models[0]["baseUrl"], "https://gateway.example/v1");
+        assert_eq!(models[0]["cost"]["cacheRead"], 0.125);
+        assert!(models[0].get("provider").is_none());
+
+        replace_provider_models_at(
+            &path,
+            "super",
+            "SUPER",
+            "https://platform.example/v1",
+            "openai-completions",
+            &[model("only")],
+        )
+        .unwrap();
+        let root = read_catalog(&path).unwrap();
+        let models = root["providers"]["super"]["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], "only");
+
+        assert!(remove_at(&path, "super").unwrap());
+        assert!(!remove_at(&path, "super").unwrap());
+        let root = read_catalog(&path).unwrap();
+        assert!(root["providers"].get("super").is_none());
+        assert_eq!(root["providers"]["keep"]["models"][0]["id"], "one");
     }
 
     #[test]

@@ -184,6 +184,7 @@ fn credential_from_token(token: TokenResponse, client_id: Option<&str>) -> Resul
             .saturating_sub(if client_id.is_some() { 180_000 } else { 0 }),
         account_id,
         available_model_ids: None,
+        device_id: None,
         client_id: client_id.map(str::to_string),
     })
 }
@@ -775,6 +776,7 @@ mod tests {
                 expires: 0,
                 account_id: String::new(),
                 available_model_ids: None,
+                device_id: None,
                 client_id: Some("issued-client".into()),
             };
             let config = OAuthConfig {
@@ -851,6 +853,7 @@ mod tests {
             expires: 0,
             account_id: "acct-old".into(),
             available_model_ids: None,
+            device_id: None,
             client_id: None,
         };
         let error = refresh(&credential, &test_config(base))

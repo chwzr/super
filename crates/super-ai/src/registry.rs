@@ -92,6 +92,7 @@ pub const BUILTIN_PROVIDER_IDS: &[&str] = &[
     "qwen-token-plan-individual",
     "radius",
     "snowflake-cortex",
+    "super",
     "together",
     "vercel-ai-gateway",
     "xai",
@@ -102,6 +103,10 @@ pub const BUILTIN_PROVIDER_IDS: &[&str] = &[
     "zai",
     "zai-coding-cn",
 ];
+
+/// Built-in providers whose models come from an account, not from the
+/// embedded catalog. They have no entries in `from_builtin()`.
+pub const DYNAMIC_BUILTIN_PROVIDER_IDS: &[&str] = &[crate::auth::super_platform::PROVIDER];
 
 #[derive(Debug, Deserialize)]
 struct CatalogFile {
@@ -225,7 +230,24 @@ impl Registry {
         if let Some(model_ids) = crate::auth::stored_oauth_model_ids("github-copilot") {
             registry.retain_provider_models("github-copilot", &model_ids);
         }
+        // The SUPER catalog is an account's model list. Signed out, the
+        // saved copy stays on disk but is not offered.
+        if !crate::auth::super_platform::is_signed_in() {
+            registry.retain_provider_models(crate::auth::super_platform::PROVIDER, &[]);
+        }
         registry
+    }
+
+    /// Replace every model of `provider` with `models`, in that order, and
+    /// offer them even without a built-in credential check.
+    pub fn replace_provider_models(&mut self, provider: &str, models: Vec<Model>) {
+        self.retain_provider_models(provider, &[]);
+        for mut model in models {
+            model.provider = provider.to_string();
+            self.upsert(model);
+        }
+        self.manually_configured_providers
+            .insert(provider.to_string());
     }
 
     pub fn from_builtin() -> Registry {
@@ -759,6 +781,13 @@ mod tests {
             .map(|model| model.provider.as_str())
             .collect();
         for provider in BUILTIN_PROVIDER_IDS {
+            if DYNAMIC_BUILTIN_PROVIDER_IDS.contains(provider) {
+                assert!(
+                    !providers.contains(provider),
+                    "{provider} has static models"
+                );
+                continue;
+            }
             assert!(providers.contains(provider), "missing provider {provider}");
         }
         let unsupported: std::collections::BTreeSet<_> = r
@@ -894,6 +923,53 @@ mod tests {
             model.map_thinking_level(ThinkingLevel::High),
             ThinkingLevel::High
         );
+    }
+
+    #[test]
+    fn replacing_provider_models_drops_the_old_set_and_offers_the_new_one() {
+        let mut registry = Registry::from_builtin();
+        let model = |id: &str| Model {
+            id: id.into(),
+            name: id.to_uppercase(),
+            api: "openai-completions".into(),
+            provider: "elsewhere".into(),
+            base_url: "https://platform.example/v1".into(),
+            reasoning: true,
+            input: vec!["text".into()],
+            cost: ModelCost::default(),
+            prompt_cache: None,
+            context_window: 400_000,
+            max_tokens: 128_000,
+            compat: None,
+            thinking_level_map: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            sampling_params: BTreeMap::new(),
+        };
+        registry.replace_provider_models("super", vec![model("first"), model("second")]);
+        let ids = |registry: &Registry| {
+            registry
+                .all()
+                .iter()
+                .filter(|model| model.provider == "super")
+                .map(|model| model.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&registry), ["first", "second"]);
+        assert!(
+            registry
+                .available_models_for(&BTreeSet::new())
+                .iter()
+                .any(|(_, model)| model.provider == "super")
+        );
+        assert!(registry.resolve("super/second", None).is_some());
+
+        registry.replace_provider_models("super", vec![model("third")]);
+        assert_eq!(ids(&registry), ["third"]);
+        assert!(registry.resolve("super/first", None).is_none());
+        assert!(registry.resolve("super/third", None).is_some());
+
+        registry.replace_provider_models("super", Vec::new());
+        assert!(ids(&registry).is_empty());
     }
 
     #[test]
