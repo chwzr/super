@@ -121,7 +121,7 @@ async fn handle(socket: tokio::net::TcpStream, fake: Arc<FakeS2>) -> std::io::Re
             continue;
         };
         let (stream, tail) = rest.rsplit_once("/records").unwrap_or((rest, ""));
-        let stream = stream.to_string();
+        let stream = percent_decode(stream);
         match (method.as_str(), tail) {
             ("POST", "") => {
                 let input: Value = serde_json::from_slice(&body).unwrap();
@@ -253,6 +253,25 @@ async fn handle(socket: tokio::net::TcpStream, fake: Arc<FakeS2>) -> std::io::Re
             _ => write_response(&mut writer, 404, "application/json", b"{}").await?,
         }
     }
+}
+
+/// The client sends stream names as one percent-encoded path segment.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(value) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
+                out.push(value);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 async fn write_response(

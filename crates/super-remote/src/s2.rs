@@ -456,12 +456,13 @@ enum ReadOutcome {
 }
 
 fn encode_stream(stream: &str) -> String {
-    // Stream names contain `/`, which must stay a path separator for the
-    // proxy, so only characters outside the unreserved set are escaped.
+    // A stream name is one path segment to S2: `sessions/h/s/events` must
+    // travel as `sessions%2Fh%2Fs%2Fevents`, or s2 lite answers 404. Only the
+    // unreserved characters stay as they are.
     let mut out = String::with_capacity(stream.len());
     for byte in stream.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(byte as char);
             }
             other => out.push_str(&format!("%{other:02X}")),
@@ -542,9 +543,13 @@ mod tests {
     }
 
     #[test]
-    fn stream_names_keep_slashes_and_escape_the_rest() {
-        assert_eq!(encode_stream("sessions/h/s/events"), "sessions/h/s/events");
+    fn stream_names_are_one_percent_encoded_segment() {
+        assert_eq!(
+            encode_stream("sessions/h/s/events"),
+            "sessions%2Fh%2Fs%2Fevents"
+        );
         assert_eq!(encode_stream("a b"), "a%20b");
+        assert_eq!(encode_stream("registry"), "registry");
     }
 
     #[test]
