@@ -266,11 +266,16 @@ impl Pump {
             {
                 break;
             }
-            // After a lag the message_end that would have triggered a sync may
-            // be gone, so a lag syncs too.
+            // A turn starts right after the user's message was recorded, and
+            // controllers only learn about that message from the entries
+            // stream, so sync then as well as after every message. After a
+            // lag the message_end that would have triggered a sync may be
+            // gone, so a lag syncs too.
             if matches!(
                 kind.as_str(),
-                "message_end"
+                "agent_start"
+                    | "turn_start"
+                    | "message_end"
                     | "turn_end"
                     | "agent_settled"
                     | "compaction_end"
