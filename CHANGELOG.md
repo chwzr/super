@@ -18,6 +18,8 @@
   follow and steer them. The footer shows `♦ remote`, remote input is
   attributed in the transcript, `/remote` inspects or toggles it, and
   `--no-remote` opts a session out. `super --mode rpc` mirrors as well.
+  A resumed session remembers which remote commands it already ran
+  (`~/.super/agent/remote/cursors`) and does not execute them again.
 - RPC approvals: `approval_request` and `approval_resolved` events plus
   `get_approvals` and `answer_approval` commands let any client answer a
   workflow or project trust question.

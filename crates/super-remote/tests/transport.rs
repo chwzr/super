@@ -343,6 +343,95 @@ async fn wait_until(mut check: impl FnMut() -> bool) {
 }
 
 #[tokio::test]
+async fn a_restarted_transport_does_not_execute_applied_commands_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let cursors = tempfile::tempdir().unwrap();
+    let fake = Arc::new(FakeS2::default());
+    let base_url = serve(fake.clone()).await;
+    let (_provider, session) = session_with(directory.path(), MockScript::text("Hello")).await;
+    let client = Arc::new(S2Client::new(
+        reqwest::Client::new(),
+        base_url,
+        Arc::new(TestCredentials),
+    ));
+    let streams = SessionStreams::new("host1", "sess1");
+    let options = TransportOptions {
+        linger: Duration::from_millis(5),
+        cursor_dir: Some(cursors.path().to_path_buf()),
+        ..TransportOptions::default()
+    };
+    let responses = |fake: &FakeS2| -> Vec<String> {
+        fake.records(&streams.events)
+            .iter()
+            .filter(|record| {
+                record
+                    .headers
+                    .iter()
+                    .any(|(k, v)| k == "t" && v == "response")
+            })
+            .filter_map(|record| serde_json::from_str::<Value>(&record.body).ok())
+            .filter_map(|value| value["id"].as_str().map(str::to_string))
+            .collect()
+    };
+    let command = |id: &str, message: &str| {
+        (
+            vec![
+                ("t".into(), "prompt".into()),
+                ("exp".into(), (now_ms() + 60_000).to_string()),
+            ],
+            json!({"id": id, "type": "prompt", "message": message}).to_string(),
+        )
+    };
+
+    // First run: one command arrives and is executed.
+    let first = SessionTransport::start(
+        client.clone(),
+        session.clone(),
+        streams.clone(),
+        options.clone(),
+        Arc::new(|_| {}),
+    );
+    fake.append(&streams.commands, vec![command("c1", "Say hello")]);
+    wait_until(|| responses(&fake) == ["c1"]).await;
+    wait_until(|| {
+        fake.records(&streams.events).iter().any(|record| {
+            record
+                .headers
+                .iter()
+                .any(|(k, v)| k == "t" && v == "agent_settled")
+        })
+    })
+    .await;
+    first.stop().await;
+
+    // Second run on the same streams, as after `super --resume`: the command
+    // is still within the lookback and not expired, but it was applied, so
+    // it must not run again. A new command still does.
+    let notices: Arc<Mutex<Vec<RemoteNotice>>> = Default::default();
+    let sink = notices.clone();
+    let second = SessionTransport::start(
+        client,
+        session,
+        streams.clone(),
+        options,
+        Arc::new(move |notice| sink.lock().unwrap().push(notice)),
+    );
+    wait_until(|| {
+        notices
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|notice| matches!(notice, RemoteNotice::Status(RemoteStatus::Reconnecting)))
+    })
+    .await;
+    fake.append(&streams.commands, vec![command("c2", "Say hello again")]);
+    wait_until(|| responses(&fake).contains(&"c2".to_string())).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(responses(&fake), ["c1", "c2"]);
+    second.stop().await;
+}
+
+#[tokio::test]
 async fn events_entries_and_commands_flow_through_the_streams() {
     let directory = tempfile::tempdir().unwrap();
     let fake = Arc::new(FakeS2::default());

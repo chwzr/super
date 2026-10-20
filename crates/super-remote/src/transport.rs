@@ -89,8 +89,13 @@ pub struct TransportOptions {
     /// Applied when a command carries no `exp` header, counted from the
     /// record's timestamp.
     pub default_command_expiry: Duration,
-    /// How many recent commands to consider when starting.
+    /// How many recent commands to consider when starting a session that has
+    /// no command cursor yet.
     pub command_lookback: u64,
+    /// Where the last applied command sequence number is kept per stream, so
+    /// a resumed session does not execute commands again. `None` means
+    /// `~/.super/agent/remote/cursors`.
+    pub cursor_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for TransportOptions {
@@ -102,6 +107,51 @@ impl Default for TransportOptions {
             linger: Duration::from_millis(30),
             default_command_expiry: Duration::from_secs(5 * 60),
             command_lookback: 50,
+            cursor_dir: None,
+        }
+    }
+}
+
+/// The last applied command sequence number of one commands stream, kept on
+/// disk so a resumed session continues after it instead of re-running the
+/// recent commands the previous process already executed.
+struct CommandCursor {
+    path: Option<std::path::PathBuf>,
+}
+
+impl CommandCursor {
+    fn new(options: &TransportOptions, stream: &str) -> Self {
+        let dir = options
+            .cursor_dir
+            .clone()
+            .or_else(|| dirs::home_dir().map(|home| home.join(".super/agent/remote/cursors")));
+        let name: String = stream
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        Self {
+            path: dir.map(|dir| dir.join(name)),
+        }
+    }
+
+    fn load(&self) -> Option<u64> {
+        let path = self.path.as_ref()?;
+        std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    }
+
+    fn store(&self, seq_num: u64) {
+        let Some(path) = &self.path else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(error) = std::fs::write(path, seq_num.to_string()) {
+            crate::log::line(format!("command cursor not saved: {error}"));
         }
     }
 }
@@ -750,13 +800,32 @@ struct Tailer {
 }
 
 impl Tailer {
+    /// Where to start reading: after the last command this session applied,
+    /// when that is still inside the stream; otherwise the recent commands
+    /// (first start) or only new ones (a cursor past the tail means the
+    /// stream was recreated).
+    async fn start_position(&self, cursor: &CommandCursor) -> ReadStart {
+        let Some(last) = cursor.load() else {
+            return ReadStart::TailOffset(self.options.command_lookback);
+        };
+        match self.client.tail(&self.stream).await {
+            Ok(tail) if last < tail => ReadStart::SeqNum(last + 1),
+            Ok(_) => ReadStart::TailOffset(0),
+            Err(error) => {
+                crate::log::line(format!("commands tail unknown, using lookback: {error}"));
+                ReadStart::TailOffset(self.options.command_lookback)
+            }
+        }
+    }
+
     async fn run(self) {
         use std::sync::atomic::Ordering::Relaxed;
-        let mut reader = self.client.tail_stream(
-            self.stream.clone(),
-            ReadStart::TailOffset(self.options.command_lookback),
-            self.cancel.clone(),
-        );
+        let cursor = CommandCursor::new(&self.options, &self.stream);
+        let start = self.start_position(&cursor).await;
+        crate::log::line(format!("commands tail start: {start:?}"));
+        let mut reader = self
+            .client
+            .tail_stream(self.stream.clone(), start, self.cancel.clone());
         while let Some(event) = reader.recv().await {
             match event {
                 ReadEvent::Connected => {
@@ -782,11 +851,13 @@ impl Tailer {
                 ReadEvent::Records(records) => {
                     let mut expired = 0;
                     for record in records {
+                        let seq_num = record.seq_num;
                         if self.is_expired(&record) {
                             expired += 1;
-                            continue;
+                        } else {
+                            self.apply(record);
                         }
-                        self.apply(record);
+                        cursor.store(seq_num);
                     }
                     if expired > 0 {
                         (self.notices)(RemoteNotice::ExpiredCommands(expired));
