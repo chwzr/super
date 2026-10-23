@@ -359,43 +359,6 @@ SUPER selects the connection type automatically. If your corporate proxy require
 set `SUPER_CURSOR_TRANSPORT=http1` (`$env:SUPER_CURSOR_TRANSPORT = "http1"`
 in PowerShell).
 
-#### Databricks
-
-Use Databricks Unity Gateway with a workspace token and URL:
-
-```bash
-super login databricks-unity-gateway \
-  --api-key YOUR_TOKEN \
-  --base-url https://your-workspace.cloud.databricks.com
-super --list-models databricks-unity-gateway
-super --model databricks-unity-gateway/system.ai.claude-sonnet-4-6
-```
-
-Azure Databricks uses the same provider. Supply the Azure workspace URL, such
-as `https://adb-1234567890123456.7.azuredatabricks.net`. You can set
-`DATABRICKS_TOKEN` and `DATABRICKS_HOST` instead of saving a login.
-
-SUPER gets the complete `system.ai` model-service list from the selected
-workspace. The list can differ by workspace and can change after SUPER is
-released.
-
-#### Snowflake
-
-Use Snowflake Cortex with a programmatic access token and an account URL:
-
-```bash
-super login snowflake-cortex \
-  --api-key YOUR_PAT \
-  --base-url https://account.snowflakecomputing.com
-super --model snowflake-cortex/claude-sonnet-4-6
-```
-
-SUPER also accepts a URL that ends in `/api/v2/cortex` or
-`/api/v2/aigateways/SNOWFLAKE`. You can set `SNOWFLAKE_PAT` and
-`SNOWFLAKE_CORTEX_BASE_URL` instead of saving a login.
-
-Account and region rules determine which Snowflake models you can use.
-
 ### Multiple accounts with rate-limit failover
 
 Add more than one account to a provider to continue work when an account
