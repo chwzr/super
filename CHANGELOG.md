@@ -41,6 +41,9 @@
 
 ### Changed
 
+- A prompt sent from the SUPER app appears in the transcript like one typed
+  here, without a `♦ prompt from …` notice. Steers and follow-ups keep their
+  origin tag.
 - The built-in dark theme is now Super Neo Citrus Dark (deep green base,
   lime accent) instead of Catppuccin Mocha.
 

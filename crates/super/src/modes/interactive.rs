@@ -5762,10 +5762,12 @@ fn handle_remote_notice(
 ) {
     match notice {
         SessionNotice::RemoteInput { origin, kind, .. } => {
+            // A remote prompt shows up as the user message it is, like one typed here.
+            // Steers and follow-ups land mid-turn, so those keep their origin tag.
             let label = match kind {
                 "steer" => "steer",
                 "follow_up" => "follow-up",
-                _ => "prompt",
+                _ => return,
             };
             app.cells
                 .push(Cell::Notice(format!("♦ {label} from {origin}")));

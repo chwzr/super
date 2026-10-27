@@ -748,8 +748,9 @@ stop it, change the model, and answer workflow and trust questions. Signed
 out, nothing is mirrored and no request leaves the machine.
 
 The footer shows `♦ remote` while mirrored, `♦ remote…` while reconnecting,
-and `♦ local` while signed in but not mirrored. Remote input appears in the
-transcript with its origin, for example `♦ steer from iPhone`. Commands that
+and `♦ local` while signed in but not mirrored. A prompt sent from the app
+appears like one typed here; a steer or follow-up is tagged with its origin,
+for example `♦ steer from iPhone`. Commands that
 arrive after their expiry (five minutes by default) are dropped and counted
 in one notice.
 
