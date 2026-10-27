@@ -448,7 +448,8 @@ struct ShellRunResult {
     exclude_from_context: bool,
 }
 
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// The running indicator: the brand diamond turning, the same sequence the app shows.
+const SPINNER: &[&str] = &["♦", "♢", "⬥", "⬘", "⬗", "⬙", "⬖", "⬥"];
 const AUTO_RECAP_IDLE: Duration = Duration::from_secs(5 * 60);
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 #[cfg(not(unix))]

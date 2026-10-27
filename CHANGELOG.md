@@ -4,6 +4,8 @@
 
 ### Added
 
+- The running indicator is the brand diamond turning (`♦ ♢ ⬥ ⬘ ⬗ ⬙ ⬖`), the
+  same sequence the SUPER app shows.
 - The SUPER platform (`super.flxkpe.io`) is a built-in provider. `/login`
   lists `♦ SUPER` first and signs in with a device code; `super login super`
   does the same from the command line. The platform's models appear in
