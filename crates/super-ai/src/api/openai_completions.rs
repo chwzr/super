@@ -894,4 +894,51 @@ mod tests {
         );
         assert!(mandatory.get("reasoning").is_none());
     }
+
+    #[test]
+    fn reasoning_effort_gateways_send_a_mapped_off_level() {
+        // The SUPER platform catalog maps `off` to `none` for models whose
+        // upstream keeps reasoning on by default; without the map, `off`
+        // sends nothing.
+        let mut model = model_with_compat(OpenAICompat {
+            supports_reasoning_effort: Some(true),
+            ..Default::default()
+        });
+        model.reasoning = true;
+        let context = Context {
+            system_prompt: None,
+            openai_responses_input: None,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let unmapped = build_request(
+            &model,
+            &context,
+            &StreamOptions::default(),
+            &detect_compat(&model),
+        );
+        assert!(unmapped.get("reasoning_effort").is_none());
+
+        model
+            .thinking_level_map
+            .insert("off".into(), Some("none".into()));
+        let off = build_request(
+            &model,
+            &context,
+            &StreamOptions::default(),
+            &detect_compat(&model),
+        );
+        assert_eq!(off["reasoning_effort"], "none");
+        assert!(off.get("reasoning").is_none());
+        let low = build_request(
+            &model,
+            &context,
+            &StreamOptions {
+                reasoning: crate::ThinkingLevel::Low,
+                ..Default::default()
+            },
+            &detect_compat(&model),
+        );
+        assert_eq!(low["reasoning_effort"], "low");
+    }
 }

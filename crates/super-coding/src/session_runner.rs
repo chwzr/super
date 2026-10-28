@@ -117,7 +117,23 @@ pub struct EphemeralResponse {
     pub usage: Usage,
 }
 
+/// One line on why a helper request came back without text.
+fn empty_answer_reason(assistant: &super_ai::AssistantMessage, budget: u64) -> String {
+    if assistant.stop_reason != StopReason::Length {
+        return "the provider returned an empty answer".into();
+    }
+    match assistant.usage.reasoning {
+        Some(reasoning) if reasoning > 0 => format!(
+            "the model spent its {budget}-token budget on reasoning ({reasoning} tokens) and returned no text"
+        ),
+        _ => format!("the model reached its {budget}-token budget before answering"),
+    }
+}
+
 const SESSION_TITLE_MAX_CHARS: usize = 36;
+/// Output budget for the one retry of a helper request whose first, tight
+/// budget was spent on reasoning the model would not switch off.
+const EPHEMERAL_REASONING_BUDGET: u64 = 4096;
 const SESSION_TITLE_PROMPT_MAX_BYTES: usize = 960;
 
 fn bounded_session_title_prompt(prompt: &str) -> &str {
@@ -1218,47 +1234,64 @@ impl AgentSession {
         max_tokens: u64,
         cancel: CancellationToken,
     ) -> anyhow::Result<EphemeralResponse> {
-        let mut config = self.loop_config(self, Arc::new(Mutex::new(PromptMode::Ordinary)));
-        config.thinking_level = ThinkingLevel::Off;
-        config.max_tokens = Some(max_tokens);
-        config.session_id = Some(format!("ephemeral-{}", uuid::Uuid::new_v4()));
-        config.get_steering_messages = None;
-        config.get_follow_up_messages = None;
-        config.prepare_next_turn = None;
-        config.prepare_generation = None;
-
-        let context = AgentContext {
-            system_prompt,
-            openai_responses_input: None,
-            messages: Vec::new(),
-            tools,
-        };
-        let sink: EventSink = Arc::new(|_| {});
-        let messages = super_agent::run_agent_loop(
-            vec![AgentMessage::user(prompt)],
-            context,
-            config,
-            cancel.clone(),
-            sink,
-        )
-        .await;
-        if cancel.is_cancelled() {
-            anyhow::bail!("request cancelled");
-        }
-
         let mut usage = Usage::default();
-        for message in &messages {
-            if let AgentMessage::Assistant(assistant) = message {
-                usage.add(&assistant.usage);
+        let mut budget = max_tokens;
+        let assistant = loop {
+            let mut config = self.loop_config(self, Arc::new(Mutex::new(PromptMode::Ordinary)));
+            config.thinking_level = ThinkingLevel::Off;
+            config.max_tokens = Some(budget);
+            config.session_id = Some(format!("ephemeral-{}", uuid::Uuid::new_v4()));
+            config.get_steering_messages = None;
+            config.get_follow_up_messages = None;
+            config.prepare_next_turn = None;
+            config.prepare_generation = None;
+
+            let context = AgentContext {
+                system_prompt: system_prompt.clone(),
+                openai_responses_input: None,
+                messages: Vec::new(),
+                tools: tools.clone(),
+            };
+            let sink: EventSink = Arc::new(|_| {});
+            let messages = super_agent::run_agent_loop(
+                vec![AgentMessage::user(prompt.clone())],
+                context,
+                config,
+                cancel.clone(),
+                sink,
+            )
+            .await;
+            if cancel.is_cancelled() {
+                anyhow::bail!("request cancelled");
             }
-        }
-        let assistant = messages.iter().rev().find_map(|message| match message {
-            AgentMessage::Assistant(assistant) => Some(assistant),
-            _ => None,
-        });
-        let Some(assistant) = assistant else {
-            anyhow::bail!("the provider returned no answer");
+            for message in &messages {
+                if let AgentMessage::Assistant(assistant) = message {
+                    usage.add(&assistant.usage);
+                }
+            }
+            let assistant = messages
+                .into_iter()
+                .rev()
+                .find_map(|message| match message {
+                    AgentMessage::Assistant(assistant) => Some(assistant),
+                    _ => None,
+                });
+            let Some(assistant) = assistant else {
+                anyhow::bail!("the provider returned no answer");
+            };
+            // A reasoning model that ignores "thinking off" spends a tight
+            // budget on reasoning alone and stops at the limit with no text.
+            // Ask once more with room for the reasoning and the answer.
+            if assistant.stop_reason == StopReason::Length
+                && assistant.text().trim().is_empty()
+                && budget < EPHEMERAL_REASONING_BUDGET
+            {
+                budget = EPHEMERAL_REASONING_BUDGET;
+                continue;
+            }
+            break assistant;
         };
+        self.totals.lock().unwrap().add(&usage);
         if assistant.stop_reason == StopReason::Error {
             anyhow::bail!(
                 "{}",
@@ -1270,9 +1303,8 @@ impl AgentSession {
         }
         let text = assistant.text();
         if text.trim().is_empty() {
-            anyhow::bail!("the provider returned an empty answer");
+            anyhow::bail!("{}", empty_answer_reason(&assistant, budget));
         }
-        self.totals.lock().unwrap().add(&usage);
         Ok(EphemeralResponse { text, usage })
     }
 
@@ -2116,6 +2148,120 @@ mod ephemeral_tests {
             headers: BTreeMap::new(),
             sampling_params: Default::default(),
         }
+    }
+
+    /// A session whose provider is the given scripted stream function. The
+    /// directory holds the session file for as long as the test keeps it.
+    fn scripted_session(stream_fn: StreamFn) -> (Arc<AgentSession>, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let manager =
+            SessionManager::create(directory.path(), Some(directory.path().join("sessions")))
+                .unwrap();
+        let settings = Settings {
+            retry: crate::settings::RetrySettings {
+                base_delay_ms: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let session = AgentSession::new(
+            manager,
+            Vec::new(),
+            Registry::load(None),
+            settings,
+            "test".into(),
+            openai_model(),
+            ThinkingLevel::Off,
+            None,
+            Arc::new(|_| {}),
+        );
+        session.set_stream_fn(Some(stream_fn));
+        (session, directory)
+    }
+
+    /// What a reasoning model answers when thinking stays on and the whole
+    /// output budget goes to reasoning: no text, stopped at the limit.
+    fn reasoning_only_answer(budget: u64) -> super_ai::EventStream {
+        let mut message =
+            super_ai::AssistantMessage::empty("openai-responses", "openai", "gpt-test");
+        message.stop_reason = StopReason::Length;
+        message.usage.output = budget;
+        message.usage.reasoning = Some(budget);
+        let (sink, stream) = super_ai::EventStream::channel();
+        sink.send(super_ai::AssistantEvent::Start {
+            partial: message.clone(),
+        });
+        sink.done(message);
+        stream
+    }
+
+    #[tokio::test]
+    async fn helper_requests_retry_with_room_for_reasoning() {
+        let budgets = Arc::new(Mutex::new(Vec::new()));
+        let seen = budgets.clone();
+        let (session, _directory) = scripted_session(Arc::new(move |_, _, options| {
+            let mut seen = seen.lock().unwrap();
+            seen.push(options.max_tokens);
+            assert_eq!(options.reasoning, ThinkingLevel::Off);
+            if seen.len() == 1 {
+                return reasoning_only_answer(options.max_tokens.unwrap());
+            }
+            let mut message =
+                super_ai::AssistantMessage::empty("openai-responses", "openai", "gpt-test");
+            message
+                .content
+                .push(super_ai::ContentBlock::text("Fix login redirect"));
+            message.stop_reason = StopReason::Stop;
+            message.usage.output = 5;
+            let (sink, stream) = super_ai::EventStream::channel();
+            sink.send(super_ai::AssistantEvent::Start {
+                partial: message.clone(),
+            });
+            sink.done(message);
+            stream
+        }));
+        let title = session
+            .generate_session_title("fix the login redirect bug", CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(title, "Fix login redirect");
+        assert_eq!(
+            *budgets.lock().unwrap(),
+            vec![Some(64), Some(EPHEMERAL_REASONING_BUDGET)]
+        );
+        // Both attempts count towards the session totals.
+        assert_eq!(session.totals.lock().unwrap().output, 64 + 5);
+    }
+
+    #[tokio::test]
+    async fn helper_requests_say_when_reasoning_spent_the_budget() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let (session, _directory) = scripted_session(Arc::new(move |_, _, options| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            reasoning_only_answer(options.max_tokens.unwrap())
+        }));
+        let error = session
+            .generate_recap(None, CancellationToken::new())
+            .await
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        // No conversation yet: the recap has nothing to summarise.
+        assert_eq!(error, "the session has no conversation to recap");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let error = session
+            .generate_session_title("fix the login redirect bug", CancellationToken::new())
+            .await
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "the model spent its 4096-token budget on reasoning (4096 tokens) and returned no text"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
