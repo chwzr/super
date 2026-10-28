@@ -320,9 +320,22 @@ fn write_json_at<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     result
 }
 
-/// Run `f` while holding the credential lock beside `auth_path`. Every
-/// writer of `auth.json` and `accounts.json` takes this lock.
-fn with_auth_lock<T>(auth_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+/// The exclusive, cross-process credential lock beside `auth.json`, held
+/// until dropped. Every writer of `auth.json` and `accounts.json` takes it,
+/// and so does a token refresh from the moment it finds the stored
+/// credential stale until the replacement is written: providers that rotate
+/// refresh tokens treat a second refresh of the same token as theft and
+/// sign the whole device out, so two `super` processes sharing the file
+/// must never both refresh it.
+struct AuthLock(std::fs::File);
+
+impl Drop for AuthLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+fn acquire_auth_lock(auth_path: &Path) -> Result<AuthLock> {
     let parent = auth_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("auth path has no parent"))?;
@@ -341,10 +354,22 @@ fn with_auth_lock<T>(auth_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<
         .with_context(|| format!("open auth lock {}", lock_path.display()))?;
     fs2::FileExt::lock_exclusive(&lock)
         .with_context(|| format!("lock auth file {}", auth_path.display()))?;
-    let result = f()?;
-    fs2::FileExt::unlock(&lock)
-        .with_context(|| format!("unlock auth file {}", auth_path.display()))?;
-    Ok(result)
+    Ok(AuthLock(lock))
+}
+
+/// Take the credential lock on the blocking pool, so a refresh in another
+/// process never stalls this runtime's workers.
+async fn acquire_auth_lock_async(auth_path: &Path) -> Result<AuthLock> {
+    let path = auth_path.to_path_buf();
+    tokio::task::spawn_blocking(move || acquire_auth_lock(&path))
+        .await
+        .context("wait for the auth lock")?
+}
+
+/// Run `f` while holding the credential lock beside `auth_path`.
+fn with_auth_lock<T>(auth_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _lock = acquire_auth_lock(auth_path)?;
+    f()
 }
 
 fn update_auth_file_at<T>(
@@ -428,10 +453,84 @@ async fn refresh_provider_oauth(
 }
 
 /// One refresh at a time per process, so concurrent requests do not race
-/// a rotating refresh token.
+/// a rotating refresh token. Across processes the credential file lock
+/// does the same.
 fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
     static REFRESH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// A refresh the provider rejected outright (`invalid_grant` or similar):
+/// the stored credential is dead until the user signs in again, so it is
+/// not sent again. The message is what the user should see.
+#[derive(Debug, Clone)]
+pub struct RefreshRejected(pub String);
+
+impl std::fmt::Display for RefreshRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RefreshRejected {}
+
+/// Per provider, the refresh token the provider rejected and the message
+/// for it. Compared by value, so a sign-in that stores a different token
+/// ends the memo on its own.
+fn rejected_refresh() -> &'static Mutex<BTreeMap<String, (String, String)>> {
+    static REJECTED: OnceLock<Mutex<BTreeMap<String, (String, String)>>> = OnceLock::new();
+    REJECTED.get_or_init(Default::default)
+}
+
+/// Replace `provider`'s stored OAuth credential while `stale` still holds
+/// for it under both refresh locks, and return the access token to use.
+/// When another process or request refreshed first, its token is returned
+/// without a request. `fallback` is the credential this request saw before
+/// taking the locks, used when the entry has gone in the meantime.
+async fn refresh_stored_oauth_at(
+    path: &Path,
+    provider: &str,
+    fallback: OAuthCredential,
+    stale: impl Fn(&OAuthCredential) -> bool,
+) -> Result<String> {
+    let _guard = refresh_lock().lock().await;
+    let _file_lock = acquire_auth_lock_async(path).await?;
+    // Read the file itself, not the cache: another process may have written
+    // it within the modification time's resolution.
+    let current = match read_auth_file_at(path).entries.get(provider).cloned() {
+        Some(AuthEntry::OAuth(current)) => current,
+        Some(other) => return Ok(other.access_token().to_string()),
+        None => fallback,
+    };
+    if !stale(&current) {
+        return Ok(current.access);
+    }
+    if let Some((rejected, message)) = rejected_refresh().lock().unwrap().get(provider)
+        && *rejected == current.refresh
+    {
+        return Err(RefreshRejected(message.clone()).into());
+    }
+    match refresh_provider_oauth(provider, &current).await {
+        Ok(refreshed) => {
+            rejected_refresh().lock().unwrap().remove(provider);
+            let access = refreshed.access.clone();
+            let mut file = read_auth_file_at(path);
+            file.entries
+                .insert(provider.to_string(), AuthEntry::OAuth(refreshed));
+            write_auth_file_at(path, &file)?;
+            update_auth_cache(path, &file);
+            Ok(access)
+        }
+        Err(error) => {
+            if let Some(rejected) = error.downcast_ref::<RefreshRejected>() {
+                rejected_refresh().lock().unwrap().insert(
+                    provider.to_string(),
+                    (current.refresh.clone(), rejected.0.clone()),
+                );
+            }
+            Err(error)
+        }
+    }
 }
 
 /// Refresh `provider`'s stored OAuth credential after the provider rejected
@@ -445,17 +544,16 @@ pub async fn refresh_rejected_oauth(
     if !supports_oauth_refresh(provider) {
         return Ok(None);
     }
-    let _guard = refresh_lock().lock().await;
-    let Some(current) = stored_oauth(provider) else {
+    let path = auth_file_path().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
+    let Some(current) = stored_oauth_at(&path, provider) else {
         return Ok(None);
     };
-    if current.access != rejected_access {
-        return Ok(Some(current.access));
-    }
-    let refreshed = refresh_provider_oauth(provider, &current).await?;
-    let access = refreshed.access.clone();
-    store_oauth(provider, refreshed)?;
-    Ok(Some(access))
+    let rejected_access = rejected_access.to_string();
+    refresh_stored_oauth_at(&path, provider, current, move |current| {
+        current.access == rejected_access
+    })
+    .await
+    .map(Some)
 }
 
 /// Resolve a credential without network access. An OAuth access token is
@@ -581,7 +679,7 @@ async fn resolve_api_key_async_generic(
     provider: &str,
     declared: &BTreeMap<String, String>,
 ) -> Result<Option<String>> {
-    let mut file = read_auth_file();
+    let file = read_auth_file();
     if let Some(entry) = file.entries.get(provider).cloned() {
         match entry {
             AuthEntry::Detailed { key, .. }
@@ -593,26 +691,15 @@ async fn resolve_api_key_async_generic(
             AuthEntry::OAuth(credential)
                 if supports_oauth_refresh(provider) && credential.is_expired() =>
             {
-                let _guard = refresh_lock().lock().await;
-                // Another request can complete the refresh while this request
-                // waits for the lock. Read the file again before network I/O.
-                file = read_auth_file();
-                let current = match file.entries.get(provider).cloned() {
-                    Some(AuthEntry::OAuth(current)) => current,
-                    Some(other) => return Ok(Some(other.access_token().to_string())),
-                    None => credential,
-                };
-                if !current.is_expired() {
-                    return Ok(Some(current.access));
-                }
-                let refreshed = refresh_provider_oauth(provider, &current).await?;
-                let access = refreshed.access.clone();
-                update_auth_file(|file| {
-                    file.entries
-                        .insert(provider.to_string(), AuthEntry::OAuth(refreshed));
-                    Ok(())
-                })?;
-                return Ok(Some(access));
+                let path = auth_file_path().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
+                return refresh_stored_oauth_at(
+                    &path,
+                    provider,
+                    credential,
+                    OAuthCredential::is_expired,
+                )
+                .await
+                .map(Some);
             }
             other => return Ok(Some(other.access_token().to_string())),
         }

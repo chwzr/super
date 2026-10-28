@@ -55,7 +55,7 @@ serde.workspace = true
 serde_json.workspace = true
 # Do not inherit the workspace's native Tokio feature set: portable builds only
 # need channels. Native features above add the runtime facilities adapters use.
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["rt", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 thiserror.workspace = true
 

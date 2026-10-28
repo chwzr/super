@@ -26,6 +26,8 @@ pub const DEFAULT_URL: &str = "https://super.flxkpe.io";
 pub const URL_ENV: &str = "SUPER_PLATFORM_URL";
 /// Notice shown when the stored sign-in can no longer be refreshed.
 pub const SIGN_IN_EXPIRED: &str = "SUPER sign-in expired. /login to restore remote control.";
+/// What a model request gets when no usable `super` credential is stored.
+pub const NOT_SIGNED_IN: &str = "not signed in to SUPER, or the sign-in expired: /login, or `super login super` on the command line";
 
 const CLIENT_ID: &str = "super-cli";
 const SCOPE: &str = "super";
@@ -446,7 +448,9 @@ pub async fn refresh(
     )
     .await?;
     if status.is_client_error() {
-        anyhow::bail!("{SIGN_IN_EXPIRED}");
+        // The platform rotated or revoked this token; sending it again would
+        // only get the device cut off (reuse detection).
+        return Err(super::RefreshRejected(SIGN_IN_EXPIRED.to_string()).into());
     }
     if !status.is_success() {
         anyhow::bail!(
@@ -868,6 +872,131 @@ mod tests {
         let mut plain: Model = serde_json::from_value(catalog_model("plain")).unwrap();
         plain.reasoning = false;
         assert!(normalize_model(plain, &config).compat.is_none());
+    }
+
+    /// The tests below point the process-wide platform URL at a mock, so
+    /// they take turns.
+    fn platform_url_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(Default::default)
+    }
+
+    fn expired_credential(refresh: &str) -> OAuthCredential {
+        OAuthCredential {
+            refresh: refresh.into(),
+            ..stored("old-access", 1)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_refreshes_make_one_request_and_share_the_new_token() {
+        let _turn = platform_url_lock().lock().await;
+        let platform = MockPlatform::start(Box::new(|request, earlier| {
+            assert_eq!(request.path, "/oauth/token");
+            if count(earlier, "/oauth/token") == 0 {
+                (200, tokens("new-access", "new-refresh"))
+            } else {
+                // A second refresh of the same token is what the platform
+                // treats as theft; the lock must make it impossible.
+                (400, json!({"error": "invalid_grant"}))
+            }
+        }))
+        .await;
+        configure_url(Some(&platform.base_url));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        let stale = expired_credential("race-refresh");
+        crate::auth::store_oauth_at(&path, PROVIDER, stale.clone()).unwrap();
+
+        let (first, second) = tokio::join!(
+            crate::auth::refresh_stored_oauth_at(
+                &path,
+                PROVIDER,
+                stale.clone(),
+                OAuthCredential::is_expired
+            ),
+            crate::auth::refresh_stored_oauth_at(
+                &path,
+                PROVIDER,
+                stale.clone(),
+                OAuthCredential::is_expired
+            ),
+        );
+        configure_url(None);
+        assert_eq!(first.unwrap(), "new-access");
+        assert_eq!(second.unwrap(), "new-access");
+        assert_eq!(count(&platform.requests(), "/oauth/token"), 1);
+        let saved = crate::auth::stored_oauth_at(&path, PROVIDER).unwrap();
+        assert_eq!(saved.refresh, "new-refresh");
+        assert!(!saved.is_expired());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rejected_refresh_is_not_sent_again_until_a_new_sign_in() {
+        let _turn = platform_url_lock().lock().await;
+        let platform = MockPlatform::start(Box::new(|_, _| {
+            (
+                400,
+                json!({"error": "invalid_grant", "error_description": "unknown refresh token"}),
+            )
+        }))
+        .await;
+        configure_url(Some(&platform.base_url));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        let dead = expired_credential("dead-refresh");
+        crate::auth::store_oauth_at(&path, PROVIDER, dead.clone()).unwrap();
+
+        let refresh = |credential: OAuthCredential| {
+            crate::auth::refresh_stored_oauth_at(
+                &path,
+                PROVIDER,
+                credential,
+                OAuthCredential::is_expired,
+            )
+        };
+        let error = refresh(dead.clone()).await.unwrap_err();
+        assert_eq!(error.to_string(), SIGN_IN_EXPIRED);
+        assert!(
+            error
+                .downcast_ref::<crate::auth::RefreshRejected>()
+                .is_some()
+        );
+        // The same dead token is refused locally, without another request.
+        let error = refresh(dead.clone()).await.unwrap_err();
+        assert_eq!(error.to_string(), SIGN_IN_EXPIRED);
+        assert_eq!(count(&platform.requests(), "/oauth/token"), 1);
+        // The credential stays in the file, so the device id survives a re-login.
+        assert_eq!(
+            crate::auth::stored_oauth_at(&path, PROVIDER)
+                .unwrap()
+                .refresh,
+            "dead-refresh"
+        );
+
+        // A new sign-in stores a different token, which is tried again.
+        let signed_in_again = expired_credential("fresh-refresh");
+        crate::auth::store_oauth_at(&path, PROVIDER, signed_in_again.clone()).unwrap();
+        let _ = refresh(signed_in_again).await;
+        configure_url(None);
+        assert_eq!(count(&platform.requests(), "/oauth/token"), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_credential_lock_serialises_processes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        // Another process holding the lock is modelled by a thread with its
+        // own file descriptor: `flock` locks are per open file.
+        let held = crate::auth::acquire_auth_lock(&path).unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        let started = std::time::Instant::now();
+        let _mine = crate::auth::acquire_auth_lock_async(&path).await.unwrap();
+        assert!(started.elapsed() >= std::time::Duration::from_millis(250));
+        holder.join().unwrap();
     }
 
     #[tokio::test]
