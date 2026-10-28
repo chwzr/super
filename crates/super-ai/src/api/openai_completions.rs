@@ -54,11 +54,12 @@ pub async fn stream(model: &Model, context: &Context, options: &StreamOptions, s
         builder.set_service_tier("priority");
     }
     let Some(credential) = options.credential.as_ref() else {
-        builder.fail(
-            format!("no API key for provider {}", model.provider),
-            false,
-            model,
-        );
+        let message = if model.provider == crate::auth::super_platform::PROVIDER {
+            crate::auth::super_platform::NOT_SIGNED_IN.to_string()
+        } else {
+            format!("no API key for provider {}", model.provider)
+        };
+        builder.fail(message, false, model);
         return;
     };
     let mut api_key = credential.value().to_string();

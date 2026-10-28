@@ -31,6 +31,15 @@
 
 ### Fixed
 
+- A platform token refresh holds the credential lock beside `auth.json`
+  until the new token is written, so two `super` processes (a terminal
+  session and the headless one the macOS app runs) never refresh the same
+  token; the platform treats that as theft and signs the device out. A
+  refresh the platform rejected is not sent again until `/login` stores a
+  new token, instead of every 30 seconds from remote control. A model
+  request without a usable platform credential says so (`not signed in to
+  SUPER, or the sign-in expired …`) instead of `no API key for provider
+  super`.
 - The session title and the idle recap work with the SUPER platform's
   reasoning models. These helper requests run with thinking off and a tight
   output budget; when a model keeps reasoning anyway and spends the budget

@@ -34,6 +34,19 @@ like the other OAuth providers. When a refresh is rejected, SUPER keeps
 running with its other providers and shows one notice:
 `SUPER sign-in expired. /login to restore remote control.`
 
+The platform rotates refresh tokens and treats a second refresh of the same
+token as theft: it signs the whole device out. Several `super` processes
+share `~/.super/agent/auth.json` (a terminal session and the headless
+`super` the macOS app runs, for example), so a refresh holds the credential
+lock beside the file (`.auth.json.lock`) from the moment it finds the stored
+token stale until the replacement is written; a process that was waiting
+finds the new token and sends no request. A refresh the platform rejected
+is not sent again: the process remembers the rejected token and answers
+with the notice above until `/login` stores a different one. A model request
+without a usable credential (print mode included) says
+`not signed in to SUPER, or the sign-in expired: /login, or `super login
+super` on the command line`.
+
 ## Models
 
 `GET /api/models` returns the catalog in SUPER's own `Model` shape. SUPER
