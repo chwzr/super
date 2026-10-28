@@ -1,0 +1,28 @@
+[package]
+name = "super-remote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Remote control for SUPER sessions: mirrors the RPC protocol to S2 streams"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+super-sdk = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+super-sdk = { workspace = true, features = ["mock"] }
+super-coding = { workspace = true }
+tempfile = { workspace = true }

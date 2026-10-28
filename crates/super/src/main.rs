@@ -13,7 +13,9 @@ mod modes {
     pub mod rpc;
 }
 mod mcp_cli;
+mod platform;
 mod provider_cli;
+mod remote;
 mod session_sources;
 mod setup;
 mod slash_commands;
@@ -219,6 +221,11 @@ async fn run_command(args: &Args, command: &Command) -> anyhow::Result<i32> {
             Ok(0)
         }
         Command::Logout { provider } => {
+            if provider == platform::PROVIDER {
+                configure_platform();
+                platform::sign_out_cli().await?;
+                return Ok(0);
+            }
             if super_ai::auth::remove_api_key(provider)? {
                 println!("Removed saved credentials for {provider}.");
             } else {
@@ -277,6 +284,15 @@ async fn run_command(args: &Args, command: &Command) -> anyhow::Result<i32> {
     }
 }
 
+/// `super login super` and `super logout super` run without the session
+/// setup that hands the `platform.url` setting to the auth module, so they
+/// would otherwise talk to the default platform.
+fn configure_platform() {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let settings = super_coding::Settings::load(&cwd, false);
+    platform::configure(&settings);
+}
+
 async fn run_oauth_login(provider: &str, headless: bool) -> anyhow::Result<()> {
     let cancel = tokio_util::sync::CancellationToken::new();
     let signal_cancel = cancel.clone();
@@ -285,6 +301,12 @@ async fn run_oauth_login(provider: &str, headless: bool) -> anyhow::Result<()> {
             signal_cancel.cancel();
         }
     });
+    if provider == platform::PROVIDER {
+        configure_platform();
+        let result = platform::sign_in_cli(headless, &cancel).await;
+        signal_task.abort();
+        return result;
+    }
     if (!headless || provider == "cursor")
         && login_methods(provider).contains(&LoginMethod::BrowserOAuth)
     {

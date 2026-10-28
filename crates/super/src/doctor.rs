@@ -399,6 +399,20 @@ fn unresolved_host(model: &Model) -> String {
 }
 
 fn add_login_targets(targets: &mut BTreeMap<(String, Connection, String), Target>) {
+    let platform = super_ai::auth::super_platform::OAuthConfig::default();
+    insert_url(
+        targets,
+        super_ai::auth::super_platform::PROVIDER,
+        Connection::Login,
+        format!("{}/oauth/device/code", platform.base_url),
+    );
+    insert_url(
+        targets,
+        super_ai::auth::super_platform::PROVIDER,
+        Connection::Sse,
+        format!("{}/chat/completions", platform.inference_url()),
+    );
+
     let openai = super_ai::auth::openai_codex::OAuthConfig::default();
     insert_url(
         targets,

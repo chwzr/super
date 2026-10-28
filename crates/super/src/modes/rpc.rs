@@ -56,16 +56,132 @@ pub fn options_from_args(args: &Args) -> Result<SessionOptions> {
 
 pub async fn run(args: &Args) -> Result<i32> {
     let session = super_sdk::Session::create(options_from_args(args)?).await?;
-    match &args.rpc_listen {
-        Some(address) => {
-            let address: std::net::SocketAddr = address.parse().map_err(|error| {
-                anyhow::anyhow!("invalid --rpc-listen address '{address}': {error}")
-            })?;
-            super_sdk::rpc::serve_websocket(session, address).await?;
+
+    // A signed-in headless session is mirrored like a terminal one, so a
+    // desktop app can drive it locally while phones follow along. Only then
+    // do workflow approvals wait for an answer: a plain RPC client keeps the
+    // auto-approve behaviour it always had.
+    let settings = session.agent_session().settings();
+    let remote = if crate::remote::wanted(args, &settings) {
+        install_approval_gate(&session);
+        let (events, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let crate::remote::RemoteEvent::Failed(reason) = event {
+                    eprintln!("super remote: unavailable: {reason}");
+                }
+            }
+        });
+        let session_file = session.state().session_file;
+        let control =
+            crate::remote::RemoteControl::start(session.clone(), session_file, &settings, events);
+        let record = crate::remote::session_record(
+            super_remote::SessionState::Idle,
+            None,
+            session.agent_session(),
+            args,
+            true,
+        );
+        control.publish(record);
+        Some((control, session.clone()))
+    } else {
+        None
+    };
+    let presence = remote.as_ref().map(|(control, sdk)| {
+        // Keep the registry current while the stdio client drives the session.
+        let args = args.clone();
+        let sdk = sdk.clone();
+        let publish = control_publisher(control);
+        tokio::spawn(async move {
+            let mut events = sdk.events();
+            loop {
+                let Some(event) = events.recv().await else {
+                    break;
+                };
+                let state = match event.0["type"].as_str() {
+                    Some("agent_start") => super_remote::SessionState::Working,
+                    Some("agent_settled") | Some("agent_end") => super_remote::SessionState::Idle,
+                    _ => continue,
+                };
+                publish(crate::remote::session_record(
+                    state,
+                    None,
+                    sdk.agent_session(),
+                    &args,
+                    true,
+                ));
+            }
+        })
+    });
+
+    let serve = async {
+        match &args.rpc_listen {
+            Some(address) => {
+                let address: std::net::SocketAddr = address.parse().map_err(|error| {
+                    anyhow::anyhow!("invalid --rpc-listen address '{address}': {error}")
+                })?;
+                super_sdk::rpc::serve_websocket(session, address).await
+            }
+            None => super_sdk::rpc::serve_stdio(session).await,
         }
-        None => super_sdk::rpc::serve_stdio(session).await?,
+    };
+    // A parent that terminates the process (the macOS app does, after
+    // closing stdin) must still see the session announced as ended, so
+    // SIGTERM ends serving and falls through to the same shutdown as EOF.
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = serve => result?,
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    serve.await?;
+    if let Some(task) = presence {
+        task.abort();
+    }
+    if let Some((control, _)) = remote {
+        control.stop().await;
     }
     Ok(0)
+}
+
+/// A publisher that outlives the borrow of the control.
+fn control_publisher(
+    control: &crate::remote::RemoteControl,
+) -> impl Fn(super_remote::SessionRecord) + Send + 'static {
+    let publish = control.publisher();
+    move |record| publish(record)
+}
+
+/// Workflows ask for approval; without a terminal the question goes to the
+/// RPC and remote clients as an `approval_request` event.
+fn install_approval_gate(session: &std::sync::Arc<super_sdk::Session>) {
+    let sdk = session.clone();
+    session
+        .agent_session()
+        .set_workflow_approver(std::sync::Arc::new(move |plan| {
+            let sdk = sdk.clone();
+            Box::pin(async move {
+                let (_, answer) = sdk.open_approval(super_sdk::ApprovalRequest {
+                    kind: super_sdk::ApprovalKind::Workflow,
+                    title: format!("Run workflow {}?", plan.name),
+                    detail: Some(plan.agent_estimate()),
+                    choices: vec![
+                        super_sdk::ApprovalChoice::new("approve", "Run it"),
+                        super_sdk::ApprovalChoice::new("cancel", "Cancel"),
+                    ],
+                });
+                match answer.await {
+                    Ok(answer) if answer.choice == "approve" => {
+                        super_coding::workflows::ApprovalDecision::Approve
+                    }
+                    _ => super_coding::workflows::ApprovalDecision::Cancel,
+                }
+            })
+        }));
 }
 
 #[cfg(test)]

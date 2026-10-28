@@ -111,10 +111,18 @@ fn every_command_serializes_with_a_snake_case_type() {
             "fork",
         ),
         (Command::GetForkMessages {}, "get_fork_messages"),
+        (Command::GetApprovals {}, "get_approvals"),
+        (
+            Command::AnswerApproval {
+                approval_id: "ap1".into(),
+                choice: "approve".into(),
+            },
+            "answer_approval",
+        ),
         (Command::Ping {}, "ping"),
     ];
 
-    assert_eq!(cases.len(), 30, "keep this list exhaustive");
+    assert_eq!(cases.len(), 32, "keep this list exhaustive");
     for (command, expected) in cases {
         assert_eq!(command.name(), expected);
         let value = serde_json::to_value(&command).unwrap();

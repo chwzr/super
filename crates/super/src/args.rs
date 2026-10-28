@@ -385,6 +385,10 @@ pub struct Args {
     #[arg(long)]
     pub no_session: bool,
 
+    /// Do not mirror this session to the SUPER platform, even when signed in.
+    #[arg(long = "no-remote")]
+    pub no_remote: bool,
+
     /// Let the model edit its live conversation through a context file (experimental).
     #[arg(long)]
     pub experimental_context_file: bool,

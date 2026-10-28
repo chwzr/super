@@ -102,6 +102,19 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 - `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
 
+### Approvals
+
+Some steps wait for a human: a dynamic workflow before it starts, the project
+trust question, a login prompt. Every surface sees the same question and any
+surface may answer it. The first answer wins.
+
+- `get_approvals`: `data.approvals`, each `{approvalId, kind, title, detail, choices}`.
+- `answer_approval` with `approvalId` and `choice` (a choice id from the request). Fails when the id is unknown, already answered, or the choice is not offered.
+
+`kind` is `workflow` (choices `approve`, `cancel`), `trust` (`trust`,
+`untrust`), `login` or `other`. Login prompts are announced but cannot be
+answered over RPC in this version.
+
 ## Events
 
 Lifecycle: `agent_start`, `agent_end`, `agent_settled`, `turn_start`, `turn_end`,
@@ -112,6 +125,14 @@ and direct-shell `bash_execution_update`.
 
 Session: `queue_update`, `compaction_start`, `compaction_end`, `retry`,
 `model_changed`, `workflow_progress`, `workflow_outcome`, and `event_lag`.
+
+Approvals: `approval_request` with `approvalId`, `kind`, `title`, `detail`,
+and `choices` (`[{id, label, detail}]`); `approval_resolved` with
+`approvalId`, `choice`, and `by` (`local` for the terminal, `rpc` for a direct
+client, otherwise the remote device name).
+
+`agent_settled` follows every run, including runs the interactive terminal
+started itself when the session is mirrored for remote control.
 
 `message_update.assistantMessageEvent` types are `start`, `text_start`,
 `text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`,

@@ -10,10 +10,10 @@
 A [ridiculously fast](#performance) terminal coding agent that keeps the interface simple and gives you
 control of the model, tools, sessions, and automation.
 
-SUPER has 44 built-in providers. These include OpenAI Codex (ChatGPT
-subscription), OpenAI API, Anthropic OAuth (Claude subscription), Anthropic
-API, Meta Muse, Cursor, Google, OpenRouter, Bedrock, Databricks, Snowflake,
-and GitHub Copilot.
+SUPER has 45 built-in providers. These include the SUPER platform
+(`super.flxkpe.io`), OpenAI Codex (ChatGPT subscription), OpenAI API,
+Anthropic OAuth (Claude subscription), Anthropic API, Meta Muse, Cursor,
+Google, OpenRouter, Bedrock, Databricks, Snowflake, and GitHub Copilot.
 
 You can also add OpenAI-compatible providers.
 
@@ -331,6 +331,37 @@ super logout openai
 super --list-models
 super --model sonnet:high
 ```
+
+#### SUPER platform
+
+One sign-in to the SUPER platform gives you its model list and inference
+gateway. `/login` lists `♦ SUPER` first; from the command line:
+
+```bash
+super login super
+super --model super/gpt-5
+super logout super
+```
+
+Sign-in uses a device code: SUPER prints the verification URL and a code
+such as `ABCD-EFGH`, opens the browser when one is available, and waits for
+your approval. Esc cancels. The last line of a successful sign-in reads
+`Signed in to SUPER as you@example.com · 12 models`.
+
+The platform's models appear in `/model` under `super/…` and stream through
+the OpenAI-compatible gateway, including tool calls, images, and reasoning
+effort. SUPER refreshes the list on sign-in and once per start, in the
+background after the first frame; offline, the list from the last refresh is
+used. The sign-in refreshes itself one minute before it expires. When it can
+no longer be refreshed, SUPER keeps working with your other providers and
+shows `SUPER sign-in expired. /login to restore remote control.`
+
+`super logout super` revokes this device on the platform and removes the
+`super` models. Signed out, SUPER never contacts the platform.
+
+The platform URL is `https://super.flxkpe.io`. For development, set the
+`platform.url` setting or the `SUPER_PLATFORM_URL` environment variable.
+See [docs/super-platform.md](docs/super-platform.md).
 
 #### Corporate proxies
 
@@ -670,6 +701,37 @@ and events as JSONL RPC. All connected clients share one SUPER session.
 
 See the [SDK guide](docs/sdk.md), [RPC protocol](docs/rpc.md), and
 [browser WebAssembly guide](crates/super-core-wasm/README.md).
+
+### Remote control
+
+Signed in to the SUPER platform (`/login`, provider `SUPER`), every saved
+session is mirrored to your account: the SUPER app for iOS and macOS and the
+web at super.flxkpe.io show it live, and they can steer it, queue follow-ups,
+stop it, change the model, and answer workflow and trust questions. Signed
+out, nothing is mirrored and no request leaves the machine.
+
+The footer shows `♦ remote` while mirrored, `♦ remote…` while reconnecting,
+and `♦ local` while signed in but not mirrored. A prompt sent from the app
+appears like one typed here; a steer or follow-up is tagged with its origin,
+for example `♦ steer from iPhone`. Commands that
+arrive after their expiry (five minutes by default) are dropped and counted
+in one notice.
+
+- `/remote` shows the status; `/remote off` and `/remote on` toggle it for the
+  session; `/remote name <name>` renames this machine.
+- `--no-remote` starts a session without mirroring. `--no-session` sessions
+  are never mirrored.
+- Settings: `remote.enabled` (default on while signed in), `remote.allowShell`
+  (default on) to accept the RPC `bash` command from controllers, and
+  `platform.url` or `SUPER_PLATFORM_URL` for a different platform.
+- `super --mode rpc` mirrors too, so a desktop app can drive a headless
+  session over stdio while phones follow along.
+- One `super` process mirrors a session file at a time; a second one runs
+  locally and says so.
+- `SUPER_LOG=remote` writes transport diagnostics to
+  `~/.super/agent/logs/remote.log` without tokens or message bodies.
+
+The machine identity lives in `~/.super/agent/host.json`.
 
 ## Performance
 

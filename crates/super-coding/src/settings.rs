@@ -206,6 +206,40 @@ pub struct WebMcpSettings {
     pub cdp: Option<Value>,
 }
 
+/// Remote control through the SUPER platform. Only effective while signed in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RemoteSettings {
+    /// `None` keeps the default: on while signed in.
+    pub enabled: Option<bool>,
+    /// Accept the RPC `bash` command from remote controllers.
+    pub allow_shell: Option<bool>,
+}
+
+impl RemoteSettings {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn shell_allowed(&self) -> bool {
+        self.allow_shell.unwrap_or(true)
+    }
+}
+
+/// The SUPER platform (`super.flxkpe.io`) sign-in, inference, and remote
+/// control.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlatformSettings {
+    /// Platform base URL. `SUPER_PLATFORM_URL` overrides it; unset means
+    /// `https://super.flxkpe.io`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Unknown keys survive load/save.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -243,6 +277,8 @@ pub struct Settings {
     pub voice_backend: Option<String>,
     pub markdown: MarkdownSettings,
     pub webmcp: WebMcpSettings,
+    pub remote: RemoteSettings,
+    pub platform: PlatformSettings,
     /// Unknown keys survive load/save.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -534,6 +570,36 @@ mod tests {
             vec!["blocked.example".to_string()]
         );
         assert_eq!(loaded.webmcp.cdp, Some(json!(9333)));
+    }
+
+    #[test]
+    fn platform_url_is_optional_and_keeps_unknown_platform_keys() {
+        let settings = Settings::default();
+        assert_eq!(settings.platform.url, None);
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["platform"], json!({}));
+
+        let loaded: Settings = serde_json::from_value(json!({
+            "platform": {"url": "http://localhost:8080", "future": {"keep": true}}
+        }))
+        .unwrap();
+        assert_eq!(
+            loaded.platform.url.as_deref(),
+            Some("http://localhost:8080")
+        );
+        let saved = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(saved["platform"]["url"], "http://localhost:8080");
+        assert_eq!(saved["platform"]["future"]["keep"], true);
+
+        // A trusted project may point development builds at another platform.
+        let merged = merged_settings(
+            json!({"platform": {"url": "https://super.flxkpe.io"}}),
+            Some(json!({"platform": {"url": "http://localhost:8080"}})),
+        );
+        assert_eq!(
+            merged.platform.url.as_deref(),
+            Some("http://localhost:8080")
+        );
     }
 
     #[test]

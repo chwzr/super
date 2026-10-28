@@ -484,6 +484,7 @@ mod tests {
             account_id: String::new(),
             client_id: None,
             available_model_ids: None,
+            device_id: None,
         })
     }
 

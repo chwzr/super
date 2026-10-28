@@ -62,6 +62,65 @@ pub(crate) struct TerminalHosts {
     workers: Vec<JoinHandle<()>>,
 }
 
+/// The command line that resumes a session with the same explicit choices,
+/// without a prompt or an API-key override.
+pub(crate) fn resume_argv(
+    session_file: &str,
+    model: &super_ai::Model,
+    thinking: super_ai::ThinkingLevel,
+    args: &Args,
+) -> Vec<String> {
+    let mut argv: Vec<String> = vec![
+        "super".into(),
+        "--session".into(),
+        session_file.to_string(),
+        "--model".into(),
+        format!("{}/{}", model.provider, model.id),
+        "--thinking".into(),
+        thinking.as_str().into(),
+    ];
+    // Preserve explicit resource choices, but never store a prompt or
+    // an API-key override in another application's session file.
+    for (flag, value) in [
+        ("--session-dir", &args.session_dir),
+        ("--tools", &args.tools),
+        ("--exclude-tools", &args.exclude_tools),
+        ("--system-prompt", &args.system_prompt),
+        ("--append-system-prompt", &args.append_system_prompt),
+    ] {
+        if let Some(value) = value {
+            argv.extend([flag.into(), value.clone()]);
+        }
+    }
+    for (flag, values) in [
+        ("--skill", &args.skills),
+        ("--prompt-template", &args.prompt_templates),
+        ("--theme", &args.themes),
+    ] {
+        for value in values {
+            argv.extend([flag.into(), value.clone()]);
+        }
+    }
+    for (flag, enabled) in [
+        ("--no-tools", args.no_tools),
+        ("--no-skills", args.no_skills),
+        ("--no-prompt-templates", args.no_prompt_templates),
+        ("--no-themes", args.no_themes),
+        ("--no-context-files", args.no_context_files),
+        ("--approve", args.approve),
+        ("--no-approve", args.no_approve),
+        (
+            "--experimental-context-file",
+            args.experimental_context_file,
+        ),
+    ] {
+        if enabled {
+            argv.push(flag.into());
+        }
+    }
+    argv
+}
+
 impl TerminalHosts {
     pub(crate) fn from_env() -> Self {
         let mut hosts = Vec::new();
@@ -124,54 +183,7 @@ impl TerminalHosts {
                     .into_string()
                     .ok()?;
                 let session_file = PathBuf::from(&file);
-                let mut argv = vec![
-                    "super".into(),
-                    "--session".into(),
-                    file,
-                    "--model".into(),
-                    format!("{}/{}", model.provider, model.id),
-                    "--thinking".into(),
-                    thinking.as_str().into(),
-                ];
-                // Preserve explicit resource choices, but never store a prompt or
-                // an API-key override in another application's session file.
-                for (flag, value) in [
-                    ("--session-dir", &args.session_dir),
-                    ("--tools", &args.tools),
-                    ("--exclude-tools", &args.exclude_tools),
-                    ("--system-prompt", &args.system_prompt),
-                    ("--append-system-prompt", &args.append_system_prompt),
-                ] {
-                    if let Some(value) = value {
-                        argv.extend([flag.into(), value.clone()]);
-                    }
-                }
-                for (flag, values) in [
-                    ("--skill", &args.skills),
-                    ("--prompt-template", &args.prompt_templates),
-                    ("--theme", &args.themes),
-                ] {
-                    for value in values {
-                        argv.extend([flag.into(), value.clone()]);
-                    }
-                }
-                for (flag, enabled) in [
-                    ("--no-tools", args.no_tools),
-                    ("--no-skills", args.no_skills),
-                    ("--no-prompt-templates", args.no_prompt_templates),
-                    ("--no-themes", args.no_themes),
-                    ("--no-context-files", args.no_context_files),
-                    ("--approve", args.approve),
-                    ("--no-approve", args.no_approve),
-                    (
-                        "--experimental-context-file",
-                        args.experimental_context_file,
-                    ),
-                ] {
-                    if enabled {
-                        argv.push(flag.into());
-                    }
-                }
+                let argv = resume_argv(&file, &model, thinking, args);
                 Some(Resume {
                     id: manager.session_id().into(),
                     file: session_file,

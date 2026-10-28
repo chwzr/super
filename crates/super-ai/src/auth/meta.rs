@@ -148,6 +148,7 @@ async fn mint(
         expires: chrono::Utc::now().timestamp_millis() + API_KEY_LIFETIME_MS,
         account_id: String::new(),
         available_model_ids: None,
+        device_id: None,
         client_id: None,
     })
 }
