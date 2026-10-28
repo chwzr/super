@@ -53,7 +53,15 @@ with `Authorization: Bearer <access token>`. Streaming, tool calls, and image
 input work as for other OpenAI-compatible providers. Reasoning models send
 `reasoning_effort`: SUPER's thinking levels `minimal`, `low`, `medium`, and
 `high` map to the same names; `xhigh` and `max` are sent as `high` unless the
-platform's model entry carries a `thinkingLevelMap`.
+platform's model entry carries a `thinkingLevelMap`. Thinking `off` sends
+nothing unless the entry maps it; the platform maps `off` to `none` for models
+whose upstream (OpenRouter) otherwise keeps reasoning on, so `off` is off.
+
+The session title, the idle recap, and `/btw` are short helper requests with
+a tight output budget. When a model spends that budget on reasoning it would
+not switch off and returns no text, SUPER asks once more with a 4096-token
+budget; if the answer is still empty, the notice says so
+(`the model spent its 4096-token budget on reasoning …`).
 
 ## Signing out
 

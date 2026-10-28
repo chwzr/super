@@ -29,6 +29,15 @@
   `mirrored_sink` publishes its events to SDK subscribers. `Session::execute_from`
   names the surface a command came from.
 
+### Fixed
+
+- The session title and the idle recap work with the SUPER platform's
+  reasoning models. These helper requests run with thinking off and a tight
+  output budget; when a model keeps reasoning anyway and spends the budget
+  before answering, SUPER asks once more with a 4096-token budget instead of
+  failing with "automatic recap failed", and an answer that is still empty
+  is explained in one line.
+
 ## 0.0.37 - 2026-10-09
 
 ### Added
