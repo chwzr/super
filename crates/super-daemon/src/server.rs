@@ -69,7 +69,7 @@ impl ServerContext {
         }
     }
 
-    async fn status(&self) -> DaemonStatus {
+    pub async fn status(&self) -> DaemonStatus {
         let sessions = self.host.list(None).await;
         let hosted = sessions.iter().filter(|session| session.hosted).count();
         DaemonStatus {
@@ -381,6 +381,42 @@ async fn daemon_command(
     log::debug("server", format!("client {} {name}", client.id));
     let result: Result<Value, String> = match request.command {
         DaemonCommand::Hello { .. } => Err("already said hello".into()),
+        DaemonCommand::Attach { session_id } => match ctx.host.load(&session_id).await {
+            Ok(hosted) => {
+                let previous = client.attach(ctx, hosted.clone());
+                Ok(json!({
+                    "session": ctx.host.summary(&hosted),
+                    "previousSessionId": previous,
+                }))
+            }
+            Err(error) => Err(error.to_string()),
+        },
+        DaemonCommand::Detach {} => Ok(json!({"sessionId": client.detach(ctx)})),
+        DaemonCommand::Shutdown {} => {
+            log::info("server", format!("client {} asked for shutdown", client.id));
+            let response = Response::ok("shutdown").with_id(id);
+            // Queue the response before cancelling so it still goes out; the
+            // caller does not send a second one for `shutdown`.
+            let _ = client.out.send(encode(&response));
+            ctx.shutdown.cancel();
+            return response;
+        }
+        other => run_host_command(ctx, other).await,
+    };
+    match result {
+        Ok(data) => Response::ok_data(name, data).with_id(id),
+        Err(error) => Response::err(name, error).with_id(id),
+    }
+}
+
+/// The commands that do not depend on a connection. The socket server and
+/// the platform link both run them here, so a command means the same thing
+/// wherever it came from.
+pub async fn run_host_command(
+    ctx: &Arc<ServerContext>,
+    command: DaemonCommand,
+) -> Result<Value, String> {
+    match command {
         DaemonCommand::Status {} => {
             serde_json::to_value(ctx.status().await).map_err(|error| error.to_string())
         }
@@ -415,36 +451,16 @@ async fn daemon_command(
             .await
             .map(|hosted| json!({"session": ctx.host.summary(&hosted)}))
             .map_err(|error| error.to_string()),
-        DaemonCommand::Attach { session_id } => match ctx.host.load(&session_id).await {
-            Ok(hosted) => {
-                let previous = client.attach(ctx, hosted.clone());
-                Ok(json!({
-                    "session": ctx.host.summary(&hosted),
-                    "previousSessionId": previous,
-                }))
-            }
-            Err(error) => Err(error.to_string()),
-        },
-        DaemonCommand::Detach {} => Ok(json!({"sessionId": client.detach(ctx)})),
         DaemonCommand::StopSession { session_id } => ctx
             .host
             .stop(&session_id, EndReason::Stopped)
             .await
             .map(|()| json!({"sessionId": session_id}))
             .map_err(|error| error.to_string()),
-        DaemonCommand::Shutdown {} => {
-            log::info("server", format!("client {} asked for shutdown", client.id));
-            let response = Response::ok("shutdown").with_id(id);
-            // Queue the response before cancelling so it still goes out; the
-            // caller does not send a second one for `shutdown`.
-            let _ = client.out.send(encode(&response));
-            ctx.shutdown.cancel();
-            return response;
-        }
-    };
-    match result {
-        Ok(data) => Response::ok_data(name, data).with_id(id),
-        Err(error) => Response::err(name, error).with_id(id),
+        DaemonCommand::Hello { .. }
+        | DaemonCommand::Attach { .. }
+        | DaemonCommand::Detach {}
+        | DaemonCommand::Shutdown {} => Err("not available over the platform".into()),
     }
 }
 
