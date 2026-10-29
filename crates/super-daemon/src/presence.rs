@@ -412,3 +412,153 @@ async fn run_host_record(shared: &Arc<Shared>, record: &SequencedRecord) {
     let value = serde_json::to_value(response).unwrap_or(Value::Null);
     let _ = shared.out.send(event_record(value));
 }
+
+#[derive(Debug, Clone)]
+pub struct PresenceConfig {
+    pub platform_url: String,
+    pub device_name: String,
+    /// How often the stored sign-in is checked.
+    pub check_interval: Duration,
+    pub link: LinkConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Start,
+    Stop,
+    Keep,
+}
+
+/// What the supervisor does on one check.
+pub fn next_action(signed_in: bool, running: bool, unauthorized: bool) -> Action {
+    match (signed_in, running) {
+        (true, false) => Action::Start,
+        (true, true) if unauthorized => Action::Stop,
+        (true, true) => Action::Keep,
+        (false, true) => Action::Stop,
+        (false, false) => Action::Keep,
+    }
+}
+
+/// Keeps one link up while the user is signed in.
+pub struct Presence {
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Presence {
+    pub fn supervise(
+        ctx: Arc<ServerContext>,
+        identity: HostIdentity,
+        config: PresenceConfig,
+    ) -> Self {
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(supervise(ctx, identity, config, cancel.clone()));
+        Self { cancel, task }
+    }
+
+    pub async fn stop(self) {
+        self.cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(10), self.task).await;
+    }
+}
+
+async fn supervise(
+    ctx: Arc<ServerContext>,
+    identity: HostIdentity,
+    config: PresenceConfig,
+    cancel: CancellationToken,
+) {
+    let mut link: Option<Link> = None;
+    loop {
+        let signed_in = super_remote::credentials::is_signed_in();
+        let unauthorized = link.as_ref().is_some_and(Link::unauthorized);
+        match next_action(signed_in, link.is_some(), unauthorized) {
+            Action::Start => {
+                let credentials: Arc<dyn super_remote::RemoteCredentials> =
+                    Arc::new(super_remote::PlatformCredentials::new(
+                        config.platform_url.clone(),
+                        config.device_name.clone(),
+                    ));
+                match super_remote::Remote::start(credentials, identity.clone()).await {
+                    Ok(remote) => {
+                        log::info(
+                            "presence",
+                            format!(
+                                "connected to {} as device {}",
+                                config.platform_url, remote.config.device_id
+                            ),
+                        );
+                        link = Some(Link::start(
+                            remote.client.clone(),
+                            ctx.clone(),
+                            identity.clone(),
+                            remote.config.device_id.clone(),
+                            config.link.clone(),
+                        ));
+                    }
+                    Err(error) => log::warn("presence", format!("platform unavailable: {error:#}")),
+                }
+            }
+            Action::Stop => {
+                log::info(
+                    "presence",
+                    if unauthorized {
+                        "sign-in rejected, presence stopped"
+                    } else {
+                        "signed out, presence stopped"
+                    },
+                );
+                if let Some(link) = link.take() {
+                    link.stop().await;
+                }
+            }
+            Action::Keep => {}
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tokio::time::sleep(config.check_interval) => {}
+        }
+    }
+    if let Some(link) = link.take() {
+        link.stop().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_supervisor_starts_when_signed_in_and_stops_when_not() {
+        assert_eq!(next_action(true, false, false), Action::Start);
+        assert_eq!(next_action(true, true, false), Action::Keep);
+        assert_eq!(next_action(true, true, true), Action::Stop);
+        assert_eq!(next_action(false, true, false), Action::Stop);
+        assert_eq!(next_action(false, false, false), Action::Keep);
+    }
+
+    #[test]
+    fn a_record_names_the_session_file_the_apps_expect() {
+        let summary = SessionSummary {
+            session_id: "a1".into(),
+            cwd: "/w".into(),
+            workspace: "/w".into(),
+            session_file: "/s/a1.jsonl".into(),
+            name: None,
+            first_message: Some("hi".into()),
+            state: SessionState::Idle,
+            blocked_reason: None,
+            hosted: true,
+            attached_clients: 1,
+            model: Some("mock/mock-1".into()),
+            thinking_level: Some("off".into()),
+            modified_at: "2026-10-29T00:00:00Z".into(),
+        };
+        let record = record_from_summary(&summary);
+        assert_eq!(record.resume_argv, ["super", "--session", "/s/a1.jsonl"]);
+        assert!(record.daemon);
+        assert!(!record.headless);
+        assert_eq!(record.model, "mock/mock-1");
+    }
+}

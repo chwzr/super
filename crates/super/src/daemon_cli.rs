@@ -47,6 +47,20 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
             platform: super_remote::host::platform_name().into(),
         },
     };
+    let presence = settings
+        .remote
+        .is_enabled()
+        .then(|| super_daemon::presence::PresenceConfig {
+            platform_url: super_remote::credentials::resolve_platform_url(
+                settings.platform.url.as_deref(),
+            ),
+            device_name: host.name.clone(),
+            check_interval: Duration::from_secs(30),
+            link: super_daemon::presence::LinkConfig {
+                allow_shell: settings.remote.shell_allowed(),
+                ..Default::default()
+            },
+        });
     let config = super_daemon::DaemonConfig {
         paths,
         host: HostConfig {
@@ -60,6 +74,7 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
         log_level: super_daemon::log::Level::from_env(),
         log_to_stderr: std::io::stderr().is_terminal(),
         sweep_interval: Duration::from_secs(60),
+        presence,
     };
     super_daemon::run(config, tokio_util::sync::CancellationToken::new()).await
 }
