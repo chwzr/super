@@ -4,6 +4,11 @@
 
 ### Added
 
+- The daemon is present on the platform while signed in: host and session
+  records in the registry (stored sessions as `ended`, `daemon: true`), one
+  mirror per hosted session, and the host-level streams
+  `hosts/{hostId}/commands` and `hosts/{hostId}/events` through which an app
+  starts, resumes, stops and lists sessions on a device (ENG-37).
 - `super daemon run|status|stop`: a per-user daemon that hosts sessions and
   serves them to any number of local clients over `~/.super/run/daemon.sock`.
   A connection says `hello`, attaches to a session, and from then on speaks
