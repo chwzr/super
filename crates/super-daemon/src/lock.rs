@@ -94,9 +94,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("run/daemon.lock");
         let first = DaemonLock::acquire(&path).expect("first lock");
-        assert_eq!(DaemonLock::holder_pid(&path), Some(std::process::id()));
+        // Windows locks are mandatory: nobody can read the pid while the
+        // lock is held, so the readback is only checked where it can work.
+        if cfg!(unix) {
+            assert_eq!(DaemonLock::holder_pid(&path), Some(std::process::id()));
+        }
         match DaemonLock::acquire(&path) {
-            Err(LockError::Held { pid }) => assert_eq!(pid, Some(std::process::id())),
+            Err(LockError::Held { pid }) => {
+                if cfg!(unix) {
+                    assert_eq!(pid, Some(std::process::id()));
+                }
+            }
             other => panic!("expected Held, got {other:?}"),
         }
         drop(first);
