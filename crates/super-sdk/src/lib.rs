@@ -45,6 +45,7 @@
 //! which is what the WebAssembly binding uses.
 
 pub mod client;
+pub mod daemon;
 pub mod protocol;
 
 pub use client::{Client, LineBuffer};
