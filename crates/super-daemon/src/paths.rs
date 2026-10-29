@@ -45,16 +45,23 @@ impl DaemonPaths {
         }
     }
 
-    /// Create the run directory, readable by this user only.
+    /// Create the run directory. Under the user's home it is made readable
+    /// by this user only; a socket placed elsewhere (`--socket /tmp/x.sock`)
+    /// leaves that shared directory's permissions alone.
     pub fn ensure_run_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.run_dir)?;
         #[cfg(unix)]
-        {
+        if restrict_permissions(&self.run_dir, dirs::home_dir().as_deref()) {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&self.run_dir, std::fs::Permissions::from_mode(0o700))?;
         }
         Ok(())
     }
+}
+
+/// Only a run directory inside the home directory is ours to lock down.
+fn restrict_permissions(run_dir: &Path, home: Option<&Path>) -> bool {
+    home.is_some_and(|home| run_dir.starts_with(home))
 }
 
 #[cfg(test)]
@@ -68,6 +75,34 @@ mod tests {
         assert!(paths.lock.ends_with(".super/run/daemon.lock"));
         assert!(paths.log.ends_with(".super/agent/logs/daemon.log"));
         assert_eq!(paths.run_dir, paths.socket.parent().unwrap());
+    }
+
+    #[test]
+    fn only_a_run_dir_under_home_is_made_private() {
+        let home = Path::new("/Users/felix");
+        assert!(restrict_permissions(
+            Path::new("/Users/felix/.super/run"),
+            Some(home)
+        ));
+        assert!(!restrict_permissions(Path::new("/tmp"), Some(home)));
+        assert!(!restrict_permissions(
+            Path::new("/Users/felix/.super/run"),
+            None
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_run_dir_leaves_a_shared_directory_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let paths = DaemonPaths::beside_socket(dir.path().join("d.sock"));
+        paths
+            .ensure_run_dir()
+            .expect("no chmod on a shared directory");
+        let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
     }
 
     #[test]
