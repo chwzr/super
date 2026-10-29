@@ -404,3 +404,93 @@ and the TUI's attribution name the client. The daemon installs no observer;
   `ExecStart=<current_exe> daemon run`, `Restart=on-failure`; `super install`
   runs `systemctl --user daemon-reload`, `enable --now`; `super uninstall`
   reverses it.
+
+## Slice 2: platform presence (ENG-37), detailed on 2026-10-29
+
+Decided with Felix after slice 1 merged: the daemon gets a pair of host-level
+streams, `hosts/{hostId}/commands` in and `hosts/{hostId}/events` out, and
+the registry keeps its current record kinds. The `workspace` record kind
+sketched above is dropped: workspaces are derived from sessions, so the apps
+keep deriving them from the session records.
+
+### Streams
+
+| Stream | Writer | Readers | Body |
+| --- | --- | --- | --- |
+| `registry` | the daemon (and a standalone `super`, as today) | apps, web | `host` once per daemon start, `heartbeat` every 30 s, one `session` record per session the daemon knows |
+| `sessions/{hostId}/{sessionId}/{events,entries,commands}` | daemon and apps, as today | | unchanged: one `SessionTransport` per hosted session, started when the session loads and stopped when it unloads |
+| `hosts/{hostId}/commands` | apps (controllers) | the daemon | one daemon-level command per record: `status`, `list_sessions`, `list_workspaces`, `list_directories`, `create_session`, `resume_session`, `stop_session` |
+| `hosts/{hostId}/events` | the daemon | apps | the response to every host command (body is the response JSON carrying the command's `id`, header `t=response`) and every daemon-level event (`session_created`, `session_updated`, `session_ended`, `daemon_shutdown`, header `t` = the event type) |
+
+Host command records carry the same headers as session commands: `t`,
+`from`, `name` (the origin shown to other clients), `exp` (dropped when
+expired, default five minutes). The daemon keeps its cursor in
+`~/.super/agent/remote/cursors/` like a session's command cursor, so a
+restarted daemon does not run recent host commands again. `hello`, `attach`,
+`detach` and `shutdown` are connection-bound and answered with the error
+`not available over the platform`.
+
+Session records for daemon sessions carry `state` from the host (`idle`,
+`working`, `blocked` with `blockedReason`, `ended` for a stored session),
+`resumeArgv: ["super", "--session", <file>]` so the apps keep finding the
+file, `headless: false`, and a new additive flag `daemon: true` so ENG-8 can
+tell a daemon session from a spawned one. All known sessions are published
+at start (stored ones as `ended`), every change is published as it happens,
+and the whole set is published again every six hours because the registry
+keeps records for one day.
+
+### Daemon side
+
+- `super-daemon/src/presence.rs`. `run` starts a presence supervisor when
+  `remote.enabled` is not false. Every 30 seconds it checks the stored
+  platform sign-in: signed in and no link yet starts one; signed out, or a
+  link whose transport reports `Unauthorized`, stops it; a failed start is
+  retried at the next check. `platform.url` from the settings is handed to
+  the auth module at daemon start, as the CLI does.
+- A link is: `Remote::start` (one `GET /api/remote/config`), a
+  `RegistryWriter` that now holds a record per session, a `SessionTransport`
+  per hosted session, a tailer for `hosts/{hostId}/commands` that runs each
+  command against the `SessionHost` with the record's origin, and an
+  appender for `hosts/{hostId}/events`. The link follows the host's own
+  daemon events (`subscribe()`) to start and stop transports and to publish
+  records, so the socket and the platform see the same lifecycle.
+- `RegistryWriter` (super-remote) grows from one session record to a map
+  keyed by session id. The host record goes out once, heartbeats continue,
+  unchanged records are not re-sent, and `stop` announces `ended` for every
+  record that is not ended yet. A standalone `super` keeps using it with one
+  record, unchanged.
+- `PlatformCredentials` (the `RemoteCredentials` backed by `auth.json`) moves
+  from the binary into `super-remote` so the daemon and the CLI share it.
+- The fake S2 server used by `super-remote`'s tests becomes a `fake` feature
+  of `super-remote`, so the daemon's presence tests drive the same fake.
+- Platform errors are passed through unchanged. The structured errors the
+  platform now returns on inference (`budget_exceeded`, `model_not_available`)
+  arrive inside session events like any model error and reach every client
+  as they are; the daemon never rewrites an event body. S2 errors stay
+  transport-level and only change the link status.
+
+### Platform side (a separate PR in super-platform)
+
+- `platform-s2/src/rules.rs`: controllers may append to `hosts/*/commands`
+  as well as `sessions/*/*/commands`; everything else unchanged (they can
+  already read every stream).
+- `docs/ARCHITECTURE.md`: the two host streams with their headers and 7-day
+  retention, the `daemon` flag and the `ended` state for stored sessions,
+  and the paragraph "There is no daemon and no host-level command stream"
+  rewritten. The app's copy `docs/platform-contract.md` follows with ENG-8.
+
+### Tests
+
+- `super-remote`: the registry writer with several sessions against the
+  fake S2 (host once, one record per session, no re-send of unchanged
+  records, `ended` for every live record on stop).
+- `super-daemon/tests/presence.rs` with the fake S2 and the mock provider:
+  at start the registry holds the host record and an `ended` record per
+  stored session; a `create_session` record on `hosts/{hostId}/commands`
+  creates the session, its response and a `session_created` event land on
+  `hosts/{hostId}/events`, the session's own events are mirrored to its
+  streams and its registry record goes `working` then `idle`; `stop_session`
+  publishes `ended`; an expired command is dropped and an unknown command
+  answered with an error; an `attach` over the platform is refused.
+- The supervisor's decision (signed in, link running, unauthorized) is a
+  pure function with its own tests.
