@@ -9,6 +9,10 @@ description = "Remote control for SUPER sessions: mirrors the RPC protocol to S2
 [lints]
 workspace = true
 
+[features]
+# An in-memory S2 server for tests of this crate and of crates that build on it.
+fake = []
+
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -18,11 +22,13 @@ rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+super-ai = { workspace = true, features = ["native"] }
 super-sdk = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
+super-remote = { path = ".", features = ["fake"] }
 super-sdk = { workspace = true, features = ["mock"] }
 super-coding = { workspace = true }
 tempfile = { workspace = true }

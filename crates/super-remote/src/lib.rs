@@ -9,6 +9,9 @@
 //! Nothing in this crate runs unless something calls [`Remote::start`], so a
 //! signed-out `super` never touches the network.
 
+pub mod commands;
+#[cfg(feature = "fake")]
+pub mod fake;
 pub mod host;
 mod log;
 pub mod registry;
