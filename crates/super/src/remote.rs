@@ -314,6 +314,7 @@ pub fn session_record(
         first_message,
         resume_argv,
         headless,
+        daemon: false,
     }
 }
 

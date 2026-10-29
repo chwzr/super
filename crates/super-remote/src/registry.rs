@@ -5,9 +5,10 @@
 use crate::host::HostIdentity;
 use crate::s2::{AppendOptions, AppendRecord, S2Client};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 pub const REGISTRY_STREAM: &str = "registry";
@@ -37,6 +38,9 @@ pub struct SessionRecord {
     /// controls over local RPC.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub headless: bool,
+    /// Set when the session is hosted by the SUPER daemon.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub daemon: bool,
 }
 
 #[derive(Serialize)]
@@ -68,24 +72,30 @@ struct HeartbeatBody<'a> {
     at: i64,
 }
 
-/// Publishes one session's presence. Drop or call [`RegistryWriter::stop`]
-/// to announce the end.
+enum Update {
+    Publish(Box<SessionRecord>),
+    Refresh,
+}
+
+/// Publishes the host's presence and a record per session. Drop or call
+/// [`RegistryWriter::stop`] to announce the end.
 pub struct RegistryWriter {
-    latest: watch::Sender<Option<SessionRecord>>,
+    updates: mpsc::UnboundedSender<Update>,
     cancel: CancellationToken,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RegistryWriter {
     /// Start announcing. The host record goes out first, then every change
-    /// to the session record, and a heartbeat every 30 seconds.
+    /// to any session record, and a heartbeat every 30 seconds.
     pub fn start(client: Arc<S2Client>, host: HostIdentity, device_id: String) -> Self {
-        let (latest, mut changes) = watch::channel::<Option<SessionRecord>>(None);
+        let (updates, mut updates_rx) = mpsc::unbounded_channel::<Update>();
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let task = tokio::spawn(async move {
             let mut announced_host = false;
-            let mut last_sent: Option<SessionRecord> = None;
+            let mut sent: BTreeMap<String, SessionRecord> = BTreeMap::new();
+            let mut pending: BTreeMap<String, SessionRecord> = BTreeMap::new();
             loop {
                 if !announced_host {
                     let body = HostBody {
@@ -98,35 +108,58 @@ impl RegistryWriter {
                     };
                     announced_host = append(&client, "host", &body).await;
                 }
-                let current = changes.borrow_and_update().clone();
-                if let Some(record) = &current
-                    && last_sent.as_ref() != Some(record)
-                {
+                let due: Vec<SessionRecord> = pending.values().cloned().collect();
+                for record in due {
+                    if sent.get(&record.session_id) == Some(&record) {
+                        pending.remove(&record.session_id);
+                        continue;
+                    }
                     let body = SessionBody {
                         kind: "session",
                         host_id: &host.host_id,
-                        session: record,
+                        session: &record,
                         at: crate::now_ms(),
                     };
                     if append(&client, "session", &body).await {
-                        last_sent = Some(record.clone());
+                        pending.remove(&record.session_id);
+                        sent.insert(record.session_id.clone(), record);
+                    } else {
+                        break;
                     }
                 }
+                let retry = if pending.is_empty() {
+                    HEARTBEAT_INTERVAL
+                } else {
+                    Duration::from_secs(5)
+                };
                 tokio::select! {
                     _ = worker_cancel.cancelled() => break,
-                    changed = changes.changed() => {
-                        if changed.is_err() {
-                            break;
+                    update = updates_rx.recv() => match update {
+                        Some(Update::Publish(record)) => {
+                            pending.insert(record.session_id.clone(), *record);
                         }
-                    }
-                    _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
-                        let body = HeartbeatBody { kind: "heartbeat", host_id: &host.host_id, at: crate::now_ms() };
-                        append(&client, "heartbeat", &body).await;
+                        Some(Update::Refresh) => {
+                            // Forget what was sent so the next pass sends it all again.
+                            let known = std::mem::take(&mut sent);
+                            for (id, record) in known {
+                                pending.entry(id).or_insert(record);
+                            }
+                        }
+                        None => break,
+                    },
+                    _ = tokio::time::sleep(retry) => {
+                        if pending.is_empty() {
+                            let body = HeartbeatBody { kind: "heartbeat", host_id: &host.host_id, at: crate::now_ms() };
+                            append(&client, "heartbeat", &body).await;
+                        }
                     }
                 }
             }
             // Say goodbye so controllers do not show a stale "working".
-            if let Some(mut record) = last_sent {
+            for (_, mut record) in sent {
+                if record.state == SessionState::Ended {
+                    continue;
+                }
                 record.state = SessionState::Ended;
                 record.blocked_reason = None;
                 let body = SessionBody {
@@ -139,15 +172,20 @@ impl RegistryWriter {
             }
         });
         Self {
-            latest,
+            updates,
             cancel,
             task: Some(task),
         }
     }
 
-    /// Publish a new snapshot. Unchanged snapshots are not re-sent.
+    /// Publish a session's snapshot. An unchanged snapshot is not re-sent.
     pub fn publish(&self, record: SessionRecord) {
-        self.latest.send_replace(Some(record));
+        let _ = self.updates.send(Update::Publish(Box::new(record)));
+    }
+
+    /// Send every known record again, for readers whose copy expired.
+    pub fn refresh(&self) {
+        let _ = self.updates.send(Update::Refresh);
     }
 
     /// Announce the end and wait for the last append.
@@ -203,6 +241,7 @@ mod tests {
             first_message: Some("Fix it".into()),
             resume_argv: vec!["super".into()],
             headless: false,
+            daemon: false,
         };
         let body = SessionBody {
             kind: "session",

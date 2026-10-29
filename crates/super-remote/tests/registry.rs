@@ -19,11 +19,7 @@ fn record(id: &str, state: SessionState) -> SessionRecord {
         thinking_level: "off".into(),
         name: None,
         first_message: None,
-        resume_argv: vec![
-            "super".into(),
-            "--session".into(),
-            format!("/s/{id}.jsonl"),
-        ],
+        resume_argv: vec!["super".into(), "--session".into(), format!("/s/{id}.jsonl")],
         headless: false,
         daemon: true,
     }
