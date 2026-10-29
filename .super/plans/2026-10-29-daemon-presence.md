@@ -897,60 +897,6 @@ pub fn record_from_summary(summary: &SessionSummary) -> SessionRecord {
     }
 }
 
-/// One connection of the daemon to the platform.
-pub struct Link {
-    cancel: CancellationToken,
-    registry: Mutex<Option<RegistryWriter>>,
-    transports: Arc<Mutex<BTreeMap<String, SessionTransport>>>,
-    unauthorized: Arc<AtomicBool>,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
-}
-
-impl Link {
-    pub fn start(
-        client: Arc<S2Client>,
-        ctx: Arc<ServerContext>,
-        identity: HostIdentity,
-        device_id: String,
-        config: LinkConfig,
-    ) -> Self {
-        let cancel = CancellationToken::new();
-        let registry = RegistryWriter::start(client.clone(), identity.clone(), device_id);
-        let (commands_stream, events_stream) = host_streams(&identity.host_id);
-        let transports: Arc<Mutex<BTreeMap<String, SessionTransport>>> = Default::default();
-        let unauthorized = Arc::new(AtomicBool::new(false));
-        let (out, out_rx) = mpsc::unbounded_channel::<AppendRecord>();
-        let notices: NoticeSink = Arc::new(|notice| log::debug("presence", format!("{notice:?}")));
-
-        let appender = tokio::spawn(append_host_events(client.clone(), events_stream, out_rx, cancel.clone(), unauthorized.clone()));
-
-        let shared = Arc::new(Shared {
-            client: client.clone(),
-            ctx: ctx.clone(),
-            host_id: identity.host_id.clone(),
-            config: config.clone(),
-            transports: transports.clone(),
-            notices,
-            out: out.clone(),
-        });
-        let follower = tokio::spawn(follow_host(shared.clone(), cancel.clone()));
-        let tailer = tokio::spawn(tail_host_commands(shared, commands_stream, cancel.clone(), unauthorized.clone()));
-
-        let link = Self {
-            cancel,
-            registry: Mutex::new(Some(registry)),
-            transports,
-            unauthorized,
-            tasks: vec![appender, follower, tailer],
-        };
-        link
-    }
-}
-```
-
-Stop here and restructure: the registry writer must be reachable from the follower task, so it lives in `Shared` too. Write the module as below instead (this is the version to commit):
-
-```rust
 struct Shared {
     client: Arc<S2Client>,
     ctx: Arc<ServerContext>,
