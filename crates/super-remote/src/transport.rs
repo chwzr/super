@@ -7,7 +7,8 @@
 //! queue is bounded: streaming deltas are dropped first, finished messages
 //! last, and an `event_lag` record tells readers what they missed.
 
-use crate::s2::{AppendOptions, AppendRecord, ReadEvent, ReadStart, S2Client, S2Error};
+use crate::commands::{CommandCursor, is_expired, start_position};
+use crate::s2::{AppendOptions, AppendRecord, ReadEvent, S2Client, S2Error};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -108,50 +109,6 @@ impl Default for TransportOptions {
             default_command_expiry: Duration::from_secs(5 * 60),
             command_lookback: 50,
             cursor_dir: None,
-        }
-    }
-}
-
-/// The last applied command sequence number of one commands stream, kept on
-/// disk so a resumed session continues after it instead of re-running the
-/// recent commands the previous process already executed.
-struct CommandCursor {
-    path: Option<std::path::PathBuf>,
-}
-
-impl CommandCursor {
-    fn new(options: &TransportOptions, stream: &str) -> Self {
-        let dir = options
-            .cursor_dir
-            .clone()
-            .or_else(|| dirs::home_dir().map(|home| home.join(".super/agent/remote/cursors")));
-        let name: String = stream
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        Self {
-            path: dir.map(|dir| dir.join(name)),
-        }
-    }
-
-    fn load(&self) -> Option<u64> {
-        let path = self.path.as_ref()?;
-        std::fs::read_to_string(path).ok()?.trim().parse().ok()
-    }
-
-    fn store(&self, seq_num: u64) {
-        let Some(path) = &self.path else { return };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Err(error) = std::fs::write(path, seq_num.to_string()) {
-            crate::log::line(format!("command cursor not saved: {error}"));
         }
     }
 }
@@ -800,28 +757,16 @@ struct Tailer {
 }
 
 impl Tailer {
-    /// Where to start reading: after the last command this session applied,
-    /// when that is still inside the stream; otherwise the recent commands
-    /// (first start) or only new ones (a cursor past the tail means the
-    /// stream was recreated).
-    async fn start_position(&self, cursor: &CommandCursor) -> ReadStart {
-        let Some(last) = cursor.load() else {
-            return ReadStart::TailOffset(self.options.command_lookback);
-        };
-        match self.client.tail(&self.stream).await {
-            Ok(tail) if last < tail => ReadStart::SeqNum(last + 1),
-            Ok(_) => ReadStart::TailOffset(0),
-            Err(error) => {
-                crate::log::line(format!("commands tail unknown, using lookback: {error}"));
-                ReadStart::TailOffset(self.options.command_lookback)
-            }
-        }
-    }
-
     async fn run(self) {
         use std::sync::atomic::Ordering::Relaxed;
-        let cursor = CommandCursor::new(&self.options, &self.stream);
-        let start = self.start_position(&cursor).await;
+        let cursor = CommandCursor::new(self.options.cursor_dir.clone(), &self.stream);
+        let start = start_position(
+            &self.client,
+            &self.stream,
+            &cursor,
+            self.options.command_lookback,
+        )
+        .await;
         crate::log::line(format!("commands tail start: {start:?}"));
         let mut reader = self
             .client
@@ -852,7 +797,7 @@ impl Tailer {
                     let mut expired = 0;
                     for record in records {
                         let seq_num = record.seq_num;
-                        if self.is_expired(&record) {
+                        if is_expired(&record, self.options.default_command_expiry) {
                             expired += 1;
                         } else {
                             self.apply(record);
@@ -863,20 +808,6 @@ impl Tailer {
                         (self.notices)(RemoteNotice::ExpiredCommands(expired));
                     }
                 }
-            }
-        }
-    }
-
-    fn is_expired(&self, record: &crate::s2::SequencedRecord) -> bool {
-        let now = crate::now_ms();
-        match record
-            .header("exp")
-            .and_then(|value| value.parse::<i64>().ok())
-        {
-            Some(exp) => exp < now,
-            None => {
-                let issued = i64::try_from(record.timestamp).unwrap_or(now);
-                issued + self.options.default_command_expiry.as_millis() as i64 <= now
             }
         }
     }

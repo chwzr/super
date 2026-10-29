@@ -114,3 +114,34 @@ null for a stored session.
 - Workflow approvals are asked as `approval_request` events and answered with
   `answer_approval` from any attached client; `approval_resolved.by` names the
   client's `hello.name`.
+
+## Through the platform
+
+While the user is signed in to the SUPER platform (and `remote.enabled` is
+not false), the daemon keeps a link to it, checked every 30 seconds:
+
+- `registry`: one `host` record when the link starts, a heartbeat every
+  30 seconds, and one `session` record per session the daemon knows, hosted
+  ones with their live state and stored ones as `ended`. Every record, the
+  host record included, is sent again every six hours. Daemon sessions carry
+  `"daemon": true` and
+  `"resumeArgv": ["super", "--session", <file>]`.
+- `sessions/{hostId}/{sessionId}/{events,entries,commands}`: every hosted
+  session is mirrored exactly like a terminal session, from the moment it
+  loads until it unloads.
+- `hosts/{hostId}/commands`: controllers append daemon-level commands here
+  with the same headers as session commands (`t`, `from`, `name`, `exp`).
+  `status`, `list_sessions`, `list_workspaces`, `list_directories`,
+  `create_session`, `resume_session` and `stop_session` run exactly as over
+  the socket; `hello`, `attach`, `detach` and `shutdown` answer
+  `not available over the platform`. Expired commands are dropped and the
+  cursor in `~/.super/agent/remote/cursors/` keeps a restarted daemon from
+  running recent commands again.
+- `hosts/{hostId}/events`: the response to every host command (with its
+  `id`, also on a parse error) and every daemon-level event
+  (`session_created`, `session_updated`, `session_ended`, `daemon_shutdown`).
+
+Signing out, or a token the platform rejects, stops the link; signing in
+again starts it within 30 seconds. The daemon never rewrites an event body,
+so a platform error inside a model response (`budget_exceeded`,
+`model_not_available`) reaches every client as it is.

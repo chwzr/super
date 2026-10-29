@@ -56,6 +56,7 @@ impl Daemon {
             log_level: Level::Debug,
             log_to_stderr: false,
             sweep_interval,
+            presence: None,
         };
         let shutdown = CancellationToken::new();
         let task = tokio::spawn(super_daemon::run(config, shutdown.clone()));
@@ -400,6 +401,7 @@ async fn a_second_daemon_on_the_same_lock_exits_with_one() {
         log_level: Level::Info,
         log_to_stderr: false,
         sweep_interval: Duration::from_secs(60),
+        presence: None,
     };
     let code = super_daemon::run(config, CancellationToken::new())
         .await

@@ -107,6 +107,11 @@ features need without touching the auth file format:
 - `OAuthConfig::default()` — a request configuration for that URL.
 - `SIGN_IN_EXPIRED` — the notice text for an unrecoverable refresh.
 
+`super_remote::credentials` holds what every signed-in process shares:
+`PlatformCredentials` (the `RemoteCredentials` backed by the stored sign-in),
+`is_signed_in()`, `resolve_platform_url(setting)` and
+`configure_platform_url(setting)`, used by the CLI and by the daemon.
+
 `crates/super/src/platform.rs` holds the CLI and TUI glue:
 `signed_in_message(email, parts)` builds the sign-in line from parts, so
 another feature can append its own clause.

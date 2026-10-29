@@ -14,6 +14,8 @@ pub mod paths;
 #[cfg(unix)]
 pub mod client;
 #[cfg(unix)]
+pub mod presence;
+#[cfg(unix)]
 pub mod server;
 
 use crate::host::HostConfig;
@@ -32,6 +34,10 @@ pub struct DaemonConfig {
     pub log_to_stderr: bool,
     /// How often the idle sweep runs.
     pub sweep_interval: Duration,
+    /// The platform link; `None` keeps the daemon local (tests, or
+    /// `remote.enabled = false`).
+    #[cfg(unix)]
+    pub presence: Option<presence::PresenceConfig>,
 }
 
 /// Run the daemon until `shutdown` fires, SIGTERM or SIGINT arrives, or a
@@ -100,6 +106,19 @@ pub async fn run(
     );
     install_signal_handlers(shutdown.clone());
 
+    let presence = config.presence.clone().map(|presence_config| {
+        super_remote::credentials::configure_platform_url(Some(&presence_config.platform_url));
+        presence::Presence::supervise(
+            ctx.clone(),
+            super_remote::HostIdentity {
+                host_id: config.host_id.clone(),
+                name: config.host_name.clone(),
+                platform: std::env::consts::OS.to_string(),
+            },
+            presence_config,
+        )
+    });
+
     let sweeper = {
         let host = host.clone();
         let cancel = shutdown.clone();
@@ -129,8 +148,12 @@ pub async fn run(
         reason: "stopped".into(),
     });
     host.shutdown().await;
-    // Let the connection writers flush the last lines before the sockets go.
+    // Let the connection writers flush the last lines before the sockets go,
+    // and the platform link announce the sessions as ended.
     tokio::time::sleep(Duration::from_millis(200)).await;
+    if let Some(presence) = presence {
+        presence.stop().await;
+    }
     let _ = std::fs::remove_file(&config.paths.socket);
     log::info("daemon", "stopped");
     Ok(0)
