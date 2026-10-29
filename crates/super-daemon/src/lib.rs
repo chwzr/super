@@ -6,6 +6,7 @@
 //! `.super/specs/2026-10-29-daemon-design.md`.
 
 pub mod env;
+pub mod host;
 pub mod lock;
 pub mod log;
 pub mod paths;

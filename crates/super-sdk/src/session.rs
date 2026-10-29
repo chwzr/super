@@ -188,6 +188,35 @@ pub fn mirrored_sink(
     (sink, sender)
 }
 
+/// Route workflow approvals through [`Session::open_approval`], so a headless
+/// session asks its clients (`approval_request`) instead of auto-approving.
+/// `--mode rpc` and the daemon both install this.
+pub fn install_workflow_approval_gate(session: &Arc<Session>) {
+    let sdk = session.clone();
+    session
+        .agent_session()
+        .set_workflow_approver(Arc::new(move |plan| {
+            let sdk = sdk.clone();
+            Box::pin(async move {
+                let (_, answer) = sdk.open_approval(ApprovalRequest {
+                    kind: crate::approvals::ApprovalKind::Workflow,
+                    title: format!("Run workflow {}?", plan.name),
+                    detail: Some(plan.agent_estimate()),
+                    choices: vec![
+                        crate::approvals::ApprovalChoice::new("approve", "Run it"),
+                        crate::approvals::ApprovalChoice::new("cancel", "Cancel"),
+                    ],
+                });
+                match answer.await {
+                    Ok(answer) if answer.choice == "approve" => {
+                        super_coding::workflows::ApprovalDecision::Approve
+                    }
+                    _ => super_coding::workflows::ApprovalDecision::Cancel,
+                }
+            })
+        }));
+}
+
 /// Fluent construction of a [`Session`].
 ///
 /// ```no_run
