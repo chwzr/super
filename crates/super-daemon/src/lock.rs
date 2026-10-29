@@ -15,7 +15,9 @@ pub struct DaemonLock {
 #[derive(Debug)]
 pub enum LockError {
     /// Another process holds the lock. `pid` is what it wrote, when readable.
-    Held { pid: Option<u32> },
+    Held {
+        pid: Option<u32>,
+    },
     Io(std::io::Error),
 }
 

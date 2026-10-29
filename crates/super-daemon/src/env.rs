@@ -8,7 +8,9 @@ use std::time::Duration;
 /// The PATH the user's login shell exports, or `None` when `SHELL` is unset
 /// or the shell does not answer within five seconds.
 pub fn login_shell_path() -> Option<String> {
-    let shell = std::env::var("SHELL").ok().filter(|value| !value.is_empty())?;
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.is_empty())?;
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let output = Command::new(shell)

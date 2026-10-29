@@ -168,7 +168,10 @@ mod tests {
         assert!(rotated.exists(), "the full file was renamed");
         let current = std::fs::read_to_string(&path).expect("current file");
         // Each line is about 70 bytes, so the file rotates after two of them.
-        assert!(current.lines().count() <= 2, "the current file started over: {current}");
+        assert!(
+            current.lines().count() <= 2,
+            "the current file started over: {current}"
+        );
         assert!(current.contains("INFO test: line number 5"));
         let previous = std::fs::read_to_string(&rotated).expect("rotated file");
         assert!(previous.contains("line number"), "{previous}");

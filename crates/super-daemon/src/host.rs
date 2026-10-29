@@ -150,12 +150,13 @@ impl SessionHost {
                 request.cwd.display()
             )));
         }
-        let thinking_level = match request.thinking_level.as_deref() {
-            None => None,
-            Some(level) => Some(ThinkingLevel::parse(level).ok_or_else(|| {
-                HostError::Invalid(format!("unknown thinking level '{level}'"))
-            })?),
-        };
+        let thinking_level =
+            match request.thinking_level.as_deref() {
+                None => None,
+                Some(level) => Some(ThinkingLevel::parse(level).ok_or_else(|| {
+                    HostError::Invalid(format!("unknown thinking level '{level}'"))
+                })?),
+            };
         let options = SessionOptions {
             cwd: request.cwd.clone(),
             model: request.model,
@@ -415,7 +416,10 @@ impl SessionHost {
         let thinking = agent.thinking_level();
         let (name, first_message) = {
             let manager = agent.manager.lock().unwrap();
-            (manager.session_name(), first_user_message(manager.entries()))
+            (
+                manager.session_name(),
+                first_user_message(manager.entries()),
+            )
         };
         let (state, blocked_reason) = hosted.state();
         SessionSummary {
