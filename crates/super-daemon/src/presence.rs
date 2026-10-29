@@ -225,6 +225,10 @@ impl Link {
             std::mem::take(&mut *self.tasks.lock().unwrap());
         for task in tasks {
             task.abort();
+            // An aborted task keeps its `Arc<Shared>` until the runtime drops
+            // it; wait for that, or the registry below cannot be unwrapped
+            // and its goodbye would race the process exit.
+            let _ = task.await;
         }
         let transports: Vec<SessionTransport> = {
             let mut guard = self.shared.transports.lock().unwrap();
@@ -233,8 +237,12 @@ impl Link {
         for transport in transports {
             transport.stop().await;
         }
-        if let Ok(shared) = Arc::try_unwrap(self.shared) {
-            shared.registry.stop().await;
+        match Arc::try_unwrap(self.shared) {
+            Ok(shared) => shared.registry.stop().await,
+            Err(_) => log::warn(
+                "presence",
+                "registry writer still in use at stop; the goodbye is not awaited",
+            ),
         }
     }
 }
@@ -281,10 +289,14 @@ async fn follow_host(shared: Arc<Shared>, cancel: CancellationToken) {
                 shared.unmirror(session_id);
                 let ended = shared.summaries.lock().unwrap().get(session_id).cloned();
                 if let Some(mut summary) = ended {
+                    // Exactly what a listing of the stored session says, so
+                    // the next resync has nothing new to send for it.
                     summary.state = SessionState::Ended;
                     summary.blocked_reason = None;
                     summary.hosted = false;
                     summary.attached_clients = 0;
+                    summary.model = None;
+                    summary.thinking_level = None;
                     shared.publish(&summary);
                 }
             }

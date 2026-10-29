@@ -139,7 +139,9 @@ impl RegistryWriter {
                             pending.insert(record.session_id.clone(), *record);
                         }
                         Some(Update::Refresh) => {
-                            // Forget what was sent so the next pass sends it all again.
+                            // Forget what was sent, the host record included, so
+                            // the next pass sends it all again.
+                            announced_host = false;
                             let known = std::mem::take(&mut sent);
                             for (id, record) in known {
                                 pending.entry(id).or_insert(record);
@@ -183,7 +185,8 @@ impl RegistryWriter {
         let _ = self.updates.send(Update::Publish(Box::new(record)));
     }
 
-    /// Send every known record again, for readers whose copy expired.
+    /// Send the host record and every known session record again, for
+    /// readers whose copy expired.
     pub fn refresh(&self) {
         let _ = self.updates.send(Update::Refresh);
     }

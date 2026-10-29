@@ -1,5 +1,6 @@
 //! The registry writer against the fake S2: one host record, one record per
-//! session, nothing re-sent unchanged, and a goodbye for every live session.
+//! session, nothing re-sent unchanged, everything again on a refresh, and a
+//! goodbye for every live session.
 
 use serde_json::Value;
 use std::sync::Arc;
@@ -86,13 +87,26 @@ async fn one_host_record_then_one_record_per_session() {
     );
     assert_eq!(all[1]["daemon"], true);
 
+    // A refresh sends the host record and every session record again, so a
+    // host that runs for longer than the registry's retention stays listed.
     writer.refresh();
-    wait_until(|| bodies(&fake).len() == 6).await;
+    wait_until(|| bodies(&fake).len() == 7).await;
+    let all = bodies(&fake);
+    assert_eq!(all[4]["kind"], "host");
+    assert_eq!(all[4]["hostId"], "01H");
+    assert_eq!(
+        (all[5]["sessionId"].as_str(), all[5]["state"].as_str()),
+        (Some("a"), Some("working"))
+    );
+    assert_eq!(
+        (all[6]["sessionId"].as_str(), all[6]["state"].as_str()),
+        (Some("b"), Some("ended"))
+    );
 
     writer.stop().await;
     let all = bodies(&fake);
     // The goodbye: `a` was working and is announced ended; `b` already was.
-    let goodbye: Vec<&Value> = all[6..].iter().collect();
+    let goodbye: Vec<&Value> = all[7..].iter().collect();
     assert_eq!(goodbye.len(), 1, "{all:?}");
     assert_eq!(goodbye[0]["sessionId"], "a");
     assert_eq!(goodbye[0]["state"], "ended");

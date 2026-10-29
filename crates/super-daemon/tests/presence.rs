@@ -19,8 +19,25 @@ struct Fixture {
     _provider: MockProvider,
     dir: tempfile::TempDir,
     fake: Arc<FakeS2>,
+    client: Arc<S2Client>,
     ctx: Arc<ServerContext>,
     link: Link,
+}
+
+fn identity() -> HostIdentity {
+    HostIdentity {
+        host_id: "01H".into(),
+        name: "mbp".into(),
+        platform: "macos".into(),
+    }
+}
+
+fn link_config(dir: &std::path::Path) -> LinkConfig {
+    LinkConfig {
+        cursor_dir: Some(dir.join("cursors")),
+        republish_interval: Duration::from_secs(3600),
+        ..LinkConfig::default()
+    }
 }
 
 async fn fixture() -> Fixture {
@@ -67,26 +84,18 @@ async fn fixture() -> Fixture {
         base,
         Arc::new(TestCredentials),
     ));
-    let identity = HostIdentity {
-        host_id: "01H".into(),
-        name: "mbp".into(),
-        platform: "macos".into(),
-    };
     let link = Link::start(
-        client,
+        client.clone(),
         ctx.clone(),
-        identity,
+        identity(),
         "device-1".into(),
-        LinkConfig {
-            cursor_dir: Some(dir.path().join("cursors")),
-            republish_interval: Duration::from_secs(3600),
-            ..LinkConfig::default()
-        },
+        link_config(dir.path()),
     );
     Fixture {
         _provider: provider,
         dir,
         fake,
+        client,
         ctx,
         link,
     }
@@ -211,7 +220,111 @@ async fn a_create_session_over_the_platform_is_answered_mirrored_and_registered(
     })
     .await;
     assert!(fixture.ctx.host.get(&id).is_none());
+    // The ended record says what a listing of the stored session says, so a
+    // resync does not send it again: no model, no thinking level.
+    let ended = bodies(&fixture.fake, "registry")
+        .into_iter()
+        .rev()
+        .find(|b| b["sessionId"] == id)
+        .unwrap();
+    assert_eq!(ended["model"], "");
+    assert_eq!(ended["thinkingLevel"], "");
+    assert_eq!(ended["daemon"], true);
     fixture.link.stop().await;
+}
+
+#[tokio::test]
+async fn a_restarted_link_resumes_from_its_cursor_and_runs_nothing_twice() {
+    let fixture = fixture().await;
+    wait_until(|| bodies(&fixture.fake, "registry").len() >= 2).await;
+    command(&fixture.fake, "c1", json!({"type": "status"}));
+    wait_until(|| {
+        bodies(&fixture.fake, "hosts/01H/events")
+            .iter()
+            .any(|b| b["id"] == "c1")
+    })
+    .await;
+    fixture.link.stop().await;
+
+    // Appended while no link runs: the next link must run it, and only it.
+    command(&fixture.fake, "c2", json!({"type": "list_workspaces"}));
+    let link = Link::start(
+        fixture.client.clone(),
+        fixture.ctx.clone(),
+        identity(),
+        "device-1".into(),
+        link_config(fixture.dir.path()),
+    );
+    wait_until(|| {
+        bodies(&fixture.fake, "hosts/01H/events")
+            .iter()
+            .any(|b| b["id"] == "c2")
+    })
+    .await;
+    let events = bodies(&fixture.fake, "hosts/01H/events");
+    let answers = |id: &str| events.iter().filter(|b| b["id"] == id).count();
+    assert_eq!(answers("c1"), 1, "{events:?}");
+    assert_eq!(answers("c2"), 1, "{events:?}");
+    assert_eq!(
+        bodies(&fixture.fake, "registry")
+            .iter()
+            .filter(|b| b["kind"] == "host")
+            .count(),
+        2,
+        "every link start announces the host"
+    );
+    link.stop().await;
+}
+
+#[tokio::test]
+async fn stopping_the_link_announces_hosted_sessions_ended_and_stops_mirroring() {
+    let fixture = fixture().await;
+    wait_until(|| bodies(&fixture.fake, "registry").len() >= 2).await;
+    let hosted = fixture
+        .ctx
+        .host
+        .create(CreateRequest {
+            cwd: fixture.dir.path().join("work"),
+            model: Some("mock/mock-1".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = hosted.session_id.clone();
+    wait_until(|| {
+        bodies(&fixture.fake, "registry")
+            .iter()
+            .any(|b| b["sessionId"] == id && b["state"] == "idle")
+    })
+    .await;
+    let stream = format!("sessions/01H/{id}/events");
+    hosted.session.prompt("hi").await.unwrap();
+    wait_until(|| {
+        bodies(&fixture.fake, &stream)
+            .iter()
+            .any(|b| b["type"] == "agent_settled")
+    })
+    .await;
+
+    // Signing out: the link stops while the session stays hosted. The
+    // goodbye is on the registry before `stop` returns.
+    fixture.link.stop().await;
+    let last = bodies(&fixture.fake, "registry")
+        .into_iter()
+        .rev()
+        .find(|b| b["sessionId"] == id)
+        .unwrap();
+    assert_eq!(last["state"], "ended", "{last}");
+    assert!(
+        fixture.ctx.host.get(&id).is_some(),
+        "the session keeps running"
+    );
+
+    // Nothing of the session reaches the platform any more.
+    let mirrored = bodies(&fixture.fake, &stream).len();
+    hosted.session.prompt("again").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(bodies(&fixture.fake, &stream).len(), mirrored);
 }
 
 #[tokio::test]

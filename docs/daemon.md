@@ -122,8 +122,9 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
 
 - `registry`: one `host` record when the link starts, a heartbeat every
   30 seconds, and one `session` record per session the daemon knows, hosted
-  ones with their live state and stored ones as `ended`. Every record is
-  sent again every six hours. Daemon sessions carry `"daemon": true` and
+  ones with their live state and stored ones as `ended`. Every record, the
+  host record included, is sent again every six hours. Daemon sessions carry
+  `"daemon": true` and
   `"resumeArgv": ["super", "--session", <file>]`.
 - `sessions/{hostId}/{sessionId}/{events,entries,commands}`: every hosted
   session is mirrored exactly like a terminal session, from the moment it
