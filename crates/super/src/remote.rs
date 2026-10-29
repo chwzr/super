@@ -18,8 +18,6 @@ use super_remote::{
 };
 use tokio::sync::{mpsc, watch};
 
-pub use super_remote::credentials::PROVIDER_ID;
-
 /// Is there a stored sign-in for the SUPER platform?
 pub fn signed_in() -> bool {
     super_ai::auth::super_platform::is_signed_in()
