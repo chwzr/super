@@ -1,0 +1,30 @@
+[package]
+name = "super-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The SUPER daemon: hosts coding-agent sessions on a device and serves them over a local socket"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+fs2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+super-coding.workspace = true
+super-sdk.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+super-sdk = { workspace = true, features = ["mock"] }
+tempfile.workspace = true

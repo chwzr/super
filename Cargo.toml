@@ -9,6 +9,7 @@ members = [
   "crates/super-mcp",
   "crates/super-sdk",
   "crates/super-remote",
+  "crates/super-daemon",
   "crates/super-tui",
   "crates/super-webmcp",
   "crates/super",
@@ -72,6 +73,7 @@ super-coding = { path = "crates/super-coding", version = "0.0.37" }
 super-mcp = { path = "crates/super-mcp", version = "0.0.37" }
 super-sdk = { package = "super-agent-sdk", path = "crates/super-sdk", version = "0.0.37" }
 super-remote = { path = "crates/super-remote", version = "0.0.37" }
+super-daemon = { path = "crates/super-daemon", version = "0.0.37" }
 super-tui = { path = "crates/super-tui" }
 super-workflow = { path = "crates/super-workflow", version = "0.0.37" }
 super-webmcp = { path = "crates/super-webmcp" }
