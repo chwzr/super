@@ -240,6 +240,22 @@ pub struct PlatformSettings {
     pub extra: serde_json::Map<String, Value>,
 }
 
+/// The SUPER daemon (`super daemon run`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DaemonSettings {
+    /// Minutes a hosted session may sit idle with no client attached before
+    /// the daemon unloads it. Unset means 60; `0` disables unloading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_unload_minutes: Option<u64>,
+}
+
+impl DaemonSettings {
+    pub fn idle_unload_minutes(&self) -> u64 {
+        self.idle_unload_minutes.unwrap_or(60)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -279,6 +295,7 @@ pub struct Settings {
     pub webmcp: WebMcpSettings,
     pub remote: RemoteSettings,
     pub platform: PlatformSettings,
+    pub daemon: DaemonSettings,
     /// Unknown keys survive load/save.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -433,6 +450,17 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daemon_idle_unload_defaults_to_an_hour() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.daemon.idle_unload_minutes(), 60);
+        let settings: Settings =
+            serde_json::from_str(r#"{"daemon":{"idleUnloadMinutes":5}}"#).unwrap();
+        assert_eq!(settings.daemon.idle_unload_minutes(), 5);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["daemon"]["idleUnloadMinutes"], 5);
+    }
     use serde_json::json;
 
     #[test]

@@ -13,25 +13,7 @@ use tokio_util::sync::CancellationToken;
 pub const REGISTRY_STREAM: &str = "registry";
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionState {
-    Idle,
-    Working,
-    Blocked,
-    Ended,
-}
-
-impl SessionState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Working => "working",
-            Self::Blocked => "blocked",
-            Self::Ended => "ended",
-        }
-    }
-}
+pub use super_sdk::daemon::SessionState;
 
 /// One session as announced to controllers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

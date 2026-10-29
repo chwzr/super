@@ -699,6 +699,14 @@ super --mode rpc --rpc-listen 127.0.0.1:9944 --no-session
 Connect to `ws://127.0.0.1:9944`. WebSocket clients use the same JSON commands
 and events as JSONL RPC. All connected clients share one SUPER session.
 
+### The daemon
+
+`super daemon run` hosts every session on the device in one long-running
+process and serves them over `~/.super/run/daemon.sock`, so the terminal and
+the SUPER app can attach to the same session and a session outlives the
+client that started it. `super daemon status` and `super daemon stop` talk to
+it. See [docs/daemon.md](docs/daemon.md).
+
 See the [SDK guide](docs/sdk.md), [RPC protocol](docs/rpc.md), and
 [browser WebAssembly guide](crates/super-core-wasm/README.md).
 

@@ -4167,6 +4167,7 @@ dependencies = [
  "super-agent-sdk",
  "super-bench",
  "super-coding",
+ "super-daemon",
  "super-mcp",
  "super-remote",
  "super-tui",
@@ -4293,6 +4294,25 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "super-daemon"
+version = "0.0.37"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "fs2",
+ "libc",
+ "serde",
+ "serde_json",
+ "super-agent-sdk",
+ "super-coding",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

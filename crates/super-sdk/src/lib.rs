@@ -45,6 +45,7 @@
 //! which is what the WebAssembly binding uses.
 
 pub mod client;
+pub mod daemon;
 pub mod protocol;
 
 pub use client::{Client, LineBuffer};
@@ -81,7 +82,7 @@ pub use options::{SessionOptions, SessionSource};
 #[cfg(feature = "native")]
 pub use session::{
     BashResult, EventStream, PromptArgs, SdkError, Session, SessionBuilder, SessionNotice,
-    SessionObserver, SessionState, mirrored_sink,
+    SessionObserver, SessionState, install_workflow_approval_gate, mirrored_sink,
 };
 #[cfg(feature = "native")]
 pub use super_agent::{AgentMessage, DynTool, StreamFn};

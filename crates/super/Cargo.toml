@@ -30,6 +30,7 @@ super-coding.workspace = true
 super-mcp.workspace = true
 super-sdk = { workspace = true, features = ["rpc"] }
 super-remote.workspace = true
+super-daemon.workspace = true
 fs2.workspace = true
 super-tui.workspace = true
 super-webmcp.workspace = true

@@ -4,6 +4,13 @@
 
 ### Added
 
+- `super daemon run|status|stop`: a per-user daemon that hosts sessions and
+  serves them to any number of local clients over `~/.super/run/daemon.sock`.
+  A connection says `hello`, attaches to a session, and from then on speaks
+  the RPC protocol unchanged; `list_sessions`, `create_session`, `attach`,
+  `stop_session` and friends manage sessions. Idle sessions nobody watches
+  are unloaded after `daemon.idleUnloadMinutes` and resume on the next
+  attach. See `docs/daemon.md`.
 - The running indicator is the brand diamond turning (`♦ ♢ ⬥ ⬘ ⬗ ⬙ ⬖`), the
   same sequence the SUPER app shows.
 - The SUPER platform (`super.flxkpe.io`) is a built-in provider. `/login`

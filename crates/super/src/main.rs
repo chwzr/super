@@ -1,6 +1,7 @@
 mod args;
 mod auth_flow;
 mod cache;
+mod daemon_cli;
 mod doctor;
 mod export;
 mod file_search;
@@ -50,6 +51,16 @@ fn main() -> ExitCode {
             return exit_code(err.exit_code());
         }
     };
+    // The daemon is started by launchd or systemd with a bare environment.
+    // Adopt the login shell's PATH now, while this process is single-threaded.
+    if matches!(
+        &args.command,
+        Some(Command::Daemon {
+            command: args::DaemonSubcommand::Run { .. }
+        })
+    ) {
+        super_daemon::env::apply_login_shell_path();
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -115,6 +126,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
 async fn run_command(args: &Args, command: &Command) -> anyhow::Result<i32> {
     match command {
         Command::Acp => modes::acp::run(args).await,
+        Command::Daemon { command } => daemon_cli::run(args, command).await,
         Command::CacheUsage { session, provider } => {
             let cwd = std::env::current_dir()?;
             let settings = super_coding::Settings::load(&cwd, false);
