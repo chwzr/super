@@ -4167,6 +4167,7 @@ dependencies = [
  "super-agent-sdk",
  "super-bench",
  "super-coding",
+ "super-daemon",
  "super-mcp",
  "super-remote",
  "super-tui",

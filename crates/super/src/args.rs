@@ -203,9 +203,39 @@ pub enum ProviderCommand {
 }
 
 #[derive(Debug, Clone, Subcommand)]
+pub enum DaemonSubcommand {
+    /// Run the daemon in the foreground. launchd and systemd start it this way.
+    Run {
+        /// Listen on this socket instead of ~/.super/run/daemon.sock.
+        #[arg(long, value_name = "PATH")]
+        socket: Option<std::path::PathBuf>,
+    },
+
+    /// Show whether a daemon is running and what it hosts.
+    Status {
+        /// The socket of the daemon to ask.
+        #[arg(long, value_name = "PATH")]
+        socket: Option<std::path::PathBuf>,
+    },
+
+    /// Stop the running daemon.
+    Stop {
+        /// The socket of the daemon to stop.
+        #[arg(long, value_name = "PATH")]
+        socket: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     /// Serve SUPER as an Agent Client Protocol agent over standard I/O.
     Acp,
+
+    /// Run or control the background daemon that hosts sessions.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonSubcommand,
+    },
 
     /// Show historical provider KV-cache rates.
     CacheUsage {
