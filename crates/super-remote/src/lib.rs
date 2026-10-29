@@ -10,6 +10,7 @@
 //! signed-out `super` never touches the network.
 
 pub mod commands;
+pub mod credentials;
 #[cfg(feature = "fake")]
 pub mod fake;
 pub mod host;
@@ -23,6 +24,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+pub use credentials::PlatformCredentials;
 pub use host::HostIdentity;
 pub use registry::{RegistryWriter, SessionRecord, SessionState};
 pub use s2::S2Client;

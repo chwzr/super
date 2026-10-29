@@ -7,10 +7,7 @@
 
 use crate::args::Args;
 use fs2::FileExt as _;
-use std::collections::BTreeMap;
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use super_coding::Settings;
 use super_coding::session_runner::AgentSession;
@@ -21,7 +18,7 @@ use super_remote::{
 };
 use tokio::sync::{mpsc, watch};
 
-pub const PROVIDER_ID: &str = super_ai::auth::super_platform::PROVIDER;
+pub use super_remote::credentials::PROVIDER_ID;
 
 /// Is there a stored sign-in for the SUPER platform?
 pub fn signed_in() -> bool {
@@ -41,31 +38,6 @@ pub fn platform_url(settings: &Settings) -> String {
 /// being signed out always says no.
 pub fn wanted(args: &Args, settings: &Settings) -> bool {
     !args.no_remote && !args.no_session && settings.remote.is_enabled() && signed_in()
-}
-
-/// Credentials backed by the stored `super` OAuth credential. Token refresh
-/// goes through the same path every provider uses.
-struct PlatformCredentials {
-    url: String,
-    device_name: String,
-}
-
-impl RemoteCredentials for PlatformCredentials {
-    fn platform_url(&self) -> String {
-        self.url.clone()
-    }
-
-    fn device_name(&self) -> String {
-        self.device_name.clone()
-    }
-
-    fn access_token(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send + '_>> {
-        Box::pin(async {
-            super_ai::auth::resolve_api_key_async(PROVIDER_ID, &BTreeMap::new())
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("not signed in to SUPER"))
-        })
-    }
 }
 
 /// What the owner of a [`RemoteControl`] hears about.
@@ -139,10 +111,9 @@ impl RemoteControl {
                 return Self::inert(false);
             }
         };
-        let credentials: Arc<dyn RemoteCredentials> = Arc::new(PlatformCredentials {
-            url: platform_url(settings),
-            device_name: host.name.clone(),
-        });
+        let credentials: Arc<dyn RemoteCredentials> = Arc::new(
+            super_remote::PlatformCredentials::new(platform_url(settings), host.name.clone()),
+        );
         let options = TransportOptions {
             allow_shell: settings.remote.shell_allowed(),
             ..TransportOptions::default()
