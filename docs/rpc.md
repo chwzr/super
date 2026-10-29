@@ -8,6 +8,9 @@ events are JSON objects read from standard output, one per line.
 super --mode rpc --no-session [--provider anthropic] [--model claude-sonnet-4-5]
 ```
 
+The same protocol is what a client speaks to a session hosted by the SUPER
+daemon after attaching; see [daemon.md](daemon.md).
+
 For browsers, use a WebSocket listener:
 
 ```sh
