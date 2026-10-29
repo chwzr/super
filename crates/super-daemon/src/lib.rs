@@ -14,6 +14,8 @@ pub mod paths;
 #[cfg(unix)]
 pub mod client;
 #[cfg(unix)]
+pub mod presence;
+#[cfg(unix)]
 pub mod server;
 
 use crate::host::HostConfig;

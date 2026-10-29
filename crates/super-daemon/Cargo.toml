@@ -17,6 +17,7 @@ fs2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 super-coding.workspace = true
+super-remote.workspace = true
 super-sdk.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -26,5 +27,7 @@ tokio-util.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+reqwest.workspace = true
+super-remote = { workspace = true, features = ["fake"] }
 super-sdk = { workspace = true, features = ["mock"] }
 tempfile.workspace = true
