@@ -5,5 +5,7 @@
 //! `super_sdk::daemon` and described in `docs/daemon.md`; the design is in
 //! `.super/specs/2026-10-29-daemon-design.md`.
 
+pub mod env;
 pub mod lock;
+pub mod log;
 pub mod paths;
