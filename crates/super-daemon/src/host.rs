@@ -286,11 +286,20 @@ impl SessionHost {
     }
 
     pub fn detach(&self, hosted: &Arc<Hosted>) {
-        let _ = hosted
-            .attached
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                Some(n.saturating_sub(1))
-            });
+        // A saturating decrement: a client never detaches twice, but a
+        // counter must not wrap if one ever did.
+        let mut current = hosted.attached.load(Ordering::SeqCst);
+        while current > 0 {
+            match hosted.attached.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
         hosted.touch();
         self.announce(DaemonEvent::SessionUpdated {
             session: self.summary(hosted),

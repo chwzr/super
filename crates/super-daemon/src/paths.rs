@@ -50,10 +50,12 @@ impl DaemonPaths {
     /// leaves that shared directory's permissions alone.
     pub fn ensure_run_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.run_dir)?;
-        #[cfg(unix)]
         if restrict_permissions(&self.run_dir, dirs::home_dir().as_deref()) {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&self.run_dir, std::fs::Permissions::from_mode(0o700))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&self.run_dir, std::fs::Permissions::from_mode(0o700))?;
+            }
         }
         Ok(())
     }

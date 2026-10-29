@@ -21,7 +21,8 @@ fn paths(socket: Option<PathBuf>) -> Result<DaemonPaths> {
 }
 
 #[cfg(not(unix))]
-async fn run_daemon(_args: &Args, _socket: Option<PathBuf>) -> Result<i32> {
+async fn run_daemon(_args: &Args, socket: Option<PathBuf>) -> Result<i32> {
+    let _paths = paths(socket)?;
     eprintln!("the SUPER daemon needs a Unix socket and is not available on Windows");
     Ok(1)
 }
@@ -64,7 +65,8 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
 }
 
 #[cfg(not(unix))]
-async fn status(_socket: Option<PathBuf>) -> Result<i32> {
+async fn status(socket: Option<PathBuf>) -> Result<i32> {
+    let _paths = paths(socket)?;
     println!("no SUPER daemon is running");
     Ok(1)
 }
@@ -112,7 +114,8 @@ async fn status(socket: Option<PathBuf>) -> Result<i32> {
 }
 
 #[cfg(not(unix))]
-async fn stop(_socket: Option<PathBuf>) -> Result<i32> {
+async fn stop(socket: Option<PathBuf>) -> Result<i32> {
+    let _paths = paths(socket)?;
     println!("no SUPER daemon is running");
     Ok(0)
 }
@@ -175,6 +178,7 @@ fn process_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
+#[cfg(unix)]
 fn uptime(seconds: u64) -> String {
     let (hours, minutes) = (seconds / 3600, (seconds % 3600) / 60);
     if hours > 0 {
@@ -186,7 +190,7 @@ fn uptime(seconds: u64) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
