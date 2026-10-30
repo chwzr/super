@@ -151,6 +151,7 @@ async fn events_entries_and_commands_flow_through_the_streams() {
         session.clone(),
         streams.clone(),
         TransportOptions {
+            cursor_dir: Some(directory.path().join("cursors")),
             linger: Duration::from_millis(5),
             ..TransportOptions::default()
         },
@@ -292,6 +293,7 @@ async fn shell_can_be_refused_by_policy() {
         session,
         streams.clone(),
         TransportOptions {
+            cursor_dir: Some(directory.path().join("cursors")),
             allow_shell: false,
             linger: Duration::from_millis(5),
             ..TransportOptions::default()
