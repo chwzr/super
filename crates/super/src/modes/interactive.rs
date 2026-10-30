@@ -37,6 +37,7 @@ use tokio_util::sync::CancellationToken;
 mod attached;
 /// One rendering for a command, wherever it was typed.
 mod commands;
+mod remote_handover;
 
 /// One rendered transcript cell.
 enum Cell {
@@ -147,6 +148,8 @@ struct App {
     /// For work started from a command event, such as a sign-in that turns
     /// remote control on.
     command_tx: Option<mpsc::UnboundedSender<CommandEvent>>,
+    /// `/remote` handing this session to the SUPER daemon.
+    handover: remote_handover::State,
     /// Set while the session runs in the SUPER daemon.
     #[cfg(unix)]
     attached: Option<attached::Attached>,
@@ -445,6 +448,10 @@ enum CommandEvent {
         generation: u64,
         text: String,
     },
+    /// `/remote` made progress handing the session to the daemon. Without
+    /// a Unix socket nothing gets that far.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Handover(remote_handover::Progress),
 }
 
 enum WebMcpCommandResult {
@@ -1310,6 +1317,9 @@ async fn run_with_hosts(
     let startup_args = args.clone();
     #[cfg(unix)]
     let attach_sink = sink.clone();
+    // `/remote` makes the session a view of the daemon's with the same sink.
+    #[cfg(unix)]
+    let view_sink = sink.clone();
     let mut startup_task = tokio::spawn(async move {
         #[cfg(unix)]
         if let Some(target) = target {
@@ -1394,8 +1404,9 @@ async fn run_with_hosts(
         themes,
     } = startup;
     // One writer per session file: a SUPER daemon must not host this one.
-    let _session_lock = match crate::setup::keep_session_lock(&session) {
-        Ok(lock) => lock,
+    // `/remote` lets go of it when it hands the session to the daemon.
+    let mut session_lock = match crate::setup::keep_session_lock(&session) {
+        Ok(lock) => Some(lock),
         Err(error) => {
             terminal.restore();
             return Err(error);
@@ -1540,6 +1551,7 @@ async fn run_with_hosts(
         remote_record_key: None,
         remote_allowed: false,
         command_tx: None,
+        handover: Default::default(),
         #[cfg(unix)]
         attached: None,
     };
@@ -1627,7 +1639,64 @@ async fn run_with_hosts(
     // list refreshes in the background from here on.
     spawn_platform_model_refresh(&command_tx);
 
+    let mut stranded = None;
     'main: loop {
+        if remote_handover::due(&app, &session) {
+            // What the turn sent last belongs on screen before it freezes.
+            while let Ok(event) = event_rx.try_recv() {
+                handle_session_event(&mut app, event, &mut file_search, &session);
+            }
+        }
+        // Checked again: what was just handled may have started more work.
+        if remote_handover::due(&app, &session) {
+            match remote_handover::finish(
+                &mut app,
+                &session,
+                &mut session_lock,
+                &resources,
+                &command_tx,
+            )
+            .await
+            {
+                remote_handover::Finished::Moved(target) => {
+                    // The daemon runs the session now: this TUI turns into
+                    // the attached TUI on it, transcript and editor in place.
+                    #[cfg(unix)]
+                    match attached::adopt(
+                        &mut app,
+                        &session,
+                        *target,
+                        view_sink.clone(),
+                        &command_tx,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            // As in `run_attached`: the keeper follows the
+                            // view, so a session taken back from a lost
+                            // daemon is locked here again.
+                            if session_lock.is_none() {
+                                session_lock = crate::setup::keep_session_lock(&session).ok();
+                            }
+                            dirty = true;
+                        }
+                        Err(error) => {
+                            stranded = Some(format!(
+                                "/remote: {error:#}. `super` attaches to the session if the daemon has it."
+                            ));
+                            break 'main;
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    match *target {}
+                }
+                remote_handover::Finished::Stranded(reason) => {
+                    stranded = Some(reason);
+                    break 'main;
+                }
+                remote_handover::Finished::Stayed => dirty = true,
+            }
+        }
         if hosts.enabled() {
             hosts.update(terminal_host_state(&app, &session), &session, args);
         }
@@ -1786,6 +1855,11 @@ async fn run_with_hosts(
     }
 
     terminal.restore();
+    if let Some(reason) = stranded {
+        // The session file is held elsewhere now; nothing here may write it.
+        eprintln!("{reason}");
+        return Ok(1);
+    }
     #[cfg(unix)]
     if let Some(attached) = app.attached.take() {
         attached::finish(attached).await;
@@ -2401,6 +2475,7 @@ fn handle_command_event(
     match event {
         CommandEvent::Remote(notice) => handle_remote_notice(app, notice, session),
         CommandEvent::RemoteEvent(event) => handle_remote_event(app, event),
+        CommandEvent::Handover(progress) => remote_handover::on_progress(app, progress, session),
         #[cfg(unix)]
         CommandEvent::Attached(update) => attached::handle_update(app, update, session),
         CommandEvent::VoicePreview { generation, text } => {
@@ -8339,6 +8414,10 @@ fn run_slash_command(
             }
         }
         "trust" => open_trust_picker(app, session),
+        "remote" | "rc" if rest.is_empty() => {
+            remote_handover::start(app, session, args, resources, command_tx)
+        }
+        "remote" if rest == "cancel" => remote_handover::cancel(app),
         "remote" => run_remote_command(app, session, &rest, args, resources, command_tx),
         "accounts" => run_accounts_command(app, &rest),
         "login" => {
@@ -9003,6 +9082,7 @@ mod tests {
             remote_record_key: None,
             remote_allowed: false,
             command_tx: None,
+            handover: Default::default(),
             #[cfg(unix)]
             attached: None,
         }

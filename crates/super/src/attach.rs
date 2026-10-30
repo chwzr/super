@@ -451,6 +451,10 @@ async fn run(
                         screen.meta(HELP);
                         screen.prompt();
                     }
+                    "/remote" | "/rc" | "/remote status" => {
+                        screen.meta(&crate::handover::attached_status(&client, &session.session_id));
+                        screen.prompt();
+                    }
                     "/abort" => {
                         let _ = client.execute(Command::Abort {}).await;
                     }
