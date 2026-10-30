@@ -263,6 +263,9 @@ queued one appears when the run takes it, `set_thinking_level` reads
 `thinking level set to low` as after `/thinking low`, `set_session_name` as
 after `/name`, `bash` as after `!`, `new_session` as after `/new`; model
 changes, compactions and aborts show through their events, as typed ones do.
+The title a terminal generates from the first prompt goes to the daemon as
+`set_session_name` with `auto: true`; the other terminals take it as the
+title without a line, as a title generated in-process never shows one.
 The internal command name and the origin never appear in the transcript, so
 a resumed session, whose file records no origins, reads like the live one.
 An approval the daemon asks (a workflow's cost gate) opens as a picker in

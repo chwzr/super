@@ -712,8 +712,10 @@ pub(super) fn title_generated(
         set_session_title(app, Some(title.clone()));
         let title = title.clone();
         let tx = command_tx.clone();
+        // Marked as generated, so the other clients take the title without
+        // showing a rename nobody typed.
         tokio::spawn(async move {
-            if let Err(error) = remote.set_session_name(&title).await {
+            if let Err(error) = remote.set_generated_title(&title).await {
                 let _ = tx.send(CommandEvent::Attached(Update::Failed(format!(
                     "could not name session: {error}"
                 ))));

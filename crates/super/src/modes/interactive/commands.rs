@@ -43,7 +43,9 @@ pub(super) fn typed(command: &Command) -> Typed {
         Command::Abort {} | Command::AbortBash {} => Typed::Key("esc"),
         Command::ClearQueue {} => Typed::Key("alt+up"),
         Command::NewSession {} => Typed::Slash("/new".into()),
-        Command::SetSessionName { name } => Typed::Slash(format!("/name {name}")),
+        Command::SetSessionName { name, auto: false } => Typed::Slash(format!("/name {name}")),
+        // A title generated from the first prompt: nobody typed it.
+        Command::SetSessionName { auto: true, .. } => Typed::Nothing,
         Command::SetModel { provider, model_id } => {
             Typed::Slash(format!("/model {provider}/{model_id}"))
         }
@@ -87,6 +89,9 @@ pub(super) enum Shown {
     Prompt(String),
     ThinkingLevel(ThinkingLevel),
     SessionName(String),
+    /// A title generated from the first prompt: the footer shows it, the
+    /// transcript does not, as with a title generated here.
+    Title(String),
     NewSession,
     /// A shell command run elsewhere, with its whole output.
     Shell {
@@ -147,6 +152,7 @@ pub(super) fn show(app: &mut App, session: &Arc<super_coding::AgentSession>, sho
             app.cells
                 .push(Cell::Notice(format!("session named: {name}")));
         }
+        Shown::Title(title) => set_session_title(app, Some(title)),
         Shown::NewSession => {
             sync_session_title(app, session);
             app.cells.clear();
@@ -244,6 +250,9 @@ pub(super) fn shown_for(
             Shown::Prompt(text)
         }
         (Typed::Slash(line), _) => slash_shown(&line, &data, session),
+        (Typed::Nothing, Command::SetSessionName { name, auto: true }) => {
+            Shown::Title(name.clone())
+        }
         (Typed::Shell(_), Command::Bash { command }) => Shown::Shell {
             command: command.clone(),
             output: data["output"].as_str().unwrap_or_default().to_string(),
@@ -599,6 +608,35 @@ mod tests {
         here.session.set_backend(None);
         there.session.set_backend(None);
 
+        // The title generated from the first prompt, here and by the phone:
+        // the footer shows it, the transcript does not.
+        let here_id = here
+            .session
+            .manager
+            .lock()
+            .unwrap()
+            .session_id()
+            .to_string();
+        let (search_tx, _) = mpsc::unbounded_channel();
+        handle_command_event(
+            &mut here.app,
+            CommandEvent::SessionTitleFinished {
+                session_id: here_id,
+                result: Ok("Greet the user".into()),
+            },
+            &mut here.resources,
+            &mut FileSearchService::new(search_tx),
+            &here.session,
+        );
+        there
+            .run(Command::SetSessionName {
+                name: "Greet the user".into(),
+                auto: true,
+            })
+            .await;
+        assert_eq!(here.app.session_title.as_deref(), Some("Greet the user"));
+        assert_eq!(there.app.session_title.as_deref(), Some("Greet the user"));
+
         // Thinking level, name and model, each in its typed form here.
         let model = here.session.model();
         for command in [
@@ -607,6 +645,7 @@ mod tests {
             },
             Command::SetSessionName {
                 name: "Release notes".into(),
+                auto: false,
             },
             Command::SetModel {
                 provider: model.provider.clone(),
@@ -730,6 +769,13 @@ mod tests {
                 Typed::Slash("/compact".into()),
             ),
             (Command::GetState {}, Typed::Nothing),
+            (
+                Command::SetSessionName {
+                    name: "Greet the user".into(),
+                    auto: true,
+                },
+                Typed::Nothing,
+            ),
         ];
         for (command, expected) in cases {
             assert_eq!(typed(&command), expected, "{command:?}");
@@ -760,5 +806,290 @@ mod tests {
             shown_for(&Command::Abort {}, None, &session),
             Shown::Events
         ));
+    }
+
+    /// Two terminals attached to one session of a real daemon, the mock
+    /// provider behind it: what one types, the other shows the same way.
+    #[cfg(unix)]
+    mod over_the_daemon {
+        use super::*;
+        use super_daemon::client::{ClientInfo, DaemonClient, NewSession};
+        use super_sdk::daemon::ClientKind;
+        use super_sdk::mock::{MockProvider, MockScript};
+
+        const REPLY: &str = "Greetings from the daemon";
+
+        /// One attached TUI: its app, its view of the daemon's session and
+        /// the channels its main loop reads.
+        struct Terminal {
+            app: App,
+            session: Arc<super_coding::AgentSession>,
+            events: mpsc::UnboundedReceiver<SessionEvent>,
+            tx: mpsc::UnboundedSender<CommandEvent>,
+            rx: mpsc::UnboundedReceiver<CommandEvent>,
+            resources: InteractiveResources,
+            running_task: Option<tokio::task::JoinHandle<()>>,
+        }
+
+        impl Terminal {
+            /// Attach the way `super` does: its own view, the daemon's
+            /// session, the transcript replayed, notices forwarded.
+            async fn attach(
+                socket: &Path,
+                work: &Path,
+                catalog: &Path,
+                name: &str,
+                session_id: Option<&str>,
+            ) -> Terminal {
+                let (events_tx, events) = mpsc::unbounded_channel();
+                let sink: super_coding::SessionEventSink = Arc::new(move |event| {
+                    let _ = events_tx.send(event);
+                });
+                let view = super_sdk::SessionOptions {
+                    cwd: work.to_path_buf(),
+                    model: Some("mock/mock-1".into()),
+                    models_file: Some(catalog.to_path_buf()),
+                    settings: Some(super_coding::Settings::default()),
+                    session: super_sdk::SessionSource::InMemory,
+                    no_context_files: true,
+                    ..Default::default()
+                }
+                .build(sink.clone())
+                .expect("the view builds")
+                .session;
+                let info = ClientInfo::new(ClientKind::Tui, name);
+                let mut client = DaemonClient::connect_to(socket, &info)
+                    .await
+                    .expect("connect");
+                let client_events = client.take_events().expect("events");
+                let session_id = match session_id {
+                    Some(id) => id.to_string(),
+                    None => {
+                        client
+                            .create_session(NewSession {
+                                cwd: work.to_path_buf(),
+                                model: Some("mock/mock-1".into()),
+                                ..Default::default()
+                            })
+                            .await
+                            .expect("create")
+                            .session_id
+                    }
+                };
+                let attached = client.attach(&session_id).await.expect("attach");
+                let (attached, notices) = super::super::super::attached::attach(
+                    crate::attach::Target {
+                        client,
+                        events: client_events,
+                        attached,
+                        info,
+                    },
+                    &view,
+                    sink,
+                )
+                .await
+                .expect("the view attaches");
+                let (tx, rx) = mpsc::unbounded_channel();
+                let mut app = test_app();
+                app.attached = Some(attached);
+                app.command_tx = Some(tx.clone());
+                super::super::super::attached::show_transcript(&mut app, &view);
+                super::super::super::attached::forward(notices, &tx);
+                Terminal {
+                    app,
+                    session: view,
+                    events,
+                    tx,
+                    rx,
+                    resources: test_resources(),
+                    running_task: None,
+                }
+            }
+
+            /// What the main loop does with what arrived.
+            fn pump(&mut self) {
+                let (search_tx, _) = mpsc::unbounded_channel();
+                let mut file_search = FileSearchService::new(search_tx);
+                while let Ok(event) = self.rx.try_recv() {
+                    handle_command_event(
+                        &mut self.app,
+                        event,
+                        &mut self.resources,
+                        &mut file_search,
+                        &self.session,
+                    );
+                }
+                while let Ok(event) = self.events.try_recv() {
+                    handle_session_event(&mut self.app, event, &mut file_search, &self.session);
+                }
+                if self
+                    .running_task
+                    .as_ref()
+                    .is_some_and(|task| task.is_finished())
+                {
+                    self.running_task = None;
+                    self.app.working = false;
+                }
+            }
+
+            async fn until(&mut self, what: &str, check: impl Fn(&Terminal) -> bool) {
+                let start = std::time::Instant::now();
+                loop {
+                    self.pump();
+                    if check(self) {
+                        return;
+                    }
+                    assert!(
+                        start.elapsed() < Duration::from_secs(20),
+                        "{what}: {:?}",
+                        transcript(&self.app)
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+
+            fn shows(&self, line: &str) -> bool {
+                transcript(&self.app).iter().any(|shown| shown == line)
+            }
+
+            fn idle(&self) -> bool {
+                !self.app.working && !self.session.is_running() && self.running_task.is_none()
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn two_terminals_on_one_daemon_session_read_the_same() {
+            // `sun_path` is short: a short temp dir and a short socket name.
+            let dir = tempfile::Builder::new()
+                .prefix("tt")
+                .tempdir()
+                .expect("tempdir");
+            let provider = MockProvider::start(dir.path().join("mock"), MockScript::text(REPLY))
+                .await
+                .expect("mock provider");
+            // A model with thinking levels, so `/thinking low` means something.
+            let catalog = provider.catalog_path();
+            let mut models: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&catalog).unwrap()).unwrap();
+            models["providers"]["mock"]["models"][0]["reasoning"] = serde_json::json!(true);
+            std::fs::write(&catalog, models.to_string()).unwrap();
+            let work = dir.path().join("work");
+            std::fs::create_dir_all(&work).unwrap();
+            let socket = dir.path().join("d.sock");
+            let shutdown = CancellationToken::new();
+            let daemon = tokio::spawn(super_daemon::run(
+                super_daemon::DaemonConfig {
+                    paths: super_daemon::paths::DaemonPaths {
+                        run_dir: dir.path().to_path_buf(),
+                        socket: socket.clone(),
+                        lock: dir.path().join("d.lock"),
+                        log: dir.path().join("d.log"),
+                    },
+                    host: super_daemon::host::HostConfig {
+                        session_dir: dir.path().join("sessions"),
+                        idle_unload: Duration::ZERO,
+                        models_file: Some(catalog.clone()),
+                        no_context_files: true,
+                    },
+                    host_id: "01TEST".into(),
+                    host_name: "testbox".into(),
+                    log_level: super_daemon::log::Level::Debug,
+                    log_to_stderr: false,
+                    sweep_interval: Duration::from_secs(60),
+                    protocol_versions: super_sdk::daemon::PROTOCOL_VERSIONS,
+                    presence: None,
+                },
+                shutdown.clone(),
+            ));
+            let start = std::time::Instant::now();
+            while !socket.exists() {
+                assert!(
+                    start.elapsed() < Duration::from_secs(20),
+                    "the daemon starts"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+
+            let mut a = Terminal::attach(&socket, &work, &catalog, "Terminal A", None).await;
+            let session_id = a.session.manager.lock().unwrap().session_id().to_string();
+            let mut b =
+                Terminal::attach(&socket, &work, &catalog, "Terminal B", Some(&session_id)).await;
+
+            // A prompt typed in A; A also titles the session from it.
+            submit(
+                &mut a.app,
+                &a.session,
+                "hello".into(),
+                &mut a.running_task,
+                &a.tx,
+            );
+            let reply = format!("assistant {REPLY}");
+            a.until("A shows the reply and has a title", |a| {
+                a.idle() && a.shows(&reply) && a.app.session_title.is_some()
+            })
+            .await;
+            let title = a.app.session_title.clone();
+            b.until("B shows the reply and has the title", |b| {
+                b.idle() && b.shows(&reply) && b.app.session_title == title
+            })
+            .await;
+
+            // Thinking level, name and a failing shell command typed in A.
+            let args = Args::parse_from(["super"]);
+            for line in ["thinking low", "name Release notes"] {
+                run_slash_command(
+                    &mut a.app,
+                    &a.session,
+                    line,
+                    &args,
+                    &mut a.resources,
+                    &mut a.running_task,
+                    &a.tx,
+                );
+            }
+            // Each lands before the next is typed, as at a human's pace: `!`
+            // runs beside the ordered lane, so it could overtake `/name`.
+            b.until("B shows the name", |b| {
+                b.app.session_title.as_deref() == Some("Release notes")
+            })
+            .await;
+            start_shell_passthrough(&mut a.app, &a.session, "echo hi; exit 3".into(), &a.tx);
+            let exited = "notice shell command exited with 3";
+            a.until("A runs the shell command", |a| a.shows(exited))
+                .await;
+            b.until("B shows the shell command", |b| b.shows(exited))
+                .await;
+
+            assert_eq!(transcript(&a.app), transcript(&b.app));
+            let lines = transcript(&b.app);
+            for expected in [
+                "user hello",
+                reply.as_str(),
+                "notice thinking level set to low",
+                "notice session named: Release notes",
+                "shell echo hi; exit 3 hi\n false",
+                exited,
+            ] {
+                assert!(
+                    lines.iter().any(|line| line == expected),
+                    "{expected}: {lines:?}"
+                );
+            }
+            assert!(
+                lines.iter().all(|line| !line.contains("Terminal A")
+                    && !line.contains('♦')
+                    && !line.contains("set_")),
+                "{lines:?}"
+            );
+            assert_eq!(b.session.thinking_level(), ThinkingLevel::Low);
+
+            for terminal in [&mut a, &mut b] {
+                if let Some(attached) = terminal.app.attached.take() {
+                    super::super::super::attached::finish(attached).await;
+                }
+            }
+            shutdown.cancel();
+            let _ = tokio::time::timeout(Duration::from_secs(10), daemon).await;
+        }
     }
 }

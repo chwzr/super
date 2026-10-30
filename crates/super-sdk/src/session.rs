@@ -971,7 +971,7 @@ impl Session {
                 Ok(Some(json!({"text": text})))
             }
             Command::GetSessionStats {} => Ok(Some(self.session_stats())),
-            Command::SetSessionName { name } => {
+            Command::SetSessionName { name, .. } => {
                 self.inner
                     .manager
                     .lock()

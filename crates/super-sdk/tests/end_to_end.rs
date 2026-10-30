@@ -382,6 +382,7 @@ async fn commands_from_another_surface_are_announced_to_every_client() {
         .execute_from(
             Command::SetSessionName {
                 name: "release notes".into(),
+                auto: false,
             },
             Some("1".into()),
             Some("iPhone".into()),
@@ -395,6 +396,7 @@ async fn commands_from_another_surface_are_announced_to_every_client() {
     session
         .execute(Command::SetSessionName {
             name: "quiet".into(),
+            auto: false,
         })
         .await;
     let refused = session

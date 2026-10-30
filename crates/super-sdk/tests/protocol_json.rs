@@ -42,7 +42,10 @@ fn every_command_serializes_with_a_snake_case_type() {
         (Command::GetLastAssistantText {}, "get_last_assistant_text"),
         (Command::GetSessionStats {}, "get_session_stats"),
         (
-            Command::SetSessionName { name: "n".into() },
+            Command::SetSessionName {
+                name: "n".into(),
+                auto: false,
+            },
             "set_session_name",
         ),
         (
@@ -162,6 +165,32 @@ fn payload_fields_are_camel_case() {
             provider: "a".into(),
             model_id: "b".into()
         }
+    );
+}
+
+#[test]
+fn a_generated_session_title_is_marked_and_a_typed_name_is_unchanged() {
+    let typed = Command::SetSessionName {
+        name: "n".into(),
+        auto: false,
+    };
+    assert_eq!(
+        serde_json::to_string(&typed).unwrap(),
+        r#"{"type":"set_session_name","name":"n"}"#
+    );
+    assert_eq!(
+        decode_request(r#"{"type":"set_session_name","name":"n"}"#)
+            .unwrap()
+            .command,
+        typed
+    );
+    let generated = Command::SetSessionName {
+        name: "Fix the tests".into(),
+        auto: true,
+    };
+    assert_eq!(
+        serde_json::to_string(&generated).unwrap(),
+        r#"{"type":"set_session_name","name":"Fix the tests","auto":true}"#
     );
 }
 
