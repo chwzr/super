@@ -10,6 +10,7 @@ pub mod host;
 pub mod lock;
 pub mod log;
 pub mod paths;
+pub mod service;
 
 #[cfg(unix)]
 pub mod client;

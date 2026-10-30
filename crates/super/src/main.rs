@@ -17,6 +17,7 @@ mod mcp_cli;
 mod platform;
 mod provider_cli;
 mod remote;
+mod service_cli;
 mod session_sources;
 mod setup;
 mod slash_commands;
@@ -126,7 +127,13 @@ async fn run(args: Args) -> anyhow::Result<i32> {
 async fn run_command(args: &Args, command: &Command) -> anyhow::Result<i32> {
     match command {
         Command::Acp => modes::acp::run(args).await,
+        // `super daemon status` ends with the systemd unit's line on Linux.
+        Command::Daemon {
+            command: command @ args::DaemonSubcommand::Status { .. },
+        } => service_cli::with_unit_status(daemon_cli::run(args, command).await),
         Command::Daemon { command } => daemon_cli::run(args, command).await,
+        Command::Install => service_cli::install(),
+        Command::Uninstall => service_cli::uninstall(),
         Command::CacheUsage { session, provider } => {
             let cwd = std::env::current_dir()?;
             let settings = super_coding::Settings::load(&cwd, false);

@@ -4,6 +4,12 @@
 
 ### Added
 
+- `super install` runs the daemon as a systemd user service on Linux: it
+  writes `~/.config/systemd/user/super-daemon.service` (`ExecStart=<super>
+  daemon run`, `Restart=on-failure`), enables and starts it, and prints the
+  unit and its state. `super uninstall` stops, disables and removes it, and
+  `super daemon status` reports the unit. On macOS both refuse and point at
+  the SUPER app, which ships the daemon (ENG-39).
 - The daemon is present on the platform while signed in: host and session
   records in the registry (stored sessions as `ended`, `daemon: true`), one
   mirror per hosted session, and the host-level streams
