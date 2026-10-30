@@ -35,6 +35,8 @@ use tokio_util::sync::CancellationToken;
 /// The TUI on a session the SUPER daemon runs.
 #[cfg(unix)]
 mod attached;
+/// One rendering for a command, wherever it was typed.
+mod commands;
 mod remote_handover;
 
 /// One rendered transcript cell.
@@ -2681,17 +2683,14 @@ fn handle_command_event(
             app.command_status = None;
             app.command_cancel = None;
             match result {
-                Ok(result) if result.cancelled => {}
-                Ok(result) if result.exit_code != Some(0) => {
-                    app.cells.push(Cell::Notice(format!(
-                        "shell command exited with {}",
-                        result
-                            .exit_code
-                            .map(|code| code.to_string())
-                            .unwrap_or_else(|| "no status".into())
-                    )));
-                }
-                Ok(_) => {}
+                Ok(result) => commands::show(
+                    app,
+                    session,
+                    commands::Shown::ShellFinished {
+                        exit_code: result.exit_code,
+                        cancelled: result.cancelled,
+                    },
+                ),
                 Err(error) => app
                     .cells
                     .push(Cell::Error(format!("shell failed: {error}"))),
@@ -2729,11 +2728,13 @@ fn handle_command_event(
                     {
                         app.editor.set_text(&text);
                     }
-                    app.cells.push(Cell::Notice(if outcome.summarized {
-                        "summarized the old branch and moved to the selected entry".into()
-                    } else {
-                        "moved to the selected entry".into()
-                    }));
+                    commands::show(
+                        app,
+                        session,
+                        commands::Shown::MovedInTree {
+                            summarized: outcome.summarized,
+                        },
+                    );
                 }
                 Err(error) => app
                     .cells
@@ -4508,8 +4509,7 @@ fn submit_with_display_in_mode(
 ) {
     maybe_generate_session_title(app, session, &display_text, command_tx);
     let stored_text = stored_user_text(&display_text, &model_text);
-    app.cells.push(Cell::User(display_text));
-    app.working = true;
+    commands::show(app, session, commands::Shown::Prompt(display_text));
     let session = session.clone();
     *running_task = Some(tokio::spawn(async move {
         session
@@ -5890,13 +5890,13 @@ fn close_dismissed_approval(app: &mut App) {
     }
 }
 
-/// A remote controller answered the open picker question.
+/// A remote controller answered the open picker question: shown as if
+/// it was answered here.
 fn resolve_remote_approval(
     app: &mut App,
     session: &Arc<super_coding::AgentSession>,
     approval_id: &str,
     choice: &str,
-    by: &str,
 ) {
     if app.open_approval.as_ref().map(|open| open.id.as_str()) != Some(approval_id) {
         return;
@@ -5915,24 +5915,23 @@ fn resolve_remote_approval(
                     super_coding::workflows::ApprovalDecision::Cancel
                 });
             }
-            app.cells.push(Cell::Notice(if approved {
-                format!("♦ workflow {} approved from {by}", plan.name)
-            } else {
-                format!("♦ workflow {} cancelled from {by}", plan.name)
-            }));
+            commands::show(
+                app,
+                session,
+                commands::Shown::WorkflowAnswered {
+                    name: plan.name.clone(),
+                    approved,
+                    progress_view: true,
+                },
+            );
         }
         (Some(ApprovalKind::Trust), PickerKind::Trust) => {
             let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
             let trusted = choice == "trust";
-            match super_coding::trust::save_decision(&cwd, trusted) {
-                Ok(()) => app.cells.push(Cell::Notice(format!(
-                    "♦ project trust saved as {} from {by}. Run /reload to apply it",
-                    if trusted { "trusted" } else { "untrusted" }
-                ))),
-                Err(error) => app.cells.push(Cell::Error(format!(
-                    "could not save project trust: {error:#}"
-                ))),
-            }
+            let saved = super_coding::trust::save_decision(&cwd, trusted)
+                .map(|()| trusted)
+                .map_err(|error| format!("{error:#}"));
+            commands::show(app, session, commands::Shown::TrustSaved(saved));
         }
         (_, kind) => {
             // Not the picker the question was about; leave it open.
@@ -5950,38 +5949,24 @@ fn handle_remote_notice(
     session: &Arc<super_coding::AgentSession>,
 ) {
     match notice {
-        SessionNotice::RemoteInput { origin, kind, .. } => {
-            // A remote prompt shows up as the user message it is, like one typed here.
-            // Steers and follow-ups land mid-turn, so those keep their origin tag.
-            let label = match kind {
-                "steer" => "steer",
-                "follow_up" => "follow-up",
-                _ => return,
-            };
-            app.cells
-                .push(Cell::Notice(format!("♦ {label} from {origin}")));
-        }
-        SessionNotice::RemoteCommand {
-            origin,
+        // A command from the app reads as the same command typed here.
+        SessionNotice::Applied {
             command,
-            success,
-        } => {
-            if command == "answer_approval" {
-                return;
-            }
-            app.cells.push(Cell::Notice(if success {
-                format!("♦ {command} from {origin}")
-            } else {
-                format!("♦ {command} from {origin} failed")
-            }));
-        }
+            success: true,
+            data,
+            ..
+        } => commands::show_remote(app, session, &command, data.as_ref()),
+        // Refused commands concern whoever sent them; `Applied` covers the rest.
+        SessionNotice::Applied { .. }
+        | SessionNotice::RemoteInput { .. }
+        | SessionNotice::RemoteCommand { .. } => {}
         SessionNotice::ApprovalAnswered {
             approval_id,
             choice,
             by,
         } => {
             if by != "local" {
-                resolve_remote_approval(app, session, &approval_id, &choice, &by);
+                resolve_remote_approval(app, session, &approval_id, &choice);
             }
         }
     }
@@ -5999,7 +5984,12 @@ fn handle_remote_event(app: &mut App, event: RemoteEvent) {
         RemoteEvent::Notice(RemoteNotice::DroppedEvents(_)) => {}
         RemoteEvent::Notice(RemoteNotice::Refused { origin, command }) => {
             app.cells.push(Cell::Notice(format!(
-                "♦ {command} from {origin} refused: remote.allowShell is off"
+                "{} from {origin} was refused: remote.allowShell is off",
+                if command == "bash" {
+                    "a shell command"
+                } else {
+                    command.as_str()
+                }
             )));
         }
         RemoteEvent::Failed(reason) => {
@@ -7146,15 +7136,10 @@ fn apply_picker_selection(
             let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
             let trusted = value == 0;
             answer_approval_locally(app, if trusted { "trust" } else { "untrust" });
-            match super_coding::trust::save_decision(&cwd, trusted) {
-                Ok(()) => app.cells.push(Cell::Notice(format!(
-                    "saved project trust as {}. Run /reload to apply it",
-                    if trusted { "trusted" } else { "untrusted" }
-                ))),
-                Err(error) => app.cells.push(Cell::Error(format!(
-                    "could not save project trust: {error:#}"
-                ))),
-            }
+            let saved = super_coding::trust::save_decision(&cwd, trusted)
+                .map(|()| trusted)
+                .map_err(|error| format!("{error:#}"));
+            commands::show(app, session, commands::Shown::TrustSaved(saved));
         }
         PickerKind::ImportConfirm(path) => {
             if value == 0 {
@@ -7186,10 +7171,15 @@ fn apply_picker_selection(
                     let _ = reply.send(super_coding::workflows::ApprovalDecision::Approve);
                 }
                 answer_approval_locally(app, "approve");
-                app.cells.push(Cell::Notice(format!(
-                    "running workflow {} · /workflows opens the progress view",
-                    plan.name
-                )));
+                commands::show(
+                    app,
+                    session,
+                    commands::Shown::WorkflowAnswered {
+                        name: plan.name.clone(),
+                        approved: true,
+                        progress_view: true,
+                    },
+                );
             }
             1 => {
                 // Show the script, then ask again rather than deciding for the
@@ -7205,7 +7195,15 @@ fn apply_picker_selection(
                     let _ = reply.send(super_coding::workflows::ApprovalDecision::Cancel);
                 }
                 answer_approval_locally(app, "cancel");
-                app.cells.push(Cell::Notice("workflow cancelled".into()));
+                commands::show(
+                    app,
+                    session,
+                    commands::Shown::WorkflowAnswered {
+                        name: plan.name.clone(),
+                        approved: false,
+                        progress_view: true,
+                    },
+                );
             }
         },
         PickerKind::WorkflowRuns(ids) => {
@@ -7464,16 +7462,14 @@ fn switch_session(
     match result {
         Ok(manager) => {
             session.replace_manager(manager);
-            sync_session_title(app, session);
-            app.cells = session_cells(session);
-            app.cell_render_cache.clear();
-            app.cells.push(Cell::Notice(format!(
-                "resumed {} session {}",
-                record.source.name(),
-                record.id
-            )));
-            update_thinking_border(app, session.thinking_level());
-            refresh_git_branch(app, session);
+            commands::show(
+                app,
+                session,
+                commands::Shown::Resumed {
+                    source: record.source.name(),
+                    id: record.id.clone(),
+                },
+            );
         }
         Err(error) => app
             .cells
@@ -8152,11 +8148,7 @@ fn run_slash_command(
                     .push(Cell::Notice("this model has no thinking levels".into()));
             } else if let Some(level) = ThinkingLevel::parse(&rest) {
                 session.set_thinking_level(level);
-                update_thinking_border(app, level);
-                app.cells.push(Cell::Notice(format!(
-                    "thinking level set to {}",
-                    level.as_str()
-                )));
+                commands::show(app, session, commands::Shown::ThinkingLevel(level));
             } else {
                 app.cells.push(Cell::Error(format!(
                     "invalid thinking level: {rest}. Use off, minimal, low, medium, high, xhigh, or max"
@@ -8475,12 +8467,9 @@ fn run_slash_command(
                     |name| format!("session name: {name}"),
                 )));
             } else {
-                match session.manager.lock().unwrap().append_session_info(&rest) {
-                    Ok(_) => {
-                        set_session_title(app, Some(rest.clone()));
-                        app.cells
-                            .push(Cell::Notice(format!("session named: {rest}")));
-                    }
+                let named = session.manager.lock().unwrap().append_session_info(&rest);
+                match named {
+                    Ok(_) => commands::show(app, session, commands::Shown::SessionName(rest)),
                     Err(error) => app
                         .cells
                         .push(Cell::Error(format!("could not name session: {error:#}"))),
@@ -8552,11 +8541,7 @@ fn run_slash_command(
             match manager {
                 Ok(new_manager) => {
                     session.replace_manager(new_manager);
-                    sync_session_title(app, session);
-                    app.cells.clear();
-                    app.cell_render_cache.clear();
-                    app.cells.push(Cell::Notice("started a new session".into()));
-                    refresh_git_branch(app, session);
+                    commands::show(app, session, commands::Shown::NewSession);
                 }
                 Err(e) => app
                     .cells
@@ -8592,10 +8577,10 @@ fn run_slash_command(
             let manager = session.manager.lock().unwrap();
             let target = parse_path_argument(&rest)
                 .unwrap_or_else(|| format!("session-{}.html", manager.session_id()));
-            match crate::export::export_session(&manager, std::path::Path::new(&target)) {
-                Ok(()) => app
-                    .cells
-                    .push(Cell::Notice(format!("exported to {target}"))),
+            let exported = crate::export::export_session(&manager, std::path::Path::new(&target));
+            drop(manager);
+            match exported {
+                Ok(()) => commands::show(app, session, commands::Shown::Exported(target)),
                 Err(e) => app.cells.push(Cell::Error(format!("export failed: {e:#}"))),
             }
         }
@@ -9034,7 +9019,7 @@ mod tests {
     use clap::Parser as _;
     use std::path::PathBuf;
 
-    fn test_app() -> App {
+    pub(super) fn test_app() -> App {
         let theme = Theme::dark();
         App {
             md: MarkdownRenderer::new(theme.clone()),
@@ -9118,7 +9103,9 @@ mod tests {
         sync_command_menu(app, &session, &[], &[], &[]);
     }
 
-    fn test_session(manager: super_coding::SessionManager) -> Arc<super_coding::AgentSession> {
+    pub(super) fn test_session(
+        manager: super_coding::SessionManager,
+    ) -> Arc<super_coding::AgentSession> {
         let registry = super_ai::Registry::from_builtin();
         test_session_with_registry(manager, registry)
     }
@@ -9141,7 +9128,7 @@ mod tests {
         )
     }
 
-    fn test_resources() -> InteractiveResources {
+    pub(super) fn test_resources() -> InteractiveResources {
         InteractiveResources {
             settings: super_coding::Settings::default(),
             skills: Vec::new(),

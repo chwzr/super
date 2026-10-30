@@ -285,6 +285,19 @@ impl RemoteSession {
     pub async fn set_session_name(&self, name: &str) -> Result<(), ClientError> {
         self.call(Command::SetSessionName {
             name: name.to_string(),
+            auto: false,
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// Name the session with a title generated from its first prompt. Other
+    /// clients take it as the title without showing a rename, as a title
+    /// generated in-process is never shown.
+    pub async fn set_generated_title(&self, title: &str) -> Result<(), ClientError> {
+        self.call(Command::SetSessionName {
+            name: title.to_string(),
+            auto: true,
         })
         .await
         .map(|_| ())

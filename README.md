@@ -723,9 +723,12 @@ stop it, change the model, and answer workflow and trust questions. Signed
 out, nothing is mirrored and no request leaves the machine.
 
 The footer shows `♦ remote` while mirrored, `♦ remote…` while reconnecting,
-and `♦ local` while signed in but not mirrored. A prompt sent from the app
-appears like one typed here; a steer or follow-up is tagged with its origin,
-for example `♦ steer from iPhone`. Commands that
+and `♦ local` while signed in but not mirrored. Whatever the app does reads
+as if it was typed here: a prompt is the user message, a steer is queued and
+delivered like one typed while the agent works, a thinking level change is
+`thinking level set to low` as after `/thinking low`, an answered workflow
+approval is `workflow cancelled`. The transcript does not say which device
+did what, live or after a resume. Commands that
 arrive after their expiry (five minutes by default) are dropped and counted
 in one notice.
 

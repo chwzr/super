@@ -79,7 +79,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 - `get_tree`: recursive `{entry, children, label}` nodes and `leafId`.
 - `get_last_assistant_text`: nullable `data.text`.
 - `get_session_stats`: message/tool counts, cost, context use, and `tokens` with `input`, `output`, `cacheRead`, `cacheWrite`, `cacheReadAvailable`, and `total`.
-- `set_session_name` with `name`.
+- `set_session_name` with `name`, and `auto: true` for a title a client generated from the first prompt rather than a name someone typed (front ends take it as the title without showing a rename).
 - `new_session`: replace active history with an empty in-memory session.
 - `switch_session` with `sessionPath`.
 - `fork` with `entryId`: move to the selected point and return editable user text.
