@@ -11,7 +11,7 @@ use std::time::Duration as StdDuration;
 const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/chwzr/super/releases/latest";
 const GITHUB_RELEASES_URL: &str = "https://github.com/chwzr/super/releases";
 const RAW_REPOSITORY_URL: &str = "https://raw.githubusercontent.com/chwzr/super";
-const HOMEBREW_UPGRADE_COMMAND: &str = "brew upgrade chwzr/tap/super";
+use super_daemon::installation::{HOMEBREW_UPGRADE_COMMAND, InstallKind};
 const CACHE_MAX_AGE_HOURS: i64 = 20;
 const VERSION_CACHE_FILE: &str = "version.json";
 
@@ -33,10 +33,14 @@ pub async fn run() -> Result<i32> {
             "`super update` is not available in debug builds. Install a SUPER release to use this command"
         );
     }
-    if installed_by_homebrew() {
-        anyhow::bail!(
+    match InstallKind::current() {
+        InstallKind::App => {
+            anyhow::bail!("this SUPER is managed by the SUPER app: update the app to update it")
+        }
+        InstallKind::Homebrew => anyhow::bail!(
             "`super update` cannot replace a SUPER binary that Homebrew installed. Run `{HOMEBREW_UPGRADE_COMMAND}` to update it"
-        );
+        ),
+        _ => {}
     }
     run_release_update().await?;
     Ok(0)
@@ -78,22 +82,19 @@ pub fn check_on_launch() -> Option<Version> {
 
 /// Build the single startup instruction shown for a newer cached release.
 pub fn notice(current: &Version, latest: &Version) -> String {
-    let command = if installed_by_homebrew() {
-        HOMEBREW_UPGRADE_COMMAND
-    } else {
-        "super update"
-    };
-    format!("Update available: super v{current} -> v{latest}. Run `{command}`.")
+    notice_for(InstallKind::current(), current, latest)
 }
 
-fn installed_by_homebrew() -> bool {
-    std::env::current_exe()
-        .and_then(std::fs::canonicalize)
-        .is_ok_and(|path| {
-            path.ancestors()
-                .nth(3)
-                .is_some_and(|rack| rack.ends_with("Cellar/super"))
-        })
+fn notice_for(install: InstallKind, current: &Version, latest: &Version) -> String {
+    match install {
+        InstallKind::App => {
+            format!("Update available: super v{current} -> v{latest}. Update the SUPER app.")
+        }
+        InstallKind::Homebrew => format!(
+            "Update available: super v{current} -> v{latest}. Run `{HOMEBREW_UPGRADE_COMMAND}`."
+        ),
+        _ => format!("Update available: super v{current} -> v{latest}. Run `super update`."),
+    }
 }
 
 fn current_version() -> Result<Version> {
@@ -373,6 +374,26 @@ mod tests {
     fn gives_a_direct_update_instruction() {
         assert_eq!(
             notice(&Version::new(1, 2, 3), &Version::new(1, 3, 0)),
+            "Update available: super v1.2.3 -> v1.3.0. Run `super update`."
+        );
+    }
+
+    #[test]
+    fn an_app_install_is_updated_with_the_app() {
+        assert_eq!(
+            notice_for(
+                InstallKind::App,
+                &Version::new(1, 2, 3),
+                &Version::new(1, 3, 0)
+            ),
+            "Update available: super v1.2.3 -> v1.3.0. Update the SUPER app."
+        );
+        assert_eq!(
+            notice_for(
+                InstallKind::Cargo,
+                &Version::new(1, 2, 3),
+                &Version::new(1, 3, 0)
+            ),
             "Update available: super v1.2.3 -> v1.3.0. Run `super update`."
         );
     }
