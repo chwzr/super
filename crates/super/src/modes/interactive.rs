@@ -32,6 +32,8 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+mod remote_handover;
+
 /// One rendered transcript cell.
 enum Cell {
     User(String),
@@ -141,6 +143,8 @@ struct App {
     /// For work started from a command event, such as a sign-in that turns
     /// remote control on.
     command_tx: Option<mpsc::UnboundedSender<CommandEvent>>,
+    /// `/remote` handing this session to the SUPER daemon.
+    handover: remote_handover::State,
 }
 
 type RemoteRecordKey = (
@@ -430,6 +434,8 @@ enum CommandEvent {
         generation: u64,
         text: String,
     },
+    /// `/remote` made progress handing the session to the daemon.
+    Handover(remote_handover::Progress),
 }
 
 enum WebMcpCommandResult {
@@ -1196,12 +1202,21 @@ fn provisional_lines(editor: &mut Editor, theme: &Theme, width: usize) -> Vec<St
 
 pub async fn run(args: &Args) -> Result<i32> {
     let hosts = crate::terminal_hosts::TerminalHosts::from_env();
-    let result = run_with_hosts(args, &hosts).await;
+    let mut handed_over = None;
+    let result = run_with_hosts(args, &hosts, &mut handed_over).await;
     hosts.shutdown().await;
-    result
+    // `/remote` moved the session to the daemon: carry on attached to it.
+    match handed_over {
+        Some(handed_over) => remote_handover::continue_attached(handed_over).await,
+        None => result,
+    }
 }
 
-async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHosts) -> Result<i32> {
+async fn run_with_hosts(
+    args: &Args,
+    hosts: &crate::terminal_hosts::TerminalHosts,
+    handed_over: &mut Option<remote_handover::HandedOver>,
+) -> Result<i32> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SessionEvent>();
     let tui_sink: super_coding::SessionEventSink = {
         let tx = event_tx.clone();
@@ -1323,8 +1338,9 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         themes,
     } = startup;
     // One writer per session file: a SUPER daemon must not host this one.
-    let _session_lock = match crate::setup::keep_session_lock(&session) {
-        Ok(lock) => lock,
+    // `/remote` lets go of it when it hands the session to the daemon.
+    let mut session_lock = match crate::setup::keep_session_lock(&session) {
+        Ok(lock) => Some(lock),
         Err(error) => {
             terminal.restore();
             return Err(error);
@@ -1469,6 +1485,7 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         remote_record_key: None,
         remote_allowed: false,
         command_tx: None,
+        handover: Default::default(),
     };
     if let Some(indent) = &settings.markdown.code_block_indent {
         app.md.code_indent = indent.clone();
@@ -1541,7 +1558,26 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
     // list refreshes in the background from here on.
     spawn_platform_model_refresh(&command_tx);
 
+    let mut moved = None;
     'main: loop {
+        if remote_handover::due(&app, &session) {
+            // What the turn sent last belongs on screen before it freezes.
+            while let Ok(event) = event_rx.try_recv() {
+                handle_session_event(&mut app, event, &mut file_search, &session);
+            }
+            moved = remote_handover::finish(
+                &mut app,
+                &session,
+                &mut session_lock,
+                &resources,
+                &command_tx,
+            )
+            .await;
+            if moved.is_some() {
+                break 'main;
+            }
+            dirty = true;
+        }
         if hosts.enabled() {
             hosts.update(terminal_host_state(&app, &session), &session, args);
         }
@@ -1697,6 +1733,21 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         }
     }
 
+    if let Some(moved) = moved {
+        // The last frame keeps the transcript and the confirmation; the
+        // attached front end continues where the editor was.
+        let (width, height) = resize_state.accepted;
+        let (lines, blank) = remote_handover::last_frame(&mut app, &session, width);
+        {
+            let mut out = std::io::stdout().lock();
+            renderer.render_frame(&lines, width, height, &mut out)?;
+            out.flush()?;
+        }
+        terminal.restore();
+        remote_handover::reclaim_rows(blank);
+        *handed_over = Some(remote_handover::handed_over(moved, stdin_rx));
+        return Ok(0);
+    }
     terminal.restore();
     if let Some(remote) = app.remote.take() {
         // Flush what is queued and announce the end; bounded, never hangs.
@@ -2308,6 +2359,7 @@ fn handle_command_event(
     match event {
         CommandEvent::Remote(notice) => handle_remote_notice(app, notice, session),
         CommandEvent::RemoteEvent(event) => handle_remote_event(app, event),
+        CommandEvent::Handover(progress) => remote_handover::on_progress(app, progress, session),
         CommandEvent::VoicePreview { generation, text } => {
             if generation == app.voice_generation {
                 app.voice_preview = Some(text);
@@ -8234,6 +8286,10 @@ fn run_slash_command(
             }
         }
         "trust" => open_trust_picker(app, session),
+        "remote" | "rc" if rest.is_empty() => {
+            remote_handover::start(app, session, args, resources, command_tx)
+        }
+        "remote" if rest == "cancel" => remote_handover::cancel(app),
         "remote" => run_remote_command(app, session, &rest, args, resources, command_tx),
         "accounts" => run_accounts_command(app, &rest),
         "login" => {
@@ -8905,6 +8961,7 @@ mod tests {
             remote_record_key: None,
             remote_allowed: false,
             command_tx: None,
+            handover: Default::default(),
         }
     }
 

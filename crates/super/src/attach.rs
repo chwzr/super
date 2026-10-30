@@ -135,7 +135,31 @@ pub async fn try_run(args: &Args) -> Result<Option<i32>> {
             return Ok(None);
         }
     };
-    run(client, events, attached, initial).await.map(Some)
+    let input: Input = Box::new(tokio::io::BufReader::new(tokio::io::stdin()));
+    run(client, events, attached, initial, input, true)
+        .await
+        .map(Some)
+}
+
+/// Lines typed into the attached front end.
+pub(crate) type Input = Box<dyn tokio::io::AsyncBufRead + Unpin + Send>;
+
+/// A connection attached to the session `/remote` just handed to the daemon.
+pub(crate) struct Continuation {
+    pub client: DaemonClient,
+    pub events: UnboundedReceiver<ClientEvent>,
+    pub attached: Attached,
+}
+
+/// Carry on as an attached terminal after `/remote` handed the session to
+/// the daemon. The transcript is on screen already, so nothing is replayed.
+pub(crate) async fn run_handed_over(continuation: Continuation, input: Input) -> Result<i32> {
+    let Continuation {
+        client,
+        events,
+        attached,
+    } = continuation;
+    run(client, events, attached, None, input, false).await
 }
 
 async fn choose_and_attach(
@@ -272,6 +296,8 @@ async fn run(
     mut events: UnboundedReceiver<ClientEvent>,
     attached: Attached,
     initial: Option<(String, String)>,
+    input: Input,
+    intro: bool,
 ) -> Result<i32> {
     let session = attached.session;
     let interactive = std::io::stdin().is_terminal();
@@ -281,27 +307,30 @@ async fn run(
         mid_line: false,
         at_prompt: false,
     };
-    let hello = client.hello().clone();
-    let mut header = format!(
-        "attached to session {} in {} · SUPER daemon {} (pid {})",
-        short_id(&session.session_id),
-        session.cwd,
-        hello.daemon_version,
-        hello.pid
-    );
-    if let Some(model) = &session.model {
-        header.push_str(&format!(" · {model}"));
-    }
-    screen.meta(&header);
-    if interactive {
-        screen.meta(HELP);
+    if intro {
+        let hello = client.hello().clone();
+        let mut header = format!(
+            "attached to session {} in {} · SUPER daemon {} (pid {})",
+            short_id(&session.session_id),
+            session.cwd,
+            hello.daemon_version,
+            hello.pid
+        );
+        if let Some(model) = &session.model {
+            header.push_str(&format!(" · {model}"));
+        }
+        screen.meta(&header);
+        if interactive {
+            screen.meta(HELP);
+        }
     }
 
     let mut working = false;
     if let Ok(Some(state)) = client.execute_ok(Command::GetState {}).await {
         working = state["isStreaming"].as_bool().unwrap_or(false);
     }
-    if let Ok(Some(data)) = client.execute_ok(Command::GetMessages {}).await
+    if intro
+        && let Ok(Some(data)) = client.execute_ok(Command::GetMessages {}).await
         && let Some(messages) = data["messages"].as_array()
     {
         print_recent(&mut screen, messages, 6);
@@ -317,7 +346,7 @@ async fn run(
         screen.prompt();
     }
 
-    let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut input = input.lines();
     let mut input_open = true;
     let code = loop {
         tokio::select! {
@@ -368,6 +397,10 @@ async fn run(
                     "/detach" | "/exit" | "/quit" => break 0,
                     "/help" => {
                         screen.meta(HELP);
+                        screen.prompt();
+                    }
+                    "/remote" | "/rc" | "/remote status" => {
+                        screen.meta(&crate::handover::attached_status(&client, &session.session_id));
                         screen.prompt();
                     }
                     "/abort" => {

@@ -278,6 +278,47 @@ current build elsewhere. `super daemon status` prints the same message and
 exits 2. `super update` refuses to replace a binary inside the app bundle
 and says the app manages it.
 
+### Moving a running session to the daemon: `/remote`
+
+A `super` that runs its session in-process (no daemon when it started,
+signed out, `--no-remote`, `daemon.attach: false`) hands that session to the
+daemon with `/remote`, alias `/rc`. The apps then see it, and it keeps
+running after the terminal closes. In order:
+
+1. Signed out, it signs in to the platform first, with the device code flow
+   `/login super` uses.
+2. It connects to the daemon, or makes one available:
+   - a daemon answering on the socket is used as it is;
+   - a daemon registered with launchd or systemd is started there, as above;
+   - on Linux with nothing registered it does what `super install` does and
+     says so; without a systemd user manager it starts `super daemon run` in
+     the background instead;
+   - on macOS without the SUPER app's agent it explains that the app
+     provides the daemon and stops;
+   - a socket named by `SUPER_DAEMON_SOCKET` is connected to, never started.
+3. It waits until the turn, queued messages, background requests that write
+   the session and open questions are done: a session never moves mid-turn.
+   `/remote cancel` keeps the session where it is.
+4. The terminal stops mirroring the session itself, lets go of the session
+   file's lock, the daemon loads the session from its file
+   (`resume_session`), and the terminal attaches to it. A new session with
+   nothing written yet has no file; the daemon starts one in the same
+   directory with the same model instead.
+
+On screen that is one line, `♦ session a1b2c3d4 now runs in the SUPER daemon
+(pid 4242) and shows up in the apps; this terminal is attached to it`, and the
+terminal carries on attached to the session, with the transcript where it
+was. The apps list the session a few seconds later.
+
+A failure at any step (the sign-in, no daemon, a session file outside the
+daemon's session directory, the daemon refusing to load it) is reported and
+leaves the session running in the terminal as before, with its lock taken
+back and its mirror restarted. `--no-session` sessions are refused (there is
+no file to resume), and so is `remote.enabled: false` (the apps would not see
+the session). In a terminal attached already, `/remote` reports the session
+and the daemon it is attached to. `/remote status`, `on`, `off` and `name`
+still control the terminal's own mirror of an in-process session.
+
 ## The client library
 
 `super_daemon::client::DaemonClient` is the Rust client the terminal uses:

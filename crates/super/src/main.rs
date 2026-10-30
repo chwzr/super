@@ -7,6 +7,9 @@ mod daemon_cli;
 mod doctor;
 mod export;
 mod file_search;
+// Without a Unix socket only the decisions are used, to refuse `/remote`.
+#[cfg_attr(not(unix), allow(dead_code))]
+mod handover;
 mod job_ui;
 mod modes {
     pub mod acp;
