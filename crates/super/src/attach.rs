@@ -60,16 +60,14 @@ pub fn wanted(args: &Args, settings: &Settings, signed_in: bool) -> bool {
         || args.approve
         || args.no_approve;
     // Model options configure a new session; they do not apply to one that
-    // is resumed, so that combination stays in-process.
-    let resumes = args.continue_recent || args.session.is_some();
-    terminal_mode
-        && !engine_options
-        && !(resumes && configures_new_session(args))
-        && !args.no_remote
-        && !args.no_session
-        && settings.remote.is_enabled()
-        && settings.daemon.attach_enabled()
-        && signed_in
+    // is resumed, so that combination stays in-process too.
+    let resumes_with_new_options =
+        (args.continue_recent || args.session.is_some()) && configures_new_session(args);
+    let opted_out = args.no_remote
+        || args.no_session
+        || !settings.remote.is_enabled()
+        || !settings.daemon.attach_enabled();
+    terminal_mode && signed_in && !(engine_options || resumes_with_new_options || opted_out)
 }
 
 fn configures_new_session(args: &Args) -> bool {
