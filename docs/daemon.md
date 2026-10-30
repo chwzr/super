@@ -306,9 +306,15 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
 - `registry`: one `host` record when the link starts, a heartbeat every
   30 seconds, and one `session` record per session the daemon knows, hosted
   ones with their live state and stored ones as `ended`. Every record, the
-  host record included, is sent again every six hours. Daemon sessions carry
-  `"daemon": true` and
-  `"resumeArgv": ["super", "--session", <file>]`.
+  host record included, is sent again every six hours. The host record
+  carries `"daemon": true`, so the apps know the daemon runs there before it
+  has a session; a standalone `super` leaves the field out. Daemon sessions
+  carry `"daemon": true` and `"resumeArgv": ["super", "--session", <file>]`.
+
+  ```json
+  {"kind":"host","hostId":"01J…","name":"mbp","platform":"macos","deviceId":"…","daemon":true,"at":1761728400000}
+  ```
+
 - `sessions/{hostId}/{sessionId}/{events,entries,commands}`: every hosted
   session is mirrored exactly like a terminal session, from the moment it
   loads until it unloads.
