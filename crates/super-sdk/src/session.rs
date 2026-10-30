@@ -985,12 +985,16 @@ impl Session {
                 Ok(Some(serde_json::to_value(model).unwrap_or(Value::Null)))
             }
             Command::GetAvailableModels { search } => {
+                // The models a user can switch to: those of providers that are
+                // configured in models.json or have a credential, the same set
+                // the TUI's /model picker and `--list-models` offer.
                 let needle = search.unwrap_or_default().to_lowercase();
                 let models: Vec<&Model> = self
                     .inner
                     .registry
-                    .all()
-                    .iter()
+                    .available_models()
+                    .into_iter()
+                    .map(|(_, model)| model)
                     .filter(|model| {
                         needle.is_empty()
                             || format!("{}/{}", model.provider, model.id)

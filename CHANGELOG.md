@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- RPC `get_available_models` lists the models of providers that are
+  configured in `models.json` or have a credential, the same set the TUI's
+  `/model` picker and `super --list-models` offer, instead of every model the
+  registry knows. The optional `search` substring and the response shape are
+  unchanged; `set_model` still accepts any known model (ENG-49).
+
 ## 0.0.38 - 2026-10-30
 
 ### Added

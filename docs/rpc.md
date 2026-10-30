@@ -89,7 +89,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 ### Models and thinking
 
 - `set_model` with `provider` and `modelId`.
-- `get_available_models`, optional `search` substring.
+- `get_available_models`, optional `search` substring matched case-insensitively against `provider/id`: `data.models`, the models of providers that are configured in `models.json` or have a credential (a stored login or API key, or a key in the environment), the same set the TUI's `/model` picker and `super --list-models` offer. Models of providers without credentials are left out. Each model carries `provider`, `id`, `name`, `reasoning`, `input`, `cost`, `contextWindow` and `maxTokens`, in registry order. `set_model` still accepts any model the registry knows.
 - `set_thinking_level` with one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Unsupported levels fail rather than silently downgrade.
 - `get_available_thinking_levels`.
 
