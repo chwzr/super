@@ -101,6 +101,9 @@ pub async fn try_run(args: &Args) -> Result<Option<i32>> {
     if !wanted(args, &settings, crate::remote::signed_in()) {
         return Ok(None);
     }
+    // `@file` arguments are sent with the file's contents and shown as typed.
+    let initial = crate::setup::initial_message(args, &cwd)?
+        .map(|message| (args.messages.join(" "), message));
     let info = ClientInfo::new(ClientKind::Tui, "Terminal");
     let mut client = match DaemonClient::connect_or_start(&info).await {
         Ok(client) => client,
@@ -132,9 +135,6 @@ pub async fn try_run(args: &Args) -> Result<Option<i32>> {
             return Ok(None);
         }
     };
-    // `@file` arguments are sent with the file's contents and shown as typed.
-    let initial = crate::setup::initial_message(args, &cwd)?
-        .map(|message| (args.messages.join(" "), message));
     run(client, events, attached, initial).await.map(Some)
 }
 
