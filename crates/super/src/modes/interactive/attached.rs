@@ -32,9 +32,10 @@ pub(super) struct Attached {
 
 struct OpenQuestion {
     id: String,
+    kind: ApprovalKind,
     title: String,
-    /// Choice ids and labels.
-    choices: Vec<(String, String)>,
+    /// This terminal answered; the daemon has not said so yet.
+    answered: bool,
 }
 
 /// The pickers this module opens.
@@ -254,16 +255,9 @@ pub(super) fn handle_update(
 ) {
     match update {
         Update::Notice(notice) => handle_notice(app, notice, session),
-        Update::Switched(Ok(summary)) => {
-            app.cells.clear();
-            app.cell_render_cache.clear();
-            app.cells.push(Cell::Notice(format!(
-                "started a new session {} in the SUPER daemon",
-                short_id(&summary.session_id)
-            )));
-            sync_session_title(app, session);
+        Update::Switched(Ok(_)) => {
+            commands::show(app, session, commands::Shown::NewSession);
             update_thinking_border(app, session.thinking_level());
-            refresh_git_branch(app, session);
         }
         Update::Switched(Err(error)) => app
             .cells
@@ -281,37 +275,38 @@ fn handle_notice(app: &mut App, notice: AttachedNotice, session: &Arc<super_codi
         AttachedNotice::ApprovalResolved {
             approval_id,
             choice,
-            by,
+            ..
         } => {
             let Some(attached) = &mut app.attached else {
                 return;
             };
-            let (title, answer) = match attached.approval.take() {
-                Some(question) if question.id == approval_id => {
-                    if matches!(
-                        app.picker.as_ref().map(|picker| &picker.kind),
-                        Some(PickerKind::Attached(AttachedPicker::Approval { .. }))
-                    ) {
-                        app.picker = None;
-                    }
-                    let label = question
-                        .choices
-                        .iter()
-                        .find(|(id, _)| *id == choice)
-                        .map(|(_, label)| label.clone())
-                        .unwrap_or_else(|| choice.clone());
-                    (question.title, label)
-                }
+            let question = match attached.approval.take() {
+                Some(question) if question.id == approval_id => question,
                 other => {
+                    // Not a question this terminal was shown.
                     attached.approval = other;
-                    ("approval".to_string(), choice.clone())
+                    return;
                 }
             };
-            if by != attached.remote.client_name() {
-                app.cells.push(Cell::Notice(format!(
-                    "♦ {title} answered from {by}: {answer}"
-                )));
+            if matches!(
+                app.picker.as_ref().map(|picker| &picker.kind),
+                Some(PickerKind::Attached(AttachedPicker::Approval { .. }))
+            ) {
+                app.picker = None;
             }
+            // Whichever client answered, it reads as answered here.
+            let shown = match question.kind {
+                ApprovalKind::Workflow => commands::Shown::WorkflowAnswered {
+                    name: workflow_name(&question.title),
+                    approved: choice == "approve",
+                    progress_view: false,
+                },
+                _ => commands::Shown::Answered {
+                    title: question.title,
+                    choice,
+                },
+            };
+            commands::show(app, session, shown);
         }
         AttachedNotice::CommandApplied(applied) => command_applied(app, applied, session),
         AttachedNotice::CommandFailed { command, error } => {
@@ -383,9 +378,8 @@ fn handle_notice(app: &mut App, notice: AttachedNotice, session: &Arc<super_codi
     }
 }
 
-/// A command a client ran on the session. This terminal's own commands
-/// are on screen already; another client's are shown the way remote
-/// commands always were.
+/// A command another client ran on the session reads as the same command
+/// typed here; this terminal's own are on screen already.
 fn command_applied(
     app: &mut App,
     applied: AppliedCommand,
@@ -394,51 +388,16 @@ fn command_applied(
     if applied.own || !applied.success {
         return;
     }
-    let kind = applied.command["type"].as_str().unwrap_or_default();
-    let origin = &applied.origin;
-    match kind {
-        "prompt" | "steer" | "follow_up" => {
-            let started = applied
-                .data
-                .as_ref()
-                .is_some_and(|data| data["disposition"] == "started");
-            // A queued message shows up when the run takes it.
-            if kind == "prompt" && started {
-                let text = applied.command["message"].as_str().unwrap_or_default();
-                app.cells.push(Cell::User(visible_user_text(text)));
-            } else if kind != "prompt" || !started {
-                app.cells.push(Cell::Notice(format!(
-                    "♦ {} from {origin}",
-                    if kind == "follow_up" {
-                        "follow-up"
-                    } else {
-                        "steer"
-                    }
-                )));
-            }
-        }
-        "bash" => {
-            let data = applied.data.unwrap_or_default();
-            app.cells.push(Cell::BashExecution {
-                command: applied.command["command"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                output: data["output"].as_str().unwrap_or_default().to_string(),
-                exclude_from_context: false,
-            });
-        }
-        "set_session_name" => {
-            sync_session_title(app, session);
-            app.cells
-                .push(Cell::Notice(format!("♦ {kind} from {origin}")));
-        }
-        _ => {
-            app.cells
-                .push(Cell::Notice(format!("♦ {kind} from {origin}")));
-        }
-    }
-    update_thinking_border(app, session.thinking_level());
+    commands::show_remote(app, session, &applied.command, applied.data.as_ref());
+}
+
+/// `Run workflow greet?`, as the daemon's gate asks it, names `greet`.
+fn workflow_name(title: &str) -> String {
+    title
+        .strip_prefix("Run workflow ")
+        .and_then(|rest| rest.strip_suffix('?'))
+        .unwrap_or(title)
+        .to_string()
 }
 
 fn append_shell_output_cell(app: &mut App, chunk: &str) {
@@ -482,12 +441,9 @@ fn open_approval(app: &mut App, approval_id: String, request: super_sdk::Approva
     }
     attached.approval = Some(OpenQuestion {
         id: approval_id.clone(),
+        kind: request.kind,
         title: request.title.clone(),
-        choices: request
-            .choices
-            .iter()
-            .map(|choice| (choice.id.clone(), choice.label.clone()))
-            .collect(),
+        answered: false,
     });
     app.picker = Some(Picker {
         kind: PickerKind::Attached(AttachedPicker::Approval {
@@ -542,10 +498,13 @@ pub(super) fn apply_picker(
             let Some(attached) = &mut app.attached else {
                 return;
             };
-            attached.approval = None;
             let Some(choice) = choices.get(value).cloned() else {
                 return;
             };
+            // Shown when the daemon says it was answered, as for any client.
+            if let Some(question) = &mut attached.approval {
+                question.answered = true;
+            }
             answer(&attached.remote, approval_id, choice, command_tx);
         }
         AttachedPicker::Lost if value == 0 => continue_here(app, session, resources, command_tx),
@@ -579,8 +538,16 @@ pub(super) fn close_dismissed(app: &mut App, command_tx: &mpsc::UnboundedSender<
     let Some(attached) = &mut app.attached else {
         return;
     };
-    if let Some(question) = attached.approval.take() {
-        answer(&attached.remote, question.id, "cancel".into(), command_tx);
+    if let Some(question) = &mut attached.approval
+        && !question.answered
+    {
+        question.answered = true;
+        answer(
+            &attached.remote,
+            question.id.clone(),
+            "cancel".into(),
+            command_tx,
+        );
     }
 }
 
@@ -644,9 +611,7 @@ pub(super) fn slash_command(
         "name" if !rest.is_empty() => {
             let name = rest.to_string();
             let tx = command_tx.clone();
-            set_session_title(app, Some(name.clone()));
-            app.cells
-                .push(Cell::Notice(format!("session named: {name}")));
+            commands::show(app, session, commands::Shown::SessionName(name.clone()));
             tokio::spawn(async move {
                 if let Err(error) = remote.set_session_name(&name).await {
                     let _ = tx.send(CommandEvent::Attached(Update::Failed(format!(

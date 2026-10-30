@@ -450,3 +450,44 @@ async fn commands_from_another_surface_are_announced_to_every_client() {
             .contains("nowhere/nothing")
     );
 }
+
+#[tokio::test]
+async fn a_prompt_from_another_surface_is_announced_before_its_run() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let (_provider, session) = session_with(directory.path(), MockScript::text("Hi.")).await;
+    let collected = collect_events(&session);
+    let notices: Arc<std::sync::Mutex<Vec<super_sdk::SessionNotice>>> = Default::default();
+    {
+        let notices = notices.clone();
+        session.set_observer(Some(Arc::new(move |notice| {
+            notices.lock().unwrap().push(notice)
+        })));
+    }
+    let response = session
+        .execute_from(
+            Command::Prompt {
+                message: "hello".into(),
+                images: Vec::new(),
+                streaming_behavior: None,
+            },
+            None,
+            Some("iPhone".into()),
+        )
+        .await;
+    assert!(response.success, "{response:?}");
+    let events = wait_for(&collected, "agent_settled").await;
+    let position = |kind: &str| {
+        events
+            .iter()
+            .position(|event| event["type"] == kind)
+            .unwrap_or_else(|| panic!("no {kind}"))
+    };
+    assert!(position("command_applied") < position("agent_start"));
+    let applied = &events[position("command_applied")];
+    assert_eq!(applied["command"]["message"], "hello");
+    assert_eq!(applied["data"], json!({"disposition": "started"}));
+    assert!(notices.lock().unwrap().iter().any(|notice| matches!(
+        notice,
+        super_sdk::SessionNotice::Applied { origin, success: true, .. } if origin == "iPhone"
+    )));
+}
