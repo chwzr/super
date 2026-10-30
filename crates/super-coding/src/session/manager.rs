@@ -248,9 +248,8 @@ impl SessionManager {
         Ok(out)
     }
 
-    /// Cheap listing: header + scan for name/first user message.
-    fn peek(path: &Path) -> Option<SessionListing> {
-        let mut reader = BufReader::new(File::open(path).ok()?);
+    /// The header, the file's first non-empty line.
+    fn read_header(reader: &mut impl BufRead) -> Option<SessionHeader> {
         let mut line = String::new();
         loop {
             line.clear();
@@ -258,10 +257,16 @@ impl SessionManager {
                 return None;
             }
             if !line.trim().is_empty() {
-                break;
+                return serde_json::from_str(&line).ok();
             }
         }
-        let header: SessionHeader = serde_json::from_str(&line).ok()?;
+    }
+
+    /// Cheap listing: header + scan for name/first user message.
+    fn peek(path: &Path) -> Option<SessionListing> {
+        let mut reader = BufReader::new(File::open(path).ok()?);
+        let header = Self::read_header(&mut reader)?;
+        let mut line = String::new();
         let mut name = None;
         let mut first_message = None;
         let mut entry_count = 0usize;
@@ -312,14 +317,42 @@ impl SessionManager {
         })
     }
 
-    /// Find a session file by partial UUID across all projects.
+    /// Find a session file by partial UUID across all projects, the newest
+    /// when several match. Unlike the listings it also finds a file that has
+    /// only its header (see [`persist_header`](Self::persist_header)): an id
+    /// names that session as much as any other.
     pub fn find_by_id(session_dir: &Path, partial: &str) -> Result<Option<PathBuf>> {
-        for listing in Self::list_all(session_dir)? {
-            if listing.id.starts_with(partial) {
-                return Ok(Some(listing.path));
+        let mut found: Option<(std::time::SystemTime, PathBuf)> = None;
+        let Ok(projects) = std::fs::read_dir(session_dir) else {
+            return Ok(None);
+        };
+        for project in projects.flatten() {
+            let Ok(files) = std::fs::read_dir(project.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let path = file.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let Some(header) = File::open(&path)
+                    .ok()
+                    .and_then(|file| Self::read_header(&mut BufReader::new(file)))
+                else {
+                    continue;
+                };
+                if !header.id.starts_with(partial) {
+                    continue;
+                }
+                let Ok(modified) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+                    continue;
+                };
+                if found.as_ref().is_none_or(|(newest, _)| modified > *newest) {
+                    found = Some((modified, path));
+                }
             }
         }
-        Ok(None)
+        Ok(found.map(|(_, path)| path))
     }
 
     // ----- appends ------------------------------------------------------
@@ -487,6 +520,19 @@ impl SessionManager {
             .insert(entry.id().to_string(), self.entries.len());
         self.entries.push(entry);
         self.context_revision = self.context_revision.wrapping_add(1);
+    }
+
+    /// Write the session file now, header first, instead of with the first
+    /// entry. A host that hands a new session to clients before anything is
+    /// said in it (the daemon) calls this, so the session can be stopped and
+    /// resumed by id while it is still empty. Listings keep skipping a file
+    /// without entries. Nothing happens for an in-memory session or a file
+    /// that is open already.
+    pub fn persist_header(&mut self) -> Result<()> {
+        if self.file.is_none() || self.append_file.is_some() {
+            return Ok(());
+        }
+        self.append_lines("")
     }
 
     fn append_lines(&mut self, lines: &str) -> Result<()> {
@@ -1331,6 +1377,43 @@ mod tests {
             .unwrap();
         assert!(path.exists());
         assert_eq!(SessionManager::list(&cwd, &sessions).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_persisted_header_is_found_by_id_but_not_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("project");
+        let sessions = dir.path().join("sessions");
+        let mut manager = SessionManager::create(&cwd, Some(sessions.clone())).unwrap();
+        let path = manager.session_file().unwrap().to_path_buf();
+        manager.persist_header().unwrap();
+        manager.persist_header().unwrap();
+        let header = format!("{}\n", serde_json::to_string(manager.header()).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), header);
+
+        // An empty session stays out of the listings, an explicit id finds it.
+        assert!(SessionManager::list(&cwd, &sessions).unwrap().is_empty());
+        let id = manager.session_id().to_string();
+        assert_eq!(
+            SessionManager::find_by_id(&sessions, &id[..8]).unwrap(),
+            Some(path.clone())
+        );
+        assert_eq!(SessionManager::find_by_id(&sessions, "zzzz").unwrap(), None);
+        let reopened = SessionManager::open(&path).unwrap();
+        assert_eq!(reopened.session_id(), id);
+        assert!(reopened.entries().is_empty());
+
+        // The first entry follows the header; the header is not written twice.
+        manager.append_message(AgentMessage::user("first")).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.starts_with(&header));
+        assert_eq!(SessionManager::list(&cwd, &sessions).unwrap().len(), 1);
+
+        // Nothing to write for an in-memory session.
+        let mut in_memory = SessionManager::in_memory(&cwd);
+        in_memory.persist_header().unwrap();
+        assert!(!in_memory.is_persisted());
     }
 
     #[test]

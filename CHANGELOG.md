@@ -60,6 +60,11 @@
 
 ### Fixed
 
+- A session the daemon created and stopped before its first message can be
+  resumed and attached to again instead of failing with `no session`: the
+  daemon writes the session file's header when it creates the session, and
+  a lookup by id finds a file that has only its header. A `super` run that
+  ends before its first message still writes nothing.
 - A platform token refresh holds the credential lock beside `auth.json`
   until the new token is written, so two `super` processes (a terminal
   session and the headless one the macOS app runs) never refresh the same

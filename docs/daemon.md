@@ -182,6 +182,10 @@ null for a stored session.
 
 ## Lifecycle
 
+- `create_session` writes the session file (its header) at once, so a
+  session stopped before its first message can be resumed and attached to by
+  id. Once unloaded, such an empty session is left out of the listings, as
+  the terminal's session picker leaves it out.
 - A hosted session with no attached client, in state `idle`, with no command
   or event for `idleUnloadMinutes` is unloaded and reported as `ended`.
   `attach` or `resume_session` loads it again with its full history. A

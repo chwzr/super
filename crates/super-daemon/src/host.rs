@@ -179,6 +179,20 @@ impl SessionHost {
         let lock = crate::session_lock::try_lock(&file)
             .map_err(|error| HostError::Startup(error.into()))?
             .ok_or_else(|| HostError::Locked(session_id.clone()))?;
+        // Clients get the session id now and may stop it before anything is
+        // said in it; `resume_session` and `attach` then need the file.
+        let persisted = session
+            .agent_session()
+            .manager
+            .lock()
+            .unwrap()
+            .persist_header();
+        if let Err(error) = persisted {
+            session.close();
+            return Err(HostError::Startup(
+                error.context(format!("write session file {}", file.display())),
+            ));
+        }
         let hosted = self.install(session, request.cwd, file, lock);
         log::info("host", format!("created session {session_id}"));
         self.announce(DaemonEvent::SessionCreated {
