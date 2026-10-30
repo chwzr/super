@@ -91,6 +91,39 @@ impl SessionManager {
         manager
     }
 
+    /// An in-memory copy of a session another process writes, such as one
+    /// the SUPER daemon hosts: it keeps that session's id and never writes.
+    /// [`absorb`](Self::absorb) adds what the other process appends later.
+    pub fn mirror(
+        session_id: &str,
+        cwd: &Path,
+        entries: Vec<SessionEntry>,
+        leaf_id: Option<String>,
+    ) -> Self {
+        let mut manager = Self::in_memory_with_entries(cwd, Vec::new());
+        manager.header.id = session_id.to_string();
+        manager.absorb(entries, leaf_id);
+        manager
+    }
+
+    /// Add entries another process appended to this session, skipping the
+    /// ones already here, and move the leaf to `leaf_id` when it is known.
+    /// Nothing is written to disk.
+    pub fn absorb(&mut self, entries: Vec<SessionEntry>, leaf_id: Option<String>) {
+        for entry in entries {
+            if !self.index.contains_key(entry.id()) {
+                self.insert_entry(entry);
+            }
+        }
+        let leaf = leaf_id
+            .filter(|id| self.index.contains_key(id))
+            .or_else(|| self.entries.last().map(|entry| entry.id().to_string()));
+        if leaf != self.leaf_id {
+            self.leaf_id = leaf;
+            self.context_revision = self.context_revision.wrapping_add(1);
+        }
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("open session {}", path.display()))?;
@@ -1084,6 +1117,43 @@ mod tests {
 
     fn manager() -> SessionManager {
         SessionManager::in_memory(Path::new("/tmp/project"))
+    }
+
+    #[test]
+    fn a_mirror_keeps_the_id_absorbs_new_entries_once_and_never_writes() {
+        let mut source = manager();
+        source.append_message(AgentMessage::user("one")).unwrap();
+        source.append_model_change("openai", "gpt-test").unwrap();
+        let first = source.entries().to_vec();
+        let mut mirror = SessionManager::mirror(
+            "a1b2c3d4",
+            Path::new("/tmp/project"),
+            first.clone(),
+            source.leaf_id().map(str::to_string),
+        );
+        assert_eq!(mirror.session_id(), "a1b2c3d4");
+        assert!(!mirror.is_persisted());
+        assert_eq!(mirror.entries().len(), 2);
+
+        source.append_message(AgentMessage::user("two")).unwrap();
+        let revision = mirror.context_revision();
+        // The overlap is skipped; only the new entry lands.
+        mirror.absorb(
+            source.entries().to_vec(),
+            source.leaf_id().map(str::to_string),
+        );
+        assert_eq!(mirror.entries().len(), 3);
+        assert_eq!(mirror.leaf_id(), source.leaf_id());
+        assert_ne!(mirror.context_revision(), revision);
+        assert_eq!(mirror.build_session_context().messages.len(), 2);
+
+        // A leaf the other process moved back is followed.
+        let earlier = first[0].id().to_string();
+        mirror.absorb(Vec::new(), Some(earlier.clone()));
+        assert_eq!(mirror.leaf_id(), Some(earlier.as_str()));
+        // An unknown leaf falls back to the newest entry.
+        mirror.absorb(Vec::new(), Some("nothere".into()));
+        assert_eq!(mirror.leaf_id(), source.leaf_id());
     }
 
     fn openai_model() -> Model {

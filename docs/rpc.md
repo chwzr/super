@@ -134,6 +134,16 @@ and `choices` (`[{id, label, detail}]`); `approval_resolved` with
 `approvalId`, `choice`, and `by` (`local` for the terminal, `rpc` for a direct
 client, otherwise the remote device name).
 
+Commands from another surface: `command_applied` with `origin` (the name
+that surface gave itself: a daemon client's `hello.name`, the device a
+platform command came from), `command` (the command as sent, `imageCount` in
+place of images), `success`, `error` and `data` (the response's data). Every
+subscriber receives it after such a command ran, the sender included; reads
+(`get_*`), `ping` and `answer_approval` (announced as `approval_resolved`)
+are not announced, and neither is a command a direct `--mode rpc` client
+sends. A prompt that started a run is visible only this way: the run's
+events begin with the reply, not with the prompt.
+
 `agent_settled` follows every run, including runs the interactive terminal
 started itself when the session is mirrored for remote control.
 
