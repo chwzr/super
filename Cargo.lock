@@ -4141,7 +4141,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "super"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -4181,7 +4181,7 @@ dependencies = [
 
 [[package]]
 name = "super-agent"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4202,7 +4202,7 @@ dependencies = [
 
 [[package]]
 name = "super-agent-ai"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -4240,7 +4240,7 @@ dependencies = [
 
 [[package]]
 name = "super-agent-sdk"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4262,11 +4262,11 @@ dependencies = [
 
 [[package]]
 name = "super-bench"
-version = "0.0.37"
+version = "0.0.38"
 
 [[package]]
 name = "super-coding"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4298,7 +4298,7 @@ dependencies = [
 
 [[package]]
 name = "super-daemon"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4321,7 +4321,7 @@ dependencies = [
 
 [[package]]
 name = "super-mcp"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4345,7 +4345,7 @@ dependencies = [
 
 [[package]]
 name = "super-remote"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4366,7 +4366,7 @@ dependencies = [
 
 [[package]]
 name = "super-tui"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -4389,7 +4389,7 @@ dependencies = [
 
 [[package]]
 name = "super-webmcp"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4407,7 +4407,7 @@ dependencies = [
 
 [[package]]
 name = "super-workflow"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "async-trait",

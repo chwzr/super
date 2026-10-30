@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.38 - 2026-10-30
+
 ### Added
 
 - Signed in, `super` in a terminal attaches to the daemon's session for the
