@@ -1571,6 +1571,7 @@ async fn run_with_hosts(
     spawn_platform_model_refresh(&command_tx);
 
     let mut moved = None;
+    let mut stranded = None;
     'main: loop {
         if let Some(next) = sessions_ui::take_switch(&mut app.sessions) {
             moved = Some(next);
@@ -1581,18 +1582,28 @@ async fn run_with_hosts(
             while let Ok(event) = event_rx.try_recv() {
                 handle_session_event(&mut app, event, &mut file_search, &session);
             }
-            moved = remote_handover::finish(
+        }
+        // Checked again: what was just handled may have started more work.
+        if remote_handover::due(&app, &session) {
+            match remote_handover::finish(
                 &mut app,
                 &session,
                 &mut session_lock,
                 &resources,
                 &command_tx,
             )
-            .await;
-            if moved.is_some() {
-                break 'main;
+            .await
+            {
+                remote_handover::Finished::Moved(next) => {
+                    moved = Some(*next);
+                    break 'main;
+                }
+                remote_handover::Finished::Stranded(reason) => {
+                    stranded = Some(reason);
+                    break 'main;
+                }
+                remote_handover::Finished::Stayed => dirty = true,
             }
-            dirty = true;
         }
         if hosts.enabled() {
             hosts.update(terminal_host_state(&app, &session), &session, args);
@@ -1769,6 +1780,11 @@ async fn run_with_hosts(
         return Ok(0);
     }
     terminal.restore();
+    if let Some(reason) = stranded {
+        // The session file is held elsewhere now; nothing here may write it.
+        eprintln!("{reason}");
+        return Ok(1);
+    }
     if let Some(remote) = app.remote.take() {
         // Flush what is queued and announce the end; bounded, never hangs.
         remote.stop().await;
