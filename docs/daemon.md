@@ -245,10 +245,12 @@ session becomes a view of the daemon's:
 - `/session` names the daemon's session file and `/remote` reports the
   attachment: the daemon, not the terminal, keeps the session visible in the
   apps.
-- `/new` starts a new session in the daemon and switches to it. `/resume`,
-  `/fork`, `/clone`, `/tree`, `/import`, `/fast`, `/loop`, `/autoresearch`,
-  `/jobs` and saved workflows work on a session in the terminal's own
-  process and say so while attached; `super --no-remote` runs one.
+- `/sessions` switches to any other session, on this device or another one
+  (below). `/new` starts a new session in the daemon and switches to it.
+  `/resume`, `/fork`, `/clone`, `/tree`, `/import`, `/fast`, `/loop`,
+  `/autoresearch`, `/jobs` and saved workflows work on a session in the
+  terminal's own process and say so while attached; `super --no-remote`
+  runs one.
 - ctrl+d, `/quit` and closing the terminal (SIGHUP) detach: the session keeps
   running in the daemon, a turn in flight included, and `super` in the same
   directory attaches to it again with the full transcript.
@@ -289,7 +291,7 @@ reply streams as it arrives, every tool call is one line, an approval is
 asked as numbered choices and each line is sent as a prompt, or as a steer
 while the session works. It exits once the session settles after the last
 line; Ctrl+C aborts the turn, `/detach` and end of input detach, `/stop`
-stops the session.
+stops the session, `/sessions` switches to another one (below).
 
 When no daemon answers and none can be started, `super` runs in-process as
 it always did (`--verbose` says why). When the daemon speaks another
@@ -381,6 +383,66 @@ no file to resume), and so is `remote.enabled: false` (the apps would not see
 the session). In a terminal attached already, `/remote` and `/rc` report the
 session and the daemon it is attached to. `/remote status`, `on`, `off` and `name`
 still control the terminal's own mirror of an in-process session.
+
+### Switching sessions: `/sessions`
+
+`/sessions` lists every session the terminal can reach, grouped by device,
+then by workspace, with the apps' status model:
+
+```
+Sessions
+● mbp  this device
+  super  /Users/felix/dev/super
+→   ◐ working         Fix the login bug  current · 2m
+    ○ idle            Add tests for the parser  1h
+    + new session in super
+  + new workspace on mbp…
+● linuxbox  online
+  api  /home/felix/api
+    ? needs an answer Migrate the schema  Workflow approval required · 5m
+↑/↓ move · enter open · type to filter · esc close
+```
+
+- This device comes first, its sessions from the daemon over the socket
+  (`list_sessions`). Signed in, other devices follow from the platform's
+  `registry` stream, online ones first: a device is online when anything
+  about it is at most 90 seconds old, as in the apps. A session is
+  `working`, `needs an answer` (blocked), `idle` or `ended` (not loaded);
+  on a device that is offline, a session that has not ended reads
+  `offline`, since its last state may be stale.
+- Typing filters by title, workspace and device; Enter opens the row under
+  the cursor; Esc clears the filter, then closes.
+- A session on this device: the connection attaches to it and its last
+  messages are replayed. The previous session keeps running in the daemon.
+  An ended session is loaded.
+- A session on another device: the terminal drives it through the platform
+  the way the apps do. Commands go to `sessions/{hostId}/{sessionId}/commands`
+  with `t`, `from` (this device), `name` (`Terminal on <host>`) and `exp`
+  headers; events and the answers come from its `events` stream and are
+  rendered like a local session's. An ended session there is resumed first
+  with `resume_session` on `hosts/{hostId}/commands`, which needs a daemon on
+  that device. `/stop` stops it through its daemon; `/detach` stops
+  following it and leaves it running.
+- `+ new session in <workspace>` starts a session in that directory
+  (`create_session`, over the socket or through `hosts/{hostId}/commands`).
+  `+ new workspace on <device>…` browses the device's directories with
+  `list_directories`, starting at the parent of its newest workspace (the
+  home directory on this device), and starts a session in the one chosen.
+  Both are offered for devices whose daemon answers. As in the apps, a
+  device runs a daemon when its newest host record says so, a host record
+  said so within the last six hours (a standalone `super` there writes host
+  records without the flag), or one of its session records says so.
+- When the daemon refuses the session picked (another process has its file
+  open, say), the terminal stays attached to the session it showed.
+
+In the full-screen TUI, in-process or attached, `/sessions` looks the same,
+in place of the editor. Picking a session on this device turns the TUI into
+the attached TUI on it, in place as after `/remote`, with its transcript: a
+session the TUI ran in-process stays saved (it is listed as ended and can
+be picked again), one it was attached to keeps running in the daemon. A
+session on another device is shown by the line-based front end, which
+takes over below the TUI's last frame on the same terminal. Switching waits
+for no turn: while one runs it is refused.
 
 ## The client library
 

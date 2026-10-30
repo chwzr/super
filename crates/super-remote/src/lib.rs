@@ -10,6 +10,7 @@
 //! signed-out `super` never touches the network.
 
 pub mod commands;
+pub mod controller;
 pub mod credentials;
 #[cfg(feature = "fake")]
 pub mod fake;

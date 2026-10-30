@@ -23,7 +23,12 @@ mod platform;
 mod provider_cli;
 mod remote;
 mod service_cli;
+#[cfg(unix)]
+mod session_link;
 mod session_sources;
+// Without a Unix socket only the picker's model is used, to say so.
+#[cfg_attr(not(unix), allow(dead_code))]
+mod sessions;
 mod setup;
 mod slash_commands;
 mod terminal_hosts;

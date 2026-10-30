@@ -162,6 +162,11 @@ pub(crate) const SUPER_SLASH_COMMANDS: &[SlashCommand] = &[
         "Hand this session to the SUPER daemon (alias for /remote)",
         None,
     ),
+    SlashCommand::new(
+        "sessions",
+        "Switch to any session on this device or another one",
+        None,
+    ),
 ];
 
 pub(crate) fn commands() -> impl Iterator<Item = &'static SlashCommand> {
@@ -315,7 +320,8 @@ mod tests {
                 "loop",
                 "autoresearch",
                 "jobs",
-                "rc"
+                "rc",
+                "sessions"
             ]
         );
         assert_eq!(

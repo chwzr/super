@@ -241,7 +241,7 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
 
 /// A turn, a queued message, a background request that writes the session,
 /// or a question on screen: the hand-over waits for all of them.
-fn busy(app: &App, session: &AgentSession) -> bool {
+pub(super) fn busy(app: &App, session: &AgentSession) -> bool {
     !matches!(
         terminal_host_state(app, session),
         crate::terminal_hosts::State::Idle

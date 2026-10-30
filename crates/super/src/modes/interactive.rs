@@ -38,6 +38,7 @@ mod attached;
 /// One rendering for a command, wherever it was typed.
 mod commands;
 mod remote_handover;
+mod sessions_ui;
 
 /// One rendered transcript cell.
 enum Cell {
@@ -150,6 +151,8 @@ struct App {
     command_tx: Option<mpsc::UnboundedSender<CommandEvent>>,
     /// `/remote` handing this session to the SUPER daemon.
     handover: remote_handover::State,
+    /// The `/sessions` picker.
+    sessions: sessions_ui::State,
     /// Set while the session runs in the SUPER daemon.
     #[cfg(unix)]
     attached: Option<attached::Attached>,
@@ -452,6 +455,9 @@ enum CommandEvent {
     /// a Unix socket nothing gets that far.
     #[cfg_attr(not(unix), allow(dead_code))]
     Handover(remote_handover::Progress),
+    /// A `/sessions` request came back. Without a Unix socket none is made.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Sessions(sessions_ui::Event),
 }
 
 enum WebMcpCommandResult {
@@ -883,6 +889,8 @@ impl App {
                 lines.push(prompt.value.clone());
             }
             lines.push(self.theme.fg("dim", "enter save · esc cancel"));
+        } else if sessions_ui::is_open(&self.sessions) {
+            lines.extend(sessions_ui::render(&mut self.sessions, width, &self.theme));
         } else if let Some(picker) = &mut self.picker {
             if let PickerKind::McpActions(name, _) = &picker.kind
                 && let Some(server) = self.mcp_servers.iter().find(|server| &server.name == name)
@@ -1222,18 +1230,29 @@ fn provisional_lines(editor: &mut Editor, theme: &Theme, width: usize) -> Vec<St
 
 pub async fn run(args: &Args) -> Result<i32> {
     let hosts = crate::terminal_hosts::TerminalHosts::from_env();
-    let result = run_with_hosts(args, &hosts, None).await;
+    let mut handed_over = None;
+    let result = run_with_hosts(args, &hosts, None, &mut handed_over).await;
     hosts.shutdown().await;
-    result
+    continue_after(result, handed_over).await
 }
 
 /// The TUI on the daemon's session `target` is attached to.
 #[cfg(unix)]
 pub async fn run_attached(args: &Args, target: crate::attach::Target) -> Result<i32> {
     let hosts = crate::terminal_hosts::TerminalHosts::from_env();
-    let result = run_with_hosts(args, &hosts, Some(target)).await;
+    let mut handed_over = None;
+    let result = run_with_hosts(args, &hosts, Some(target), &mut handed_over).await;
     hosts.shutdown().await;
-    result
+    continue_after(result, handed_over).await
+}
+
+/// `/sessions` switched to a session on another device: the line-based
+/// front end shows it from here on.
+async fn continue_after(result: Result<i32>, handed_over: sessions_ui::Slot) -> Result<i32> {
+    match handed_over {
+        Some(handed_over) => sessions_ui::continue_line_based(handed_over).await,
+        None => result,
+    }
 }
 
 #[cfg(unix)]
@@ -1265,6 +1284,8 @@ async fn run_with_hosts(
     args: &Args,
     hosts: &crate::terminal_hosts::TerminalHosts,
     target: Option<AttachTarget>,
+    // Without a Unix socket `/sessions` never leaves.
+    #[cfg_attr(not(unix), allow(unused_variables))] handed_over: &mut sessions_ui::Slot,
 ) -> Result<i32> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SessionEvent>();
     let tui_sink: super_coding::SessionEventSink = {
@@ -1317,7 +1338,8 @@ async fn run_with_hosts(
     let startup_args = args.clone();
     #[cfg(unix)]
     let attach_sink = sink.clone();
-    // `/remote` makes the session a view of the daemon's with the same sink.
+    // `/remote` and `/sessions` make the session a view of a daemon session
+    // with the same sink.
     #[cfg(unix)]
     let view_sink = sink.clone();
     let mut startup_task = tokio::spawn(async move {
@@ -1552,6 +1574,7 @@ async fn run_with_hosts(
         remote_allowed: false,
         command_tx: None,
         handover: Default::default(),
+        sessions: Default::default(),
         #[cfg(unix)]
         attached: None,
     };
@@ -1640,7 +1663,22 @@ async fn run_with_hosts(
     spawn_platform_model_refresh(&command_tx);
 
     let mut stranded = None;
+    // `/sessions` picked a session on another device.
+    #[cfg(unix)]
+    let mut leave = None;
     'main: loop {
+        #[cfg(unix)]
+        if let Some(switch) = sessions_ui::take_switch(&mut app.sessions) {
+            match sessions_ui::carry_on(&mut app, &session, switch, view_sink.clone(), &command_tx)
+                .await
+            {
+                sessions_ui::Next::Here => dirty = true,
+                sessions_ui::Next::Leave(next) => {
+                    leave = Some(*next);
+                    break 'main;
+                }
+            }
+        }
         if remote_handover::due(&app, &session) {
             // What the turn sent last belongs on screen before it freezes.
             while let Ok(event) = event_rx.try_recv() {
@@ -1854,6 +1892,30 @@ async fn run_with_hosts(
         }
     }
 
+    #[cfg(unix)]
+    if let Some(next) = leave {
+        // The last frame keeps the transcript and the switch; the line-based
+        // front end continues where the editor was.
+        let (width, height) = resize_state.accepted;
+        let (lines, blank) = sessions_ui::last_frame(&mut app, &session, width);
+        {
+            let mut out = std::io::stdout().lock();
+            renderer.render_frame(&lines, width, height, &mut out)?;
+            out.flush()?;
+        }
+        terminal.restore();
+        sessions_ui::reclaim_rows(blank);
+        if let Some(remote) = app.remote.take() {
+            // `/sessions` left this session saved: its mirror says goodbye.
+            remote.stop().await;
+        }
+        if let Some(attached) = app.attached.take() {
+            // The session shown before keeps running in the daemon.
+            attached::detach(attached).await;
+        }
+        *handed_over = Some(sessions_ui::handed_over(next, stdin_rx));
+        return Ok(0);
+    }
     terminal.restore();
     if let Some(reason) = stranded {
         // The session file is held elsewhere now; nothing here may write it.
@@ -2476,6 +2538,7 @@ fn handle_command_event(
         CommandEvent::Remote(notice) => handle_remote_notice(app, notice, session),
         CommandEvent::RemoteEvent(event) => handle_remote_event(app, event),
         CommandEvent::Handover(progress) => remote_handover::on_progress(app, progress, session),
+        CommandEvent::Sessions(event) => sessions_ui::on_event(app, event, session),
         #[cfg(unix)]
         CommandEvent::Attached(update) => attached::handle_update(app, update, session),
         CommandEvent::VoicePreview { generation, text } => {
@@ -3674,6 +3737,13 @@ fn handle_input(
             && view.handle_key(key) == JobViewAction::Close
         {
             app.job_view = None;
+        }
+        return Flow::Continue;
+    }
+
+    if sessions_ui::is_open(&app.sessions) {
+        if let InputEvent::Key(key) = event {
+            sessions_ui::handle_key(app, session, key, command_tx);
         }
         return Flow::Continue;
     }
@@ -8418,6 +8488,7 @@ fn run_slash_command(
             remote_handover::start(app, session, args, resources, command_tx)
         }
         "remote" if rest == "cancel" => remote_handover::cancel(app),
+        "sessions" => sessions_ui::open(app, session, command_tx),
         "remote" => run_remote_command(app, session, &rest, args, resources, command_tx),
         "accounts" => run_accounts_command(app, &rest),
         "login" => {
@@ -9083,6 +9154,7 @@ mod tests {
             remote_allowed: false,
             command_tx: None,
             handover: Default::default(),
+            sessions: Default::default(),
             #[cfg(unix)]
             attached: None,
         }

@@ -79,6 +79,18 @@ pub(super) async fn attach(
     view: &Arc<super_coding::AgentSession>,
     sink: super_coding::SessionEventSink,
 ) -> Result<(Attached, mpsc::UnboundedReceiver<AttachedNotice>)> {
+    attach_with(target, view, sink, Connector::Discover).await
+}
+
+/// [`attach`], reconnecting through `connector` after a dropped connection.
+/// Tests pin their temporary socket, so a reconnect never looks for (or
+/// starts) the daemon `super` would find.
+pub(super) async fn attach_with(
+    target: Target,
+    view: &Arc<super_coding::AgentSession>,
+    sink: super_coding::SessionEventSink,
+    connector: Connector,
+) -> Result<(Attached, mpsc::UnboundedReceiver<AttachedNotice>)> {
     let Target {
         client,
         events,
@@ -91,7 +103,7 @@ pub(super) async fn attach(
             events,
             attached,
             info,
-            connector: Connector::Discover,
+            connector,
         },
         view,
         sink,
@@ -128,6 +140,59 @@ pub(super) async fn adopt(
     forward(notices, command_tx);
     // Joining a turn in flight: it streams in from its next event.
     app.working = view.is_running();
+    Ok(())
+}
+
+/// Show the daemon session `/sessions` picked, which `link` is attached to,
+/// with its transcript. Attached, the TUI's own connection moves to it and
+/// the session shown before keeps running in the daemon; the link lets go.
+/// In-process, the TUI's session becomes a view of the session picked on
+/// the link's connection, the way `/remote` makes it one; the in-process
+/// session stays saved and its mirror says goodbye.
+pub(super) async fn switch(
+    app: &mut App,
+    view: &Arc<super_coding::AgentSession>,
+    mut link: crate::session_link::Link,
+    picked: super_sdk::daemon::SessionSummary,
+    sink: super_coding::SessionEventSink,
+    command_tx: &mpsc::UnboundedSender<CommandEvent>,
+) -> Result<()> {
+    if let Some(attached) = &mut app.attached {
+        let remote = attached.remote.clone();
+        let moved = remote.switch_to(&picked.session_id).await;
+        link.detach().await;
+        moved.map_err(|error| anyhow::anyhow!("could not switch: {error}"))?;
+        attached.approval = None;
+        if matches!(
+            app.picker.as_ref().map(|picker| &picker.kind),
+            Some(PickerKind::Attached(AttachedPicker::Approval { .. }))
+        ) {
+            app.picker = None;
+        }
+    } else {
+        let (client, events) = link
+            .into_daemon()
+            .ok_or_else(|| anyhow::anyhow!("no SUPER daemon connection to show it on"))?;
+        if let Some(remote) = app.remote.take() {
+            remote.stop().await;
+        }
+        app.remote_record_key = None;
+        let target = Target {
+            client,
+            events,
+            attached: super_daemon::client::Attached {
+                session: picked,
+                previous_session_id: None,
+            },
+            // What the link's connection said in `hello`.
+            info: crate::handover::client_info(),
+        };
+        adopt(app, view, target, sink, command_tx).await?;
+    }
+    show_transcript(app, view);
+    sync_session_title(app, view);
+    update_thinking_border(app, view.thinking_level());
+    refresh_git_branch(app, view);
     Ok(())
 }
 
@@ -793,6 +858,12 @@ pub(super) fn shell(
         let _ = tx.send(CommandEvent::ShellFinished(result));
     });
     true
+}
+
+/// Stop showing the session and leave it running in the daemon, quietly:
+/// `/sessions` picked one on another device.
+pub(super) async fn detach(attached: Attached) {
+    attached.remote.detach().await;
 }
 
 /// Leave: detach, say where the session went.

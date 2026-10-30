@@ -11,9 +11,12 @@
 //! `modes::interactive::run_attached`). With piped input or output the front
 //! end here is line based: it streams the reply, names each tool call, asks
 //! approvals as numbered choices and sends each line as a prompt (a steer
-//! while the session works).
+//! while the session works). `/sessions` switches what it shows, also to a
+//! session on another device through the platform ([`crate::session_link`]);
+//! the full TUI continues here when it switches to one.
 
 use crate::args::Args;
+use crate::session_link::Link;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -214,9 +217,33 @@ pub async fn try_run(args: &Args) -> Result<Outcome> {
             info,
         })));
     }
-    run(client, events, attached, initial)
-        .await
-        .map(Outcome::Exit)
+    let input: Input = Box::new(tokio::io::BufReader::new(tokio::io::stdin()));
+    run(
+        Link::local(client, events),
+        attached.session,
+        initial,
+        input,
+    )
+    .await
+    .map(Outcome::Exit)
+}
+
+/// Lines typed into the line-based front end.
+pub(crate) type Input = Box<dyn tokio::io::AsyncBufRead + Unpin + Send>;
+
+/// What `/sessions` in the full-screen TUI switched to: the link showing the
+/// session picked.
+pub(crate) struct Continuation {
+    pub link: Link,
+    pub session: SessionSummary,
+}
+
+/// Carry on line based after the full-screen TUI switched to a session on
+/// another device, which only this front end shows, with that session's
+/// header and last messages.
+pub(crate) async fn run_continued(continuation: Continuation, input: Input) -> Result<i32> {
+    let Continuation { link, session } = continuation;
+    run(link, session, None, input).await
 }
 
 async fn choose_and_attach(
@@ -346,15 +373,47 @@ impl Screen {
     }
 }
 
-const HELP: &str = "enter sends (a steer while it works) · ctrl+c aborts the turn, or detaches when idle · /detach or ctrl+d leaves it running · /stop stops the session";
+const HELP: &str = "enter sends (a steer while it works) · ctrl+c aborts the turn, or detaches when idle · /detach or ctrl+d leaves it running · /stop stops the session · /sessions switches";
+
+/// Introduce the session shown: a header line, the help when `help`, and
+/// its last messages. Returns whether it is working.
+async fn show_session(
+    link: &Link,
+    session: &SessionSummary,
+    screen: &mut Screen,
+    help: bool,
+) -> bool {
+    let mut header = format!(
+        "attached to session {} in {} · {}",
+        short_id(&session.session_id),
+        session.cwd,
+        link.describe()
+    );
+    if let Some(model) = &session.model {
+        header.push_str(&format!(" · {model}"));
+    }
+    screen.meta(&header);
+    if help && screen.interactive {
+        screen.meta(HELP);
+    }
+    let mut working = false;
+    if let Ok(Some(state)) = link.execute_ok(Command::GetState {}).await {
+        working = state["isStreaming"].as_bool().unwrap_or(false);
+    }
+    if let Ok(Some(data)) = link.execute_ok(Command::GetMessages {}).await
+        && let Some(messages) = data["messages"].as_array()
+    {
+        print_recent(screen, messages, 6);
+    }
+    working
+}
 
 async fn run(
-    client: DaemonClient,
-    mut events: UnboundedReceiver<ClientEvent>,
-    attached: Attached,
+    mut link: Link,
+    mut session: SessionSummary,
     initial: Option<(String, String)>,
+    input: Input,
 ) -> Result<i32> {
-    let session = attached.session;
     let interactive = std::io::stdin().is_terminal();
     let mut screen = Screen {
         color: std::io::stdout().is_terminal(),
@@ -362,43 +421,19 @@ async fn run(
         mid_line: false,
         at_prompt: false,
     };
-    let hello = client.hello().clone();
-    let mut header = format!(
-        "attached to session {} in {} · SUPER daemon {} (pid {})",
-        short_id(&session.session_id),
-        session.cwd,
-        hello.daemon_version,
-        hello.pid
-    );
-    if let Some(model) = &session.model {
-        header.push_str(&format!(" · {model}"));
-    }
-    screen.meta(&header);
-    if interactive {
-        screen.meta(HELP);
-    }
-
-    let mut working = false;
-    if let Ok(Some(state)) = client.execute_ok(Command::GetState {}).await {
-        working = state["isStreaming"].as_bool().unwrap_or(false);
-    }
-    if let Ok(Some(data)) = client.execute_ok(Command::GetMessages {}).await
-        && let Some(messages) = data["messages"].as_array()
-    {
-        print_recent(&mut screen, messages, 6);
-    }
+    let mut working = show_session(&link, &session, &mut screen, true).await;
 
     let mut own_prompts: VecDeque<String> = VecDeque::new();
     let mut approval: Option<OpenApproval> = None;
     if let Some((shown, message)) = initial {
         screen.line(&format!("› {shown}"));
-        send_prompt(&client, &mut screen, &mut own_prompts, message, working).await;
+        send_prompt(&link, &mut screen, &mut own_prompts, message, working).await;
         working = true;
     } else if !working {
         screen.prompt();
     }
 
-    let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut input = input.lines();
     let mut input_open = true;
     let code = loop {
         tokio::select! {
@@ -427,7 +462,7 @@ async fn run(
                 if let Some(open) = &approval {
                     match pick_choice(&open.choices, &text) {
                         Some(choice) => {
-                            let answer = client
+                            let answer = link
                                 .execute_ok(Command::AnswerApproval {
                                     approval_id: open.id.clone(),
                                     choice,
@@ -452,28 +487,54 @@ async fn run(
                         screen.prompt();
                     }
                     "/remote" | "/rc" | "/remote status" => {
-                        screen.meta(&crate::handover::attached_status(&client, &session.session_id));
+                        screen.meta(&link.status(&session.session_id));
                         screen.prompt();
                     }
+                    "/sessions" => {
+                        screen.end_reply();
+                        let picked = crate::sessions::pick_inline(
+                            &mut link,
+                            &session.session_id,
+                            input.get_mut(),
+                        )
+                        .await;
+                        match picked {
+                            Ok(Some(next)) => {
+                                session = next;
+                                approval = None;
+                                own_prompts.clear();
+                                working = show_session(&link, &session, &mut screen, false).await;
+                            }
+                            Ok(None) => {}
+                            Err(error) => screen.meta(&format!("/sessions: {error}")),
+                        }
+                        if !working {
+                            screen.prompt();
+                        }
+                    }
                     "/abort" => {
-                        let _ = client.execute(Command::Abort {}).await;
+                        let _ = link.execute(Command::Abort {}).await;
                     }
                     "/stop" => {
-                        match client.stop_session(&session.session_id).await {
+                        match link.stop_session(&session.session_id).await {
                             Ok(()) => screen.meta("stopped; the session can be resumed with `super -c`"),
                             Err(error) => screen.meta(&format!("could not stop: {error}")),
                         }
                         break 0;
                     }
                     _ => {
-                        send_prompt(&client, &mut screen, &mut own_prompts, text, working).await;
+                        send_prompt(&link, &mut screen, &mut own_prompts, text, working).await;
                         working = true;
                     }
                 }
             }
-            event = events.recv() => {
+            event = link.recv() => {
                 let Some(event) = event else {
-                    screen.meta("the SUPER daemon closed the connection");
+                    screen.meta(if link.remote().is_some() {
+                        "the session's events stopped coming through the platform"
+                    } else {
+                        "the SUPER daemon closed the connection"
+                    });
                     break 1;
                 };
                 match event {
@@ -514,7 +575,7 @@ async fn run(
             _ = tokio::signal::ctrl_c() => {
                 if working {
                     screen.meta("aborting");
-                    let _ = client.execute(Command::Abort {}).await;
+                    let _ = link.execute(Command::Abort {}).await;
                 } else {
                     break 0;
                 }
@@ -522,9 +583,15 @@ async fn run(
         }
     };
     screen.end_reply();
-    if !client.is_closed() {
-        let _ = client.detach().await;
-        if code == 0 {
+    if !link.is_closed() {
+        let remote = link.remote().is_some();
+        link.detach().await;
+        if code == 0 && remote {
+            screen.meta(&format!(
+                "detached from {}; it keeps running on its device",
+                short_id(&session.session_id)
+            ));
+        } else if code == 0 {
             screen.meta(&format!(
                 "detached from {}; it keeps running in the SUPER daemon and `super` here attaches again",
                 short_id(&session.session_id)
@@ -535,7 +602,7 @@ async fn run(
 }
 
 async fn send_prompt(
-    client: &DaemonClient,
+    link: &Link,
     screen: &mut Screen,
     own_prompts: &mut VecDeque<String>,
     message: String,
@@ -550,7 +617,7 @@ async fn send_prompt(
         images: Vec::new(),
         streaming_behavior: working.then_some(StreamingBehavior::Steer),
     };
-    if let Err(error) = client.execute_ok(command).await {
+    if let Err(error) = link.execute_ok(command).await {
         screen.meta(&format!("not sent: {error}"));
     }
 }
