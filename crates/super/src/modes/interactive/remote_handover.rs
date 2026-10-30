@@ -71,6 +71,9 @@ pub(super) struct HandedOver {
 #[cfg(not(unix))]
 pub(super) enum HandedOver {}
 
+/// Where the full-screen terminal leaves what it handed over.
+pub(super) type Slot = Option<HandedOver>;
+
 #[cfg(unix)]
 pub(super) fn handed_over(moved: Moved, stdin: mpsc::UnboundedReceiver<Vec<u8>>) -> HandedOver {
     HandedOver {
