@@ -117,7 +117,9 @@ pub(super) enum Shown {
         progress_view: bool,
     },
     TrustSaved(std::result::Result<bool, String>),
-    /// Another question was answered.
+    /// Another question was answered. Only the daemon asks those, so a
+    /// build without the daemon client never shows one.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Answered {
         title: String,
         choice: String,
