@@ -265,6 +265,25 @@ async fn the_dispatcher_answers_state_and_model_questions() {
         .await;
     let models = models.data.unwrap();
     assert_eq!(models["models"].as_array().unwrap().len(), 1);
+    assert_eq!(models["models"][0]["provider"], "mock");
+    assert_eq!(models["models"][0]["id"], "mock-1");
+
+    // Without a search the list is every model of a configured or
+    // authenticated provider; the provider from models.json is one of them.
+    // (Which built-in providers appear depends on this machine's logins; the
+    // hermetic check lives in tests/available_models.rs.)
+    let everything = session
+        .execute(Command::GetAvailableModels { search: None })
+        .await;
+    let everything = everything.data.unwrap();
+    assert!(
+        everything["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["provider"] == "mock" && model["id"] == "mock-1"),
+        "{everything}"
+    );
 
     // A model that does not exist is a clean failure, not a panic.
     let missing = session

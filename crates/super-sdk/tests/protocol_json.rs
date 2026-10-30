@@ -169,6 +169,29 @@ fn payload_fields_are_camel_case() {
 }
 
 #[test]
+fn model_search_is_optional() {
+    let all = Command::GetAvailableModels { search: None };
+    assert_eq!(
+        serde_json::to_string(&all).unwrap(),
+        r#"{"type":"get_available_models"}"#
+    );
+    assert_eq!(
+        decode_request(r#"{"type":"get_available_models"}"#)
+            .unwrap()
+            .command,
+        all
+    );
+    assert_eq!(
+        decode_request(r#"{"type":"get_available_models","search":"claude"}"#)
+            .unwrap()
+            .command,
+        Command::GetAvailableModels {
+            search: Some("claude".into())
+        }
+    );
+}
+
+#[test]
 fn a_generated_session_title_is_marked_and_a_typed_name_is_unchanged() {
     let typed = Command::SetSessionName {
         name: "n".into(),
