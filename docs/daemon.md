@@ -66,9 +66,11 @@ super-daemon`, waits up to ten seconds for the daemon to answer on its
 socket, and prints the unit path, the binary it runs and the unit's state.
 `ExecStart` is the binary you ran `super install` with, or the `super` on
 your PATH when that is a symlink to it (Homebrew), so an upgrade keeps the
-unit working. A path with spaces is quoted. Running `super install` again is
-safe: the same unit is only enabled and started, a different one (super
-moved) replaces it and restarts the daemon.
+unit working. A path with spaces is quoted; systemd cannot run one with a
+quote, a backslash or a `$` in it, so `super install` refuses those before
+writing anything. Running `super install` again is safe: the same unit is
+only enabled and started, a different one (super moved) replaces it and
+restarts the daemon.
 
 The daemon now starts with your systemd user manager, which runs from your
 first login to your last logout. On an always-on machine (a server, a box you

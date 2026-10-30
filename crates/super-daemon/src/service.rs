@@ -147,8 +147,10 @@ pub fn service_exe(current_exe: &Path, path_var: Option<&OsStr>) -> PathBuf {
 }
 
 /// `path` as the program word of `ExecStart=`: `%` doubled so systemd does
-/// not read a specifier, and the whole path in double quotes with `\` and `"`
-/// escaped when it holds whitespace, a quote or a backslash.
+/// not read a specifier, and the whole path in double quotes when it holds
+/// whitespace. systemd refuses a program path with a quote or a backslash
+/// in it however it is escaped ("Executable name contains special
+/// characters"), so those are refused here, before anything is written.
 pub fn exec_path(path: &Path) -> Result<String, ServiceError> {
     let unusable = |reason| ServiceError::ExePath {
         path: path.to_path_buf(),
@@ -168,27 +170,17 @@ pub fn exec_path(path: &Path) -> Result<String, ServiceError> {
     if text.contains('$') {
         return Err(unusable("systemd cannot run a path that contains `$`"));
     }
-    let quote = text
-        .chars()
-        .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '\'' | '\\'));
-    let mut word = String::with_capacity(text.len() + 2);
-    if quote {
-        word.push('"');
+    if text.contains(['"', '\'', '\\']) {
+        return Err(unusable(
+            "systemd cannot run a path that contains a quote or a backslash",
+        ));
     }
-    for ch in text.chars() {
-        match ch {
-            '%' => word.push_str("%%"),
-            '"' | '\\' if quote => {
-                word.push('\\');
-                word.push(ch);
-            }
-            _ => word.push(ch),
-        }
-    }
-    if quote {
-        word.push('"');
-    }
-    Ok(word)
+    let word = text.replace('%', "%%");
+    Ok(if text.chars().any(char::is_whitespace) {
+        format!("\"{word}\"")
+    } else {
+        word
+    })
 }
 
 /// The unit file `super install` writes for `exe`.
@@ -372,10 +364,9 @@ pub fn install(
         Err(source) => return Err(io_error("read", &unit_path, source)),
     };
     if change != UnitChange::Unchanged {
-        std::fs::create_dir_all(&env.unit_dir)
+        create_unit_dir(&env.unit_dir)
             .map_err(|source| io_error("create", &env.unit_dir, source))?;
-        std::fs::write(&unit_path, &unit)
-            .map_err(|source| io_error("write", &unit_path, source))?;
+        write_unit(&unit_path, &unit).map_err(|source| io_error("write", &unit_path, source))?;
     }
     call(systemctl, &["daemon-reload"])?;
     if change == UnitChange::Updated {
@@ -611,6 +602,28 @@ fn detail(output: &SystemctlOutput) -> String {
         .to_string()
 }
 
+/// Create the unit directory and its missing parents as 0755, as systemd's
+/// own tools do, so a permissive umask (002, 000) does not leave a directory
+/// where another user could put a unit that runs as this one.
+fn create_unit_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o755);
+    builder.create(dir)
+}
+
+/// Write the unit, a new file as 0644 whatever the umask: a unit another
+/// user can rewrite runs their command as this user.
+fn write_unit(path: &Path, unit: &str) -> io::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o644);
+    options.open(path)?.write_all(unit.as_bytes())
+}
+
 fn io_error(action: &'static str, path: &Path, source: io::Error) -> ServiceError {
     ServiceError::Io {
         action,
@@ -753,26 +766,31 @@ mod tests {
     }
 
     #[test]
-    fn exec_path_quotes_only_what_systemd_would_split_or_unescape() {
+    fn exec_path_quotes_only_what_systemd_would_split() {
         let path = |text: &str| exec_path(Path::new(text)).unwrap();
         assert_eq!(path("/usr/local/bin/super"), "/usr/local/bin/super");
         assert_eq!(
             path("/home/felix/My Tools/super"),
             "\"/home/felix/My Tools/super\""
         );
-        assert_eq!(path("/opt/it's/super"), "\"/opt/it's/super\"");
-        assert_eq!(path("/opt/a\"b/super"), "\"/opt/a\\\"b/super\"");
-        assert_eq!(path("/opt/a\\b/super"), "\"/opt/a\\\\b/super\"");
         assert_eq!(path("/opt/100%/super"), "/opt/100%%/super");
         assert_eq!(path("/opt/50% off/super"), "\"/opt/50%% off/super\"");
+        assert_eq!(path("/opt/a;b/super"), "/opt/a;b/super");
     }
 
     #[test]
     fn exec_path_refuses_what_a_unit_cannot_hold() {
+        // systemd's config_parse_exec rejects a program path that fails
+        // string_is_safe(): quotes, backslashes and control characters.
         for (path, reason) in [
             ("bin/super", "not absolute"),
             ("/opt/$HOME/super", "`$`"),
             ("/opt/a\nb/super", "control character"),
+            ("/opt/a\u{7f}b/super", "control character"),
+            ("/opt/it's/super", "a quote or a backslash"),
+            ("/opt/a\"b/super", "a quote or a backslash"),
+            ("/opt/a\\b/super", "a quote or a backslash"),
+            ("/opt/my \"tools\"/super", "a quote or a backslash"),
         ] {
             let error = exec_path(Path::new(path)).unwrap_err().to_string();
             assert!(error.contains(reason), "{path}: {error}");
@@ -979,6 +997,53 @@ mod tests {
             "{error:?}"
         );
         assert!(systemctl.calls.is_empty());
+    }
+
+    #[test]
+    fn install_refuses_a_path_systemd_would_not_run_and_writes_nothing() {
+        let fixture = Fixture::linux();
+        let quoted = fixture.dir.path().join("it's").join("super");
+        std::fs::create_dir_all(quoted.parent().unwrap()).unwrap();
+        std::fs::write(&quoted, b"binary").unwrap();
+        let mut systemctl = FakeSystemctl::default();
+
+        let error = install(&fixture.env, &quoted, &mut systemctl).unwrap_err();
+
+        assert!(matches!(error, ServiceError::ExePath { .. }), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .ends_with("systemd cannot run a path that contains a quote or a backslash"),
+            "{error}"
+        );
+        assert!(systemctl.calls.is_empty());
+        assert!(!fixture.env.unit_dir.exists());
+    }
+
+    #[test]
+    fn install_leaves_the_unit_and_its_directories_unwritable_by_others() {
+        let fixture = Fixture::linux();
+        // The umask belongs to the whole process, so it is changed only around
+        // the install. 002 is the default where every user has their own group.
+        let previous = unsafe { libc::umask(0o002) };
+        let installed = install(&fixture.env, &fixture.exe, &mut FakeSystemctl::healthy());
+        unsafe { libc::umask(previous) };
+        installed.unwrap();
+
+        let mode = |path: &Path| {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+        };
+        assert_eq!(mode(&fixture.env.unit_path()), 0o644);
+        let home = fixture.dir.path().join("home");
+        for dir in fixture
+            .env
+            .unit_dir
+            .ancestors()
+            .take_while(|dir| *dir != home)
+        {
+            assert_eq!(mode(dir), 0o755, "{}", dir.display());
+        }
     }
 
     #[test]
