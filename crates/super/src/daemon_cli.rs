@@ -142,7 +142,8 @@ async fn status(socket: Option<PathBuf>) -> Result<i32> {
         "sessions {} hosted, {} on disk",
         status.hosted_sessions, status.stored_sessions
     );
-    println!("clients  {}", status.clients);
+    // Not counting this connection.
+    println!("clients  {}", status.clients.saturating_sub(1));
     Ok(0)
 }
 

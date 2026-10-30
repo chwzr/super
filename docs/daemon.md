@@ -18,7 +18,7 @@ an account works as it always did.
 | Command | What it does |
 | --- | --- |
 | `super daemon run [--socket PATH]` | Run in the foreground until `shutdown`, SIGTERM or SIGINT. Exit 0 on a deliberate stop, 1 on any error. Refuses to start while another daemon holds `~/.super/run/daemon.lock`. |
-| `super daemon status [--socket PATH]` | Print version, pid, uptime, sessions and clients. Exit 1 when no daemon answers, 2 when it refuses the protocol. |
+| `super daemon status [--socket PATH]` | Print version, pid, uptime, sessions and the clients connected besides itself. Exit 1 when no daemon answers, 2 when it refuses the protocol. |
 | `super daemon stop [--socket PATH]` | Ask the daemon to shut down, or send SIGTERM to the pid in the lock file when the socket is dead or the daemon speaks another protocol version. |
 
 Without `--socket` every command uses `SUPER_DAEMON_SOCKET` when it is set,

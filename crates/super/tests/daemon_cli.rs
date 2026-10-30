@@ -165,7 +165,7 @@ fn status_finds_the_socket_in_the_environment() {
         .expect("run status");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{stdout}");
-    assert!(stdout.contains("clients  1"), "{stdout}");
+    assert!(stdout.contains("clients  0"), "{stdout}");
     let stopped = sandbox
         .command(&["daemon", "stop"])
         .env("SUPER_DAEMON_SOCKET", sandbox.socket())

@@ -199,6 +199,8 @@ struct Screen {
     interactive: bool,
     /// The reply is streaming mid-line.
     mid_line: bool,
+    /// The cursor waits after `› `; output starts on the next line.
+    at_prompt: bool,
 }
 
 impl Screen {
@@ -212,9 +214,10 @@ impl Screen {
 
     fn line(&mut self, text: &str) {
         let mut out = std::io::stdout().lock();
-        if self.mid_line {
+        if self.mid_line || self.at_prompt {
             let _ = writeln!(out);
             self.mid_line = false;
+            self.at_prompt = false;
         }
         let _ = writeln!(out, "{text}");
         let _ = out.flush();
@@ -227,27 +230,38 @@ impl Screen {
 
     fn stream(&mut self, delta: &str) {
         let mut out = std::io::stdout().lock();
+        if self.at_prompt {
+            let _ = writeln!(out);
+            self.at_prompt = false;
+        }
         let _ = write!(out, "{delta}");
         let _ = out.flush();
         self.mid_line = !delta.ends_with('\n');
     }
 
     fn end_reply(&mut self) {
-        if self.mid_line {
+        if self.mid_line || self.at_prompt {
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out);
             let _ = out.flush();
             self.mid_line = false;
+            self.at_prompt = false;
         }
     }
 
     fn prompt(&mut self) {
-        if self.interactive {
+        if self.interactive && !self.at_prompt {
             self.end_reply();
             let mut out = std::io::stdout().lock();
             let _ = write!(out, "› ");
             let _ = out.flush();
+            self.at_prompt = true;
         }
+    }
+
+    /// The user pressed enter: the terminal moved to the next line.
+    fn entered(&mut self) {
+        self.at_prompt = false;
     }
 }
 
@@ -265,6 +279,7 @@ async fn run(
         color: std::io::stdout().is_terminal(),
         interactive,
         mid_line: false,
+        at_prompt: false,
     };
     let hello = client.hello().clone();
     let mut header = format!(
@@ -308,7 +323,10 @@ async fn run(
         tokio::select! {
             line = input.next_line(), if input_open => {
                 let line = match line {
-                    Ok(Some(line)) => line,
+                    Ok(Some(line)) => {
+                        screen.entered();
+                        line
+                    }
                     Ok(None) | Err(_) => {
                         input_open = false;
                         // Piped input waits for the turn it started.
