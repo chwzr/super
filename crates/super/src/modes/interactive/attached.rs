@@ -112,6 +112,24 @@ pub(super) async fn attach(
     ))
 }
 
+/// Make the TUI's running session a view of the daemon's session `target`
+/// is attached to, in place: after `/remote` handed the session over, the
+/// transcript on screen is the daemon's already and stays.
+pub(super) async fn adopt(
+    app: &mut App,
+    view: &Arc<super_coding::AgentSession>,
+    target: Target,
+    sink: super_coding::SessionEventSink,
+    command_tx: &mpsc::UnboundedSender<CommandEvent>,
+) -> Result<()> {
+    let (attached, notices) = attach(target, view, sink).await?;
+    app.attached = Some(attached);
+    forward(notices, command_tx);
+    // Joining a turn in flight: it streams in from its next event.
+    app.working = view.is_running();
+    Ok(())
+}
+
 /// Hand the daemon's notices to the TUI loop.
 pub(super) fn forward(
     mut notices: mpsc::UnboundedReceiver<AttachedNotice>,
@@ -670,7 +688,7 @@ pub(super) fn slash_command(
             });
         }
         "session" => app.cells.push(Cell::Notice(session_info(session, &remote))),
-        "remote" if matches!(rest, "" | "status" | "on" | "off") => {
+        "remote" | "rc" if matches!(rest, "" | "status" | "on" | "off") => {
             let summary = remote.session();
             app.cells.push(Cell::Notice(format!(
                 "This terminal is attached to session {} in the SUPER daemon {}, which keeps it visible in the SUPER app while signed in. `daemon.attach: false` in settings keeps terminals in-process.",

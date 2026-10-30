@@ -76,8 +76,8 @@ pub(crate) const PI_CORE_SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand::new("logout", "Remove provider authentication", None),
     SlashCommand::new(
         "remote",
-        "Remote control: status, on, off, name <name>",
-        Some("[status|on|off|name <name>]"),
+        "Hand this session to the SUPER daemon so the apps see it; status, on, off, name <name>",
+        Some("[status|on|off|name <name>|cancel]"),
     ),
     SlashCommand::new("new", "Start a new session", None),
     SlashCommand::new("compact", "Manually compact the session context", None),
@@ -157,6 +157,11 @@ pub(crate) const SUPER_SLASH_COMMANDS: &[SlashCommand] = &[
         Some("<goal> [--iterations N]"),
     ),
     SlashCommand::new("jobs", "Browse and manage iterative jobs", None),
+    SlashCommand::new(
+        "rc",
+        "Hand this session to the SUPER daemon (alias for /remote)",
+        None,
+    ),
 ];
 
 pub(crate) fn commands() -> impl Iterator<Item = &'static SlashCommand> {
@@ -270,8 +275,8 @@ mod tests {
                 ("logout", "Remove provider authentication", None),
                 (
                     "remote",
-                    "Remote control: status, on, off, name <name>",
-                    Some("[status|on|off|name <name>]")
+                    "Hand this session to the SUPER daemon so the apps see it; status, on, off, name <name>",
+                    Some("[status|on|off|name <name>|cancel]")
                 ),
                 ("new", "Start a new session", None),
                 ("compact", "Manually compact the session context", None),
@@ -309,7 +314,8 @@ mod tests {
                 "workflows",
                 "loop",
                 "autoresearch",
-                "jobs"
+                "jobs",
+                "rc"
             ]
         );
         assert_eq!(
