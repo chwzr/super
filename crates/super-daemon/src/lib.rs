@@ -11,8 +11,8 @@ pub mod installation;
 pub mod lock;
 pub mod log;
 pub mod paths;
-pub mod session_lock;
 pub mod service;
+pub mod session_lock;
 
 #[cfg(unix)]
 pub mod client;
