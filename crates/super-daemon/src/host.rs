@@ -540,6 +540,23 @@ pub fn next_state(
     }
 }
 
+/// Whether `event` reports a change to what a session's summary shows
+/// besides its state: a successful command that renamed it or changed its
+/// model or thinking level.
+fn changes_summary(event: &Value) -> bool {
+    match event.get("type").and_then(Value::as_str) {
+        Some("model_changed") => true,
+        Some("command_applied") => {
+            event.get("success").and_then(Value::as_bool) == Some(true)
+                && matches!(
+                    event.pointer("/command/type").and_then(Value::as_str),
+                    Some("set_session_name" | "set_model" | "set_thinking_level")
+                )
+        }
+        _ => false,
+    }
+}
+
 /// Follow one hosted session's events, keep its state, announce changes.
 /// Holds only weak references, so a dropped session ends the task.
 async fn track_state(
@@ -561,6 +578,12 @@ async fn track_state(
             host.announce(DaemonEvent::SessionUpdated {
                 session: host.summary(&hosted),
             });
+        } else if changes_summary(&event.0) {
+            // A client renamed the session or changed its model or thinking
+            // level: the listing shows it.
+            host.announce(DaemonEvent::SessionUpdated {
+                session: host.summary(&hosted),
+            });
         }
     }
 }
@@ -573,6 +596,23 @@ mod tests {
 
     fn state(kind: SessionState) -> (SessionState, Option<String>) {
         (kind, None)
+    }
+
+    #[test]
+    fn renames_and_model_or_thinking_changes_update_the_listing() {
+        let applied = |command: &str, success: bool| {
+            json!({"type": "command_applied", "origin": "Terminal",
+                   "command": {"type": command}, "success": success})
+        };
+        assert!(changes_summary(&applied("set_thinking_level", true)));
+        assert!(changes_summary(&applied("set_session_name", true)));
+        assert!(changes_summary(&applied("set_model", true)));
+        assert!(changes_summary(
+            &json!({"type": "model_changed", "provider": "mock", "modelId": "mock-1"})
+        ));
+        assert!(!changes_summary(&applied("set_thinking_level", false)));
+        assert!(!changes_summary(&applied("abort", true)));
+        assert!(!changes_summary(&json!({"type": "message_end"})));
     }
 
     #[test]
