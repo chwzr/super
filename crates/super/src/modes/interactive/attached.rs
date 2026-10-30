@@ -79,6 +79,18 @@ pub(super) async fn attach(
     view: &Arc<super_coding::AgentSession>,
     sink: super_coding::SessionEventSink,
 ) -> Result<(Attached, mpsc::UnboundedReceiver<AttachedNotice>)> {
+    attach_with(target, view, sink, Connector::Discover).await
+}
+
+/// [`attach`], reconnecting through `connector` after a dropped connection.
+/// Tests pin their temporary socket, so a reconnect never looks for (or
+/// starts) the daemon `super` would find.
+pub(super) async fn attach_with(
+    target: Target,
+    view: &Arc<super_coding::AgentSession>,
+    sink: super_coding::SessionEventSink,
+    connector: Connector,
+) -> Result<(Attached, mpsc::UnboundedReceiver<AttachedNotice>)> {
     let Target {
         client,
         events,
@@ -91,7 +103,7 @@ pub(super) async fn attach(
             events,
             attached,
             info,
-            connector: Connector::Discover,
+            connector,
         },
         view,
         sink,
