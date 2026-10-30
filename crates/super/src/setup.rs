@@ -317,6 +317,29 @@ pub fn session_dir(args: &Args, settings: &Settings) -> PathBuf {
         .unwrap_or_else(default_session_dir)
 }
 
+/// Hold `<file>.jsonl.lock` for whichever session file `session` has open,
+/// following it when the user starts, resumes or forks another, so a SUPER
+/// daemon never hosts a file this process writes. Fails when another process
+/// already holds the file the session starts with.
+pub fn keep_session_lock(
+    session: &Arc<AgentSession>,
+) -> Result<super_daemon::session_lock::SessionLockKeeper> {
+    let session = Arc::downgrade(session);
+    super_daemon::session_lock::SessionLockKeeper::start(
+        move || {
+            let session = session.upgrade()?;
+            let manager = session.manager.lock().ok()?;
+            manager.session_file().map(std::path::Path::to_path_buf)
+        },
+        std::time::Duration::from_millis(500),
+    )
+    .map_err(|held| {
+        anyhow::anyhow!(
+            "{held} (the SUPER daemon or another terminal). Close it there, or run `super` signed in to attach to it through the daemon"
+        )
+    })
+}
+
 fn locate_session(reference: &str, dir: &std::path::Path) -> Result<PathBuf> {
     let as_path = PathBuf::from(reference);
     if as_path.is_file() {

@@ -56,6 +56,7 @@ pub fn options_from_args(args: &Args) -> Result<SessionOptions> {
 
 pub async fn run(args: &Args) -> Result<i32> {
     let session = super_sdk::Session::create(options_from_args(args)?).await?;
+    let _session_lock = crate::setup::keep_session_lock(session.agent_session())?;
 
     // A signed-in headless session is mirrored like a terminal one, so a
     // desktop app can drive it locally while phones follow along. Only then

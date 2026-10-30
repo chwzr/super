@@ -1322,6 +1322,14 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         theme,
         themes,
     } = startup;
+    // One writer per session file: a SUPER daemon must not host this one.
+    let _session_lock = match crate::setup::keep_session_lock(&session) {
+        Ok(lock) => lock,
+        Err(error) => {
+            terminal.restore();
+            return Err(error);
+        }
+    };
     let mut resources = InteractiveResources {
         settings: settings.clone(),
         skills,
@@ -7242,7 +7250,21 @@ fn switch_session(
     session: &Arc<super_coding::AgentSession>,
     record: &SessionRecord,
 ) {
+    let current = session
+        .manager
+        .lock()
+        .unwrap()
+        .session_file()
+        .map(Path::to_path_buf);
     let result = match &record.source {
+        SessionSource::Super(path)
+            if current.as_deref() != Some(path.as_path())
+                && super_daemon::session_lock::is_held(path) =>
+        {
+            Err(anyhow::anyhow!(
+                "it is open in another SUPER process (the SUPER daemon or another terminal)"
+            ))
+        }
         SessionSource::Super(path) => super_coding::SessionManager::open(path),
         source => session_sources::import(source).and_then(|messages| {
             if messages.is_empty() {
