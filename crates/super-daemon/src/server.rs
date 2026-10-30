@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use super_sdk::daemon::{
     ClientLine, DaemonCommand, DaemonEvent, DaemonRequest, DaemonStatus, DirectoryEntry, EndReason,
-    HelloReply, PROTOCOL_VERSIONS, decode_client_line, negotiate,
+    HelloReply, decode_client_line, negotiate,
 };
 use super_sdk::protocol::Response;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -28,12 +28,17 @@ pub struct DaemonInfo {
     pub host_name: String,
     pub platform: String,
     pub socket_path: PathBuf,
+    /// The range `hello` accepts and advertises.
+    pub protocol_versions: [u32; 2],
 }
 
 pub struct ServerContext {
     pub host: Arc<SessionHost>,
     pub info: DaemonInfo,
     pub shutdown: CancellationToken,
+    /// Cancelled once the last lines of a shutdown are queued: every
+    /// connection then closes, so clients see the daemon go.
+    pub closing: CancellationToken,
     started: Instant,
     started_at: String,
     clients: AtomicUsize,
@@ -46,6 +51,7 @@ impl ServerContext {
             host,
             info,
             shutdown,
+            closing: CancellationToken::new(),
             started: Instant::now(),
             started_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
             clients: AtomicUsize::new(0),
@@ -74,7 +80,7 @@ impl ServerContext {
         let hosted = sessions.iter().filter(|session| session.hosted).count();
         DaemonStatus {
             daemon_version: self.info.version.clone(),
-            protocol_versions: PROTOCOL_VERSIONS,
+            protocol_versions: self.info.protocol_versions,
             host_id: self.info.host_id.clone(),
             host_name: self.info.host_name.clone(),
             platform: self.info.platform.clone(),
@@ -252,7 +258,12 @@ async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
         })
     };
 
-    while let Some(line) = read_line(&mut reader, &mut buffer).await {
+    loop {
+        let line = tokio::select! {
+            _ = ctx.closing.cancelled() => break,
+            line = read_line(&mut reader, &mut buffer) => line,
+        };
+        let Some(line) = line else { break };
         dispatch(&ctx, &client, &line);
     }
 
@@ -294,7 +305,7 @@ fn handshake(
                     version,
                     protocol_versions,
                 },
-        })) => match negotiate(protocol_versions, PROTOCOL_VERSIONS) {
+        })) => match negotiate(protocol_versions, ctx.info.protocol_versions) {
             Ok(protocol_version) => {
                 let reply = ctx.hello_reply(protocol_version);
                 let response =
@@ -320,7 +331,7 @@ fn handshake(
                     message,
                     Some(json!({
                         "daemonVersion": ctx.info.version,
-                        "protocolVersions": PROTOCOL_VERSIONS,
+                        "protocolVersions": ctx.info.protocol_versions,
                     })),
                 )
             }

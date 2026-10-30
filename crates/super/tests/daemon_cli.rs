@@ -41,9 +41,16 @@ impl Sandbox {
     }
 
     fn spawn_daemon(&self) -> Child {
+        self.spawn_daemon_with(&[])
+    }
+
+    fn spawn_daemon_with(&self, env: &[(&str, &str)]) -> Child {
         let socket = self.socket();
-        let child = self
-            .command(&["daemon", "run", "--socket", socket.to_str().unwrap()])
+        let mut command = self.command(&["daemon", "run", "--socket", socket.to_str().unwrap()]);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let child = command
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -145,4 +152,49 @@ fn stop_stops_a_running_daemon() {
         .expect("run stop again");
     assert_eq!(again.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&again.stdout).contains("no SUPER daemon is running"));
+}
+
+#[test]
+fn status_finds_the_socket_in_the_environment() {
+    let sandbox = Sandbox::new();
+    let child = sandbox.spawn_daemon();
+    let output = sandbox
+        .command(&["daemon", "status"])
+        .env("SUPER_DAEMON_SOCKET", sandbox.socket())
+        .output()
+        .expect("run status");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("clients  1"), "{stdout}");
+    let stopped = sandbox
+        .command(&["daemon", "stop"])
+        .env("SUPER_DAEMON_SOCKET", sandbox.socket())
+        .output()
+        .expect("run stop");
+    assert!(String::from_utf8_lossy(&stopped.stdout).contains("stopped"));
+    assert_eq!(wait_exit(child), 0);
+}
+
+#[test]
+fn a_daemon_on_another_protocol_range_names_both_and_the_update() {
+    let sandbox = Sandbox::new();
+    let child = sandbox.spawn_daemon_with(&[("SUPER_DAEMON_PROTOCOL_VERSIONS", "2-3")]);
+    let output = sandbox
+        .command(&[
+            "daemon",
+            "status",
+            "--socket",
+            sandbox.socket().to_str().unwrap(),
+        ])
+        .output()
+        .expect("run status");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("the SUPER daemon speaks protocol 2 to 3, this build speaks 1: "),
+        "{stderr}"
+    );
+    // SAFETY: SIGTERM to a child we own.
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    assert_eq!(wait_exit(child), 0);
 }

@@ -16,8 +16,14 @@ pub async fn run(args: &Args, command: &DaemonSubcommand) -> Result<i32> {
 fn paths(socket: Option<PathBuf>) -> Result<DaemonPaths> {
     match socket {
         Some(socket) => Ok(DaemonPaths::beside_socket(socket)),
-        None => DaemonPaths::default_paths().ok_or_else(|| anyhow::anyhow!("no home directory")),
+        None => DaemonPaths::discover().ok_or_else(|| anyhow::anyhow!("no home directory")),
     }
+}
+
+/// How `super daemon status|stop` introduce themselves.
+#[cfg(unix)]
+fn cli_client() -> super_daemon::client::ClientInfo {
+    super_daemon::client::ClientInfo::new(super_sdk::daemon::ClientKind::Cli, "super")
 }
 
 #[cfg(not(unix))]
@@ -75,8 +81,30 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
         log_to_stderr: std::io::stderr().is_terminal(),
         sweep_interval: Duration::from_secs(60),
         presence,
+        protocol_versions: advertised_protocol(std::env::var(PROTOCOL_ENV).ok().as_deref())?,
     };
     super_daemon::run(config, tokio_util::sync::CancellationToken::new()).await
+}
+
+/// Lets a test daemon advertise another protocol range (`2-3`), to see what
+/// a client says to a newer or older daemon.
+#[cfg(unix)]
+const PROTOCOL_ENV: &str = "SUPER_DAEMON_PROTOCOL_VERSIONS";
+
+#[cfg(unix)]
+fn advertised_protocol(value: Option<&str>) -> Result<[u32; 2]> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(super_sdk::daemon::PROTOCOL_VERSIONS);
+    };
+    let parse = |part: &str| part.trim().parse::<u32>().ok();
+    let range = match value.split_once(['-', ',']) {
+        Some((low, high)) => parse(low).zip(parse(high)).map(|(low, high)| [low, high]),
+        None => parse(value).map(|version| [version, version]),
+    };
+    match range {
+        Some([low, high]) if low <= high => Ok([low, high]),
+        _ => anyhow::bail!("{PROTOCOL_ENV} must be a version or a range like 2-3, not '{value}'"),
+    }
 }
 
 #[cfg(not(unix))]
@@ -88,31 +116,21 @@ async fn status(socket: Option<PathBuf>) -> Result<i32> {
 
 #[cfg(unix)]
 async fn status(socket: Option<PathBuf>) -> Result<i32> {
-    use anyhow::Context as _;
-    use super_daemon::client::DaemonClient;
-    use super_sdk::daemon::{ClientKind, DaemonCommand, DaemonStatus};
+    use super_daemon::client::{ClientError, DaemonClient};
 
     let paths = paths(socket)?;
-    let Ok(mut client) = DaemonClient::connect(&paths.socket).await else {
-        println!("no SUPER daemon is running");
-        return Ok(1);
+    let client = match DaemonClient::connect_to(&paths.socket, &cli_client()).await {
+        Ok(client) => client,
+        Err(ClientError::NotRunning { .. }) => {
+            println!("no SUPER daemon is running");
+            return Ok(1);
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            return Ok(2);
+        }
     };
-    if let Err(error) = client
-        .hello(ClientKind::Cli, "super", env!("CARGO_PKG_VERSION"))
-        .await
-    {
-        eprintln!("error: {error}");
-        return Ok(2);
-    }
-    let response = client.call(DaemonCommand::Status {}).await?;
-    if !response.success {
-        anyhow::bail!(
-            "{}",
-            response.error.unwrap_or_else(|| "status failed".into())
-        );
-    }
-    let status: DaemonStatus =
-        serde_json::from_value(response.data.context("status without data")?)?;
+    let status = client.status().await?;
     println!(
         "SUPER daemon {} running (pid {}, up {})",
         status.daemon_version,
@@ -138,29 +156,17 @@ async fn stop(socket: Option<PathBuf>) -> Result<i32> {
 #[cfg(unix)]
 async fn stop(socket: Option<PathBuf>) -> Result<i32> {
     use std::time::Duration;
-    use super_daemon::client::DaemonClient;
+    use super_daemon::client::{ClientError, DaemonClient};
     use super_daemon::lock::DaemonLock;
-    use super_sdk::daemon::{ClientKind, DaemonCommand};
 
     let paths = paths(socket)?;
-    match DaemonClient::connect(&paths.socket).await {
-        Ok(mut client) => {
-            client
-                .hello(ClientKind::Cli, "super", env!("CARGO_PKG_VERSION"))
-                .await?;
-            let response = client.call(DaemonCommand::Shutdown {}).await?;
-            if !response.success {
-                anyhow::bail!(
-                    "{}",
-                    response.error.unwrap_or_else(|| "shutdown refused".into())
-                );
-            }
+    match DaemonClient::connect_to(&paths.socket, &cli_client()).await {
+        Ok(client) => {
+            client.shutdown().await?;
             // The daemon closes every connection on its way out.
-            let closed = tokio::time::timeout(Duration::from_secs(10), async {
-                while let Ok(Some(_)) = client.next_line().await {}
-            })
-            .await
-            .is_ok();
+            let closed = tokio::time::timeout(Duration::from_secs(10), client.closed())
+                .await
+                .is_ok();
             if closed {
                 println!("stopped");
             } else {
@@ -168,7 +174,7 @@ async fn stop(socket: Option<PathBuf>) -> Result<i32> {
             }
             Ok(0)
         }
-        Err(_) => match DaemonLock::holder_pid(&paths.lock) {
+        Err(ClientError::NotRunning { .. }) => match DaemonLock::holder_pid(&paths.lock) {
             Some(pid) if process_alive(pid) => {
                 // SAFETY: kill with SIGTERM has no memory-safety preconditions.
                 let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0;
@@ -184,6 +190,7 @@ async fn stop(socket: Option<PathBuf>) -> Result<i32> {
                 Ok(0)
             }
         },
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -208,6 +215,19 @@ fn uptime(seconds: u64) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_test_daemon_can_advertise_another_protocol_range() {
+        assert_eq!(
+            advertised_protocol(None).unwrap(),
+            super_sdk::daemon::PROTOCOL_VERSIONS
+        );
+        assert_eq!(advertised_protocol(Some("2-3")).unwrap(), [2, 3]);
+        assert_eq!(advertised_protocol(Some("2,3")).unwrap(), [2, 3]);
+        assert_eq!(advertised_protocol(Some(" 4 ")).unwrap(), [4, 4]);
+        assert!(advertised_protocol(Some("3-2")).is_err());
+        assert!(advertised_protocol(Some("two")).is_err());
+    }
 
     #[test]
     fn uptime_reads_like_a_person_wrote_it() {

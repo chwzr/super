@@ -74,6 +74,7 @@ async fn fixture() -> Fixture {
             host_name: "mbp".into(),
             platform: "macos".into(),
             socket_path: dir.path().join("d.sock"),
+            protocol_versions: super_sdk::daemon::PROTOCOL_VERSIONS,
         },
         CancellationToken::new(),
     );
