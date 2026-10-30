@@ -1,4 +1,6 @@
 mod args;
+#[cfg(unix)]
+mod attach;
 mod auth_flow;
 mod cache;
 mod daemon_cli;
@@ -119,7 +121,14 @@ async fn run(args: Args) -> anyhow::Result<i32> {
         Some("rpc") => modes::rpc::run(&args).await,
         Some(other) => anyhow::bail!("unknown mode: {other} (supported: json, rpc)"),
         None if args.print => modes::print::run(&args).await,
-        None => modes::interactive::run(&args).await,
+        None => {
+            // Signed in with a daemon about, the terminal attaches to it.
+            #[cfg(unix)]
+            if let Some(code) = attach::try_run(&args).await? {
+                return Ok(code);
+            }
+            modes::interactive::run(&args).await
+        }
     }
 }
 

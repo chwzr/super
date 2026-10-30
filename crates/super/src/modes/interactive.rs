@@ -3292,7 +3292,7 @@ fn stored_user_text(display_text: &str, model_text: &str) -> String {
     format!("{USER_DISPLAY_PREFIX}{display}{USER_DISPLAY_SUFFIX}\n{model_text}")
 }
 
-fn visible_user_text(stored_text: &str) -> String {
+pub(crate) fn visible_user_text(stored_text: &str) -> String {
     use base64::Engine as _;
     let Some((header, _)) = stored_text.split_once('\n') else {
         return stored_text.to_string();
