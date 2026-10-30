@@ -431,7 +431,15 @@ pub fn uninstall(
             }
         },
         Err(error) => {
-            problems.push(format!("nothing was stopped: {error}"));
+            problems.push(match error {
+                ServiceError::NoSystemctl => {
+                    "systemctl was not found, so nothing was stopped".into()
+                }
+                ServiceError::NoUserManager { detail, .. } => {
+                    format!("no systemd user manager answered ({detail}), so nothing was stopped")
+                }
+                other => format!("nothing was stopped: {other}"),
+            });
             false
         }
     };
@@ -1067,7 +1075,13 @@ mod tests {
         };
         assert!(!stopped);
         assert_eq!(problems.len(), 1);
-        assert!(problems[0].starts_with("nothing was stopped: systemctl --user did not reach"));
+        assert!(
+            problems[0].starts_with(
+                "no systemd user manager answered (Failed to connect to bus: No medium found), \
+                 so nothing was stopped"
+            ),
+            "{problems:?}"
+        );
         assert_eq!(fixture.unit(), None);
         assert!(std::fs::symlink_metadata(&link).is_err());
         assert_eq!(systemctl.calls, ["show-environment"]);
