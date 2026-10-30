@@ -32,6 +32,9 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// The TUI on a session the SUPER daemon runs.
+#[cfg(unix)]
+mod attached;
 mod remote_handover;
 
 /// One rendered transcript cell.
@@ -145,6 +148,9 @@ struct App {
     command_tx: Option<mpsc::UnboundedSender<CommandEvent>>,
     /// `/remote` handing this session to the SUPER daemon.
     handover: remote_handover::State,
+    /// Set while the session runs in the SUPER daemon.
+    #[cfg(unix)]
+    attached: Option<attached::Attached>,
 }
 
 type RemoteRecordKey = (
@@ -222,6 +228,9 @@ enum PickerKind {
     WorkflowRuns(Vec<super_coding::workflows::RunId>),
     /// Pick where to save a run's script.
     WorkflowSaveLocation(super_coding::workflows::RunId),
+    /// A question of the SUPER daemon, or what to do once it is gone.
+    #[cfg(unix)]
+    Attached(attached::AttachedPicker),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,6 +365,9 @@ enum CommandEvent {
     Remote(SessionNotice),
     /// The remote transport changed.
     RemoteEvent(RemoteEvent),
+    /// The SUPER daemon, for a TUI attached to it.
+    #[cfg(unix)]
+    Attached(attached::Update),
     BrowserLoginUrl {
         url: String,
         opened: bool,
@@ -565,6 +577,10 @@ impl App {
     /// ` · ♦ remote` while mirrored, ` · ♦ local` while signed in but not
     /// mirrored, nothing while signed out.
     fn remote_label(&self) -> String {
+        #[cfg(unix)]
+        if let Some(attached) = &self.attached {
+            return attached::footer_label(attached);
+        }
         match &self.remote {
             Some(remote) => format!(
                 " · {}",
@@ -1204,21 +1220,49 @@ fn provisional_lines(editor: &mut Editor, theme: &Theme, width: usize) -> Vec<St
 
 pub async fn run(args: &Args) -> Result<i32> {
     let hosts = crate::terminal_hosts::TerminalHosts::from_env();
-    let mut handed_over = None;
-    let result = run_with_hosts(args, &hosts, &mut handed_over).await;
+    let result = run_with_hosts(args, &hosts, None).await;
     hosts.shutdown().await;
-    // `/remote` moved the session to the daemon: carry on attached to it.
-    match handed_over {
-        Some(handed_over) => remote_handover::continue_attached(handed_over).await,
-        None => result,
+    result
+}
+
+/// The TUI on the daemon's session `target` is attached to.
+#[cfg(unix)]
+pub async fn run_attached(args: &Args, target: crate::attach::Target) -> Result<i32> {
+    let hosts = crate::terminal_hosts::TerminalHosts::from_env();
+    let result = run_with_hosts(args, &hosts, Some(target)).await;
+    hosts.shutdown().await;
+    result
+}
+
+#[cfg(unix)]
+type AttachTarget = crate::attach::Target;
+#[cfg(not(unix))]
+type AttachTarget = std::convert::Infallible;
+#[cfg(unix)]
+type AttachedView = (
+    attached::Attached,
+    mpsc::UnboundedReceiver<super_daemon::attached::AttachedNotice>,
+);
+#[cfg(not(unix))]
+type AttachedView = std::convert::Infallible;
+
+/// Whether the session runs in the SUPER daemon.
+fn is_attached(app: &App) -> bool {
+    #[cfg(unix)]
+    {
+        app.attached.is_some()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = app;
+        false
     }
 }
 
 async fn run_with_hosts(
     args: &Args,
     hosts: &crate::terminal_hosts::TerminalHosts,
-    // Without a Unix socket nothing is ever handed over.
-    #[cfg_attr(not(unix), allow(unused_variables))] handed_over: &mut remote_handover::Slot,
+    target: Option<AttachTarget>,
 ) -> Result<i32> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SessionEvent>();
     let tui_sink: super_coding::SessionEventSink = {
@@ -1269,8 +1313,24 @@ async fn run_with_hosts(
     }
 
     let startup_args = args.clone();
-    let mut startup_task =
-        tokio::spawn(async move { build_startup(&startup_args, true, sink).await });
+    #[cfg(unix)]
+    let attach_sink = sink.clone();
+    // `/remote` makes the session a view of the daemon's with the same sink.
+    #[cfg(unix)]
+    let view_sink = sink.clone();
+    let mut startup_task = tokio::spawn(async move {
+        #[cfg(unix)]
+        if let Some(target) = target {
+            let startup = build_startup(&attached::view_args(&startup_args), true, sink).await?;
+            let attached = attached::attach(target, &startup.session, attach_sink).await?;
+            return Ok((startup, Some(attached)));
+        }
+        #[cfg(not(unix))]
+        let _: Option<AttachTarget> = target;
+        build_startup(&startup_args, true, sink)
+            .await
+            .map(|startup| (startup, None::<AttachedView>))
+    });
     let mut submit_after_startup = false;
     let startup = 'startup: loop {
         let resize_deadline = resize_state
@@ -1280,7 +1340,7 @@ async fn run_with_hosts(
             result = &mut startup_task => {
                 let result = result.context("startup task stopped")?;
                 match result {
-                    Ok(startup) => break 'startup startup,
+                    Ok(started) => break 'startup started,
                     Err(error) => {
                         terminal.restore();
                         return Err(error);
@@ -1328,6 +1388,7 @@ async fn run_with_hosts(
             }
         }
     };
+    let (startup, attached_view) = startup;
     let Startup {
         session,
         settings,
@@ -1489,12 +1550,22 @@ async fn run_with_hosts(
         remote_allowed: false,
         command_tx: None,
         handover: Default::default(),
+        #[cfg(unix)]
+        attached: None,
     };
     if let Some(indent) = &settings.markdown.code_block_indent {
         app.md.code_indent = indent.clone();
     }
     app.editor.placeholder = "Ask anything. / commands, $ skills, @ files, ! shell.".into();
-    if needs_login {
+    #[cfg(unix)]
+    let attached_notices = attached_view.map(|(attached, notices)| {
+        app.attached = Some(attached);
+        attached::show_transcript(&mut app, &session);
+        notices
+    });
+    #[cfg(not(unix))]
+    let _ = attached_view;
+    if needs_login && !is_attached(&app) {
         app.cells.push(Cell::Notice(
             "No credentials yet. Type /login to sign in.".into(),
         ));
@@ -1503,6 +1574,10 @@ async fn run_with_hosts(
     refresh_git_branch(&mut app, &session);
 
     let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommandEvent>();
+    #[cfg(unix)]
+    if let Some(notices) = attached_notices {
+        attached::forward(notices, &command_tx);
+    }
 
     // Install the cost approval gate before any prompt can call a workflow.
     session.set_workflow_approver(workflow_approver(&command_tx));
@@ -1525,7 +1600,8 @@ async fn run_with_hosts(
     app.remote_signed_in = crate::remote::signed_in();
     app.remote_allowed =
         !args.no_remote && !args.no_session && resources.settings.remote.is_enabled();
-    if crate::remote::wanted(args, &resources.settings) {
+    // Attached, the daemon publishes the session.
+    if crate::remote::wanted(args, &resources.settings) && !is_attached(&app) {
         start_remote(&mut app, &session, &resources.settings, &command_tx);
     }
 
@@ -1561,7 +1637,6 @@ async fn run_with_hosts(
     // list refreshes in the background from here on.
     spawn_platform_model_refresh(&command_tx);
 
-    let mut moved = None;
     let mut stranded = None;
     'main: loop {
         if remote_handover::due(&app, &session) {
@@ -1581,9 +1656,37 @@ async fn run_with_hosts(
             )
             .await
             {
-                remote_handover::Finished::Moved(next) => {
-                    moved = Some(*next);
-                    break 'main;
+                remote_handover::Finished::Moved(target) => {
+                    // The daemon runs the session now: this TUI turns into
+                    // the attached TUI on it, transcript and editor in place.
+                    #[cfg(unix)]
+                    match attached::adopt(
+                        &mut app,
+                        &session,
+                        *target,
+                        view_sink.clone(),
+                        &command_tx,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            // As in `run_attached`: the keeper follows the
+                            // view, so a session taken back from a lost
+                            // daemon is locked here again.
+                            if session_lock.is_none() {
+                                session_lock = crate::setup::keep_session_lock(&session).ok();
+                            }
+                            dirty = true;
+                        }
+                        Err(error) => {
+                            stranded = Some(format!(
+                                "/remote: {error:#}. `super` attaches to the session if the daemon has it."
+                            ));
+                            break 'main;
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    match *target {}
                 }
                 remote_handover::Finished::Stranded(reason) => {
                     stranded = Some(reason);
@@ -1741,32 +1844,24 @@ async fn run_with_hosts(
                     }
                 }
                 close_dismissed_approval(&mut app);
+                #[cfg(unix)]
+                attached::close_dismissed(&mut app, &command_tx);
                 dirty = true;
                 next_render_at = Instant::now();
             }
         }
     }
 
-    if let Some(moved) = moved {
-        // The last frame keeps the transcript and the confirmation; the
-        // attached front end continues where the editor was.
-        let (width, height) = resize_state.accepted;
-        let (lines, blank) = remote_handover::last_frame(&mut app, &session, width);
-        {
-            let mut out = std::io::stdout().lock();
-            renderer.render_frame(&lines, width, height, &mut out)?;
-            out.flush()?;
-        }
-        terminal.restore();
-        remote_handover::reclaim_rows(blank);
-        *handed_over = Some(remote_handover::handed_over(moved, stdin_rx));
-        return Ok(0);
-    }
     terminal.restore();
     if let Some(reason) = stranded {
         // The session file is held elsewhere now; nothing here may write it.
         eprintln!("{reason}");
         return Ok(1);
+    }
+    #[cfg(unix)]
+    if let Some(attached) = app.attached.take() {
+        attached::finish(attached).await;
+        return Ok(0);
     }
     if let Some(remote) = app.remote.take() {
         // Flush what is queued and announce the end; bounded, never hangs.
@@ -2379,6 +2474,8 @@ fn handle_command_event(
         CommandEvent::Remote(notice) => handle_remote_notice(app, notice, session),
         CommandEvent::RemoteEvent(event) => handle_remote_event(app, event),
         CommandEvent::Handover(progress) => remote_handover::on_progress(app, progress, session),
+        #[cfg(unix)]
+        CommandEvent::Attached(update) => attached::handle_update(app, update, session),
         CommandEvent::VoicePreview { generation, text } => {
             if generation == app.voice_generation {
                 app.voice_preview = Some(text);
@@ -2679,6 +2776,12 @@ fn handle_command_event(
             }
         }
         CommandEvent::SessionTitleFinished { session_id, result } => {
+            #[cfg(unix)]
+            if let Some(command_tx) = app.command_tx.clone()
+                && attached::title_generated(app, &session_id, &result, &command_tx)
+            {
+                return;
+            }
             let mut manager = session.manager.lock().unwrap();
             if manager.session_id() != session_id {
                 return;
@@ -4426,6 +4529,12 @@ fn start_shell_passthrough(
         Some(rest) => (rest.trim().to_string(), true),
         None => (command.trim().to_string(), false),
     };
+    // Attached, `!` runs in the daemon so the session records it; `!!`,
+    // kept out of the context, runs here as always.
+    #[cfg(unix)]
+    if !exclude && attached::shell(app, &command, command_tx) {
+        return;
+    }
     let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
     let settings = session.settings();
     let shell = settings
@@ -7120,6 +7229,10 @@ fn apply_picker_selection(
                 value: suggested,
             });
         }
+        #[cfg(unix)]
+        PickerKind::Attached(picker) => {
+            attached::apply_picker(app, session, picker, value, resources, command_tx)
+        }
     }
 }
 
@@ -7991,6 +8104,10 @@ fn run_slash_command(
     let name = parts.next().unwrap_or("");
     let rest = parts.next().unwrap_or("").trim().to_string();
 
+    #[cfg(unix)]
+    if let Some(flow) = attached::slash_command(app, session, name, &rest, resources, command_tx) {
+        return flow;
+    }
     match name {
         "quit" | "exit" => return Flow::Quit,
         "help" | "hotkeys" => {
@@ -8981,6 +9098,8 @@ mod tests {
             remote_allowed: false,
             command_tx: None,
             handover: Default::default(),
+            #[cfg(unix)]
+            attached: None,
         }
     }
 

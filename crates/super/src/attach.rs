@@ -7,10 +7,11 @@
 //! closes. Without an account, without a daemon, with `--no-remote` or
 //! `daemon.attach: false`, `super` runs in-process exactly as before.
 //!
-//! The front end here is line based: it streams the reply, names each tool
-//! call, asks approvals as numbered choices and sends what you type as a
-//! prompt (a steer while the session works). The full TUI over the same
-//! connection is ENG-13.
+//! In a terminal the full TUI runs against the daemon's session (see
+//! `modes::interactive::run_attached`). With piped input or output the front
+//! end here is line based: it streams the reply, names each tool call, asks
+//! approvals as numbered choices and sends each line as a prompt (a steer
+//! while the session works).
 
 use crate::args::Args;
 use anyhow::Result;
@@ -93,38 +94,108 @@ fn existing_session(args: &Args, sessions: &[SessionSummary]) -> Option<String> 
         .map(|session| session.session_id.clone())
 }
 
-/// Attach and run the terminal front end. `Ok(None)` means "run in-process":
-/// the ecosystem is off, or no daemon answers or can be started.
-pub async fn try_run(args: &Args) -> Result<Option<i32>> {
+/// What this invocation does after looking for the daemon.
+pub enum Outcome {
+    /// Run the engine in this process, exactly as without a daemon.
+    InProcess,
+    /// The line-based front end ran (or the daemon refused); exit with this.
+    Exit(i32),
+    /// Run the full TUI on the attached session.
+    Tui(Box<Target>),
+}
+
+/// A connection attached to the session the TUI shows.
+pub struct Target {
+    pub client: DaemonClient,
+    pub events: UnboundedReceiver<ClientEvent>,
+    pub attached: Attached,
+    pub info: ClientInfo,
+}
+
+/// What a failed connection means for this invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectFailure {
+    /// No daemon and none to start: run in-process, saying why only with
+    /// `--verbose`, as `super` without a daemon always did.
+    Quiet(String),
+    /// Something unexpected: run in-process with a warning.
+    Warn(String),
+    /// The daemon speaks another protocol: stop with the update hint.
+    Stop(String),
+}
+
+pub fn connect_failure(error: &ClientError) -> ConnectFailure {
+    match error {
+        ClientError::Skew(skew) => ConnectFailure::Stop(skew.to_string()),
+        ClientError::NotRunning { .. } | ClientError::Unavailable(_) => {
+            ConnectFailure::Quiet(error.to_string())
+        }
+        other => ConnectFailure::Warn(other.to_string()),
+    }
+}
+
+/// The name this terminal gives the daemon: what the apps and other
+/// terminals see as the origin of its commands and approvals, such as
+/// `Terminal (ttys003)`, so two terminals on one machine tell apart.
+pub fn client_name() -> String {
+    // SAFETY: ttyname has no preconditions; the string it returns lives in
+    // a static buffer that is copied before anything else calls it.
+    let tty = unsafe {
+        let name = libc::ttyname(libc::STDIN_FILENO);
+        (!name.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned()
+        })
+    };
+    terminal_name(tty.as_deref())
+}
+
+fn terminal_name(tty: Option<&str>) -> String {
+    match tty.map(|tty| tty.trim_start_matches("/dev/")) {
+        Some(tty) if !tty.is_empty() => format!("Terminal ({tty})"),
+        _ => "Terminal".to_string(),
+    }
+}
+
+/// Look for the daemon and attach. Signed out, opted out, or with no daemon
+/// to talk to, the answer is [`Outcome::InProcess`].
+pub async fn try_run(args: &Args) -> Result<Outcome> {
     let cwd = std::env::current_dir()?;
     let settings = Settings::load(&cwd, false);
     if !wanted(args, &settings, crate::remote::signed_in()) {
-        return Ok(None);
+        return Ok(Outcome::InProcess);
     }
+    let full_screen = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     // `@file` arguments are sent with the file's contents and shown as typed.
-    let initial = crate::setup::initial_message(args, &cwd)?
-        .map(|message| (args.messages.join(" "), message));
-    let info = ClientInfo::new(ClientKind::Tui, "Terminal");
+    let initial = if full_screen {
+        None
+    } else {
+        crate::setup::initial_message(args, &cwd)?.map(|message| (args.messages.join(" "), message))
+    };
+    let info = ClientInfo::new(ClientKind::Tui, client_name());
     let mut client = match DaemonClient::connect_or_start(&info).await {
         Ok(client) => client,
-        Err(ClientError::Skew(skew)) => {
-            eprintln!("error: {skew}");
-            eprintln!("`super --no-remote` runs without the daemon until then.");
-            return Ok(Some(2));
-        }
-        Err(error @ (ClientError::NotRunning { .. } | ClientError::Unavailable(_))) => {
-            if args.verbose {
-                eprintln!("{error}; running in this process");
+        Err(error) => match connect_failure(&error) {
+            ConnectFailure::Stop(message) => {
+                eprintln!("error: {message}");
+                eprintln!("`super --no-remote` runs without the daemon until then.");
+                return Ok(Outcome::Exit(2));
             }
-            return Ok(None);
-        }
-        Err(error) => {
-            eprintln!("warning: {error}; running in this process");
-            return Ok(None);
-        }
+            ConnectFailure::Quiet(message) => {
+                if args.verbose {
+                    eprintln!("{message}; running in this process");
+                }
+                return Ok(Outcome::InProcess);
+            }
+            ConnectFailure::Warn(message) => {
+                eprintln!("warning: {message}; running in this process");
+                return Ok(Outcome::InProcess);
+            }
+        },
     };
     let Some(events) = client.take_events() else {
-        return Ok(None);
+        return Ok(Outcome::InProcess);
     };
     let attached = match choose_and_attach(&client, args, &cwd).await {
         Ok(attached) => attached,
@@ -132,34 +203,20 @@ pub async fn try_run(args: &Args) -> Result<Option<i32>> {
             eprintln!(
                 "warning: could not attach through the SUPER daemon: {error}; running in this process"
             );
-            return Ok(None);
+            return Ok(Outcome::InProcess);
         }
     };
-    let input: Input = Box::new(tokio::io::BufReader::new(tokio::io::stdin()));
-    run(client, events, attached, initial, input, true)
+    if full_screen {
+        return Ok(Outcome::Tui(Box::new(Target {
+            client,
+            events,
+            attached,
+            info,
+        })));
+    }
+    run(client, events, attached, initial)
         .await
-        .map(Some)
-}
-
-/// Lines typed into the attached front end.
-pub(crate) type Input = Box<dyn tokio::io::AsyncBufRead + Unpin + Send>;
-
-/// A connection attached to the session `/remote` just handed to the daemon.
-pub(crate) struct Continuation {
-    pub client: DaemonClient,
-    pub events: UnboundedReceiver<ClientEvent>,
-    pub attached: Attached,
-}
-
-/// Carry on as an attached terminal after `/remote` handed the session to
-/// the daemon. The transcript is on screen already, so nothing is replayed.
-pub(crate) async fn run_handed_over(continuation: Continuation, input: Input) -> Result<i32> {
-    let Continuation {
-        client,
-        events,
-        attached,
-    } = continuation;
-    run(client, events, attached, None, input, false).await
+        .map(Outcome::Exit)
 }
 
 async fn choose_and_attach(
@@ -296,8 +353,6 @@ async fn run(
     mut events: UnboundedReceiver<ClientEvent>,
     attached: Attached,
     initial: Option<(String, String)>,
-    input: Input,
-    intro: bool,
 ) -> Result<i32> {
     let session = attached.session;
     let interactive = std::io::stdin().is_terminal();
@@ -307,30 +362,27 @@ async fn run(
         mid_line: false,
         at_prompt: false,
     };
-    if intro {
-        let hello = client.hello().clone();
-        let mut header = format!(
-            "attached to session {} in {} · SUPER daemon {} (pid {})",
-            short_id(&session.session_id),
-            session.cwd,
-            hello.daemon_version,
-            hello.pid
-        );
-        if let Some(model) = &session.model {
-            header.push_str(&format!(" · {model}"));
-        }
-        screen.meta(&header);
-        if interactive {
-            screen.meta(HELP);
-        }
+    let hello = client.hello().clone();
+    let mut header = format!(
+        "attached to session {} in {} · SUPER daemon {} (pid {})",
+        short_id(&session.session_id),
+        session.cwd,
+        hello.daemon_version,
+        hello.pid
+    );
+    if let Some(model) = &session.model {
+        header.push_str(&format!(" · {model}"));
+    }
+    screen.meta(&header);
+    if interactive {
+        screen.meta(HELP);
     }
 
     let mut working = false;
     if let Ok(Some(state)) = client.execute_ok(Command::GetState {}).await {
         working = state["isStreaming"].as_bool().unwrap_or(false);
     }
-    if intro
-        && let Ok(Some(data)) = client.execute_ok(Command::GetMessages {}).await
+    if let Ok(Some(data)) = client.execute_ok(Command::GetMessages {}).await
         && let Some(messages) = data["messages"].as_array()
     {
         print_recent(&mut screen, messages, 6);
@@ -346,7 +398,7 @@ async fn run(
         screen.prompt();
     }
 
-    let mut input = input.lines();
+    let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut input_open = true;
     let code = loop {
         tokio::select! {
@@ -727,6 +779,55 @@ mod tests {
         assert!(!wanted(&args(&[]), &no_attach, true));
     }
 
+    /// `super` with no account behaves exactly as before the daemon: it
+    /// never even looks for one, whatever the arguments.
+    #[test]
+    fn without_an_account_nothing_attaches() {
+        let settings = Settings::default();
+        for argv in [
+            &[][..],
+            &["fix", "the", "tests"],
+            &["-c"],
+            &["--session", "abc"],
+            &["--model", "mock/mock-1"],
+            &["--name", "x"],
+        ] {
+            assert!(!wanted(&args(argv), &settings, false), "{argv:?}");
+        }
+    }
+
+    /// Without a daemon to talk to (none running, none registered to
+    /// start) `super` runs in-process and says nothing unless asked;
+    /// anything stranger is a warning, and only a protocol mismatch stops.
+    #[test]
+    fn a_missing_daemon_means_in_process_and_only_skew_stops() {
+        let not_running = ClientError::NotRunning {
+            socket: "/tmp/none.sock".into(),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        };
+        assert!(matches!(
+            connect_failure(&not_running),
+            ConnectFailure::Quiet(_)
+        ));
+        assert!(matches!(
+            connect_failure(&ClientError::Unavailable("nothing registered".into())),
+            ConnectFailure::Quiet(_)
+        ));
+        assert!(matches!(
+            connect_failure(&ClientError::Refused("odd".into())),
+            ConnectFailure::Warn(_)
+        ));
+        assert!(matches!(
+            connect_failure(&ClientError::Timeout("hello".into())),
+            ConnectFailure::Warn(_)
+        ));
+        let skew = super_daemon::client::SkewError::new([2, 3], [1, 1], None);
+        match connect_failure(&ClientError::Skew(skew)) {
+            ConnectFailure::Stop(message) => assert!(message.contains("protocol 2 to 3")),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn other_modes_and_engine_options_run_in_process() {
         let settings = Settings::default();
@@ -789,6 +890,13 @@ mod tests {
             "options for a new session create one"
         );
         assert_eq!(existing_session(&args(&["-c"]), &[]), None);
+    }
+
+    #[test]
+    fn a_terminal_is_named_after_its_tty() {
+        assert_eq!(terminal_name(Some("/dev/ttys003")), "Terminal (ttys003)");
+        assert_eq!(terminal_name(Some("/dev/pts/4")), "Terminal (pts/4)");
+        assert_eq!(terminal_name(None), "Terminal");
     }
 
     #[test]

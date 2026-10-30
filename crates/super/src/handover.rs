@@ -204,7 +204,7 @@ pub(crate) fn confirmation(session_id: &str, daemon_pid: u32, signed_in: bool) -
         ""
     };
     format!(
-        "♦ session {} now runs in the SUPER daemon (pid {daemon_pid}){apps}; this terminal is attached to it · /detach leaves it running",
+        "♦ session {} now runs in the SUPER daemon (pid {daemon_pid}){apps}; this terminal is attached to it · ctrl+d detaches and leaves it running",
         short_id(session_id)
     )
 }
@@ -282,9 +282,13 @@ mod daemon {
         pub events: UnboundedReceiver<ClientEvent>,
     }
 
-    /// How the terminal introduces itself to the daemon.
+    /// How the terminal introduces itself to the daemon: by its tty, as
+    /// a terminal that attached on start does.
     pub(crate) fn client_info() -> ClientInfo {
-        ClientInfo::new(super_sdk::daemon::ClientKind::Tui, "Terminal")
+        ClientInfo::new(
+            super_sdk::daemon::ClientKind::Tui,
+            crate::attach::client_name(),
+        )
     }
 
     /// Connect to the daemon, starting or installing it the way this system
@@ -566,51 +570,6 @@ mod daemon {
             crate::remote::signed_in(),
         )
     }
-
-    /// Reads what the terminal's stdin thread delivers, so the attached front
-    /// end continues on the same input the full-screen terminal used. A
-    /// second reader of stdin would swallow the first line typed.
-    pub(crate) struct ChannelReader {
-        rx: UnboundedReceiver<Vec<u8>>,
-        pending: Vec<u8>,
-        offset: usize,
-    }
-
-    impl ChannelReader {
-        pub(crate) fn new(rx: UnboundedReceiver<Vec<u8>>) -> Self {
-            Self {
-                rx,
-                pending: Vec::new(),
-                offset: 0,
-            }
-        }
-    }
-
-    impl tokio::io::AsyncRead for ChannelReader {
-        fn poll_read(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            use std::task::Poll;
-            while self.offset >= self.pending.len() {
-                match self.rx.poll_recv(cx) {
-                    Poll::Ready(Some(bytes)) => {
-                        self.pending = bytes;
-                        self.offset = 0;
-                    }
-                    // The sender is gone: end of input.
-                    Poll::Ready(None) => return Poll::Ready(Ok(())),
-                    Poll::Pending => return Poll::Pending,
-                }
-            }
-            let available = &self.pending[self.offset..];
-            let count = available.len().min(buf.remaining());
-            buf.put_slice(&available[..count]);
-            self.offset += count;
-            Poll::Ready(Ok(()))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -773,7 +732,7 @@ mod tests {
         let line = confirmation("a1b2c3d4-e5f6", 4242, true);
         assert_eq!(
             line,
-            "♦ session a1b2c3d4 now runs in the SUPER daemon (pid 4242) and shows up in the apps; this terminal is attached to it · /detach leaves it running"
+            "♦ session a1b2c3d4 now runs in the SUPER daemon (pid 4242) and shows up in the apps; this terminal is attached to it · ctrl+d detaches and leaves it running"
         );
         assert!(!confirmation("a1b2c3d4", 1, false).contains("apps"));
         assert_eq!(
@@ -997,6 +956,100 @@ mod end_to_end {
 
         drop(standalone);
         drop(client);
+        fixture.stop().await;
+    }
+
+    /// What the TUI does once the hand-over went through
+    /// (`modes::interactive::attached::adopt`): the session it ran becomes,
+    /// in place, a view of the daemon's. The transcript stays, the next
+    /// prompt runs in the daemon, and nothing here writes the file again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_handed_over_session_carries_on_in_place_as_a_view() {
+        use super_daemon::attached::{Attachment, Connector, RemoteSession};
+
+        let fixture = Fixture::start("sessions").await;
+        let standalone = fixture.standalone_session().await;
+        let agent = standalone.agent_session().clone();
+        let mut lock = Some(crate::setup::keep_session_lock(&agent).unwrap());
+        let file = agent
+            .manager
+            .lock()
+            .unwrap()
+            .session_file()
+            .unwrap()
+            .to_path_buf();
+        let session_id = standalone.state().session_id;
+        let info = client_info();
+        let mut client = DaemonClient::connect_to(&fixture.socket, &info)
+            .await
+            .unwrap();
+        let events = client.take_events().unwrap();
+        let target = prepare(&client, &agent).await.unwrap();
+        let attached = hand_over(&client, &target, &mut lock, &agent)
+            .await
+            .unwrap();
+
+        let (sink_tx, mut sink_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink: super_coding::SessionEventSink = Arc::new(move |event| {
+            let _ = sink_tx.send(event);
+        });
+        let (remote, _notices) = RemoteSession::attach(
+            Attachment {
+                client,
+                events,
+                attached,
+                info,
+                connector: Connector::Socket(fixture.socket.clone()),
+            },
+            &agent,
+            sink,
+        )
+        .await
+        .unwrap();
+        // The TUI holds a lock keeper again; it follows the view, which has
+        // no file, so the daemon keeps the one it loaded.
+        let keeper = crate::setup::keep_session_lock(&agent).unwrap();
+        assert!(agent.is_remote());
+        {
+            let manager = agent.manager.lock().unwrap();
+            assert_eq!(manager.session_id(), session_id);
+            assert!(manager.session_file().is_none(), "the view writes nothing");
+            assert_eq!(
+                manager.build_session_context().messages.len(),
+                2,
+                "the transcript stayed"
+            );
+        }
+
+        agent
+            .prompt_with_mode(
+                vec![super_agent::AgentMessage::user("second question")],
+                super_coding::session_runner::PromptMode::Ordinary,
+            )
+            .await;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while agent
+                .manager
+                .lock()
+                .unwrap()
+                .build_session_context()
+                .messages
+                .len()
+                < 4
+            {
+                // The daemon's events reach the view through the sink.
+                let _ = tokio::time::timeout(Duration::from_millis(100), sink_rx.recv()).await;
+            }
+        })
+        .await
+        .expect("the mirror caught up with the daemon's turn");
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(written.contains("second question"), "the daemon wrote it");
+        assert!(session_lock::is_held(&file), "the daemon still holds it");
+
+        remote.detach().await;
+        drop(keeper);
+        drop(standalone);
         fixture.stop().await;
     }
 

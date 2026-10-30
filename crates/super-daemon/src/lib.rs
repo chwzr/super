@@ -15,6 +15,8 @@ pub mod service;
 pub mod session_lock;
 
 #[cfg(unix)]
+pub mod attached;
+#[cfg(unix)]
 pub mod client;
 #[cfg(unix)]
 pub mod presence;

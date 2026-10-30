@@ -371,3 +371,82 @@ async fn a_session_file_guard_can_refuse_switch_session() {
     assert!(switched.success, "{switched:?}");
     assert_eq!(session.state().session_id, other_id);
 }
+
+#[tokio::test]
+async fn commands_from_another_surface_are_announced_to_every_client() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let (_provider, session) = session_with(directory.path(), MockScript::text("hi")).await;
+    let collected = collect_events(&session);
+
+    let named = session
+        .execute_from(
+            Command::SetSessionName {
+                name: "release notes".into(),
+            },
+            Some("1".into()),
+            Some("iPhone".into()),
+        )
+        .await;
+    assert!(named.success, "{named:?}");
+    // Reads and direct clients are not announced.
+    session
+        .execute_from(Command::GetState {}, None, Some("iPhone".into()))
+        .await;
+    session
+        .execute(Command::SetSessionName {
+            name: "quiet".into(),
+        })
+        .await;
+    let refused = session
+        .execute_from(
+            Command::SetModel {
+                provider: "nowhere".into(),
+                model_id: "nothing".into(),
+            },
+            None,
+            Some("Terminal".into()),
+        )
+        .await;
+    assert!(!refused.success);
+
+    let events = wait_for(&collected, "command_applied").await;
+    for _ in 0..100 {
+        if collected
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event["type"] == "command_applied")
+            .count()
+            >= 2
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let applied: Vec<serde_json::Value> = collected
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event["type"] == "command_applied")
+        .cloned()
+        .collect();
+    assert_eq!(applied.len(), 2, "{events:?}");
+    assert_eq!(
+        applied[0],
+        json!({
+            "type": "command_applied",
+            "origin": "iPhone",
+            "command": {"type": "set_session_name", "name": "release notes"},
+            "success": true,
+        })
+    );
+    assert_eq!(applied[1]["origin"], "Terminal");
+    assert_eq!(applied[1]["command"]["type"], "set_model");
+    assert_eq!(applied[1]["success"], false);
+    assert!(
+        applied[1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("nowhere/nothing")
+    );
+}
