@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.39 - 2026-10-30
+
 ### Changed
 
 - RPC `get_available_models` lists the models of providers that are
