@@ -237,6 +237,12 @@ pub enum Command {
         command: DaemonSubcommand,
     },
 
+    /// Run the daemon as a systemd user service that starts at login (Linux).
+    Install,
+
+    /// Stop the daemon's systemd user service and remove its unit (Linux).
+    Uninstall,
+
     /// Show historical provider KV-cache rates.
     CacheUsage {
         /// Limit the report to a session ID prefix or JSONL file path.

@@ -15,7 +15,7 @@
 
 use crate::installation::InstallKind;
 use crate::paths::DaemonPaths;
-use crate::service::{self, DaemonService};
+use crate::supervisor::{self, DaemonService};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -222,7 +222,7 @@ impl DaemonClient {
         let paths = DaemonPaths::discover()
             .ok_or_else(|| ClientError::Unavailable("no home directory".into()))?;
         let service = if paths.is_default() {
-            service::platform_service()
+            supervisor::platform_service()
         } else {
             None
         };
@@ -241,9 +241,9 @@ impl DaemonClient {
             Err(ClientError::NotRunning { .. }) => {}
             other => return other,
         }
-        let service = match service::start_decision(service) {
-            service::StartDecision::Start(service) => service,
-            service::StartDecision::Unavailable(reason) => {
+        let service = match supervisor::start_decision(service) {
+            supervisor::StartDecision::Start(service) => service,
+            supervisor::StartDecision::Unavailable(reason) => {
                 return Err(ClientError::Unavailable(reason));
             }
         };

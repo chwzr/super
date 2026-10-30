@@ -12,6 +12,7 @@ pub mod lock;
 pub mod log;
 pub mod paths;
 pub mod session_lock;
+pub mod service;
 
 #[cfg(unix)]
 pub mod client;
@@ -20,7 +21,7 @@ pub mod presence;
 #[cfg(unix)]
 pub mod server;
 #[cfg(unix)]
-pub mod service;
+pub mod supervisor;
 
 use crate::host::HostConfig;
 use crate::paths::DaemonPaths;

@@ -708,6 +708,8 @@ client that started it. `super daemon status` and `super daemon stop` talk to
 it. Signed in, `super` in a terminal attaches to the daemon's session for
 the directory (starting a registered daemon on demand) and detaching leaves
 it running; without a daemon it runs in-process as before. See
+it. On Linux, `super install` runs it as a systemd user service that starts
+at login, and `super uninstall` removes it again. See
 [docs/daemon.md](docs/daemon.md).
 
 See the [SDK guide](docs/sdk.md), [RPC protocol](docs/rpc.md), and

@@ -12,6 +12,9 @@ Linux `super install` (coming) registers a systemd user unit. Signed in to
 the platform, `super` in a terminal attaches to the daemon (see
 [The terminal](#the-terminal)); running `super` without a daemon or without
 an account works as it always did.
+Linux `super install` registers a systemd user unit (see
+[On Linux](#on-linux-a-systemd-user-service)). Running `super` in a terminal
+without a daemon works as it always did.
 
 ## Commands
 
@@ -26,6 +29,10 @@ else `~/.super/run/daemon.sock`; the lock sits beside a socket given either
 way. `SUPER_DAEMON_PROTOCOL_VERSIONS=2-3 super daemon run` makes a daemon
 advertise another protocol range, to see what clients say to a newer or
 older daemon.
+| `super daemon status [--socket PATH]` | Print version, pid, uptime, sessions and clients. Exit 1 when no daemon answers, 2 when it refuses the protocol. |
+| `super daemon stop [--socket PATH]` | Ask the daemon to shut down, or send SIGTERM to the pid in the lock file when the socket is dead. |
+| `super install` | Linux: write the systemd user unit, enable it and start the daemon. |
+| `super uninstall` | Linux: stop and disable the unit and remove it. |
 
 ## Files
 
@@ -36,10 +43,80 @@ older daemon.
 | `~/.super/agent/logs/daemon.log` | Log, rotated at 5 MiB keeping `daemon.log.1`. `SUPER_LOG=daemon=debug` adds detail. Never contains tokens, prompts or record bodies. |
 | `~/.super/agent/sessions/` | The session files, shared with the terminal. |
 | `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60, "attach": true}}`: minutes an idle, unattached session stays loaded (`0` keeps sessions loaded until stopped); whether `super` in a terminal attaches to the daemon when signed in. |
+| `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60}}`: minutes an idle, unattached session stays loaded; `0` keeps sessions loaded until stopped. |
+| `~/.config/systemd/user/super-daemon.service` | Linux: the unit `super install` writes (`$XDG_CONFIG_HOME/systemd/user` when that is set). |
 
 The daemon is started by launchd or systemd with a bare environment, so it
 reads the login shell's PATH once at start and uses it for every session's
 tools.
+
+## On Linux: a systemd user service
+
+```sh
+super install     # write the unit, enable it, start the daemon
+super uninstall   # stop and disable the unit, remove it
+```
+
+`super install` writes `~/.config/systemd/user/super-daemon.service`:
+
+```ini
+# Written by `super install`; `super uninstall` removes it.
+[Unit]
+Description=SUPER daemon: hosts this user's SUPER sessions
+Documentation=https://github.com/chwzr/super/blob/main/docs/daemon.md
+
+[Service]
+ExecStart=/home/felix/.local/bin/super daemon run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+then runs `systemctl --user daemon-reload` and `systemctl --user enable --now
+super-daemon`, waits up to ten seconds for the daemon to answer on its
+socket, and prints the unit path, the binary it runs and the unit's state.
+`ExecStart` is the binary you ran `super install` with, or the `super` on
+your PATH when that is a symlink to it (Homebrew), so an upgrade keeps the
+unit working. A path with spaces is quoted; systemd cannot run one with a
+quote, a backslash or a `$` in it, so `super install` refuses those before
+writing anything. Running `super install` again is safe: the same unit is
+only enabled and started, a different one (super moved) replaces it and
+restarts the daemon.
+
+The daemon now starts with your systemd user manager, which runs from your
+first login to your last logout. On an always-on machine (a server, a box you
+reach over SSH) keep the manager, and the daemon, running without a login:
+
+```sh
+loginctl enable-linger <user>    # may ask for sudo
+```
+
+- `super daemon status` ends with the unit's line, for example
+  `service  enabled, active (/home/felix/.config/systemd/user/super-daemon.service)`,
+  also when no daemon answers.
+- `Restart=on-failure` brings the daemon back five seconds after a crash.
+  `super daemon stop` and `systemctl --user stop super-daemon` exit 0, which
+  systemd takes as a deliberate stop: the daemon stays down until the next
+  login or `systemctl --user start super-daemon`.
+- After `super update`, `systemctl --user restart super-daemon` runs the new
+  version.
+- Start failures are in `journalctl --user -u super-daemon`; the daemon's own
+  log is `~/.super/agent/logs/daemon.log`.
+- A daemon you started by hand keeps the lock: the unit retries every five
+  seconds until `super daemon stop` ends the other one.
+
+`super uninstall` runs `systemctl --user disable --now super-daemon`, removes
+the unit file, reloads systemd and clears a failed state. With nothing
+installed it says so. Without a reachable user manager it removes the unit
+file and its `default.target.wants` link and says that nothing was stopped.
+
+Without systemd, or without a user manager for your login (inside many
+containers, or after `su`), `super install` writes nothing and says what is
+missing; run `super daemon run` under the service manager you use instead.
+On macOS `super install` refuses: the daemon ships with the SUPER app, which
+registers it with launchd.
 
 ## The connection
 
