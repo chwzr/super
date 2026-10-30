@@ -8,13 +8,11 @@ client that started it; any client can attach to any session; a session the
 daemon unloaded can always be resumed.
 
 On macOS the SUPER app bundles the daemon and registers it with launchd. On
-Linux `super install` (coming) registers a systemd user unit. Signed in to
-the platform, `super` in a terminal attaches to the daemon (see
+Linux `super install` registers a systemd user unit (see
+[On Linux](#on-linux-a-systemd-user-service)). Signed in to the platform,
+`super` in a terminal attaches to the daemon (see
 [The terminal](#the-terminal)); running `super` without a daemon or without
 an account works as it always did.
-Linux `super install` registers a systemd user unit (see
-[On Linux](#on-linux-a-systemd-user-service)). Running `super` in a terminal
-without a daemon works as it always did.
 
 ## Commands
 
@@ -23,16 +21,14 @@ without a daemon works as it always did.
 | `super daemon run [--socket PATH]` | Run in the foreground until `shutdown`, SIGTERM or SIGINT. Exit 0 on a deliberate stop, 1 on any error. Refuses to start while another daemon holds `~/.super/run/daemon.lock`. |
 | `super daemon status [--socket PATH]` | Print version, pid, uptime, sessions and the clients connected besides itself. Exit 1 when no daemon answers, 2 when it refuses the protocol. |
 | `super daemon stop [--socket PATH]` | Ask the daemon to shut down, or send SIGTERM to the pid in the lock file when the socket is dead or the daemon speaks another protocol version. |
+| `super install` | Linux: write the systemd user unit, enable it and start the daemon. |
+| `super uninstall` | Linux: stop and disable the unit and remove it. |
 
 Without `--socket` every command uses `SUPER_DAEMON_SOCKET` when it is set,
 else `~/.super/run/daemon.sock`; the lock sits beside a socket given either
 way. `SUPER_DAEMON_PROTOCOL_VERSIONS=2-3 super daemon run` makes a daemon
 advertise another protocol range, to see what clients say to a newer or
 older daemon.
-| `super daemon status [--socket PATH]` | Print version, pid, uptime, sessions and clients. Exit 1 when no daemon answers, 2 when it refuses the protocol. |
-| `super daemon stop [--socket PATH]` | Ask the daemon to shut down, or send SIGTERM to the pid in the lock file when the socket is dead. |
-| `super install` | Linux: write the systemd user unit, enable it and start the daemon. |
-| `super uninstall` | Linux: stop and disable the unit and remove it. |
 
 ## Files
 
@@ -43,7 +39,6 @@ older daemon.
 | `~/.super/agent/logs/daemon.log` | Log, rotated at 5 MiB keeping `daemon.log.1`. `SUPER_LOG=daemon=debug` adds detail. Never contains tokens, prompts or record bodies. |
 | `~/.super/agent/sessions/` | The session files, shared with the terminal. |
 | `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60, "attach": true}}`: minutes an idle, unattached session stays loaded (`0` keeps sessions loaded until stopped); whether `super` in a terminal attaches to the daemon when signed in. |
-| `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60}}`: minutes an idle, unattached session stays loaded; `0` keeps sessions loaded until stopped. |
 | `~/.config/systemd/user/super-daemon.service` | Linux: the unit `super install` writes (`$XDG_CONFIG_HOME/systemd/user` when that is set). |
 
 The daemon is started by launchd or systemd with a bare environment, so it
@@ -187,6 +182,10 @@ null for a stored session.
 
 ## Lifecycle
 
+- `create_session` writes the session file (its header) at once, so a
+  session stopped before its first message can be resumed and attached to by
+  id. Once unloaded, such an empty session is left out of the listings, as
+  the terminal's session picker leaves it out.
 - A hosted session with no attached client, in state `idle`, with no command
   or event for `idleUnloadMinutes` is unloaded and reported as `ended`.
   `attach` or `resume_session` loads it again with its full history. A
@@ -311,9 +310,15 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
 - `registry`: one `host` record when the link starts, a heartbeat every
   30 seconds, and one `session` record per session the daemon knows, hosted
   ones with their live state and stored ones as `ended`. Every record, the
-  host record included, is sent again every six hours. Daemon sessions carry
-  `"daemon": true` and
-  `"resumeArgv": ["super", "--session", <file>]`.
+  host record included, is sent again every six hours. The host record
+  carries `"daemon": true`, so the apps know the daemon runs there before it
+  has a session; a standalone `super` leaves the field out. Daemon sessions
+  carry `"daemon": true` and `"resumeArgv": ["super", "--session", <file>]`.
+
+  ```json
+  {"kind":"host","hostId":"01J…","name":"mbp","platform":"macos","deviceId":"…","daemon":true,"at":1761728400000}
+  ```
+
 - `sessions/{hostId}/{sessionId}/{events,entries,commands}`: every hosted
   session is mirrored exactly like a terminal session, from the moment it
   loads until it unloads.

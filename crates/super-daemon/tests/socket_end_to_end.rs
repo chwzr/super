@@ -320,6 +320,71 @@ async fn two_clients_share_one_session_until_it_is_stopped_and_resumed() {
 }
 
 #[tokio::test]
+async fn a_session_stopped_before_its_first_message_resumes() {
+    let daemon = Daemon::start(Duration::ZERO, Duration::from_secs(60)).await;
+    let mut a = daemon.client("A").await;
+    let created = a
+        .call(json!({"type": "create_session", "cwd": daemon.work_dir(), "model": "mock/mock-1"}))
+        .await;
+    assert_eq!(created["success"], true, "{created}");
+    let id = created["data"]["session"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let file = PathBuf::from(created["data"]["session"]["sessionFile"].as_str().unwrap());
+
+    // The file exists from creation on, with its header and nothing else.
+    let text = std::fs::read_to_string(&file).expect("the session file exists at creation");
+    assert_eq!(text.lines().count(), 1, "{text}");
+    let header_line = text.lines().next().unwrap().to_string();
+    let header: Value = serde_json::from_str(&header_line).unwrap();
+    assert_eq!(header["type"], "session");
+    assert_eq!(header["id"], id);
+
+    let stopped = a
+        .call(json!({"type": "stop_session", "sessionId": id}))
+        .await;
+    assert_eq!(stopped["success"], true, "{stopped}");
+    let ended = a.read_until(|v| v["type"] == "session_ended").await;
+    assert_eq!(ended.last().unwrap()["sessionId"], id);
+    assert!(file.exists(), "stopping keeps the file");
+
+    let resumed = a
+        .call(json!({"type": "resume_session", "sessionId": id}))
+        .await;
+    assert_eq!(resumed["success"], true, "{resumed}");
+    let session = &resumed["data"]["session"];
+    assert_eq!(session["sessionId"], id);
+    assert_eq!(session["hosted"], true);
+    assert_eq!(session["state"], "idle");
+    assert_eq!(session["sessionFile"], file.display().to_string());
+
+    let attached = a.call(json!({"type": "attach", "sessionId": id})).await;
+    assert_eq!(attached["success"], true, "{attached}");
+    assert_eq!(attached["data"]["session"]["attachedClients"], 1);
+    let state = a.call(json!({"type": "get_state"})).await;
+    assert_eq!(state["data"]["sessionId"], id, "{state}");
+    let entries = a.call(json!({"type": "get_entries"})).await;
+    assert_eq!(entries["data"]["entries"], json!([]), "{entries}");
+
+    // The resumed session works and writes on in the same file. The model
+    // is set again: an empty session has no model on record yet.
+    let model = a
+        .call(json!({"type": "set_model", "provider": "mock", "modelId": "mock-1"}))
+        .await;
+    assert_eq!(model["success"], true, "{model}");
+    let accepted = a.call(json!({"type": "prompt", "message": "say hi"})).await;
+    assert_eq!(accepted["data"]["disposition"], "started", "{accepted}");
+    let lines = a.read_until(|v| v["type"] == "agent_settled").await;
+    assert_eq!(text_of(&lines), "Hello from the mock provider.");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.lines().count() >= 4, "{text}");
+    assert_eq!(text.lines().next(), Some(header_line.as_str()));
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn the_sweep_unloads_a_session_nobody_watches() {
     let daemon = Daemon::start(Duration::from_millis(50), Duration::from_millis(20)).await;
     let mut a = daemon.client("A").await;

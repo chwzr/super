@@ -51,6 +51,10 @@ struct HostBody<'a> {
     name: &'a str,
     platform: &'a str,
     device_id: &'a str,
+    /// Set when the SUPER daemon runs on the host, so apps can ask it to
+    /// start and resume sessions there.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    daemon: bool,
     at: i64,
 }
 
@@ -89,6 +93,16 @@ impl RegistryWriter {
     /// Start announcing. The host record goes out first, then every change
     /// to any session record, and a heartbeat every 30 seconds.
     pub fn start(client: Arc<S2Client>, host: HostIdentity, device_id: String) -> Self {
+        Self::spawn(client, host, device_id, false)
+    }
+
+    /// [`start`](Self::start) for the SUPER daemon: the host record carries
+    /// `"daemon": true`, also when no session exists yet.
+    pub fn start_daemon(client: Arc<S2Client>, host: HostIdentity, device_id: String) -> Self {
+        Self::spawn(client, host, device_id, true)
+    }
+
+    fn spawn(client: Arc<S2Client>, host: HostIdentity, device_id: String, daemon: bool) -> Self {
         let (updates, mut updates_rx) = mpsc::unbounded_channel::<Update>();
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
@@ -104,6 +118,7 @@ impl RegistryWriter {
                         name: &host.name,
                         platform: &host.platform,
                         device_id: &device_id,
+                        daemon,
                         at: crate::now_ms(),
                     };
                     announced_host = append(&client, "host", &body).await;
@@ -260,5 +275,29 @@ mod tests {
         assert_eq!(json["blockedReason"], "Workflow approval required");
         assert!(json.get("headless").is_none());
         assert!(json.get("name").is_none());
+    }
+
+    #[test]
+    fn the_host_record_names_a_daemon_and_omits_the_flag_otherwise() {
+        let body = |daemon| HostBody {
+            kind: "host",
+            host_id: "01H",
+            name: "mbp",
+            platform: "macos",
+            device_id: "device-1",
+            daemon,
+            at: 1,
+        };
+        let json = serde_json::to_value(body(true)).expect("json");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "host", "hostId": "01H", "name": "mbp", "platform": "macos",
+                "deviceId": "device-1", "daemon": true, "at": 1
+            })
+        );
+        let json = serde_json::to_value(body(false)).expect("json");
+        assert!(json.get("daemon").is_none(), "{json}");
+        assert_eq!(json["kind"], "host");
     }
 }

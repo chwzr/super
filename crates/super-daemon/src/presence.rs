@@ -183,7 +183,7 @@ impl Link {
             ctx,
             host_id: identity.host_id.clone(),
             config,
-            registry: RegistryWriter::start(client.clone(), identity, device_id),
+            registry: RegistryWriter::start_daemon(client.clone(), identity, device_id),
             transports: Mutex::new(BTreeMap::new()),
             summaries: Mutex::new(BTreeMap::new()),
             notices: Arc::new(|notice| log::debug("presence", format!("{notice:?}"))),

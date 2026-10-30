@@ -142,6 +142,10 @@ async fn the_host_and_every_stored_session_are_announced_at_start() {
     let registry = bodies(&fixture.fake, "registry");
     assert_eq!(registry[0]["kind"], "host");
     assert_eq!(registry[0]["name"], "mbp");
+    assert_eq!(
+        registry[0]["daemon"], true,
+        "the host record names the daemon"
+    );
     assert_eq!(registry[1]["kind"], "session");
     assert_eq!(registry[1]["state"], "ended");
     assert_eq!(registry[1]["daemon"], true);

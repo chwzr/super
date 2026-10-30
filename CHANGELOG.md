@@ -21,7 +21,8 @@
   `super daemon status` reports the unit. On macOS both refuse and point at
   the SUPER app, which ships the daemon (ENG-39).
 - The daemon is present on the platform while signed in: host and session
-  records in the registry (stored sessions as `ended`, `daemon: true`), one
+  records in the registry (both with `daemon: true`, so an app recognises a
+  daemon that hosts no session yet; stored sessions as `ended`), one
   mirror per hosted session, and the host-level streams
   `hosts/{hostId}/commands` and `hosts/{hostId}/events` through which an app
   starts, resumes, stops and lists sessions on a device (ENG-37).
@@ -59,6 +60,11 @@
 
 ### Fixed
 
+- A session the daemon created and stopped before its first message can be
+  resumed and attached to again instead of failing with `no session`: the
+  daemon writes the session file's header when it creates the session, and
+  a lookup by id finds a file that has only its header. A `super` run that
+  ends before its first message still writes nothing.
 - A platform token refresh holds the credential lock beside `auth.json`
   until the new token is written, so two `super` processes (a terminal
   session and the headless one the macOS app runs) never refresh the same
