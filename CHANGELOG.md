@@ -4,6 +4,16 @@
 
 ### Added
 
+- Signed in, `super` in a terminal attaches to the daemon's session for the
+  directory instead of running the engine itself, starts a registered
+  daemon on demand (`launchctl kickstart` on macOS, `systemctl --user start`
+  on Linux), and leaves the session running when it detaches. A daemon on
+  another protocol version is refused with both ranges and the update
+  command for how this `super` was installed. `super` running in-process
+  holds the session file's lock, so the daemon never writes the same file.
+  `SUPER_DAEMON_SOCKET` points clients at another socket; `daemon.attach:
+  false` keeps the in-process TUI. `DaemonClient` in `super-daemon` is the
+  client library (ENG-38).
 - The daemon is present on the platform while signed in: host and session
   records in the registry (stored sessions as `ended`, `daemon: true`), one
   mirror per hosted session, and the host-level streams

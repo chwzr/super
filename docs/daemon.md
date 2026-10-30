@@ -8,8 +8,10 @@ client that started it; any client can attach to any session; a session the
 daemon unloaded can always be resumed.
 
 On macOS the SUPER app bundles the daemon and registers it with launchd. On
-Linux `super install` (coming) registers a systemd user unit. Running `super`
-in a terminal without a daemon works as it always did.
+Linux `super install` (coming) registers a systemd user unit. Signed in to
+the platform, `super` in a terminal attaches to the daemon (see
+[The terminal](#the-terminal)); running `super` without a daemon or without
+an account works as it always did.
 
 ## Commands
 
@@ -19,6 +21,12 @@ in a terminal without a daemon works as it always did.
 | `super daemon status [--socket PATH]` | Print version, pid, uptime, sessions and clients. Exit 1 when no daemon answers, 2 when it refuses the protocol. |
 | `super daemon stop [--socket PATH]` | Ask the daemon to shut down, or send SIGTERM to the pid in the lock file when the socket is dead. |
 
+Without `--socket` every command uses `SUPER_DAEMON_SOCKET` when it is set,
+else `~/.super/run/daemon.sock`; the lock sits beside a socket given either
+way. `SUPER_DAEMON_PROTOCOL_VERSIONS=2-3 super daemon run` makes a daemon
+advertise another protocol range, to see what clients say to a newer or
+older daemon.
+
 ## Files
 
 | Path | Purpose |
@@ -27,7 +35,7 @@ in a terminal without a daemon works as it always did.
 | `~/.super/run/daemon.lock` | Exclusive lock with the daemon's pid inside. |
 | `~/.super/agent/logs/daemon.log` | Log, rotated at 5 MiB keeping `daemon.log.1`. `SUPER_LOG=daemon=debug` adds detail. Never contains tokens, prompts or record bodies. |
 | `~/.super/agent/sessions/` | The session files, shared with the terminal. |
-| `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60}}`: minutes an idle, unattached session stays loaded; `0` keeps sessions loaded until stopped. |
+| `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60, "attach": true}}`: minutes an idle, unattached session stays loaded (`0` keeps sessions loaded until stopped); whether `super` in a terminal attaches to the daemon when signed in. |
 
 The daemon is started by launchd or systemd with a bare environment, so it
 reads the login shell's PATH once at start and uses it for every session's
@@ -108,12 +116,112 @@ null for a stored session.
   `working` or `blocked` session is never unloaded.
 - While hosting a session the daemon holds `<file>.jsonl.lock` beside it and
   refuses a file another process holds (`session a1b2c3d4 is open in another
-  process`).
+  process`). A `super` running the engine in-process (terminal, `-p`,
+  `--mode json`, `--mode rpc`) holds the same lock on the file it writes,
+  so the two never append to one file: it refuses to start on a file the
+  daemon hosts, and the session picker refuses to switch to one.
 - `shutdown`, SIGTERM and SIGINT abort in-flight turns, unload every session
   and exit 0. After a restart nothing is hosted; sessions load lazily.
 - Workflow approvals are asked as `approval_request` events and answered with
   `answer_approval` from any attached client; `approval_resolved.by` names the
   client's `hello.name`.
+
+## The terminal
+
+`super` in a terminal attaches to the daemon instead of running the engine
+itself when all of these hold:
+
+- it is signed in to the SUPER platform, `remote.enabled` is not false and
+  `daemon.attach` is not false;
+- it is a plain interactive run: no `-p`, `--mode`, subcommand, `--no-remote`
+  or `--no-session`, and none of the options that shape how the engine is
+  built (`--tools`, `--skill`, `--system-prompt`, `--approve`,
+  `--session-dir`, `--resume`, `--fork`, ...);
+- a daemon answers on the socket, or one is registered to start (below).
+
+It then picks a session in the current directory: `super` joins the newest
+session the daemon is running there, else creates one (with `--model`,
+`--provider`, `--thinking` and `--name` when given, which always create a
+new session); `super -c` attaches to the newest session there, loading a
+stored one; `super --session <id or file>` attaches to that session.
+Message arguments, `@file` included, become the first prompt.
+
+The front end is line based for now (the full TUI over the connection is
+ENG-13): the reply streams as it arrives, every tool call is one line, an
+approval is asked as numbered choices, and a line you type is sent as a
+prompt, or as a steer while the session works. Ctrl+C aborts the turn, or
+detaches when nothing runs; `/detach` and Ctrl+D detach, `/stop` stops the
+session. Detaching leaves the session running in the daemon, where the apps
+see it and `super` attaches again. With piped input, `super` sends each
+line and exits once the session settles after the last one.
+
+When no daemon answers and none can be started, `super` runs in-process as
+it always did (`--verbose` says why). When the daemon speaks another
+protocol version, `super` stops with the skew message below; `super
+--no-remote` runs without the daemon until the update.
+
+### Starting on demand
+
+When the default socket is dead, the client asks the service manager that
+owns the daemon to start it, so the daemon keeps one supervisor however it
+was started:
+
+- macOS: `launchctl kickstart gui/<uid>/io.flxkpe.super.daemon` when
+  `launchctl print gui/<uid>/io.flxkpe.super.daemon` finds the agent the
+  SUPER app registers;
+- Linux: `systemctl --user start super-daemon.service` when
+  `systemctl --user cat super-daemon.service` finds the unit `super install`
+  writes.
+
+It then waits up to five seconds for the socket. Nothing registered means
+no daemon, and nothing is started. A socket named by `SUPER_DAEMON_SOCKET`
+other than the default is connected to, never started.
+
+### Version skew
+
+A daemon and a client with no protocol version in common cannot talk. The
+client names both ranges and the update that fixes it, read from how this
+`super` was installed:
+
+```
+the SUPER daemon speaks protocol 2 to 3, this build speaks 1: run `brew upgrade chwzr/tap/super`
+```
+
+| This `super` is | The hint |
+| --- | --- |
+| a symlink into (or inside) `SUPER.app/Contents/Helpers` | `managed by the SUPER app: update the app` |
+| in a Homebrew cellar | ``run `brew upgrade chwzr/tap/super` `` |
+| in `~/.local/bin` (or `SUPER_INSTALL_DIR`) from `install.sh`, or anywhere else | ``run `super update` `` |
+| in `~/.cargo/bin` | ``run `cargo install --git https://github.com/chwzr/super super` `` |
+| a build in a checkout's `target/` | `rebuild it from an up-to-date checkout` |
+
+When the daemon is the older side the hint is about the daemon instead:
+`update the SUPER app, which runs the daemon` on macOS, a restart on the
+current build elsewhere. `super daemon status` prints the same message and
+exits 2. `super update` refuses to replace a binary inside the app bundle
+and says the app manages it.
+
+## The client library
+
+`super_daemon::client::DaemonClient` is the Rust client the terminal uses:
+
+- `DaemonClient::connect(&info)` finds the socket (`SUPER_DAEMON_SOCKET`,
+  else `~/.super/run/daemon.sock`) and says `hello` with `info`'s kind
+  (`tui`, `cli`, ...), name, version and protocol range; `hello()` and
+  `protocol_version()` report what the daemon answered.
+  `connect_or_start(&info)` adds the start on demand.
+- Typed calls for every daemon-level command: `status`, `list_sessions`,
+  `list_workspaces`, `list_directories`, `create_session`,
+  `resume_session`, `attach`, `detach`, `stop_session`, `shutdown`.
+  `execute(command)` sends a session command to the attached session and
+  returns its response.
+- `take_events()` returns the connection's event stream: daemon-level
+  events as `ClientEvent::Daemon`, the attached session's events, exactly
+  as `--mode rpc` emits them, as `ClientEvent::Session`. `closed()`
+  resolves when the daemon closes the connection.
+- Errors say what happened: `NotRunning`, `Unavailable` (with the reason
+  nothing was started), `Skew` (the message above), `Command` (a command
+  that came back with `success: false`), `Closed`, `Timeout`.
 
 ## Through the platform
 
