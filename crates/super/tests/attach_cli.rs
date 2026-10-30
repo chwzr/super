@@ -152,6 +152,25 @@ async fn a_signed_in_super_attaches_to_the_daemon_and_leaves_the_session_running
     assert!(again_out.contains("› say hi"), "{again_out}");
     assert!(again_out.contains("Hello from the daemon."), "{again_out}");
 
+    // `--session` with the short id from the header finds the same session.
+    let short = stdout
+        .split("attached to session ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .expect("the header names the session")
+        .to_string();
+    let by_id = output(
+        sandbox.command("client-home", &["--session", &short]),
+        "/detach\n",
+    )
+    .await;
+    let by_id_out = String::from_utf8_lossy(&by_id.stdout);
+    assert_eq!(by_id.status.code(), Some(0), "{by_id_out}");
+    assert!(
+        by_id_out.contains(&format!("attached to session {short}")),
+        "{by_id_out}"
+    );
+
     let stopped = output(sandbox.command("client-home", &["daemon", "stop"]), "").await;
     assert!(String::from_utf8_lossy(&stopped.stdout).contains("stopped"));
     let exit = tokio::time::timeout(Duration::from_secs(20), daemon.wait())

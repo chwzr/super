@@ -194,7 +194,17 @@ fn a_daemon_on_another_protocol_range_names_both_and_the_update() {
         stderr.contains("the SUPER daemon speaks protocol 2 to 3, this build speaks 1: "),
         "{stderr}"
     );
-    // SAFETY: SIGTERM to a child we own.
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    // It cannot be asked to stop, but `stop` finds its pid.
+    let stopped = sandbox
+        .command(&[
+            "daemon",
+            "stop",
+            "--socket",
+            sandbox.socket().to_str().unwrap(),
+        ])
+        .output()
+        .expect("run stop");
+    assert_eq!(stopped.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&stopped.stdout).contains("stopped (pid"));
     assert_eq!(wait_exit(child), 0);
 }

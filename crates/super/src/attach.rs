@@ -144,7 +144,19 @@ async fn choose_and_attach(
     cwd: &Path,
 ) -> Result<Attached, ClientError> {
     let existing = match &args.session {
-        Some(reference) => Some(session_reference(reference)),
+        // A partial id names whichever session it starts; the daemon wants
+        // the whole id for one it hosts.
+        Some(reference) => {
+            let id = session_reference(reference);
+            let sessions = client.list_sessions(None).await?;
+            Some(
+                sessions
+                    .into_iter()
+                    .find(|session| session.session_id.starts_with(&id))
+                    .map(|session| session.session_id)
+                    .unwrap_or(id),
+            )
+        }
         None => existing_session(args, &client.list_sessions(Some(cwd)).await?),
     };
     let session_id = match existing {

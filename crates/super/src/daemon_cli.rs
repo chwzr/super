@@ -174,22 +174,26 @@ async fn stop(socket: Option<PathBuf>) -> Result<i32> {
             }
             Ok(0)
         }
-        Err(ClientError::NotRunning { .. }) => match DaemonLock::holder_pid(&paths.lock) {
-            Some(pid) if process_alive(pid) => {
-                // SAFETY: kill with SIGTERM has no memory-safety preconditions.
-                let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0;
-                if sent {
-                    println!("stopped (pid {pid})");
-                } else {
-                    println!("no SUPER daemon is running");
+        // A daemon on another protocol version cannot be asked; its pid can.
+        Err(error @ (ClientError::NotRunning { .. } | ClientError::Skew(_))) => {
+            match DaemonLock::holder_pid(&paths.lock) {
+                Some(pid) if process_alive(pid) => {
+                    // SAFETY: kill with SIGTERM has no memory-safety preconditions.
+                    let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0;
+                    if sent {
+                        println!("stopped (pid {pid})");
+                    } else {
+                        println!("no SUPER daemon is running");
+                    }
+                    Ok(0)
                 }
-                Ok(0)
+                _ if matches!(error, ClientError::Skew(_)) => Err(error.into()),
+                _ => {
+                    println!("no SUPER daemon is running");
+                    Ok(0)
+                }
             }
-            _ => {
-                println!("no SUPER daemon is running");
-                Ok(0)
-            }
-        },
+        }
         Err(error) => Err(error.into()),
     }
 }
