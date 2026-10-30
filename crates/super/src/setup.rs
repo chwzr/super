@@ -317,6 +317,24 @@ pub fn session_dir(args: &Args, settings: &Settings) -> PathBuf {
         .unwrap_or_else(default_session_dir)
 }
 
+/// The first message from the command line: the positional arguments, with
+/// each `@file` replaced by that file's contents.
+pub fn initial_message(args: &Args, cwd: &std::path::Path) -> Result<Option<String>> {
+    let mut parts: Vec<String> = Vec::new();
+    for arg in &args.messages {
+        if let Some(file) = arg.strip_prefix('@') {
+            let path = cwd.join(file);
+            match std::fs::read_to_string(&path) {
+                Ok(content) => parts.push(format!("<file path=\"{file}\">\n{content}\n</file>")),
+                Err(e) => anyhow::bail!("could not read @{file}: {e}"),
+            }
+        } else {
+            parts.push(arg.clone());
+        }
+    }
+    Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
+}
+
 /// Hold `<file>.jsonl.lock` for whichever session file `session` has open,
 /// following it when the user starts, resumes or forks another, so a SUPER
 /// daemon never hosts a file this process writes. Fails when another process
@@ -534,24 +552,7 @@ pub async fn build_startup(
         !args.no_tools,
     );
 
-    // Initial message: positional args + @files + piped stdin (print mode).
-    let mut parts: Vec<String> = Vec::new();
-    for arg in &args.messages {
-        if let Some(file) = arg.strip_prefix('@') {
-            let path = cwd.join(file);
-            match std::fs::read_to_string(&path) {
-                Ok(content) => parts.push(format!("<file path=\"{file}\">\n{content}\n</file>")),
-                Err(e) => anyhow::bail!("could not read @{file}: {e}"),
-            }
-        } else {
-            parts.push(arg.clone());
-        }
-    }
-    let initial_message = if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n\n"))
-    };
+    let initial_message = initial_message(args, &cwd)?;
 
     let (theme, themes) = load_themes(args, &cwd, trusted, &settings);
 

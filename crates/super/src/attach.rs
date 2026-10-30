@@ -58,8 +58,7 @@ pub fn wanted(args: &Args, settings: &Settings, signed_in: bool) -> bool {
         || args.system_prompt.is_some()
         || args.append_system_prompt.is_some()
         || args.approve
-        || args.no_approve
-        || args.messages.iter().any(|message| message.starts_with('@'));
+        || args.no_approve;
     // Model options configure a new session; they do not apply to one that
     // is resumed, so that combination stays in-process.
     let resumes = args.continue_recent || args.session.is_some();
@@ -135,7 +134,9 @@ pub async fn try_run(args: &Args) -> Result<Option<i32>> {
             return Ok(None);
         }
     };
-    let initial = (!args.messages.is_empty()).then(|| args.messages.join("\n\n"));
+    // `@file` arguments are sent with the file's contents and shown as typed.
+    let initial = crate::setup::initial_message(args, &cwd)?
+        .map(|message| (args.messages.join(" "), message));
     run(client, events, attached, initial).await.map(Some)
 }
 
@@ -246,7 +247,7 @@ async fn run(
     client: DaemonClient,
     mut events: UnboundedReceiver<ClientEvent>,
     attached: Attached,
-    initial: Option<String>,
+    initial: Option<(String, String)>,
 ) -> Result<i32> {
     let session = attached.session;
     let interactive = std::io::stdin().is_terminal();
@@ -283,8 +284,8 @@ async fn run(
 
     let mut own_prompts: VecDeque<String> = VecDeque::new();
     let mut approval: Option<OpenApproval> = None;
-    if let Some(message) = initial {
-        screen.line(&format!("› {message}"));
+    if let Some((shown, message)) = initial {
+        screen.line(&format!("› {shown}"));
         send_prompt(&client, &mut screen, &mut own_prompts, message, working).await;
         working = true;
     } else if !working {
@@ -648,6 +649,7 @@ mod tests {
         let settings = Settings::default();
         assert!(wanted(&args(&[]), &settings, true));
         assert!(wanted(&args(&["fix", "the", "tests"]), &settings, true));
+        assert!(wanted(&args(&["see", "@notes.md"]), &settings, true));
         assert!(wanted(&args(&["-c"]), &settings, true));
         assert!(wanted(&args(&["--model", "mock/mock-1"]), &settings, true));
     }
@@ -677,7 +679,6 @@ mod tests {
             &["--resume"],
             &["--fork", "abc"],
             &["--session-dir", "/tmp/x"],
-            &["see", "@notes.md"],
             &["-c", "--model", "mock/mock-1"],
         ] {
             assert!(!wanted(&args(argv), &settings, true), "{argv:?}");
