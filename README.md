@@ -705,7 +705,9 @@ and events as JSONL RPC. All connected clients share one SUPER session.
 process and serves them over `~/.super/run/daemon.sock`, so the terminal and
 the SUPER app can attach to the same session and a session outlives the
 client that started it. `super daemon status` and `super daemon stop` talk to
-it. See [docs/daemon.md](docs/daemon.md).
+it. On Linux, `super install` runs it as a systemd user service that starts
+at login, and `super uninstall` removes it again. See
+[docs/daemon.md](docs/daemon.md).
 
 See the [SDK guide](docs/sdk.md), [RPC protocol](docs/rpc.md), and
 [browser WebAssembly guide](crates/super-core-wasm/README.md).
