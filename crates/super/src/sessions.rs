@@ -101,6 +101,19 @@ pub(crate) fn status(state: SessionState) -> Status {
     }
 }
 
+/// A session's status as the apps show it: an ended session stays ended,
+/// any other state is only current while its device is online.
+pub(crate) fn session_status(state: SessionState, device_online: bool) -> Status {
+    if state != SessionState::Ended && !device_online {
+        return Status {
+            label: "offline",
+            mark: "○",
+            token: "dim",
+        };
+    }
+    status(state)
+}
+
 /// A device's presence dot, label and colour.
 pub(crate) fn presence(online: bool) -> Status {
     if online {
@@ -311,7 +324,7 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
                         .filter(|session| session.host_id == host.host_id)
                         .map(|session| entry(summary_from_record(session), current))
                         .collect();
-                    let can_start = online && host.daemon;
+                    let can_start = online && view.runs_daemon(&host.host_id, now);
                     // A device with nothing to show and nothing to start is noise.
                     (!entries.is_empty() || can_start).then(|| Device {
                         host_id: host.host_id.clone(),
@@ -663,8 +676,9 @@ impl SessionsPicker {
                 )
             }
             Row::Session(d, w, s) => {
-                let entry = &self.devices[d].workspaces[w].sessions[s];
-                let state = status(entry.summary.state);
+                let device = &self.devices[d];
+                let entry = &device.workspaces[w].sessions[s];
+                let state = session_status(entry.summary.state, device.online || device.local);
                 let mut detail = Vec::new();
                 if entry.current {
                     detail.push("current".to_string());
@@ -1062,17 +1076,34 @@ mod daemon {
 
     /// Attach the daemon connection to a session on this device. Detaching
     /// first, and dropping what queued up, keeps the previous session's last
-    /// events from showing under the new one.
+    /// events from showing under the new one. When the daemon refuses the
+    /// new one, the connection goes back to the session it showed.
     async fn attach_local(link: &mut Link, session_id: &str) -> Result<SessionSummary, String> {
         const NO_DAEMON: &str = "no SUPER daemon is running on this device";
-        let _ = link.daemon().ok_or(NO_DAEMON)?.detach().await;
-        link.drain();
-        let attached = link
+        let previous = link
             .daemon()
             .ok_or(NO_DAEMON)?
-            .attach(session_id)
+            .detach()
             .await
-            .map_err(|error| error.to_string())?;
+            .ok()
+            .flatten();
+        link.drain();
+        let client = link.daemon().ok_or(NO_DAEMON)?;
+        let attached = match client.attach(session_id).await {
+            Ok(attached) => attached,
+            Err(error) => {
+                let mut message = error.to_string();
+                if let Some(previous) = previous
+                    && let Err(back) = client.attach(&previous).await
+                {
+                    message.push_str(&format!(
+                        "; this terminal could not go back to {}: {back}",
+                        short_id(&previous)
+                    ));
+                }
+                return Err(message);
+            }
+        };
         link.set_remote(None);
         Ok(attached.session)
     }
@@ -1304,6 +1335,9 @@ mod tests {
         view.apply(&session("01M", "s1", "/w/super", "idle", NOW - 5_000));
         view.apply(&host("02L", "linuxbox", true, NOW - 10_000));
         view.apply(&session("02L", "r1", "/srv/app", "working", NOW - 10_000));
+        // A standalone `super` there announces the host without the daemon
+        // flag; the daemon still runs, as the apps see it.
+        view.apply(&host("02L", "linuxbox", false, NOW - 9_000));
         view.apply(&host("03O", "old-laptop", false, NOW - 3_600_000));
         view.apply(&session("03O", "o1", "/home/o", "ended", NOW - 3_600_000));
         // Nothing to show and nothing to start: left out.
@@ -1387,6 +1421,34 @@ mod tests {
             laptop.workspaces[0].sessions[0].summary.state,
             SessionState::Ended
         );
+    }
+
+    #[test]
+    fn a_session_on_an_offline_device_reads_offline_unless_it_ended() {
+        assert_eq!(
+            session_status(SessionState::Working, false).label,
+            "offline"
+        );
+        assert_eq!(
+            session_status(SessionState::Blocked, false).label,
+            "offline"
+        );
+        assert_eq!(session_status(SessionState::Idle, false).label, "offline");
+        assert_eq!(session_status(SessionState::Ended, false).label, "ended");
+        assert_eq!(session_status(SessionState::Working, true).label, "working");
+
+        let mut listing = listing();
+        if let Some(Ok(view)) = &mut listing.registry {
+            view.apply(&format!(
+                r#"{{"kind":"session","hostId":"03O","sessionId":"o2","workspace":"/home/o","cwd":"/home/o","state":"working","model":"m","thinkingLevel":"off","firstMessage":"left running","at":{}}}"#,
+                NOW - 3_600_000
+            ));
+        }
+        let mut picker = SessionsPicker::new(group(&listing, NOW), NOW, Theme::dark());
+        picker.max_visible = 40;
+        let text = strip_ansi(&picker.render(120).join("\n"));
+        assert!(text.contains("○ offline         left running"), "{text}");
+        assert!(!text.contains("working         left running"), "{text}");
     }
 
     #[test]
@@ -1637,6 +1699,42 @@ mod end_to_end {
             .collect()
     }
 
+    /// A stored session of this device's daemon that nothing hosts.
+    async fn client_create_and_unload(link: &Link, cwd: &std::path::Path) -> SessionSummary {
+        let client = link.daemon().unwrap();
+        let created = client
+            .create_session(NewSession {
+                cwd: cwd.to_path_buf(),
+                model: Some("mock/mock-1".into()),
+                ..NewSession::default()
+            })
+            .await
+            .unwrap();
+        client.stop_session(&created.session_id).await.unwrap();
+        created
+    }
+
+    /// How many clients each session of this device's daemon has attached.
+    async fn attachments(link: &Link) -> std::collections::BTreeMap<String, usize> {
+        link.daemon()
+            .unwrap()
+            .list_sessions(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| (session.session_id, session.attached_clients))
+            .collect()
+    }
+
+    async fn shown_session(link: &Link) -> String {
+        let state = link
+            .execute_ok(Command::GetState {})
+            .await
+            .unwrap()
+            .unwrap();
+        state["sessionId"].as_str().unwrap().to_string()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_link_switches_between_sessions_here_and_on_another_device() {
         let dir = tempfile::Builder::new().prefix("sw").tempdir().unwrap();
@@ -1805,6 +1903,9 @@ mod end_to_end {
         .await
         .unwrap();
         assert_eq!(shown.session_id, second.session_id);
+        let attached = attachments(&link).await;
+        assert_eq!(attached[&first.session_id], 0, "never attached twice");
+        assert_eq!(attached[&second.session_id], 1);
         assert_eq!(
             prompt_and_settle(&mut link, "for the second").await,
             "Hello."
@@ -1824,6 +1925,29 @@ mod end_to_end {
             "the first is untouched"
         );
 
+        // A session another process holds is refused, and the terminal keeps
+        // showing the one it showed.
+        let held = client_create_and_unload(&link, &work).await;
+        let other_process =
+            super_daemon::session_lock::try_lock(std::path::Path::new(&held.session_file))
+                .unwrap()
+                .expect("free once unloaded");
+        let refused = switch(
+            &mut link,
+            Choice::Session {
+                device: here.clone(),
+                session: Box::new(held.clone()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.contains("open in another process"), "{refused}");
+        assert_eq!(shown_session(&link).await, first.session_id);
+        let attached = attachments(&link).await;
+        assert_eq!(attached[&first.session_id], 1, "still attached");
+        assert_eq!(attached[&second.session_id], 0);
+        drop(other_process);
+
         // Over to the session on the other device: the same commands.
         switch(
             &mut link,
@@ -1835,6 +1959,10 @@ mod end_to_end {
         .await
         .unwrap();
         assert!(link.remote().is_some());
+        assert!(
+            attachments(&link).await.values().all(|count| *count == 0),
+            "the terminal follows the other device only"
+        );
         assert_eq!(link.describe(), "linuxbox through the SUPER platform");
         assert_eq!(prompt_and_settle(&mut link, "for linuxbox").await, "Hello.");
         assert_eq!(user_messages(&link).await, ["for linuxbox"]);
@@ -1871,6 +1999,7 @@ mod end_to_end {
         .await
         .unwrap();
         assert!(link.remote().is_none());
+        assert_eq!(attachments(&link).await[&first.session_id], 1);
         assert_eq!(prompt_and_settle(&mut link, "back home").await, "Hello.");
         let listed = link.daemon().unwrap().list_sessions(None).await.unwrap();
         let hosted: Vec<&str> = listed

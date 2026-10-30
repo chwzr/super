@@ -250,6 +250,13 @@ async fn append<T: Serialize>(client: &S2Client, kind: &str, body: &T) -> bool {
 /// use the same window.
 pub const ONLINE_WINDOW: Duration = Duration::from_secs(90);
 
+/// How long a host record's `daemon` flag outlives a newer host record
+/// without it, as in the apps. A daemon sends its host record again every six
+/// hours; a standalone `super` on the same machine (`-p`, `--mode rpc`,
+/// `daemon.attach: false`) writes host records without the flag, which must
+/// not hide the daemon in between.
+pub const DAEMON_FLAG_WINDOW: Duration = Duration::from_secs(6 * 3600 + 90);
+
 /// A host as the registry knows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryHost {
@@ -257,8 +264,11 @@ pub struct RegistryHost {
     /// The host id until a host record names it.
     pub name: String,
     pub platform: String,
-    /// The SUPER daemon runs there, so it takes host commands.
+    /// The newest host record says the SUPER daemon runs there. Whether it
+    /// takes host commands is [`RegistryView::runs_daemon`].
     pub daemon: bool,
+    /// Unix milliseconds of the newest host record that said `daemon: true`.
+    pub daemon_flagged_at: Option<i64>,
     /// Unix milliseconds of the newest record about the host.
     pub last_seen: i64,
 }
@@ -302,6 +312,9 @@ impl RegistryView {
                     host.platform = platform.to_string();
                 }
                 host.daemon = value["daemon"].as_bool().unwrap_or(false);
+                if host.daemon && host.daemon_flagged_at.is_none_or(|flagged| flagged < at) {
+                    host.daemon_flagged_at = Some(at);
+                }
                 host.last_seen = host.last_seen.max(at);
             }
             Some("heartbeat") => {
@@ -335,6 +348,7 @@ impl RegistryView {
                 name: host_id.to_string(),
                 platform: "unknown".into(),
                 daemon: false,
+                daemon_flagged_at: None,
                 last_seen: 0,
             })
     }
@@ -357,6 +371,24 @@ impl RegistryView {
         self.hosts.get(host_id).is_some_and(|host| {
             host.last_seen > 0 && now - host.last_seen <= ONLINE_WINDOW.as_millis() as i64
         })
+    }
+
+    /// Whether the SUPER daemon runs on the host at `now`, as the apps
+    /// decide it: its newest host record says so, a host record said so
+    /// within [`DAEMON_FLAG_WINDOW`], or one of its session records says so
+    /// (a daemon marks every session it hosts or keeps).
+    pub fn runs_daemon(&self, host_id: &str, now: i64) -> bool {
+        let flagged = self.hosts.get(host_id).is_some_and(|host| {
+            host.daemon
+                || host
+                    .daemon_flagged_at
+                    .is_some_and(|flagged| now - flagged <= DAEMON_FLAG_WINDOW.as_millis() as i64)
+        });
+        flagged
+            || self
+                .sessions
+                .values()
+                .any(|session| session.host_id == host_id && session.record.daemon)
     }
 }
 
@@ -447,6 +479,37 @@ mod tests {
         assert_eq!(json["blockedReason"], "Workflow approval required");
         assert!(json.get("headless").is_none());
         assert!(json.get("name").is_none());
+    }
+
+    #[test]
+    fn a_daemon_stays_known_beside_a_standalone_super_on_the_same_host() {
+        let host = |daemon: bool, at: i64| {
+            format!(
+                r#"{{"kind":"host","hostId":"01H","name":"linuxbox","platform":"linux","daemon":{daemon},"at":{at}}}"#
+            )
+        };
+        let window = DAEMON_FLAG_WINDOW.as_millis() as i64;
+        let mut view = RegistryView::default();
+        view.apply(&host(true, 1_000));
+        // A `super -p` there announces the host without the flag.
+        view.apply(&host(false, 2_000));
+        assert!(!view.host_by_id("01H").unwrap().daemon, "the newest record");
+        assert!(view.runs_daemon("01H", 2_000));
+        assert!(view.runs_daemon("01H", 1_000 + window));
+        assert!(
+            !view.runs_daemon("01H", 1_000 + window + 1),
+            "a daemon renews its host record well before the flag lapses"
+        );
+
+        // A session record of the daemon says it runs there too.
+        let mut sessions = RegistryView::default();
+        sessions.apply(&host(false, 1_000));
+        assert!(!sessions.runs_daemon("01H", 1_000));
+        sessions.apply(
+            r#"{"kind":"session","hostId":"01H","sessionId":"a1","workspace":"/w","cwd":"/w","state":"ended","model":"m","thinkingLevel":"off","daemon":true,"at":900}"#,
+        );
+        assert!(sessions.runs_daemon("01H", 1_000 + window + 1));
+        assert!(!sessions.runs_daemon("02X", 1_000));
     }
 
     #[test]

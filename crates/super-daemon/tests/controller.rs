@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 struct Fixture {
     _provider: MockProvider,
     dir: tempfile::TempDir,
+    fake: Arc<FakeS2>,
     client: Arc<S2Client>,
     ctx: Arc<ServerContext>,
     link: Link,
@@ -69,7 +70,7 @@ async fn fixture() -> Fixture {
         CancellationToken::new(),
     );
     let fake = Arc::new(FakeS2::default());
-    let base = serve(fake).await;
+    let base = serve(fake.clone()).await;
     let client = Arc::new(S2Client::new(
         reqwest::Client::new(),
         base,
@@ -93,6 +94,7 @@ async fn fixture() -> Fixture {
     Fixture {
         _provider: provider,
         dir,
+        fake,
         client,
         ctx,
         link,
@@ -123,6 +125,25 @@ async fn registry_until(
 
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+/// The headers of the newest record on `stream`, and its body.
+fn newest(fake: &FakeS2, stream: &str) -> (std::collections::BTreeMap<String, String>, Value) {
+    let record = fake.records(stream).pop().expect("a record");
+    (
+        record.headers.into_iter().collect(),
+        serde_json::from_str(&record.body).unwrap(),
+    )
+}
+
+/// What the apps put on every command: its type, this device, the name the
+/// others see, and an expiry in the future.
+fn assert_command_headers(headers: &std::collections::BTreeMap<String, String>, kind: &str) {
+    assert_eq!(headers["t"], kind, "{headers:?}");
+    assert_eq!(headers["from"], "device-mac");
+    assert_eq!(headers["name"], "Terminal on mbp");
+    let expires: i64 = headers["exp"].parse().unwrap();
+    assert!(expires > now_ms(), "{headers:?}");
 }
 
 #[tokio::test]
@@ -160,6 +181,20 @@ async fn a_controller_creates_prompts_and_follows_a_session_on_another_host() {
         .await
         .unwrap();
     assert!(listing.success, "{listing:?}");
+    // The command went to the host's commands stream with the apps' headers,
+    // and its answer, matched by id, came from the host's events stream.
+    let (headers, body) = newest(&fixture.fake, "hosts/01L/commands");
+    assert_command_headers(&headers, "list_directories");
+    assert_eq!(body["type"], "list_directories");
+    let answered = fixture
+        .fake
+        .records("hosts/01L/events")
+        .into_iter()
+        .any(|record| {
+            serde_json::from_str::<Value>(&record.body)
+                .is_ok_and(|event| event["type"] == "response" && event["id"] == body["id"])
+        });
+    assert!(answered, "the answer is on hosts/01L/events");
     let names: Vec<&str> = listing.data.as_ref().unwrap()["directories"]
         .as_array()
         .unwrap()
@@ -198,6 +233,13 @@ async fn a_controller_creates_prompts_and_follows_a_session_on_another_host() {
         .await
         .unwrap();
     assert!(response.success, "{response:?}");
+    // A prompt goes to that session's own commands stream.
+    let (headers, body) = newest(
+        &fixture.fake,
+        &format!("sessions/01L/{session_id}/commands"),
+    );
+    assert_command_headers(&headers, "prompt");
+    assert_eq!(body["message"], "hi from the Mac");
     let mut kinds: Vec<String> = Vec::new();
     let mut text = String::new();
     tokio::time::timeout(Duration::from_secs(20), async {

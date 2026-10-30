@@ -346,7 +346,9 @@ Sessions
   (`list_sessions`). Signed in, other devices follow from the platform's
   `registry` stream, online ones first: a device is online when anything
   about it is at most 90 seconds old, as in the apps. A session is
-  `working`, `needs an answer` (blocked), `idle` or `ended` (not loaded).
+  `working`, `needs an answer` (blocked), `idle` or `ended` (not loaded);
+  on a device that is offline, a session that has not ended reads
+  `offline`, since its last state may be stale.
 - Typing filters by title, workspace and device; Enter opens the row under
   the cursor; Esc clears the filter, then closes.
 - A session on this device: the connection attaches to it and its last
@@ -365,7 +367,12 @@ Sessions
   `+ new workspace on <device>…` browses the device's directories with
   `list_directories`, starting at the parent of its newest workspace (the
   home directory on this device), and starts a session in the one chosen.
-  Both are offered for devices whose daemon answers.
+  Both are offered for devices whose daemon answers. As in the apps, a
+  device runs a daemon when its newest host record says so, a host record
+  said so within the last six hours (a standalone `super` there writes host
+  records without the flag), or one of its session records says so.
+- When the daemon refuses the session picked (another process has its file
+  open, say), the terminal stays attached to the session it showed.
 
 In the full-screen terminal, which runs its session in-process, `/sessions`
 looks the same. Picking a session leaves the in-process session saved (it
