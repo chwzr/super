@@ -313,7 +313,10 @@ was. The apps list the session a few seconds later.
 A failure at any step (the sign-in, no daemon, a session file outside the
 daemon's session directory, the daemon refusing to load it) is reported and
 leaves the session running in the terminal as before, with its lock taken
-back and its mirror restarted. `--no-session` sessions are refused (there is
+back and its mirror restarted. Should another process hold the file by then
+(a daemon that loaded it after the terminal stopped waiting for it), the
+terminal exits instead of writing beside it, and `super` attaches to the
+session where it runs. `--no-session` sessions are refused (there is
 no file to resume), and so is `remote.enabled: false` (the apps would not see
 the session). In a terminal attached already, `/remote` reports the session
 and the daemon it is attached to. `/remote status`, `on`, `off` and `name`

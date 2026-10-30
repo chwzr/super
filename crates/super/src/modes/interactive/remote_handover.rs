@@ -292,8 +292,20 @@ pub(super) fn due(app: &App, session: &AgentSession) -> bool {
         }) == Step::HandOver
 }
 
-/// Move the session to the daemon. `None` when it stays here, with the
-/// reason on screen.
+/// How finishing the hand-over came out. Without a Unix socket it always
+/// stays.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(super) enum Finished {
+    /// The daemon runs the session; the terminal continues attached to it.
+    Moved(Box<Moved>),
+    /// The session keeps running here, the reason on screen.
+    Stayed,
+    /// The session file was let go and another process holds it now: the
+    /// terminal must stop running the session. The reason.
+    Stranded(String),
+}
+
+/// Move the session to the daemon.
 #[cfg(not(unix))]
 pub(super) async fn finish(
     _app: &mut App,
@@ -301,12 +313,11 @@ pub(super) async fn finish(
     _lock: &mut Option<SessionLockKeeper>,
     _resources: &InteractiveResources,
     _command_tx: &mpsc::UnboundedSender<CommandEvent>,
-) -> Option<Moved> {
-    None
+) -> Finished {
+    Finished::Stayed
 }
 
-/// Move the session to the daemon. `None` when it stays here, with the
-/// reason on screen.
+/// Move the session to the daemon.
 #[cfg(unix)]
 pub(super) async fn finish(
     app: &mut App,
@@ -314,11 +325,18 @@ pub(super) async fn finish(
     lock: &mut Option<SessionLockKeeper>,
     resources: &InteractiveResources,
     command_tx: &mpsc::UnboundedSender<CommandEvent>,
-) -> Option<Moved> {
-    let handover::Ready {
+) -> Finished {
+    let Some(handover::Ready {
         mut client,
         mut events,
-    } = app.handover.pending.take()?.ready?;
+    }) = app
+        .handover
+        .pending
+        .take()
+        .and_then(|pending| pending.ready)
+    else {
+        return Finished::Stayed;
+    };
     let failed = |app: &mut App, error: String| {
         show(
             app,
@@ -333,7 +351,7 @@ pub(super) async fn finish(
             Ok(ready) => (client, events) = (ready.client, ready.events),
             Err(error) => {
                 failed(app, error);
-                return None;
+                return Finished::Stayed;
             }
         }
     }
@@ -341,7 +359,7 @@ pub(super) async fn finish(
         Ok(target) => target,
         Err(error) => {
             failed(app, error);
-            return None;
+            return Finished::Stayed;
         }
     };
     // The terminal's own mirror says goodbye first, so its "ended" record
@@ -366,19 +384,22 @@ pub(super) async fn finish(
                     crate::remote::signed_in(),
                 )),
             );
-            Some(crate::attach::Continuation {
+            Finished::Moved(Box::new(crate::attach::Continuation {
                 client,
                 events,
                 attached,
-            })
+            }))
         }
-        Err(error) => {
+        Err(handover::Failure::StaysHere(error)) => {
             if mirrored {
                 super::start_remote(app, session, &resources.settings, command_tx);
             }
             failed(app, error);
-            None
+            Finished::Stayed
         }
+        Err(handover::Failure::Stranded(error)) => Finished::Stranded(format!(
+            "/remote: could not hand the session to the SUPER daemon: {error}. `super` attaches to it if the daemon has it."
+        )),
     }
 }
 

@@ -252,6 +252,29 @@ mod daemon {
     /// How long a daemon that `super install` or the fallback started may
     /// take to answer. It reads the login shell's PATH before it binds.
     const ANSWER_WAIT: Duration = Duration::from_secs(10);
+    /// How long a failed hand-over keeps trying to take the session file's
+    /// lock back, for a daemon that is still letting go of it.
+    const RELOCK_WAIT: Duration = Duration::from_secs(3);
+
+    /// Why a hand-over did not go through.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum Failure {
+        /// This process holds the session file again; the in-process
+        /// session carries on.
+        StaysHere(String),
+        /// The file was let go and another process holds it now, most
+        /// likely the daemon that loaded it after all. The in-process
+        /// session must not write to it again.
+        Stranded(String),
+    }
+
+    impl std::fmt::Display for Failure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::StaysHere(message) | Self::Stranded(message) => f.write_str(message),
+            }
+        }
+    }
 
     /// A connection to a daemon, waiting for the turn to end.
     pub(crate) struct Ready {
@@ -458,13 +481,15 @@ mod daemon {
 
     /// Let go of the session file and have the daemon load it, then attach.
     /// On any failure the daemon lets go of the file again and this process
-    /// takes its lock back, so the in-process session carries on.
+    /// takes its lock back, so the in-process session carries on. When the
+    /// lock cannot be taken back, the failure says so
+    /// ([`Failure::Stranded`]): two writers must never share the file.
     pub(crate) async fn hand_over(
         client: &DaemonClient,
         target: &Target,
         lock: &mut Option<SessionLockKeeper>,
         session: &Arc<AgentSession>,
-    ) -> Result<Attached, String> {
+    ) -> Result<Attached, Failure> {
         match target {
             Target::Create {
                 cwd,
@@ -481,12 +506,12 @@ mod daemon {
                         name: None,
                     })
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| Failure::StaysHere(error.to_string()))?;
                 match client.attach(&created.session_id).await {
                     Ok(attached) => Ok(attached),
                     Err(error) => {
                         let _ = client.stop_session(&created.session_id).await;
-                        Err(error.to_string())
+                        Err(Failure::StaysHere(error.to_string()))
                     }
                 }
             }
@@ -501,17 +526,31 @@ mod daemon {
                     Err(error) => {
                         // The daemon may have loaded it before `attach` failed.
                         let _ = client.stop_session(session_id).await;
-                        match crate::setup::keep_session_lock(session) {
-                            Ok(keeper) => *lock = Some(keeper),
-                            Err(relock) => {
-                                return Err(format!(
-                                    "{error}; the session file could not be locked again: {relock:#}"
-                                ));
+                        match relock(session).await {
+                            Ok(keeper) => {
+                                *lock = Some(keeper);
+                                Err(Failure::StaysHere(error.to_string()))
                             }
+                            Err(relock) => Err(Failure::Stranded(format!(
+                                "{error}; the session file could not be locked again ({relock:#}), so this terminal stops running it"
+                            ))),
                         }
-                        Err(error.to_string())
                     }
                 }
+            }
+        }
+    }
+
+    /// Take the session file's lock back, giving a daemon that is still
+    /// loading or unloading it a moment (a `resume_session` that timed out
+    /// here may still be running there).
+    async fn relock(session: &Arc<AgentSession>) -> anyhow::Result<SessionLockKeeper> {
+        let deadline = tokio::time::Instant::now() + RELOCK_WAIT;
+        loop {
+            match crate::setup::keep_session_lock(session) {
+                Ok(keeper) => return Ok(keeper),
+                Err(error) if tokio::time::Instant::now() >= deadline => return Err(error),
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
             }
         }
     }
@@ -991,7 +1030,10 @@ mod end_to_end {
         let error = hand_over(&client, &target, &mut lock, &agent)
             .await
             .unwrap_err();
-        assert!(error.contains("no session"), "{error}");
+        assert!(
+            matches!(&error, Failure::StaysHere(message) if message.contains("no session")),
+            "{error:?}"
+        );
         assert!(lock.is_some(), "the lock is back");
         assert!(session_lock::is_held(&file));
 
@@ -1003,6 +1045,65 @@ mod end_to_end {
                 .contains("still here")
         );
 
+        drop(standalone);
+        drop(client);
+        fixture.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_held_elsewhere_after_a_failed_hand_over_is_not_written_again() {
+        // The daemon cannot load the session, and while this process lets go
+        // of the file another one takes it (as a daemon still loading it
+        // after `resume_session` timed out here would).
+        let fixture = Fixture::start("daemon-sessions").await;
+        let standalone = fixture.standalone_session().await;
+        let agent = standalone.agent_session().clone();
+        let mut lock = Some(crate::setup::keep_session_lock(&agent).unwrap());
+        let file = agent
+            .manager
+            .lock()
+            .unwrap()
+            .session_file()
+            .unwrap()
+            .to_path_buf();
+        let client = DaemonClient::connect_to(&fixture.socket, &client_info())
+            .await
+            .unwrap();
+        let target = target(&standalone_of(&agent)).unwrap();
+
+        let (taken_tx, taken_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let elsewhere = {
+            let file = file.clone();
+            std::thread::spawn(move || {
+                // Spin: the file is free only between the release and the
+                // daemon's answers.
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                let held = loop {
+                    if let Some(held) = session_lock::try_lock(&file).unwrap() {
+                        break held;
+                    }
+                    assert!(std::time::Instant::now() < deadline, "never free");
+                    std::thread::yield_now();
+                };
+                let _ = taken_tx.send(());
+                let _ = release_rx.blocking_recv();
+                drop(held);
+            })
+        };
+        let error = hand_over(&client, &target, &mut lock, &agent)
+            .await
+            .unwrap_err();
+        taken_rx.await.expect("the other process took the file");
+        let Failure::Stranded(message) = &error else {
+            panic!("the terminal must stop running the session: {error:?}");
+        };
+        assert!(message.contains("could not be locked again"), "{message}");
+        assert!(lock.is_none(), "no lock is claimed that is not held");
+        assert!(session_lock::is_held(&file), "the other process has it");
+
+        let _ = release_tx.send(());
+        elsewhere.join().unwrap();
         drop(standalone);
         drop(client);
         fixture.stop().await;
