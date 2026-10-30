@@ -140,6 +140,12 @@ pub enum ClientError {
     Command { command: String, message: String },
     #[error("unexpected answer from the SUPER daemon: {0}")]
     Protocol(String),
+    /// The process listening on the socket runs as another user.
+    #[error(
+        "the socket {} belongs to another user (uid {uid}); not connecting to it",
+        .socket.display()
+    )]
+    ForeignSocket { socket: PathBuf, uid: u32 },
     #[error(transparent)]
     Io(std::io::Error),
 }
@@ -274,6 +280,11 @@ impl DaemonClient {
                     socket: socket.to_path_buf(),
                     source,
                 })?;
+        // Prompts and file contents go over this socket: only to a daemon
+        // of this user, wherever `SUPER_DAEMON_SOCKET` points.
+        let peer = stream.peer_cred().map_err(ClientError::Io)?.uid();
+        // SAFETY: getuid has no preconditions and cannot fail.
+        same_user(socket, peer, unsafe { libc::getuid() })?;
         let (read, write) = stream.into_split();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
@@ -608,6 +619,18 @@ fn hello_refusal(response: &Response, client: [u32; 2]) -> ClientError {
     )
 }
 
+/// Refuse a socket whose listener runs as another user than this process.
+fn same_user(socket: &Path, peer: u32, own: u32) -> Result<(), ClientError> {
+    if peer == own {
+        Ok(())
+    } else {
+        Err(ClientError::ForeignSocket {
+            socket: socket.to_path_buf(),
+            uid: peer,
+        })
+    }
+}
+
 fn command_error(response: Response) -> ClientError {
     ClientError::Command {
         command: response.command,
@@ -882,6 +905,21 @@ mod tests {
         assert!(older_daemon("linux").to_string().ends_with(
             "restart the daemon on this build: `super daemon stop`, then start it again"
         ));
+    }
+
+    #[test]
+    fn a_socket_of_another_user_is_refused() {
+        let socket = Path::new("/tmp/shared.sock");
+        assert!(same_user(socket, 501, 501).is_ok());
+        let error = same_user(socket, 0, 501).expect_err("another user");
+        assert!(
+            matches!(&error, ClientError::ForeignSocket { uid: 0, .. }),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "the socket /tmp/shared.sock belongs to another user (uid 0); not connecting to it"
+        );
     }
 
     #[test]

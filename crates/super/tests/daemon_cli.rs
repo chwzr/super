@@ -166,6 +166,33 @@ fn status_finds_the_socket_in_the_environment() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{stdout}");
     assert!(stdout.contains("clients  0"), "{stdout}");
+
+    // One other client (an attached terminal, say): status counts it and
+    // not its own connection.
+    let terminal = std::os::unix::net::UnixStream::connect(sandbox.socket()).expect("connect");
+    {
+        use std::io::{BufRead as _, Write as _};
+        let mut writer = &terminal;
+        writeln!(
+            writer,
+            r#"{{"type":"hello","id":"h1","client":"tui","name":"Terminal","version":"0.0.0","protocolVersions":[1,1]}}"#
+        )
+        .expect("hello");
+        let mut reply = String::new();
+        std::io::BufReader::new(&terminal)
+            .read_line(&mut reply)
+            .expect("hello reply");
+        assert!(reply.contains(r#""success":true"#), "{reply}");
+    }
+    let output = sandbox
+        .command(&["daemon", "status"])
+        .env("SUPER_DAEMON_SOCKET", sandbox.socket())
+        .output()
+        .expect("run status");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("clients  1"), "{stdout}");
+    drop(terminal);
+
     let stopped = sandbox
         .command(&["daemon", "stop"])
         .env("SUPER_DAEMON_SOCKET", sandbox.socket())

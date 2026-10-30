@@ -1493,6 +1493,7 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
         super_sdk::Session::attach(session.clone(), cwd, mirrored_events)
     };
+    sdk.set_session_file_guard(Some(crate::setup::session_file_guard(&session)));
     {
         let tx = command_tx.clone();
         sdk.set_observer(Some(Arc::new(move |notice| {

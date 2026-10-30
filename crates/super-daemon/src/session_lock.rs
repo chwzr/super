@@ -113,9 +113,11 @@ impl SessionFileLock {
 }
 
 /// Keeps a [`SessionFileLock`] on the current session file from a background
-/// task, polling `current` every `interval`. Dropping it releases the lock.
+/// task, polling `current` every `interval`. Dropping it releases the lock at
+/// once, so the same file can be opened again right after.
 pub struct SessionLockKeeper {
     task: Option<tokio::task::JoinHandle<()>>,
+    lock: Arc<Mutex<SessionFileLock>>,
     conflict: Arc<Mutex<Option<Held>>>,
 }
 
@@ -129,8 +131,10 @@ impl SessionLockKeeper {
     ) -> Result<Self, Held> {
         let mut lock = SessionFileLock::new();
         lock.follow(current().as_deref())?;
+        let lock = Arc::new(Mutex::new(lock));
         let conflict: Arc<Mutex<Option<Held>>> = Arc::new(Mutex::new(None));
         let task = {
+            let lock = lock.clone();
             let conflict = conflict.clone();
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(interval);
@@ -138,13 +142,14 @@ impl SessionLockKeeper {
                 loop {
                     tick.tick().await;
                     let file = current();
-                    let result = lock.follow(file.as_deref());
+                    let result = lock.lock().unwrap().follow(file.as_deref());
                     *conflict.lock().unwrap() = result.err();
                 }
             })
         };
         Ok(Self {
             task: Some(task),
+            lock,
             conflict,
         })
     }
@@ -159,6 +164,10 @@ impl Drop for SessionLockKeeper {
     fn drop(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
+        }
+        // The aborted task lets go of its handle later; the lock goes now.
+        if let Ok(mut lock) = self.lock.lock() {
+            let _ = lock.follow(None);
         }
     }
 }
@@ -256,7 +265,9 @@ mod tests {
         assert!(is_held(&next) && !is_held(&file));
         assert_eq!(keeper.conflict(), None);
         drop(keeper);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(!is_held(&next));
+        assert!(
+            !is_held(&next),
+            "dropping the keeper releases the lock at once"
+        );
     }
 }

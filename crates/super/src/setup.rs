@@ -358,6 +358,40 @@ pub fn keep_session_lock(
     })
 }
 
+/// The check `switch_session` (`--mode rpc`, remote controllers) runs
+/// before opening a file: a file another process holds is refused, as the
+/// session picker refuses it.
+pub fn session_file_guard(session: &Arc<AgentSession>) -> super_sdk::SessionFileGuard {
+    let session = Arc::downgrade(session);
+    Arc::new(move |path: &std::path::Path| {
+        let current = session.upgrade().and_then(|session| {
+            let manager = session.manager.lock().ok()?;
+            manager.session_file().map(std::path::Path::to_path_buf)
+        });
+        refuse_held_file(current.as_deref(), path)
+    })
+}
+
+/// `Err` when `path` is not the file this process has open and another
+/// process holds its lock.
+fn refuse_held_file(
+    current: Option<&std::path::Path>,
+    path: &std::path::Path,
+) -> std::result::Result<(), String> {
+    let canonical = |path: &std::path::Path| std::fs::canonicalize(path).ok();
+    let ours = current.is_some_and(|current| {
+        current == path
+            || canonical(current).is_some_and(|current| Some(current) == canonical(path))
+    });
+    if !ours && super_daemon::session_lock::is_held(path) {
+        return Err(format!(
+            "{} (the SUPER daemon or another terminal)",
+            super_daemon::session_lock::Held(path.to_path_buf())
+        ));
+    }
+    Ok(())
+}
+
 fn locate_session(reference: &str, dir: &std::path::Path) -> Result<PathBuf> {
     let as_path = PathBuf::from(reference);
     if as_path.is_file() {
@@ -574,6 +608,38 @@ pub async fn build_startup(
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn switching_to_a_file_another_process_holds_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = dir.path().join("2026_aaaa1111-0000.jsonl");
+        let theirs = dir.path().join("2026_bbbb2222-0000.jsonl");
+        let free = dir.path().join("2026_cccc3333-0000.jsonl");
+        for file in [&ours, &theirs, &free] {
+            std::fs::write(file, "{}\n").unwrap();
+        }
+        let _our_lock = super_daemon::session_lock::try_lock(&ours)
+            .unwrap()
+            .unwrap();
+        let _daemon = super_daemon::session_lock::try_lock(&theirs)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            refuse_held_file(Some(&ours), &theirs),
+            Err(
+                "session bbbb2222 is open in another SUPER process (the SUPER daemon or another terminal)"
+                    .to_string()
+            )
+        );
+        assert_eq!(refuse_held_file(Some(&ours), &free), Ok(()));
+        assert_eq!(
+            refuse_held_file(Some(&ours), &ours),
+            Ok(()),
+            "the file this process holds itself"
+        );
+        assert!(refuse_held_file(None, &theirs).is_err());
+    }
 
     #[test]
     fn changed_pi_provider_defaults_are_preferred() {

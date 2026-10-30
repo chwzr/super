@@ -81,8 +81,8 @@ pub use approvals::{ApprovalAnswer, ApprovalChoice, ApprovalKind, ApprovalReques
 pub use options::{SessionOptions, SessionSource};
 #[cfg(feature = "native")]
 pub use session::{
-    BashResult, EventStream, PromptArgs, SdkError, Session, SessionBuilder, SessionNotice,
-    SessionObserver, SessionState, install_workflow_approval_gate, mirrored_sink,
+    BashResult, EventStream, PromptArgs, SdkError, Session, SessionBuilder, SessionFileGuard,
+    SessionNotice, SessionObserver, SessionState, install_workflow_approval_gate, mirrored_sink,
 };
 #[cfg(feature = "native")]
 pub use super_agent::{AgentMessage, DynTool, StreamFn};

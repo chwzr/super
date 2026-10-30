@@ -117,9 +117,10 @@ null for a stored session.
 - While hosting a session the daemon holds `<file>.jsonl.lock` beside it and
   refuses a file another process holds (`session a1b2c3d4 is open in another
   process`). A `super` running the engine in-process (terminal, `-p`,
-  `--mode json`, `--mode rpc`) holds the same lock on the file it writes,
-  so the two never append to one file: it refuses to start on a file the
-  daemon hosts, and the session picker refuses to switch to one.
+  `--mode json`, `--mode rpc`, `super acp`) holds the same lock on the file
+  it writes, so the two never append to one file: it refuses to start on a
+  file the daemon hosts, and the session picker, `switch_session` and ACP
+  `session/load` refuse to open one.
 - `shutdown`, SIGTERM and SIGINT abort in-flight turns, unload every session
   and exit 0. After a restart nothing is hosted; sessions load lazily.
 - Workflow approvals are asked as `approval_request` events and answered with
@@ -221,7 +222,9 @@ and says the app manages it.
   resolves when the daemon closes the connection.
 - Errors say what happened: `NotRunning`, `Unavailable` (with the reason
   nothing was started), `Skew` (the message above), `Command` (a command
-  that came back with `success: false`), `Closed`, `Timeout`.
+  that came back with `success: false`), `Closed`, `Timeout`, and
+  `ForeignSocket`: the client only talks to a daemon running as the same
+  user, wherever `SUPER_DAEMON_SOCKET` points.
 
 ## Through the platform
 
