@@ -441,7 +441,8 @@ enum CommandEvent {
     /// a Unix socket nothing gets that far.
     #[cfg_attr(not(unix), allow(dead_code))]
     Handover(remote_handover::Progress),
-    /// A `/sessions` request came back.
+    /// A `/sessions` request came back. Without a Unix socket none is made.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Sessions(sessions_ui::Event),
 }
 
