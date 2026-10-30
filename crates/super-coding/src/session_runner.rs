@@ -11,6 +11,7 @@ use crate::settings::{CacheWarmingMode, CompactionMode, QueueMode, ReasoningEffo
 use crate::subagents::{ForkTurns, SUBAGENT_SYSTEM_PROMPT, SubagentRuntime, fork_messages};
 use crate::workflows::{WorkflowApprover, WorkflowRuntime};
 use anyhow::Context as _;
+use futures::future::BoxFuture;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 use super_agent::{
@@ -78,6 +79,36 @@ pub enum SessionEvent {
 }
 
 pub type SessionEventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
+
+/// Runs the engine of a session somewhere else, such as the SUPER daemon.
+///
+/// An [`AgentSession`] with a backend is a view of a session another process
+/// runs: prompts, queued messages, abort, model and thinking changes and
+/// compaction go to the backend, and the backend feeds the events of the
+/// session back through the view's sink, so a front end renders them as if
+/// they happened here. The view's [`SessionManager`] is a mirror the backend
+/// keeps up to date with [`AgentSession::absorb_entries`].
+pub trait SessionBackend: Send + Sync {
+    /// Start a run with `prompts`, or queue them when one is running there.
+    /// Resolves once the run they started or joined has settled.
+    fn prompt(&self, prompts: Vec<AgentMessage>, mode: PromptMode) -> BoxFuture<'static, ()>;
+    /// Queue one message as a steer, or as a follow-up after the run; starts
+    /// a run when none is in flight.
+    fn queue(&self, message: AgentMessage, mode: PromptMode, follow_up: bool);
+    /// Take back the queued messages that were not delivered yet.
+    fn reclaim_queued(&self) -> Vec<AgentMessage>;
+    fn abort(&self);
+    fn set_model(&self, model: &Model);
+    fn set_thinking_level(&self, level: ThinkingLevel);
+    /// Compact there; resolves when the compaction finished.
+    fn compact(&self, custom_instructions: Option<String>) -> BoxFuture<'static, ()>;
+    /// Whether a run is in flight there.
+    fn is_running(&self) -> bool;
+}
+
+/// Why an operation that only works on a session this process runs refused.
+pub const REMOTE_SESSION_REFUSAL: &str =
+    "not available while this session runs in the SUPER daemon";
 
 /// Tools and instructions that belong to one submitted user turn.
 ///
@@ -190,6 +221,8 @@ pub struct AgentSession {
     /// Optional replacement for the provider streaming function. Embedders and
     /// tests install one to run the whole loop against a scripted fake model.
     stream_fn: Mutex<Option<StreamFn>>,
+    /// Set while the engine runs elsewhere; see [`SessionBackend`].
+    backend: Mutex<Option<Arc<dyn SessionBackend>>>,
 }
 
 struct ReasoningRunState {
@@ -310,6 +343,7 @@ impl AgentSession {
             iterative: OnceLock::new(),
             workflow_approver: Mutex::new(None),
             stream_fn: Mutex::new(None),
+            backend: Mutex::new(None),
         });
         if subagents_allowed {
             let runtime = SubagentRuntime::new(Arc::downgrade(&session));
@@ -330,6 +364,58 @@ impl AgentSession {
     /// subagents and compaction.
     pub fn set_stream_fn(&self, stream_fn: Option<StreamFn>) {
         *self.stream_fn.lock().unwrap() = stream_fn;
+    }
+
+    /// Hand the engine to `backend`, or take it back with `None`. While a
+    /// backend is set this session runs nothing itself: see
+    /// [`SessionBackend`].
+    pub fn set_backend(&self, backend: Option<Arc<dyn SessionBackend>>) {
+        *self.backend.lock().unwrap() = backend;
+    }
+
+    /// The backend running this session's engine, when another process does.
+    pub fn backend(&self) -> Option<Arc<dyn SessionBackend>> {
+        self.backend.lock().unwrap().clone()
+    }
+
+    /// Whether the engine runs elsewhere.
+    pub fn is_remote(&self) -> bool {
+        self.backend.lock().unwrap().is_some()
+    }
+
+    /// Add entries the process running this session appended, and follow
+    /// what they change: model, thinking level, usage totals.
+    pub fn absorb_entries(&self, entries: Vec<crate::SessionEntry>, leaf_id: Option<String>) {
+        let (totals, context) = {
+            let mut manager = self.manager.lock().unwrap();
+            manager.absorb(entries, leaf_id);
+            (manager.usage_totals(), manager.build_session_context())
+        };
+        if let Some((provider, model_id)) = context.model
+            && let Some((model, _)) = self.registry.resolve(&model_id, Some(&provider))
+        {
+            let mut current = self.model.lock().unwrap();
+            if current.provider != model.provider || current.id != model.id {
+                *current = model;
+            }
+        }
+        if let Some(thinking) = context.thinking_level {
+            *self.thinking.lock().unwrap() = thinking;
+        }
+        *self.context_usage_cache.lock().unwrap() = None;
+        *self.totals.lock().unwrap() = totals;
+    }
+
+    /// Take the model and thinking level the process running this session
+    /// reports, without recording a change: it recorded its own.
+    pub fn adopt_remote_state(&self, model: Option<Model>, thinking: Option<ThinkingLevel>) {
+        if let Some(model) = model {
+            *self.model.lock().unwrap() = model;
+        }
+        if let Some(thinking) = thinking {
+            *self.thinking.lock().unwrap() = thinking;
+        }
+        *self.context_usage_cache.lock().unwrap() = None;
     }
 
     pub fn model(&self) -> Model {
@@ -357,7 +443,7 @@ impl AgentSession {
     }
 
     pub fn is_running(&self) -> bool {
-        *self.running.lock().unwrap()
+        *self.running.lock().unwrap() || self.backend().is_some_and(|backend| backend.is_running())
     }
 
     pub fn settings(&self) -> Settings {
@@ -571,6 +657,12 @@ impl AgentSession {
 
     pub fn set_model(&self, model: Model) {
         self.cache_warm_cancel.lock().unwrap().cancel();
+        if let Some(backend) = self.backend() {
+            // Shown at once; the backend records the change and announces it.
+            backend.set_model(&model);
+            *self.model.lock().unwrap() = model;
+            return;
+        }
         {
             let mut m = self.manager.lock().unwrap();
             let _ = m.append_model_change(&model.provider, &model.id);
@@ -583,6 +675,11 @@ impl AgentSession {
     }
 
     pub fn set_thinking_level(&self, level: ThinkingLevel) {
+        if let Some(backend) = self.backend() {
+            backend.set_thinking_level(level);
+            *self.thinking.lock().unwrap() = level;
+            return;
+        }
         let _ = self
             .manager
             .lock()
@@ -600,6 +697,9 @@ impl AgentSession {
         custom_instructions: Option<String>,
         cancel: CancellationToken,
     ) -> anyhow::Result<TreeNavigationOutcome> {
+        if self.is_remote() {
+            anyhow::bail!("moving in the session tree is {REMOTE_SESSION_REFUSAL}");
+        }
         let (old_leaf, new_leaf, editor_text, abandoned_messages) = {
             let manager = self.manager.lock().unwrap();
             let target = manager
@@ -715,6 +815,10 @@ impl AgentSession {
     }
 
     pub fn queue_steering_with_mode(&self, message: AgentMessage, mode: PromptMode) {
+        if let Some(backend) = self.backend() {
+            backend.queue(message, mode, false);
+            return;
+        }
         self.steering
             .lock()
             .unwrap()
@@ -727,6 +831,10 @@ impl AgentSession {
     }
 
     pub fn queue_follow_up_with_mode(&self, message: AgentMessage, mode: PromptMode) {
+        if let Some(backend) = self.backend() {
+            backend.queue(message, mode, true);
+            return;
+        }
         self.follow_up
             .lock()
             .unwrap()
@@ -736,6 +844,9 @@ impl AgentSession {
 
     /// Drain both queues back to the caller (Escape restores to editor).
     pub fn reclaim_queued(&self) -> Vec<AgentMessage> {
+        if let Some(backend) = self.backend() {
+            return backend.reclaim_queued();
+        }
         let mut out: Vec<AgentMessage> = self
             .steering
             .lock()
@@ -755,6 +866,9 @@ impl AgentSession {
     }
 
     pub fn abort(&self) {
+        if let Some(backend) = self.backend() {
+            backend.abort();
+        }
         self.cancel.lock().unwrap().cancel();
     }
 
@@ -1410,6 +1524,9 @@ impl AgentSession {
         prompts: Vec<AgentMessage>,
         prompt_mode: PromptMode,
     ) {
+        if let Some(backend) = self.backend() {
+            return backend.prompt(prompts, prompt_mode).await;
+        }
         self.cache_warm_cancel.lock().unwrap().cancel();
         {
             let mut running = self.running.lock().unwrap();
@@ -1690,6 +1807,9 @@ impl AgentSession {
 
     /// Manual or automatic compaction.
     pub async fn compact(self: &Arc<Self>, custom_instructions: Option<String>, auto: bool) {
+        if let Some(backend) = self.backend() {
+            return backend.compact(custom_instructions).await;
+        }
         (self.sink)(SessionEvent::CompactionStart { auto });
         let ctx = self.manager.lock().unwrap().build_session_context();
         let previous_summary = ctx.messages.iter().rev().find_map(|m| match m {

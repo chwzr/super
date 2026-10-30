@@ -8,7 +8,10 @@
 use crate::approvals::{
     ApprovalAnswer, ApprovalRequest, Approvals, approval_request_event, approval_resolved_event,
 };
-use crate::events::{agent_settled, bash_execution_update, event_lag, session_event_json};
+use crate::events::{
+    agent_settled, announced_command, bash_execution_update, command_applied, event_lag,
+    session_event_json,
+};
 use crate::options::SessionOptions;
 use crate::protocol::{Command, Event, ImageInput, QueueMode, Response, StreamingBehavior};
 use serde_json::{Value, json};
@@ -751,6 +754,10 @@ impl Session {
             }
         }
         let by = origin.clone().unwrap_or_else(|| "rpc".to_string());
+        // What every other client is told once the command ran.
+        let announced = origin
+            .as_ref()
+            .and_then(|origin| Some((origin.clone(), announced_command(&command)?)));
         let result = match command {
             Command::Bash { command } => self
                 .bash_with_id(&command, id.clone())
@@ -766,6 +773,13 @@ impl Session {
                 .map_err(SdkErrorText::from),
             other => self.execute_inner(other).await,
         };
+        if let Some((origin, command)) = announced {
+            let (success, error, data) = match &result {
+                Ok(data) => (true, None, data.clone()),
+                Err(error) => (false, Some(error.0.as_str()), None),
+            };
+            self.emit(command_applied(&origin, command, success, error, data));
+        }
         if let Some(origin) = origin
             && !matches!(name, "prompt" | "steer" | "follow_up" | "ping")
             && !name.starts_with("get_")

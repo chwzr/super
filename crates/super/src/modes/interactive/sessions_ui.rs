@@ -1,9 +1,11 @@
-//! `/sessions` in the full-screen terminal: the picker from
-//! [`crate::sessions`] in place of the editor. Picking a session leaves the
-//! in-process session saved and continues in the attached front end on the
-//! session picked ([`crate::attach`]), the way `/remote` does.
+//! `/sessions` in the full-screen TUI, in-process or attached: the picker
+//! from [`crate::sessions`] in place of the editor. A session on this
+//! device turns the TUI into the attached TUI on it, in place, as after
+//! `/remote`; the session the TUI ran in-process stays saved, one it was
+//! attached to keeps running in the daemon. A session on another device is
+//! shown by the line-based front end ([`crate::attach`]), which takes over
+//! below the TUI's last frame.
 
-use super::remote_handover::Moved;
 use super::{App, Cell, CommandEvent};
 use std::sync::Arc;
 use super_coding::session_runner::AgentSession;
@@ -11,6 +13,7 @@ use super_tui::KeyEvent;
 use tokio::sync::mpsc;
 #[cfg(unix)]
 use {
+    crate::attach::Continuation,
     crate::session_link::Link,
     crate::sessions::{
         BrowseOutcome, Choice, DeviceRef, DirectoryPicker, Listing, Outcome, SessionsPicker,
@@ -27,9 +30,27 @@ pub(super) struct State {
     /// A request in flight; its answer is dropped once this is cancelled.
     #[cfg(unix)]
     pending: Option<CancellationToken>,
-    /// The switch is done: the main loop hands over.
+    /// The switch is done: the main loop shows the session picked.
     #[cfg(unix)]
-    switched: Option<Moved>,
+    switched: Option<Switch>,
+}
+
+/// A switch the daemon or the platform accepted.
+#[cfg(unix)]
+pub(super) struct Switch {
+    next: Continuation,
+    /// The line saying where the TUI went and what became of the session
+    /// it showed.
+    note: String,
+}
+
+/// Where the TUI goes once a switch went through.
+#[cfg(unix)]
+pub(super) enum Next {
+    /// It shows the session picked, attached to it in place.
+    Here,
+    /// A session on another device: the line-based front end takes over.
+    Leave(Box<Continuation>),
 }
 
 #[cfg(unix)]
@@ -192,19 +213,20 @@ pub(super) fn on_event(app: &mut App, event: Event, session: &AgentSession) {
                             .unwrap()
                             .session_file()
                             .is_some_and(std::path::Path::exists);
-                        app.cells.push(Cell::Notice(format!(
-                            "♦ switched to {} on {place}{}",
+                        let left = if super::is_attached(app) {
+                            " · the session shown before keeps running in the SUPER daemon"
+                        } else if saved {
+                            " · this session is saved; /sessions or `super -c` here brings it back"
+                        } else {
+                            ""
+                        };
+                        let note = format!(
+                            "♦ switched to {} on {place}{left}",
                             crate::sessions::title(&session),
-                            if saved {
-                                " · this session is saved; /sessions or `super -c` here brings it back"
-                            } else {
-                                ""
-                            }
-                        )));
-                        app.sessions.switched = Some(crate::attach::Continuation {
-                            link,
-                            session,
-                            intro: true,
+                        );
+                        app.sessions.switched = Some(Switch {
+                            next: Continuation { link, session },
+                            note,
                         });
                     }
                     Err(error) => {
@@ -387,14 +409,164 @@ pub(super) fn render(state: &mut State, width: usize, theme: &super_tui::Theme) 
 }
 
 /// The session picked, once the switch went through.
-pub(super) fn take_switch(state: &mut State) -> Option<Moved> {
-    #[cfg(unix)]
-    {
-        state.switched.take()
+#[cfg(unix)]
+pub(super) fn take_switch(state: &mut State) -> Option<Switch> {
+    state.switched.take()
+}
+
+/// Show the session a switch picked: one on this device in this TUI, in
+/// place; one on another device through the line-based front end.
+#[cfg(unix)]
+pub(super) async fn carry_on(
+    app: &mut App,
+    session: &Arc<AgentSession>,
+    switch: Switch,
+    sink: super_coding::SessionEventSink,
+    command_tx: &mpsc::UnboundedSender<CommandEvent>,
+) -> Next {
+    let Switch { next, note } = switch;
+    if next.link.remote().is_some() {
+        app.cells.push(Cell::Notice(note));
+        return Next::Leave(Box::new(next));
     }
-    #[cfg(not(unix))]
-    {
-        let _ = state;
-        None
+    let Continuation {
+        link,
+        session: picked,
+    } = next;
+    match super::attached::switch(app, session, link, picked, sink, command_tx).await {
+        Ok(()) => app.cells.push(Cell::Notice(note)),
+        Err(error) => app.cells.push(Cell::Error(format!("/sessions: {error:#}"))),
+    }
+    Next::Here
+}
+
+/// What the line-based front end carries on with after a switch to a
+/// session on another device: the link and the terminal's input.
+#[cfg(unix)]
+pub(super) struct HandedOver {
+    continuation: Continuation,
+    stdin: mpsc::UnboundedReceiver<Vec<u8>>,
+}
+
+#[cfg(not(unix))]
+pub(super) enum HandedOver {}
+
+/// Where the full-screen TUI leaves what it handed over.
+pub(super) type Slot = Option<HandedOver>;
+
+#[cfg(unix)]
+pub(super) fn handed_over(
+    continuation: Continuation,
+    stdin: mpsc::UnboundedReceiver<Vec<u8>>,
+) -> HandedOver {
+    HandedOver {
+        continuation,
+        stdin,
+    }
+}
+
+/// The frame the full-screen TUI leaves behind: the transcript with the
+/// switch, and blank rows where the editor and the footer were. Returns the
+/// frame and how many rows at its end are blank.
+#[cfg(unix)]
+pub(super) fn last_frame(
+    app: &mut App,
+    session: &Arc<AgentSession>,
+    width: usize,
+) -> (Vec<String>, usize) {
+    use super_tui::Component as _;
+    let mut lines = app.render(width, session);
+    let editor_top = app
+        .editor
+        .render(width)
+        .first()
+        .and_then(|first| lines.iter().rposition(|line| line == first));
+    let blank = match editor_top {
+        Some(top) => lines.len() - top,
+        None => 0,
+    };
+    let len = lines.len();
+    for line in &mut lines[len - blank..] {
+        line.clear();
+    }
+    (lines, blank)
+}
+
+/// Put the cursor on the first blank row of the last frame, so the
+/// line-based front end writes where the editor was. The terminal is out of
+/// raw mode and has moved to the row below the frame.
+#[cfg(unix)]
+pub(super) fn reclaim_rows(blank: usize) {
+    use std::io::Write as _;
+    if blank > 0 {
+        let mut out = std::io::stdout().lock();
+        let _ = write!(out, "\x1b[{blank}A\r");
+        let _ = out.flush();
+    }
+}
+
+/// After the full-screen TUI closed: the line-based front end on the
+/// session picked, reading the same input.
+#[cfg(unix)]
+pub(super) async fn continue_line_based(handed_over: HandedOver) -> anyhow::Result<i32> {
+    let HandedOver {
+        continuation,
+        stdin,
+    } = handed_over;
+    let input: crate::attach::Input =
+        Box::new(tokio::io::BufReader::new(ChannelReader::new(stdin)));
+    crate::attach::run_continued(continuation, input).await
+}
+
+#[cfg(not(unix))]
+pub(super) async fn continue_line_based(handed_over: HandedOver) -> anyhow::Result<i32> {
+    match handed_over {}
+}
+
+/// Reads what the TUI's stdin thread delivers, so the line-based front end
+/// continues on the same input the full-screen TUI used. A second reader of
+/// stdin would swallow the first line typed.
+#[cfg(unix)]
+struct ChannelReader {
+    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    pending: Vec<u8>,
+    offset: usize,
+}
+
+#[cfg(unix)]
+impl ChannelReader {
+    fn new(rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
+        Self {
+            rx,
+            pending: Vec::new(),
+            offset: 0,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl tokio::io::AsyncRead for ChannelReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        while self.offset >= self.pending.len() {
+            match self.rx.poll_recv(cx) {
+                Poll::Ready(Some(bytes)) => {
+                    self.pending = bytes;
+                    self.offset = 0;
+                }
+                // The sender is gone: end of input.
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        let available = &self.pending[self.offset..];
+        let count = available.len().min(buf.remaining());
+        buf.put_slice(&available[..count]);
+        self.offset += count;
+        Poll::Ready(Ok(()))
     }
 }

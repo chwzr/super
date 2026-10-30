@@ -122,6 +122,15 @@ impl Link {
         Self::new(Some((client, events)), None)
     }
 
+    /// The daemon connection and its events, for the full-screen TUI to
+    /// show the session it is attached to.
+    pub fn into_daemon(self) -> Option<(DaemonClient, UnboundedReceiver<ClientEvent>)> {
+        if let Some(remote) = &self.remote {
+            remote.controller.close();
+        }
+        self.daemon
+    }
+
     pub fn daemon(&self) -> Option<&DaemonClient> {
         self.daemon.as_ref().map(|(client, _)| client)
     }

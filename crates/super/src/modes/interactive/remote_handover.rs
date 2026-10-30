@@ -1,7 +1,8 @@
 //! The terminal side of `/remote` (alias `/rc`): start the hand-over, show
 //! its progress, and finish it once the turn is over. What to do when is
-//! decided in [`crate::handover`]; after a successful hand-over the
-//! terminal continues in the attached front end ([`crate::attach`]).
+//! decided in [`crate::handover`]; after a successful hand-over the same
+//! TUI carries on as the attached TUI on the daemon's session
+//! (`attached.rs`), transcript and editor in place.
 
 use super::{App, Cell, CommandEvent, InteractiveResources, terminal_host_state};
 use crate::args::Args;
@@ -9,7 +10,6 @@ use crate::handover::{self, Facts, Step};
 use std::sync::Arc;
 use super_coding::session_runner::AgentSession;
 use super_daemon::session_lock::SessionLockKeeper;
-use super_tui::Component as _;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -53,39 +53,13 @@ pub(super) enum Progress {
     Cancelled,
 }
 
-/// The connection attached to the session the daemon now hosts.
+/// The connection attached to the session the daemon now hosts, for the
+/// attached TUI.
 #[cfg(unix)]
-pub(super) type Moved = crate::attach::Continuation;
+pub(super) type Moved = crate::attach::Target;
 
 #[cfg(not(unix))]
 pub(super) enum Moved {}
-
-/// What the attached front end carries on with: the connection and the
-/// terminal's input.
-#[cfg(unix)]
-pub(super) struct HandedOver {
-    continuation: Moved,
-    stdin: mpsc::UnboundedReceiver<Vec<u8>>,
-}
-
-#[cfg(not(unix))]
-pub(super) enum HandedOver {}
-
-/// Where the full-screen terminal leaves what it handed over.
-pub(super) type Slot = Option<HandedOver>;
-
-#[cfg(unix)]
-pub(super) fn handed_over(moved: Moved, stdin: mpsc::UnboundedReceiver<Vec<u8>>) -> HandedOver {
-    HandedOver {
-        continuation: moved,
-        stdin,
-    }
-}
-
-#[cfg(not(unix))]
-pub(super) fn handed_over(moved: Moved, _stdin: mpsc::UnboundedReceiver<Vec<u8>>) -> HandedOver {
-    match moved {}
-}
 
 /// Add a line to the transcript without cutting a reply short: deltas only
 /// land in a streaming reply while it is the last cell.
@@ -296,7 +270,7 @@ pub(super) fn due(app: &App, session: &AgentSession) -> bool {
 /// stays.
 #[cfg_attr(not(unix), allow(dead_code))]
 pub(super) enum Finished {
-    /// The daemon runs the session; the terminal continues attached to it.
+    /// The daemon runs the session; the TUI continues attached to it.
     Moved(Box<Moved>),
     /// The session keeps running here, the reason on screen.
     Stayed,
@@ -384,10 +358,12 @@ pub(super) async fn finish(
                     crate::remote::signed_in(),
                 )),
             );
-            Finished::Moved(Box::new(crate::attach::Continuation {
-                link: crate::session_link::Link::local(client, events),
-                session: attached.session,
-                intro: false,
+            Finished::Moved(Box::new(crate::attach::Target {
+                client,
+                events,
+                attached,
+                // What the connection said in `hello`; reconnects say it again.
+                info: handover::client_info(),
             }))
         }
         Err(handover::Failure::StaysHere(error)) => {
@@ -401,60 +377,4 @@ pub(super) async fn finish(
             "/remote: could not hand the session to the SUPER daemon: {error}. `super` attaches to it if the daemon has it."
         )),
     }
-}
-
-/// The frame the full-screen terminal leaves behind: the transcript with the
-/// confirmation, and blank rows where the editor and the footer were. Returns
-/// the frame and how many rows at its end are blank.
-pub(super) fn last_frame(
-    app: &mut App,
-    session: &Arc<AgentSession>,
-    width: usize,
-) -> (Vec<String>, usize) {
-    let mut lines = app.render(width, session);
-    let editor_top = app
-        .editor
-        .render(width)
-        .first()
-        .and_then(|first| lines.iter().rposition(|line| line == first));
-    let blank = match editor_top {
-        Some(top) => lines.len() - top,
-        None => 0,
-    };
-    let len = lines.len();
-    for line in &mut lines[len - blank..] {
-        line.clear();
-    }
-    (lines, blank)
-}
-
-/// Put the cursor on the first blank row of the last frame, so the attached
-/// front end writes where the editor was. The terminal is out of raw mode
-/// and has moved to the row below the frame.
-pub(super) fn reclaim_rows(blank: usize) {
-    use std::io::Write as _;
-    if blank > 0 {
-        let mut out = std::io::stdout().lock();
-        let _ = write!(out, "\x1b[{blank}A\r");
-        let _ = out.flush();
-    }
-}
-
-/// After the full-screen terminal closed: the attached front end, reading
-/// the same input.
-#[cfg(unix)]
-pub(super) async fn continue_attached(handed_over: HandedOver) -> anyhow::Result<i32> {
-    let HandedOver {
-        continuation,
-        stdin,
-    } = handed_over;
-    let input: crate::attach::Input = Box::new(tokio::io::BufReader::new(
-        handover::ChannelReader::new(stdin),
-    ));
-    crate::attach::run_continued(continuation, input).await
-}
-
-#[cfg(not(unix))]
-pub(super) async fn continue_attached(handed_over: HandedOver) -> anyhow::Result<i32> {
-    match handed_over {}
 }

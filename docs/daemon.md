@@ -223,15 +223,65 @@ new session); `super -c` attaches to the newest session there, loading a
 stored one; `super --session <id or file>` attaches to that session.
 Message arguments, `@file` included, become the first prompt.
 
-The front end is line based for now (the full TUI over the connection is
-ENG-13): the reply streams as it arrives, every tool call is one line, an
-approval is asked as numbered choices, and a line you type is sent as a
-prompt, or as a steer while the session works. Ctrl+C aborts the turn, or
-detaches when nothing runs; `/detach` and Ctrl+D detach, `/stop` stops the
-session, `/sessions` switches to another one (below). Detaching leaves the
-session running in the daemon, where the apps see it and `super` attaches
-again. With piped input, `super` sends each
-line and exits once the session settles after the last one.
+In a terminal `super` then runs its usual TUI on the daemon's session: the
+same editor, slash commands, pickers and rendering, with the engine in the
+daemon. The TUI builds its own tools, settings and skills as always, and its
+session becomes a view of the daemon's:
+
+- On attach it reads the daemon's entries (`get_entries`) and shows the
+  whole transcript, the way the apps show it: messages, thinking, tool calls
+  with their output, `!` commands, compactions. A turn in flight streams in
+  from its next event; a question the daemon is waiting on opens as a
+  picker.
+- Prompts, steers, follow-ups, esc and ctrl+c (abort, with the queued text
+  back in the editor), `/model`, `/thinking`, shift+tab, `/compact` and
+  `/name` go to the daemon over the socket, in the order they were made.
+  The session's events come back and are rendered by the same code that
+  renders an in-process run, so the footer, the context meter and the cost
+  follow what the daemon records.
+- `!command` runs in the daemon, in the session's directory with the
+  daemon's environment, which records it for the next model request;
+  `!!command` stays out of the context and runs in the terminal.
+- `/session` names the daemon's session file and `/remote` reports the
+  attachment: the daemon, not the terminal, keeps the session visible in the
+  apps.
+- `/sessions` switches to any other session, on this device or another one
+  (below). `/new` starts a new session in the daemon and switches to it.
+  `/resume`, `/fork`, `/clone`, `/tree`, `/import`, `/fast`, `/loop`,
+  `/autoresearch`, `/jobs` and saved workflows work on a session in the
+  terminal's own process and say so while attached; `super --no-remote`
+  runs one.
+- ctrl+d, `/quit` and closing the terminal (SIGHUP) detach: the session keeps
+  running in the daemon, a turn in flight included, and `super` in the same
+  directory attaches to it again with the full transcript.
+
+Several clients can be attached to one session. Every client receives every
+event, and after each command a client sends the daemon announces it to all
+of them as `command_applied` ([rpc.md](rpc.md#events)) with the client's
+`hello.name`: the terminal calls itself `Terminal (ttys003)` after its tty.
+A prompt another client started shows up as the user message it is; other
+commands show as `♦ set_thinking_level from Terminal (ttys004)`. An approval
+the daemon asks (a workflow's cost gate) opens as a picker in every attached
+terminal; the first answer wins, the daemon names the answering client in
+`approval_resolved.by`, and the other terminals close their picker and say
+who answered. Esc on the picker answers `cancel`.
+
+When the connection drops (the daemon crashed, was restarted or stopped),
+the TUI says so, marks the footer `♦ daemon…` and reconnects for about eight
+seconds, starting a registered daemon on demand, attaches to the same
+session again (a restarted daemon loads it from its file) and redraws the
+transcript from the daemon's entries. When no daemon comes back it offers to
+continue in this process: the TUI opens the session file itself, holds its
+lock as an in-process `super` does, and goes on from there. If another
+process holds the file by then, it says so instead. When another client
+stops the session, the next message loads it again.
+
+With piped input or output `super` uses a line-based front end instead: the
+reply streams as it arrives, every tool call is one line, an approval is
+asked as numbered choices and each line is sent as a prompt, or as a steer
+while the session works. It exits once the session settles after the last
+line; Ctrl+C aborts the turn, `/detach` and end of input detach, `/stop`
+stops the session, `/sessions` switches to another one (below).
 
 When no daemon answers and none can be started, `super` runs in-process as
 it always did (`--verbose` says why). When the daemon speaks another
@@ -308,8 +358,9 @@ running after the terminal closes. In order:
 
 On screen that is one line, `♦ session a1b2c3d4 now runs in the SUPER daemon
 (pid 4242) and shows up in the apps; this terminal is attached to it`, and the
-terminal carries on attached to the session, with the transcript where it
-was. The apps list the session a few seconds later.
+same TUI carries on as the attached TUI described above, with the transcript
+and the editor where they were: ctrl+d now detaches and leaves the session
+running. The apps list the session a few seconds later.
 
 A failure at any step (the sign-in, no daemon, a session file outside the
 daemon's session directory, the daemon refusing to load it) is reported and
@@ -319,8 +370,8 @@ back and its mirror restarted. Should another process hold the file by then
 terminal exits instead of writing beside it, and `super` attaches to the
 session where it runs. `--no-session` sessions are refused (there is
 no file to resume), and so is `remote.enabled: false` (the apps would not see
-the session). In a terminal attached already, `/remote` reports the session
-and the daemon it is attached to. `/remote status`, `on`, `off` and `name`
+the session). In a terminal attached already, `/remote` and `/rc` report the
+session and the daemon it is attached to. `/remote status`, `on`, `off` and `name`
 still control the terminal's own mirror of an in-process session.
 
 ### Switching sessions: `/sessions`
@@ -374,11 +425,14 @@ Sessions
 - When the daemon refuses the session picked (another process has its file
   open, say), the terminal stays attached to the session it showed.
 
-In the full-screen terminal, which runs its session in-process, `/sessions`
-looks the same. Picking a session leaves the in-process session saved (it
-is listed as ended and can be picked again) and the terminal continues
-attached to the session picked, as after `/remote`. Switching waits for no
-turn: while one runs it is refused.
+In the full-screen TUI, in-process or attached, `/sessions` looks the same,
+in place of the editor. Picking a session on this device turns the TUI into
+the attached TUI on it, in place as after `/remote`, with its transcript: a
+session the TUI ran in-process stays saved (it is listed as ended and can
+be picked again), one it was attached to keeps running in the daemon. A
+session on another device is shown by the line-based front end, which
+takes over below the TUI's last frame on the same terminal. Switching waits
+for no turn: while one runs it is refused.
 
 ## The client library
 
@@ -403,6 +457,18 @@ turn: while one runs it is refused.
   that came back with `success: false`), `Closed`, `Timeout`, and
   `ForeignSocket`: the client only talks to a daemon running as the same
   user, wherever `SUPER_DAEMON_SOCKET` points.
+
+`super_daemon::attached::RemoteSession` is what the TUI runs on: it takes an
+attached `DaemonClient` and the TUI's own `AgentSession` and makes the
+session a view of the daemon's. It implements `super_coding::SessionBackend`
+(prompts, queued messages, abort, model, thinking level and compaction go
+to the daemon in order), feeds the session's events, decoded with
+`super_sdk::events::decode_session_event`, to the view's sink, keeps the
+view's `SessionManager` a mirror of the daemon's entries
+(`SessionManager::mirror`, `AgentSession::absorb_entries`), reports
+approvals, `command_applied`, the connection and the session's end as
+`AttachedNotice`s, reconnects on its own, and gives the engine back with
+`release()` when no daemon comes back.
 
 ## Through the platform
 

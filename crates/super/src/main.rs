@@ -133,8 +133,12 @@ async fn run(args: Args) -> anyhow::Result<i32> {
         None => {
             // Signed in with a daemon about, the terminal attaches to it.
             #[cfg(unix)]
-            if let Some(code) = attach::try_run(&args).await? {
-                return Ok(code);
+            match attach::try_run(&args).await? {
+                attach::Outcome::InProcess => {}
+                attach::Outcome::Exit(code) => return Ok(code),
+                attach::Outcome::Tui(target) => {
+                    return modes::interactive::run_attached(&args, *target).await;
+                }
             }
             modes::interactive::run(&args).await
         }
