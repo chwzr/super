@@ -41,8 +41,9 @@ install-path = "CARGO_HOME"
 install-updater = false
 # Which actions to run on pull requests
 pr-run-mode = "plan"
-# Build Windows ARM64 natively on GitHub's ARM64 runner.
-github-custom-runners = { "aarch64-pc-windows-msvc" = "windows-11-arm" }
+# Build Windows ARM64 natively on GitHub's ARM64 runner, and Apple Silicon on macOS 15:
+# dist 0.32 still picks macos-14, which GitHub browns out and retires on 2026-11-02.
+github-custom-runners = { "aarch64-pc-windows-msvc" = "windows-11-arm", "aarch64-apple-darwin" = "macos-15" }
 # Whether dist should create a Github Release or use an existing draft
 create-release = true
 # Which phase dist should use to create the GitHub release
