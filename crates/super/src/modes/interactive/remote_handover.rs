@@ -264,7 +264,7 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
 
 /// A turn, a queued message, a background request that writes the session,
 /// or a question on screen: the hand-over waits for all of them.
-fn busy(app: &App, session: &AgentSession) -> bool {
+pub(super) fn busy(app: &App, session: &AgentSession) -> bool {
     !matches!(
         terminal_host_state(app, session),
         crate::terminal_hosts::State::Idle
@@ -364,9 +364,9 @@ pub(super) async fn finish(
                 )),
             );
             Some(crate::attach::Continuation {
-                client,
-                events,
-                attached,
+                link: crate::session_link::Link::local(client, events),
+                session: attached.session,
+                intro: false,
             })
         }
         Err(error) => {
@@ -427,7 +427,7 @@ pub(super) async fn continue_attached(handed_over: HandedOver) -> anyhow::Result
     let input: crate::attach::Input = Box::new(tokio::io::BufReader::new(
         handover::ChannelReader::new(stdin),
     ));
-    crate::attach::run_handed_over(continuation, input).await
+    crate::attach::run_continued(continuation, input).await
 }
 
 #[cfg(not(unix))]

@@ -33,6 +33,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 mod remote_handover;
+mod sessions_ui;
 
 /// One rendered transcript cell.
 enum Cell {
@@ -145,6 +146,8 @@ struct App {
     command_tx: Option<mpsc::UnboundedSender<CommandEvent>>,
     /// `/remote` handing this session to the SUPER daemon.
     handover: remote_handover::State,
+    /// The `/sessions` picker.
+    sessions: sessions_ui::State,
 }
 
 type RemoteRecordKey = (
@@ -436,6 +439,8 @@ enum CommandEvent {
     },
     /// `/remote` made progress handing the session to the daemon.
     Handover(remote_handover::Progress),
+    /// A `/sessions` request came back.
+    Sessions(sessions_ui::Event),
 }
 
 enum WebMcpCommandResult {
@@ -863,6 +868,8 @@ impl App {
                 lines.push(prompt.value.clone());
             }
             lines.push(self.theme.fg("dim", "enter save · esc cancel"));
+        } else if sessions_ui::is_open(&self.sessions) {
+            lines.extend(sessions_ui::render(&mut self.sessions, width, &self.theme));
         } else if let Some(picker) = &mut self.picker {
             if let PickerKind::McpActions(name, _) = &picker.kind
                 && let Some(server) = self.mcp_servers.iter().find(|server| &server.name == name)
@@ -1486,6 +1493,7 @@ async fn run_with_hosts(
         remote_allowed: false,
         command_tx: None,
         handover: Default::default(),
+        sessions: Default::default(),
     };
     if let Some(indent) = &settings.markdown.code_block_indent {
         app.md.code_indent = indent.clone();
@@ -1560,6 +1568,10 @@ async fn run_with_hosts(
 
     let mut moved = None;
     'main: loop {
+        if let Some(next) = sessions_ui::take_switch(&mut app.sessions) {
+            moved = Some(next);
+            break 'main;
+        }
         if remote_handover::due(&app, &session) {
             // What the turn sent last belongs on screen before it freezes.
             while let Ok(event) = event_rx.try_recv() {
@@ -1745,6 +1757,10 @@ async fn run_with_hosts(
         }
         terminal.restore();
         remote_handover::reclaim_rows(blank);
+        if let Some(remote) = app.remote.take() {
+            // `/sessions` left this session saved: its mirror says goodbye.
+            remote.stop().await;
+        }
         *handed_over = Some(remote_handover::handed_over(moved, stdin_rx));
         return Ok(0);
     }
@@ -2360,6 +2376,7 @@ fn handle_command_event(
         CommandEvent::Remote(notice) => handle_remote_notice(app, notice, session),
         CommandEvent::RemoteEvent(event) => handle_remote_event(app, event),
         CommandEvent::Handover(progress) => remote_handover::on_progress(app, progress, session),
+        CommandEvent::Sessions(event) => sessions_ui::on_event(app, event, session),
         CommandEvent::VoicePreview { generation, text } => {
             if generation == app.voice_generation {
                 app.voice_preview = Some(text);
@@ -3551,6 +3568,13 @@ fn handle_input(
             && view.handle_key(key) == JobViewAction::Close
         {
             app.job_view = None;
+        }
+        return Flow::Continue;
+    }
+
+    if sessions_ui::is_open(&app.sessions) {
+        if let InputEvent::Key(key) = event {
+            sessions_ui::handle_key(app, session, key, command_tx);
         }
         return Flow::Continue;
     }
@@ -8290,6 +8314,7 @@ fn run_slash_command(
             remote_handover::start(app, session, args, resources, command_tx)
         }
         "remote" if rest == "cancel" => remote_handover::cancel(app),
+        "sessions" => sessions_ui::open(app, session, command_tx),
         "remote" => run_remote_command(app, session, &rest, args, resources, command_tx),
         "accounts" => run_accounts_command(app, &rest),
         "login" => {
@@ -8962,6 +8987,7 @@ mod tests {
             remote_allowed: false,
             command_tx: None,
             handover: Default::default(),
+            sessions: Default::default(),
         }
     }
 

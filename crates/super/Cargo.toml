@@ -51,5 +51,6 @@ url.workspace = true
 
 [dev-dependencies]
 super-bench.workspace = true
+super-remote = { workspace = true, features = ["fake"] }
 super-sdk = { workspace = true, features = ["mock", "rpc"] }
 tempfile.workspace = true
