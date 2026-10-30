@@ -147,6 +147,11 @@ pub enum SessionNotice {
 /// Receives [`SessionNotice`]s. Must not block.
 pub type SessionObserver = Arc<dyn Fn(SessionNotice) + Send + Sync>;
 
+/// Asked before `switch_session` opens a file; `Err` refuses the switch with
+/// that message. An embedder uses it to keep away from a session file that
+/// another process writes.
+pub type SessionFileGuard = Arc<dyn Fn(&std::path::Path) -> Result<(), String> + Send + Sync>;
+
 /// One embeddable conversation with the agent.
 pub struct Session {
     inner: Arc<AgentSession>,
@@ -159,6 +164,7 @@ pub struct Session {
     closed: AtomicBool,
     approvals: Approvals,
     observer: Mutex<Option<SessionObserver>>,
+    file_guard: Mutex<Option<SessionFileGuard>>,
 }
 
 /// Build the event sink a harness session needs so that every event is also
@@ -383,6 +389,7 @@ impl Session {
             closed: AtomicBool::new(false),
             approvals: Approvals::default(),
             observer: Mutex::new(None),
+            file_guard: Mutex::new(None),
         })
     }
 
@@ -398,6 +405,11 @@ impl Session {
     /// Install the observer that hears about remote commands and approvals.
     pub fn set_observer(&self, observer: Option<SessionObserver>) {
         *self.observer.lock().unwrap() = observer;
+    }
+
+    /// Install the check `switch_session` runs before opening a file.
+    pub fn set_session_file_guard(&self, guard: Option<SessionFileGuard>) {
+        *self.file_guard.lock().unwrap() = guard;
     }
 
     fn notify(&self, notice: SessionNotice) {
@@ -1004,9 +1016,13 @@ impl Session {
                 Ok(Some(json!({"path": path})))
             }
             Command::SwitchSession { session_path } => {
-                let manager =
-                    super_coding::SessionManager::open(std::path::Path::new(&session_path))
-                        .map_err(|error| SdkErrorText(format!("{error:#}")))?;
+                let path = std::path::Path::new(&session_path);
+                let guard = self.file_guard.lock().unwrap().clone();
+                if let Some(guard) = guard {
+                    guard(path).map_err(SdkErrorText)?;
+                }
+                let manager = super_coding::SessionManager::open(path)
+                    .map_err(|error| SdkErrorText(format!("{error:#}")))?;
                 self.inner.replace_manager(manager);
                 Ok(Some(json!({"cancelled": false})))
             }

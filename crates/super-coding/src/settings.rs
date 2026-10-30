@@ -248,11 +248,20 @@ pub struct DaemonSettings {
     /// the daemon unloads it. Unset means 60; `0` disables unloading.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_unload_minutes: Option<u64>,
+    /// Whether `super` in a terminal attaches to the daemon's session for
+    /// the directory when signed in. Unset means yes; `false` keeps running
+    /// the engine in-process.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attach: Option<bool>,
 }
 
 impl DaemonSettings {
     pub fn idle_unload_minutes(&self) -> u64 {
         self.idle_unload_minutes.unwrap_or(60)
+    }
+
+    pub fn attach_enabled(&self) -> bool {
+        self.attach.unwrap_or(true)
     }
 }
 
@@ -450,6 +459,13 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daemon_attach_defaults_to_on() {
+        assert!(Settings::default().daemon.attach_enabled());
+        let settings: Settings = serde_json::from_str(r#"{"daemon":{"attach":false}}"#).unwrap();
+        assert!(!settings.daemon.attach_enabled());
+    }
 
     #[test]
     fn daemon_idle_unload_defaults_to_an_hour() {

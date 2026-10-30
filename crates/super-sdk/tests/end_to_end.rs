@@ -337,3 +337,37 @@ async fn an_unknown_entry_cursor_is_reported_rather_than_ignored() {
     assert!(!response.success);
     assert!(response.error.unwrap().contains("does-not-exist"));
 }
+
+#[tokio::test]
+async fn a_session_file_guard_can_refuse_switch_session() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let (_provider, session) = session_with(directory.path(), MockScript::text("hi")).await;
+    let mut other =
+        super_coding::SessionManager::create(directory.path(), Some(directory.path().join("s")))
+            .expect("another session");
+    other.append_session_info("other").expect("written");
+    let other_file = other.session_file().expect("a file").to_path_buf();
+    let other_id = other.session_id().to_string();
+    let before = session.state().session_id;
+
+    let held = other_file.clone();
+    session.set_session_file_guard(Some(Arc::new(move |path: &std::path::Path| {
+        if path == held {
+            Err("held by another process".to_string())
+        } else {
+            Ok(())
+        }
+    })));
+    let switch = Command::SwitchSession {
+        session_path: other_file.display().to_string(),
+    };
+    let refused = session.execute(switch.clone()).await;
+    assert!(!refused.success, "{refused:?}");
+    assert_eq!(refused.error.as_deref(), Some("held by another process"));
+    assert_eq!(session.state().session_id, before, "nothing was switched");
+
+    session.set_session_file_guard(None);
+    let switched = session.execute(switch).await;
+    assert!(switched.success, "{switched:?}");
+    assert_eq!(session.state().session_id, other_id);
+}

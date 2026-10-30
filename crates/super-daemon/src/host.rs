@@ -6,7 +6,6 @@
 
 use crate::log;
 use chrono::{DateTime, SecondsFormat, Utc};
-use fs2::FileExt as _;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -177,7 +176,7 @@ impl SessionHost {
             .session_file
             .ok_or_else(|| HostError::Invalid("the session has no file".into()))?;
         let session_id = session.state().session_id;
-        let lock = lock_session_file(&file)
+        let lock = crate::session_lock::try_lock(&file)
             .map_err(|error| HostError::Startup(error.into()))?
             .ok_or_else(|| HostError::Locked(session_id.clone()))?;
         let hosted = self.install(session, request.cwd, file, lock);
@@ -208,8 +207,8 @@ impl SessionHost {
         let Some((path, cwd)) = found else {
             return Err(HostError::Unknown(session_id.to_string()));
         };
-        let Some(lock) =
-            lock_session_file(&path).map_err(|error| HostError::Startup(error.into()))?
+        let Some(lock) = crate::session_lock::try_lock(&path)
+            .map_err(|error| HostError::Startup(error.into()))?
         else {
             // Either another process, or a concurrent `load` of ours.
             return match self.get(session_id) {
@@ -493,34 +492,6 @@ fn reason_label(reason: EndReason) -> &'static str {
         EndReason::Stopped => "stopped",
         EndReason::Idle => "idle",
         EndReason::Shutdown => "shutdown",
-    }
-}
-
-/// Lock `<file>.jsonl.lock` beside a session file. `Ok(None)` means another
-/// process holds it.
-fn lock_session_file(file: &Path) -> std::io::Result<Option<File>> {
-    let path = file.with_extension("jsonl.lock");
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)?;
-    match lock.try_lock_exclusive() {
-        Ok(()) => Ok(Some(lock)),
-        Err(error) => {
-            let contended = fs2::lock_contended_error();
-            if error.kind() == std::io::ErrorKind::WouldBlock
-                || (contended.kind() == error.kind()
-                    && contended.raw_os_error() == error.raw_os_error())
-            {
-                Ok(None)
-            } else {
-                Err(error)
-            }
-        }
     }
 }
 

@@ -1322,6 +1322,14 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         theme,
         themes,
     } = startup;
+    // One writer per session file: a SUPER daemon must not host this one.
+    let _session_lock = match crate::setup::keep_session_lock(&session) {
+        Ok(lock) => lock,
+        Err(error) => {
+            terminal.restore();
+            return Err(error);
+        }
+    };
     let mut resources = InteractiveResources {
         settings: settings.clone(),
         skills,
@@ -1485,6 +1493,7 @@ async fn run_with_hosts(args: &Args, hosts: &crate::terminal_hosts::TerminalHost
         let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
         super_sdk::Session::attach(session.clone(), cwd, mirrored_events)
     };
+    sdk.set_session_file_guard(Some(crate::setup::session_file_guard(&session)));
     {
         let tx = command_tx.clone();
         sdk.set_observer(Some(Arc::new(move |notice| {
@@ -3284,7 +3293,7 @@ fn stored_user_text(display_text: &str, model_text: &str) -> String {
     format!("{USER_DISPLAY_PREFIX}{display}{USER_DISPLAY_SUFFIX}\n{model_text}")
 }
 
-fn visible_user_text(stored_text: &str) -> String {
+pub(crate) fn visible_user_text(stored_text: &str) -> String {
     use base64::Engine as _;
     let Some((header, _)) = stored_text.split_once('\n') else {
         return stored_text.to_string();
@@ -7242,7 +7251,21 @@ fn switch_session(
     session: &Arc<super_coding::AgentSession>,
     record: &SessionRecord,
 ) {
+    let current = session
+        .manager
+        .lock()
+        .unwrap()
+        .session_file()
+        .map(Path::to_path_buf);
     let result = match &record.source {
+        SessionSource::Super(path)
+            if current.as_deref() != Some(path.as_path())
+                && super_daemon::session_lock::is_held(path) =>
+        {
+            Err(anyhow::anyhow!(
+                "it is open in another SUPER process (the SUPER daemon or another terminal)"
+            ))
+        }
         SessionSource::Super(path) => super_coding::SessionManager::open(path),
         source => session_sources::import(source).and_then(|messages| {
             if messages.is_empty() {

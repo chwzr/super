@@ -47,6 +47,9 @@ struct ActiveSession {
     prompt: tokio::sync::Mutex<()>,
     cancelled: AtomicBool,
     closed: AtomicBool,
+    /// `<file>.jsonl.lock` of the session file, so a SUPER daemon (or
+    /// another `super`) never writes it while this process does.
+    _session_lock: super_daemon::session_lock::SessionLockKeeper,
 }
 
 impl Drop for ActiveSession {
@@ -117,6 +120,13 @@ impl SuperAcpAgent {
         options.session = source;
         options.mcp_servers = acp_mcp_servers(mcp_servers)?;
         let built = options.build(sink).map_err(internal_error)?;
+        let session_lock = match crate::setup::keep_session_lock(&built.session) {
+            Ok(lock) => lock,
+            Err(error) => {
+                built.session.abort();
+                return Err(agent_client_protocol::Error::invalid_params().data(error.to_string()));
+            }
+        };
         let id = SessionId::new(
             built
                 .session
@@ -133,6 +143,7 @@ impl SuperAcpAgent {
             prompt: tokio::sync::Mutex::new(()),
             cancelled: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            _session_lock: session_lock,
         });
         self.sessions
             .lock()
@@ -1454,6 +1465,98 @@ mod tests {
                         .iter()
                         .any(|update| matches!(update, SessionUpdate::AgentMessageChunk(_)))
                 );
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_open_session_holds_its_file_and_a_held_file_is_refused() {
+        use super_daemon::session_lock::{is_held, try_lock};
+
+        async fn until(mut done: impl FnMut() -> bool) -> bool {
+            for _ in 0..200 {
+                if done() {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            done()
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let provider = MockProvider::start(directory.path(), MockScript::text("locked answer"))
+            .await
+            .unwrap();
+        let sessions = directory.path().join("sessions");
+        let agent = SuperAcpAgent::new(SessionOptions {
+            model: Some("mock/mock-1".into()),
+            models_file: Some(provider.catalog_path()),
+            settings: Some(super_coding::Settings::default()),
+            session: SessionSource::Create,
+            session_dir: Some(sessions.clone()),
+            no_context_files: true,
+            ..Default::default()
+        });
+        let cwd = directory.path().to_path_buf();
+
+        Client
+            .builder()
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let created = connection
+                    .send_request(NewSessionRequest::new(&cwd))
+                    .block_task()
+                    .await?;
+                connection
+                    .send_request(PromptRequest::new(
+                        created.session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new("lock this"))],
+                    ))
+                    .block_task()
+                    .await?;
+                let file = SessionManager::list_all(&sessions)
+                    .unwrap()
+                    .into_iter()
+                    .find(|listing| listing.id == created.session_id.to_string())
+                    .expect("the session file")
+                    .path;
+                // The lock follows the file once its first entry appears.
+                assert!(
+                    until(|| is_held(&file)).await,
+                    "the open session holds its file"
+                );
+                connection
+                    .send_request(CloseSessionRequest::new(created.session_id.clone()))
+                    .block_task()
+                    .await?;
+                assert!(until(|| !is_held(&file)).await, "closing lets go of it");
+
+                // Another process (the daemon) holds it: loading it is refused.
+                let daemon = try_lock(&file).unwrap().expect("free");
+                let refused = connection
+                    .send_request(LoadSessionRequest::new(
+                        created.session_id.clone(),
+                        cwd.clone(),
+                    ))
+                    .block_task()
+                    .await
+                    .expect_err("the file is held elsewhere");
+                assert!(
+                    format!("{refused:?}").contains("is open in another SUPER process"),
+                    "{refused:?}"
+                );
+                drop(daemon);
+
+                connection
+                    .send_request(LoadSessionRequest::new(created.session_id, cwd))
+                    .block_task()
+                    .await?;
+                assert!(is_held(&file), "a loaded session holds its file");
                 Ok(())
             })
             .await

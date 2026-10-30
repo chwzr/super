@@ -51,6 +51,7 @@ pub async fn run(args: &Args) -> Result<i32> {
     };
 
     let startup = build_startup(args, false, sink).await?;
+    let _session_lock = crate::setup::keep_session_lock(&startup.session)?;
 
     // Merge piped stdin into the prompt.
     let mut prompt = startup.initial_message.clone().unwrap_or_default();

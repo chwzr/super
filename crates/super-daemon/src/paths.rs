@@ -1,6 +1,10 @@
 //! Where the daemon keeps its socket, lock and log.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+
+/// Points clients, and `super daemon run`, at another socket.
+pub const SOCKET_ENV: &str = "SUPER_DAEMON_SOCKET";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonPaths {
@@ -23,6 +27,25 @@ impl DaemonPaths {
             log: home.join(".super/agent/logs/daemon.log"),
             run_dir,
         })
+    }
+
+    /// The socket clients look for: `SUPER_DAEMON_SOCKET` when set, else
+    /// `~/.super/run/daemon.sock`.
+    pub fn discover() -> Option<Self> {
+        Self::discover_from(std::env::var_os(SOCKET_ENV), Self::default_paths())
+    }
+
+    fn discover_from(env: Option<OsString>, defaults: Option<Self>) -> Option<Self> {
+        match env.filter(|value| !value.is_empty()) {
+            Some(socket) => Some(Self::beside_socket(PathBuf::from(socket))),
+            None => defaults,
+        }
+    }
+
+    /// Whether this is the socket launchd and systemd start the daemon on.
+    /// Only then does starting the registered service bring it up.
+    pub fn is_default(&self) -> bool {
+        Self::default_paths().is_some_and(|defaults| defaults.socket == self.socket)
     }
 
     /// A socket somewhere else (`--socket`, tests). The lock sits beside the
@@ -105,6 +128,36 @@ mod tests {
             .expect("no chmod on a shared directory");
         let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn discovery_prefers_the_environment() {
+        let defaults =
+            DaemonPaths::beside_socket(PathBuf::from("/home/felix/.super/run/daemon.sock"));
+        let found = DaemonPaths::discover_from(
+            Some(OsString::from("/tmp/eng38.sock")),
+            Some(defaults.clone()),
+        )
+        .unwrap();
+        assert_eq!(found.socket, PathBuf::from("/tmp/eng38.sock"));
+        assert_eq!(found.lock, PathBuf::from("/tmp/eng38.lock"));
+        assert_eq!(
+            DaemonPaths::discover_from(Some(OsString::new()), Some(defaults.clone())),
+            Some(defaults.clone()),
+            "an empty variable counts as unset"
+        );
+        assert_eq!(
+            DaemonPaths::discover_from(None, Some(defaults.clone())),
+            Some(defaults)
+        );
+        assert_eq!(DaemonPaths::discover_from(None, None), None);
+    }
+
+    #[test]
+    fn only_the_default_socket_is_the_default() {
+        let defaults = DaemonPaths::default_paths().expect("a home directory");
+        assert!(defaults.is_default());
+        assert!(!DaemonPaths::beside_socket(PathBuf::from("/tmp/other.sock")).is_default());
     }
 
     #[test]

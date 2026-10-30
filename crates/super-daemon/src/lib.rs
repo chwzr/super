@@ -7,9 +7,11 @@
 
 pub mod env;
 pub mod host;
+pub mod installation;
 pub mod lock;
 pub mod log;
 pub mod paths;
+pub mod session_lock;
 pub mod service;
 
 #[cfg(unix)]
@@ -18,6 +20,8 @@ pub mod client;
 pub mod presence;
 #[cfg(unix)]
 pub mod server;
+#[cfg(unix)]
+pub mod supervisor;
 
 use crate::host::HostConfig;
 use crate::paths::DaemonPaths;
@@ -35,6 +39,10 @@ pub struct DaemonConfig {
     pub log_to_stderr: bool,
     /// How often the idle sweep runs.
     pub sweep_interval: Duration,
+    /// The protocol range `hello` accepts and advertises:
+    /// `super_sdk::daemon::PROTOCOL_VERSIONS`, or another one to try a
+    /// client against a newer or older daemon.
+    pub protocol_versions: [u32; 2],
     /// The platform link; `None` keeps the daemon local (tests, or
     /// `remote.enabled = false`).
     #[cfg(unix)]
@@ -94,6 +102,7 @@ pub async fn run(
         host_name: config.host_name.clone(),
         platform: std::env::consts::OS.to_string(),
         socket_path: config.paths.socket.clone(),
+        protocol_versions: config.protocol_versions,
     };
     let ctx = ServerContext::new(host.clone(), info, shutdown.clone());
     log::info(
@@ -152,6 +161,7 @@ pub async fn run(
     // Let the connection writers flush the last lines before the sockets go,
     // and the platform link announce the sessions as ended.
     tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.closing.cancel();
     if let Some(presence) = presence {
         presence.stop().await;
     }
