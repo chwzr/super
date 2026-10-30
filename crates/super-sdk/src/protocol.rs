@@ -101,6 +101,10 @@ pub enum Command {
     #[serde(rename_all = "camelCase")]
     SetSessionName {
         name: String,
+        /// A title the client generated from the first prompt, not a name
+        /// someone typed: clients take it without showing a rename.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        auto: bool,
     },
 
     // --- model ---

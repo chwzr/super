@@ -259,12 +259,22 @@ Several clients can be attached to one session. Every client receives every
 event, and after each command a client sends the daemon announces it to all
 of them as `command_applied` ([rpc.md](rpc.md#events)) with the client's
 `hello.name`: the terminal calls itself `Terminal (ttys003)` after its tty.
-A prompt another client started shows up as the user message it is; other
-commands show as `♦ set_thinking_level from Terminal (ttys004)`. An approval
-the daemon asks (a workflow's cost gate) opens as a picker in every attached
-terminal; the first answer wins, the daemon names the answering client in
-`approval_resolved.by`, and the other terminals close their picker and say
-who answered. Esc on the picker answers `cancel`.
+Every terminal shows a command another client ran exactly as the same
+command typed there: a prompt that started a run is the user message, a
+queued one appears when the run takes it, `set_thinking_level` reads
+`thinking level set to low` as after `/thinking low`, `set_session_name` as
+after `/name`, `bash` as after `!`, `new_session` as after `/new`; model
+changes, compactions and aborts show through their events, as typed ones do.
+The title a terminal generates from the first prompt goes to the daemon as
+`set_session_name` with `auto: true`; the other terminals take it as the
+title without a line, as a title generated in-process never shows one.
+The internal command name and the origin never appear in the transcript, so
+a resumed session, whose file records no origins, reads like the live one.
+An approval the daemon asks (a workflow's cost gate) opens as a picker in
+every attached terminal; the first answer wins, the daemon names the
+answering client in `approval_resolved.by`, and every terminal closes its
+picker and shows the answer the same way (`workflow cancelled`). Esc on the
+picker answers `cancel`.
 
 When the connection drops (the daemon crashed, was restarted or stopped),
 the TUI says so, marks the footer `♦ daemon…` and reconnects for about eight

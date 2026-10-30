@@ -139,6 +139,16 @@ pub enum SessionNotice {
         command: &'static str,
         success: bool,
     },
+    /// A command from `origin` ran, as `command_applied` announces it to
+    /// every client: the command as sent (`imageCount` in place of images),
+    /// whether it succeeded, and its response's data. A prompt is announced
+    /// before its run starts.
+    Applied {
+        origin: String,
+        command: Value,
+        success: bool,
+        data: Option<Value>,
+    },
     /// An approval was answered, by the terminal (`local`) or a remote device.
     ApprovalAnswered {
         approval_id: String,
@@ -755,10 +765,38 @@ impl Session {
         }
         let by = origin.clone().unwrap_or_else(|| "rpc".to_string());
         // What every other client is told once the command ran.
-        let announced = origin
+        let mut announced = origin
             .as_ref()
             .and_then(|origin| Some((origin.clone(), announced_command(&command)?)));
         let result = match command {
+            // Announced before its run starts, so every client shows the
+            // prompt before the reply.
+            Command::Prompt {
+                message,
+                images,
+                streaming_behavior,
+            } if announced.is_some() => {
+                let args = PromptArgs {
+                    message,
+                    images,
+                    streaming_behavior,
+                };
+                match self.accept_prompt(&args) {
+                    Ok(queued) => {
+                        let data =
+                            json!({"disposition": if queued { "queued" } else { "started" }});
+                        if let Some((origin, command)) = announced.take() {
+                            self.announce(&origin, command, &Ok(Some(data.clone())));
+                        }
+                        if !queued {
+                            let session = self.clone();
+                            tokio::spawn(async move { session.run_prompt(args).await });
+                        }
+                        Ok(Some(data))
+                    }
+                    Err(error) => Err(SdkErrorText::from(error)),
+                }
+            }
             Command::Bash { command } => self
                 .bash_with_id(&command, id.clone())
                 .await
@@ -774,11 +812,7 @@ impl Session {
             other => self.execute_inner(other).await,
         };
         if let Some((origin, command)) = announced {
-            let (success, error, data) = match &result {
-                Ok(data) => (true, None, data.clone()),
-                Err(error) => (false, Some(error.0.as_str()), None),
-            };
-            self.emit(command_applied(&origin, command, success, error, data));
+            self.announce(&origin, command, &result);
         }
         if let Some(origin) = origin
             && !matches!(name, "prompt" | "steer" | "follow_up" | "ping")
@@ -795,6 +829,22 @@ impl Session {
             Ok(None) => Response::ok(name).with_id(id),
             Err(error) => Response::err(name, error).with_id(id),
         }
+    }
+
+    /// Tell every client, and the embedding terminal, that `command` from
+    /// `origin` ran.
+    fn announce(&self, origin: &str, command: Value, result: &Result<Option<Value>, SdkErrorText>) {
+        let (success, error, data) = match result {
+            Ok(data) => (true, None, data.clone()),
+            Err(error) => (false, Some(error.0.as_str()), None),
+        };
+        self.notify(SessionNotice::Applied {
+            origin: origin.to_string(),
+            command: command.clone(),
+            success,
+            data: data.clone(),
+        });
+        self.emit(command_applied(origin, command, success, error, data));
     }
 
     async fn execute_inner(
@@ -921,7 +971,7 @@ impl Session {
                 Ok(Some(json!({"text": text})))
             }
             Command::GetSessionStats {} => Ok(Some(self.session_stats())),
-            Command::SetSessionName { name } => {
+            Command::SetSessionName { name, .. } => {
                 self.inner
                     .manager
                     .lock()
