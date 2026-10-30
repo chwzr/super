@@ -437,7 +437,9 @@ enum CommandEvent {
         generation: u64,
         text: String,
     },
-    /// `/remote` made progress handing the session to the daemon.
+    /// `/remote` made progress handing the session to the daemon. Without
+    /// a Unix socket nothing gets that far.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Handover(remote_handover::Progress),
     /// A `/sessions` request came back.
     Sessions(sessions_ui::Event),
@@ -1222,7 +1224,8 @@ pub async fn run(args: &Args) -> Result<i32> {
 async fn run_with_hosts(
     args: &Args,
     hosts: &crate::terminal_hosts::TerminalHosts,
-    handed_over: &mut Option<remote_handover::HandedOver>,
+    // Without a Unix socket nothing is ever handed over.
+    #[cfg_attr(not(unix), allow(unused_variables))] handed_over: &mut remote_handover::Slot,
 ) -> Result<i32> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SessionEvent>();
     let tui_sink: super_coding::SessionEventSink = {
