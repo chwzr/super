@@ -172,7 +172,7 @@ impl SessionOptions {
         };
 
         let registry = Registry::load(self.models_file.as_deref());
-        let (model, pattern_thinking) = self.resolve_model(&registry)?;
+        let (model, pattern_thinking) = self.resolve_model(&registry, &settings)?;
         let thinking = self
             .thinking_level
             .or(pattern_thinking)
@@ -306,14 +306,32 @@ impl SessionOptions {
         Ok(Some(super_mcp::McpManager::new(loaded)?))
     }
 
-    fn resolve_model(&self, registry: &Registry) -> Result<(Model, Option<ThinkingLevel>)> {
+    /// `model` > the settings default > the first model of `provider` > the
+    /// first model with a credential; the same order as the terminal.
+    fn resolve_model(
+        &self,
+        registry: &Registry,
+        settings: &Settings,
+    ) -> Result<(Model, Option<ThinkingLevel>)> {
         if let Some(pattern) = &self.model {
             return registry
                 .resolve(pattern, self.provider.as_deref())
                 .with_context(|| format!("no model matches pattern '{pattern}'"));
         }
-        if let Some(provider) = &self.provider
-            && let Some(model) = registry.all().iter().find(|m| &m.provider == provider)
+        if let (Some(provider), Some(model)) = (&settings.default_provider, &settings.default_model)
+            && self
+                .provider
+                .as_ref()
+                .is_none_or(|wanted| wanted == provider)
+            && let Some(found) = registry.resolve(model, Some(provider))
+        {
+            return Ok(found);
+        }
+        if let Some(provider) = self
+            .provider
+            .as_deref()
+            .or(settings.default_provider.as_deref())
+            && let Some(model) = registry.all().iter().find(|m| m.provider == provider)
         {
             return Ok((model.clone(), None));
         }
@@ -384,11 +402,44 @@ mod tests {
             ..Default::default()
         };
         let registry = Registry::from_builtin();
-        let error = options.resolve_model(&registry).unwrap_err();
+        let error = options
+            .resolve_model(&registry, &Settings::default())
+            .unwrap_err();
         assert!(
             error.to_string().contains("definitely/not-a-model"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn the_settings_default_picks_the_model_when_none_is_given() {
+        let registry = Registry::from_builtin();
+        let wanted = registry.all().last().cloned().expect("a builtin model");
+        let settings = Settings {
+            default_provider: Some(wanted.provider.clone()),
+            default_model: Some(wanted.id.clone()),
+            ..Settings::default()
+        };
+        let (model, _) = SessionOptions::default()
+            .resolve_model(&registry, &settings)
+            .expect("the settings default resolves");
+        assert_eq!((&model.provider, &model.id), (&wanted.provider, &wanted.id));
+
+        // Another provider asked for: the pair does not apply.
+        let other = registry
+            .all()
+            .iter()
+            .find(|model| model.provider != wanted.provider)
+            .cloned()
+            .expect("a second provider");
+        let options = SessionOptions {
+            provider: Some(other.provider.clone()),
+            ..Default::default()
+        };
+        let (model, _) = options
+            .resolve_model(&registry, &settings)
+            .expect("a model of that provider");
+        assert_eq!(model.provider, other.provider);
     }
 
     #[test]
