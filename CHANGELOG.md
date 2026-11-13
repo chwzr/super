@@ -12,8 +12,10 @@
   complete list in one request when its link starts. Nothing is sent again
   every six hours. `/sessions` reads the other machines with one
   `GET /api/registry`, in which the platform says which machines are online
-  and which run a daemon. This needs a platform that has these endpoints:
-  nothing is written to or read from the old stream.
+  and which run a daemon. A session that ends with nothing said in it is
+  removed from the registry; one the platform refuses is not sent again
+  until it changes. This needs a platform that has these endpoints: nothing
+  is written to or read from the old stream.
 - A computer that runs sessions is a "machine" everywhere, where it was a
   "host" or a "device": `~/.super/agent/machine.json` with `machineId` (the
   id in an existing `host.json` is taken over once), the streams

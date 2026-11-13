@@ -507,17 +507,24 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
   - `PUT /api/machines/{machineId}/sessions/{sessionId}` carries a session
     whenever it changed. The daemon keeps the newest state per session and
     tries a failed call again every 5 seconds.
+  - `DELETE /api/machines/{machineId}/sessions/{sessionId}` takes a session
+    out of the registry when it ends with nothing said in it (no first
+    message and no name): there is nothing of it to open again.
   - `POST /api/machines/{machineId}/heartbeat` with `{"daemon": true}`
     follows every 30 seconds, on its own timer, whatever else is being
     sent. The platform lists a machine as online for 90 seconds after it
-    last heard from it, and as running a daemon for 90 seconds after the
-    last announcement or heartbeat that said so.
+    last heard from it. While the machine is online it lists it as running
+    a daemon for 90 seconds after the last announcement or heartbeat that
+    said so; a machine that is off keeps what it said last, so the apps
+    know that sessions can be started on it once it is back.
 
   A call the platform answers with 404 (it does not know the machine, or
   the machine was removed there) is followed by a new announcement and the
-  complete list; a 401 stops the link like any rejected token. Nothing is
-  sent again on a schedule: the platform keeps a machine and its sessions
-  until they are removed.
+  complete list; a 401 stops the link like any rejected token. A session
+  the platform refuses for what it says (another 4xx) is not sent again
+  until it changes and holds up no other session; a list it refuses is
+  sent session by session instead. Nothing is sent again on a schedule:
+  the platform keeps a machine and its sessions until they are removed.
 
   A session carries `workspace`, `cwd`, `state`, `blockedReason`, `model`,
   `thinkingLevel`, `name`, `firstMessage`, `"daemon": true`, `"resumeArgv":
@@ -541,7 +548,9 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
   which goes offline when its heartbeats stop. A `super` that runs a
   session in-process writes the registry the same way for its one session:
   the announcement and the heartbeats without `daemon`, the session with
-  `"daemon": false` and no complete list.
+  `"daemon": false` and no complete list. When it exits, a session with
+  something said in it stays listed as `ended`, with the `resumeArgv` that
+  opens it again; one nothing was said in has no file and is removed.
 
 - `sessions/{machineId}/{sessionId}/{events,entries,commands}`: every
   hosted session is mirrored exactly like a terminal session, from the

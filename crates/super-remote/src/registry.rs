@@ -7,7 +7,7 @@ use crate::RemoteCredentials;
 use crate::machine::MachineIdentity;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -145,6 +145,15 @@ impl std::fmt::Display for RegistryError {
 
 impl std::error::Error for RegistryError {}
 
+impl RegistryError {
+    /// The platform refused the request for what it says and would refuse
+    /// it again: sending it once more is no use.
+    fn refused(&self) -> bool {
+        matches!(self, Self::Status(code, _)
+            if (400..500).contains(code) && *code != 408 && *code != 429)
+    }
+}
+
 /// The platform's registry endpoints, with the bearer token every other
 /// platform call of this process uses.
 pub struct RegistryClient {
@@ -271,6 +280,23 @@ impl RegistryClient {
         .map(drop)
     }
 
+    /// `DELETE /api/machines/{machineId}/sessions/{sessionId}`: the
+    /// session leaves the registry. Fine when it was not there.
+    pub async fn delete_session(
+        &self,
+        machine_id: &str,
+        session_id: &str,
+    ) -> Result<(), RegistryError> {
+        let path = format!(
+            "{}/sessions/{}",
+            machine_path(machine_id),
+            crate::s2::encode_segment(session_id)
+        );
+        self.send(reqwest::Method::DELETE, &path, None)
+            .await
+            .map(drop)
+    }
+
     /// `GET /api/registry`: every machine and session of the account as
     /// the platform knows them now.
     pub async fn read(&self) -> Result<Registry, RegistryError> {
@@ -312,6 +338,7 @@ impl Default for WriterOptions {
 enum Update {
     Publish(Box<SessionRecord>),
     PublishAll(Vec<SessionRecord>),
+    Remove(String),
 }
 
 /// Keeps this machine and its sessions current in the registry. Drop or call
@@ -353,6 +380,8 @@ impl RegistryWriter {
             announced: false,
             sent: BTreeMap::new(),
             pending: BTreeMap::new(),
+            refused: BTreeMap::new(),
+            removals: BTreeSet::new(),
             list: None,
             unauthorized: unauthorized.clone(),
         };
@@ -380,12 +409,19 @@ impl RegistryWriter {
         let _ = self.updates.send(Update::PublishAll(records));
     }
 
+    /// Take a session out of the registry: one that ended with nothing said
+    /// in it, which nobody can open again.
+    pub fn remove(&self, session_id: &str) {
+        let _ = self.updates.send(Update::Remove(session_id.to_string()));
+    }
+
     /// The platform rejected the token; a new sign-in is needed.
     pub fn unauthorized(&self) -> bool {
         self.unauthorized.load(Ordering::Relaxed)
     }
 
-    /// Mark the sessions as ended and wait for that, three seconds at most.
+    /// Mark the sessions as ended (and remove those nothing was said in) and
+    /// wait for that, three seconds at most.
     pub async fn stop(mut self) {
         self.cancel.cancel();
         if let Some(task) = self.task.take() {
@@ -410,6 +446,11 @@ struct Worker {
     sent: BTreeMap<String, SessionRecord>,
     /// The newest state of each session that is still to send.
     pending: BTreeMap<String, SessionRecord>,
+    /// What the platform refused of a session. It is not sent again as it
+    /// is, and it holds up nobody else.
+    refused: BTreeMap<String, SessionRecord>,
+    /// Sessions that are still to take out of the registry.
+    removals: BTreeSet<String>,
     /// A complete list that is still to send. It goes out before `pending`,
     /// which holds what changed after the list was made.
     list: Option<Vec<SessionRecord>>,
@@ -466,7 +507,16 @@ impl Worker {
     fn take(&mut self, update: Update) {
         match update {
             Update::Publish(record) => {
+                self.removals.remove(&record.session_id);
                 self.pending.insert(record.session_id.clone(), *record);
+            }
+            Update::Remove(session_id) => {
+                self.pending.remove(&session_id);
+                self.refused.remove(&session_id);
+                if let Some(list) = &mut self.list {
+                    list.retain(|record| record.session_id != session_id);
+                }
+                self.removals.insert(session_id);
             }
             Update::PublishAll(mut records) => {
                 if records.len() > MAX_LISTED_SESSIONS {
@@ -478,6 +528,8 @@ impl Worker {
                 }
                 // The list is newer than anything that waited.
                 self.pending.clear();
+                self.removals.clear();
+                self.refused.clear();
                 self.list = Some(records);
             }
         }
@@ -509,20 +561,34 @@ impl Worker {
                 .client
                 .put_sessions(&self.machine.machine_id, list)
                 .await;
-            self.note("sessions", listed)?;
-            self.sent = self
-                .list
-                .take()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|record| (record.session_id.clone(), record))
-                .collect();
+            match self.note("sessions", listed) {
+                Ok(()) => {
+                    self.sent = self
+                        .list
+                        .take()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|record| (record.session_id.clone(), record))
+                        .collect();
+                }
+                // One session in it is to blame. They go one by one instead,
+                // so the others are listed; what changed since stays newer.
+                Err(error) if error.refused() => {
+                    for record in self.list.take().unwrap_or_default() {
+                        self.pending
+                            .entry(record.session_id.clone())
+                            .or_insert(record);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
         }
         while let Some((id, record)) = self.pending.pop_first() {
             if self
                 .sent
                 .get(&id)
                 .is_some_and(|sent| sent.same_but_activity(&record))
+                || self.refused.get(&id) == Some(&record)
             {
                 continue;
             }
@@ -530,11 +596,36 @@ impl Worker {
                 .client
                 .put_session(&self.machine.machine_id, &record)
                 .await;
-            if let Err(error) = self.note("session", put) {
-                self.pending.insert(id, record);
-                return Err(error);
+            match self.note("session", put) {
+                Ok(()) => {
+                    self.refused.remove(&id);
+                    self.sent.insert(id, record);
+                }
+                // Refused for what it says: it would be refused again, and
+                // the sessions after it must not wait for it.
+                Err(error) if error.refused() => {
+                    self.refused.insert(id, record);
+                }
+                Err(error) => {
+                    self.pending.insert(id, record);
+                    return Err(error);
+                }
             }
-            self.sent.insert(id, record);
+        }
+        while let Some(id) = self.removals.pop_first() {
+            let removed = self
+                .client
+                .delete_session(&self.machine.machine_id, &id)
+                .await;
+            match self.note("removal", removed) {
+                Ok(()) => {}
+                Err(error) if error.refused() => {}
+                Err(error) => {
+                    self.removals.insert(id);
+                    return Err(error);
+                }
+            }
+            self.sent.remove(&id);
         }
         Ok(())
     }
@@ -589,21 +680,34 @@ impl Worker {
     }
 
     /// Mark every session the platform has as live as ended, so no client
-    /// shows a stale "working".
+    /// shows a stale "working". A session nothing was said in has nothing to
+    /// open again (no file, so no `resume_argv`): it is taken out instead of
+    /// staying listed for good.
     async fn goodbye(self) {
         for mut record in self.sent.into_values() {
             if record.state == SessionState::Ended {
                 continue;
             }
-            record.state = SessionState::Ended;
-            record.blocked_reason = None;
-            let put = self
-                .client
-                .put_session(&self.machine.machine_id, &record)
-                .await;
-            if let Err(error) = put {
-                crate::log::line(format!("registry goodbye failed: {error}"));
-                break;
+            let machine_id = &self.machine.machine_id;
+            let said = if record.resume_argv.is_empty() {
+                self.client
+                    .delete_session(machine_id, &record.session_id)
+                    .await
+            } else {
+                record.state = SessionState::Ended;
+                record.blocked_reason = None;
+                self.client.put_session(machine_id, &record).await
+            };
+            match said {
+                Ok(()) => {}
+                Err(error) if error.refused() => {
+                    crate::log::line(format!("registry goodbye refused: {error}"));
+                }
+                // The platform is not there; the others would fail too.
+                Err(error) => {
+                    crate::log::line(format!("registry goodbye failed: {error}"));
+                    break;
+                }
             }
         }
     }

@@ -442,6 +442,57 @@ async fn a_turn_moves_the_time_of_the_last_activity() {
 }
 
 #[tokio::test]
+async fn a_session_that_ends_with_nothing_said_leaves_the_registry() {
+    let fixture = fixture().await;
+    started(&fixture).await;
+    let create = || async {
+        fixture
+            .ctx
+            .host
+            .create(CreateRequest {
+                cwd: fixture.dir.path().join("work"),
+                model: Some("mock/mock-1".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+    };
+    // Two sessions are opened; something is said in one of them only.
+    let empty = create().await;
+    let used = create().await;
+    let (empty_id, used_id) = (empty.session_id.clone(), used.session_id.clone());
+    wait_until(|| {
+        has_state(&fixture.fake, &empty_id, "idle") && has_state(&fixture.fake, &used_id, "idle")
+    })
+    .await;
+    used.session.prompt("hi").await.unwrap();
+    wait_until(|| {
+        listed(&fixture.fake, &used_id)
+            .is_some_and(|session| session["state"] == "idle" && session["firstMessage"] == "hi")
+    })
+    .await;
+    drop((empty, used));
+
+    // Both end. The one that was used stays listed, to be opened again; the
+    // other one has nothing to open and is gone.
+    fixture
+        .ctx
+        .host
+        .stop(&empty_id, EndReason::Stopped)
+        .await
+        .unwrap();
+    fixture
+        .ctx
+        .host
+        .stop(&used_id, EndReason::Stopped)
+        .await
+        .unwrap();
+    wait_until(|| has_state(&fixture.fake, &used_id, "ended")).await;
+    wait_until(|| listed(&fixture.fake, &empty_id).is_none()).await;
+    fixture.link.stop().await;
+}
+
+#[tokio::test]
 async fn a_create_session_over_the_platform_is_answered_mirrored_and_registered() {
     let fixture = fixture().await;
     started(&fixture).await;

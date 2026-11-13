@@ -209,12 +209,12 @@ impl FakePlatform {
         match (method, segments.as_slice()) {
             ("GET", ["registry"]) => (200, registry.snapshot()),
             (_, ["machines", id, ..]) if !valid_machine_id(id) => {
-                (400, api_error("invalid_machine_id"))
+                (400, api_error("invalid_request"))
             }
             ("PUT", ["machines", id]) => (200, registry.announce(id, &body)),
             ("DELETE", ["machines", id]) => {
                 if registry.machines.get(*id).is_some_and(|m| m.online) {
-                    return (409, api_error("machine_online"));
+                    return (409, api_error("conflict"));
                 }
                 registry.machines.remove(*id);
                 registry.sessions.retain(|(machine, _), _| machine != id);
@@ -245,6 +245,11 @@ impl FakePlatform {
                 if sessions.len() > 10_000 {
                     return (400, api_error("too_many_sessions"));
                 }
+                // Nothing of a list with a session the platform would refuse
+                // is taken.
+                if sessions.iter().any(|session| !valid_session(session)) {
+                    return (400, api_error("invalid_request"));
+                }
                 let mut listed = Vec::new();
                 for session in sessions {
                     let Some(session_id) = session["id"].as_str() else {
@@ -260,6 +265,9 @@ impl FakePlatform {
                 let removed = before - registry.sessions.len();
                 registry.version += 1;
                 (200, json!({"sessions": listed.len(), "removed": removed}))
+            }
+            ("PUT", ["machines", _, "sessions", _]) if !valid_session(&body) => {
+                (400, api_error("invalid_request"))
             }
             ("PUT", ["machines", id, "sessions", session_id]) => {
                 (200, registry.upsert(id, session_id, &body))
@@ -372,6 +380,11 @@ fn api_error(code: &str) -> Value {
 }
 
 /// 1 to 128 characters of `A-Z a-z 0-9 _ -`, and never `cloud`.
+/// What the platform asks of a session: a workspace and a state.
+fn valid_session(session: &Value) -> bool {
+    session["workspace"].as_str().is_some_and(|w| !w.is_empty()) && session["state"].is_string()
+}
+
 fn valid_machine_id(id: &str) -> bool {
     (1..=128).contains(&id.len())
         && id != "cloud"

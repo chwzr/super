@@ -298,7 +298,14 @@ async fn follow_daemon(shared: Arc<Shared>, cancel: CancellationToken) {
             DaemonEvent::SessionEnded { session_id, .. } => {
                 shared.unmirror(session_id);
                 let ended = shared.summaries.lock().unwrap().get(session_id).cloned();
-                if let Some(mut summary) = ended {
+                // Nothing was said in it, so nothing of it is kept: the next
+                // listing of the stored sessions would not have it either.
+                if ended.as_ref().is_some_and(|summary| {
+                    summary.first_message.is_none() && summary.name.is_none()
+                }) {
+                    shared.summaries.lock().unwrap().remove(session_id);
+                    shared.registry.remove(session_id);
+                } else if let Some(mut summary) = ended {
                     // Exactly what a listing of the stored session says.
                     summary.state = SessionState::Ended;
                     summary.blocked_reason = None;

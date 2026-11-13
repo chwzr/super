@@ -371,6 +371,94 @@ async fn a_failed_send_is_retried_with_the_newest_state_and_blocks_nobody() {
 }
 
 #[tokio::test]
+async fn a_refused_session_is_not_sent_again_and_holds_up_nobody() {
+    let (fake, client) = fake_platform().await;
+    let writer = RegistryWriter::start_with(client, machine(), false, quick());
+    // `a` says nothing the platform takes (no workspace): 400, now and every
+    // time. `b` comes after it and must be listed all the same.
+    let refused = SessionRecord {
+        workspace: String::new(),
+        ..record("a", SessionState::Working)
+    };
+    writer.publish(refused.clone());
+    writer.publish(record("b", SessionState::Working));
+    wait_until(|| fake.session("01H", "b").is_some()).await;
+    assert!(fake.session("01H", "a").is_none());
+    // Several retry intervals later it was still sent only once, and again
+    // unchanged it is not sent either.
+    writer.publish(refused);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(session_puts(&fake, "a").len(), 1, "{:?}", calls(&fake));
+    assert!(!writer.unauthorized());
+
+    // Once it says something else it is tried again.
+    writer.publish(record("a", SessionState::Idle));
+    wait_until(|| fake.session("01H", "a").is_some()).await;
+    assert_eq!(state_of(&fake, "a").as_deref(), Some("idle"));
+
+    // The goodbye skips what the platform never took and still ends `b`.
+    writer.publish(SessionRecord {
+        workspace: String::new(),
+        ..record("c", SessionState::Working)
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    writer.stop().await;
+    assert_eq!(state_of(&fake, "b").as_deref(), Some("ended"));
+    assert!(fake.session("01H", "c").is_none());
+}
+
+#[tokio::test]
+async fn a_refused_list_goes_session_by_session() {
+    let (fake, client) = fake_platform().await;
+    let writer = RegistryWriter::start_with(client, machine(), true, quick());
+    writer.publish_all(vec![
+        daemon_record("a", SessionState::Ended),
+        SessionRecord {
+            workspace: String::new(),
+            ..daemon_record("bad", SessionState::Ended)
+        },
+        daemon_record("c", SessionState::Idle),
+    ]);
+    wait_until(|| fake.sessions("01H").len() == 2).await;
+    assert!(fake.session("01H", "a").is_some());
+    assert!(fake.session("01H", "c").is_some());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let lists = calls(&fake)
+        .iter()
+        .filter(|call| *call == "PUT /api/machines/01H/sessions")
+        .count();
+    assert_eq!(lists, 1, "the list is not sent again as it is");
+    assert_eq!(session_puts(&fake, "bad").len(), 1);
+    writer.stop().await;
+}
+
+#[tokio::test]
+async fn a_session_nothing_was_said_in_leaves_the_registry() {
+    let (fake, client) = fake_platform().await;
+    let writer = RegistryWriter::start_with(client, machine(), false, quick());
+    // A terminal session before its first message has no file to open
+    // again, so no `resume_argv`.
+    let empty = SessionRecord {
+        resume_argv: Vec::new(),
+        ..record("empty", SessionState::Idle)
+    };
+    writer.publish(empty);
+    writer.publish(record("said", SessionState::Working));
+    writer.publish(record("dropped", SessionState::Idle));
+    wait_until(|| fake.sessions("01H").len() == 3).await;
+
+    // Taken out on request.
+    writer.remove("dropped");
+    wait_until(|| fake.session("01H", "dropped").is_none()).await;
+
+    // At the goodbye the one that was used ends; the empty one goes.
+    writer.stop().await;
+    assert_eq!(state_of(&fake, "said").as_deref(), Some("ended"));
+    assert!(fake.session("01H", "empty").is_none());
+    assert_eq!(fake.sessions("01H").len(), 1);
+}
+
+#[tokio::test]
 async fn a_rejected_token_is_reported() {
     let (fake, client) = fake_platform().await;
     let writer = RegistryWriter::start_with(client, machine(), true, quick());
