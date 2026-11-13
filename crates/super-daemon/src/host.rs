@@ -457,10 +457,8 @@ impl SessionHost {
             attached_clients: hosted.attached(),
             model: Some(format!("{}/{}", model.provider, model.id)),
             thinking_level: Some(thinking.as_str().to_string()),
-            modified_at: std::fs::metadata(&hosted.file)
-                .and_then(|metadata| metadata.modified())
-                .map(rfc3339)
-                .unwrap_or_else(|_| rfc3339(SystemTime::now())),
+            modified_at: file_modified_at(&hosted.file)
+                .unwrap_or_else(|| rfc3339(SystemTime::now())),
         }
     }
 }
@@ -499,6 +497,15 @@ fn first_user_message(entries: &[SessionEntry]) -> Option<String> {
 
 fn rfc3339(time: SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+/// When a session's file was last written, as a summary's `modified_at`
+/// names it: the time of the session's newest entry.
+pub(crate) fn file_modified_at(file: &Path) -> Option<String> {
+    std::fs::metadata(file)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(rfc3339)
 }
 
 fn reason_label(reason: EndReason) -> &'static str {

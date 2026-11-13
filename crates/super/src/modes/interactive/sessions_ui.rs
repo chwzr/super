@@ -1,8 +1,8 @@
 //! `/sessions` in the full-screen TUI, in-process or attached: the picker
 //! from [`crate::sessions`] in place of the editor. A session on this
-//! device turns the TUI into the attached TUI on it, in place, as after
+//! machine turns the TUI into the attached TUI on it, in place, as after
 //! `/remote`; the session the TUI ran in-process stays saved, one it was
-//! attached to keeps running in the daemon. A session on another device is
+//! attached to keeps running in the daemon. A session on another machine is
 //! shown by the line-based front end ([`crate::attach`]), which takes over
 //! below the TUI's last frame.
 
@@ -16,7 +16,7 @@ use {
     crate::attach::Continuation,
     crate::session_link::Link,
     crate::sessions::{
-        BrowseOutcome, Choice, DeviceRef, DirectoryPicker, Listing, Outcome, SessionsPicker,
+        BrowseOutcome, Choice, DirectoryPicker, Listing, MachineRef, Outcome, SessionsPicker,
     },
     super_sdk::daemon::{DirectoryEntry, SessionSummary},
     tokio_util::sync::CancellationToken,
@@ -49,7 +49,7 @@ pub(super) struct Switch {
 pub(super) enum Next {
     /// It shows the session picked, attached to it in place.
     Here,
-    /// A session on another device: the line-based front end takes over.
+    /// A session on another machine: the line-based front end takes over.
     Leave(Box<Continuation>),
 }
 
@@ -76,7 +76,7 @@ pub(super) enum Event {
 #[cfg(unix)]
 pub(super) struct Directories {
     link: Link,
-    device: DeviceRef,
+    machine: MachineRef,
     path: String,
     entries: Result<Vec<DirectoryEntry>, String>,
 }
@@ -165,11 +165,8 @@ pub(super) fn on_event(app: &mut App, event: Event, session: &AgentSession) {
             Event::Loaded(loaded) => {
                 let (link, listing) = *loaded;
                 let now = chrono::Utc::now().timestamp_millis();
-                let sessions = SessionsPicker::new(
-                    crate::sessions::group(&listing, now),
-                    now,
-                    app.theme.clone(),
-                );
+                let sessions =
+                    SessionsPicker::new(crate::sessions::group(&listing), now, app.theme.clone());
                 app.sessions.open = Some(Open {
                     link: Some(link),
                     sessions,
@@ -180,7 +177,7 @@ pub(super) fn on_event(app: &mut App, event: Event, session: &AgentSession) {
             Event::Directories(answer) => {
                 let Directories {
                     link,
-                    device,
+                    machine,
                     path,
                     entries,
                 } = *answer;
@@ -191,7 +188,7 @@ pub(super) fn on_event(app: &mut App, event: Event, session: &AgentSession) {
                 open.link = Some(link);
                 match entries {
                     Ok(entries) => {
-                        open.browser = Some(DirectoryPicker::new(device, path, entries, theme));
+                        open.browser = Some(DirectoryPicker::new(machine, path, entries, theme));
                     }
                     Err(error) => open.note = Some(error),
                 }
@@ -202,9 +199,8 @@ pub(super) fn on_event(app: &mut App, event: Event, session: &AgentSession) {
                 match result {
                     Ok(session) => {
                         let place = match &choice {
-                            Choice::Session { device, .. } | Choice::NewSession { device, .. } => {
-                                device.name.clone()
-                            }
+                            Choice::Session { machine, .. }
+                            | Choice::NewSession { machine, .. } => machine.name.clone(),
                         };
                         app.sessions.open = None;
                         let saved = this
@@ -276,11 +272,11 @@ pub(super) fn handle_key(
                             Action::Nothing
                         }
                         BrowseOutcome::Open(path) => {
-                            Action::Request(Request::Browse(browser.device.clone(), path))
+                            Action::Request(Request::Browse(browser.machine.clone(), path))
                         }
                         BrowseOutcome::Use(cwd) => {
                             Action::Request(Request::Switch(Choice::NewSession {
-                                device: browser.device.clone(),
+                                machine: browser.machine.clone(),
                                 cwd,
                             }))
                         }
@@ -292,8 +288,8 @@ pub(super) fn handle_key(
                             open.note = Some(text);
                             Action::Nothing
                         }
-                        Outcome::Browse { device, path } => {
-                            Action::Request(Request::Browse(device, path))
+                        Outcome::Browse { machine, path } => {
+                            Action::Request(Request::Browse(machine, path))
                         }
                         Outcome::Pick(choice) => Action::Request(Request::Switch(choice)),
                     },
@@ -324,7 +320,7 @@ enum Action {
 
 #[cfg(unix)]
 enum Request {
-    Browse(DeviceRef, String),
+    Browse(MachineRef, String),
     Switch(Choice),
 }
 
@@ -341,14 +337,14 @@ fn send(app: &mut App, request: Request, command_tx: &mpsc::UnboundedSender<Comm
     app.command_cancel = Some(cancel);
     let tx = command_tx.clone();
     match request {
-        Request::Browse(device, path) => {
-            app.command_status = Some(format!("listing {path} on {}", device.name));
+        Request::Browse(machine, path) => {
+            app.command_status = Some(format!("listing {path} on {}", machine.name));
             tokio::spawn(async move {
-                let entries = crate::sessions::list_directories(&mut link, &device, &path).await;
+                let entries = crate::sessions::list_directories(&mut link, &machine, &path).await;
                 let _ = tx.send(CommandEvent::Sessions(Event::Directories(Box::new(
                     Directories {
                         link,
-                        device,
+                        machine,
                         path,
                         entries,
                     },
@@ -414,8 +410,8 @@ pub(super) fn take_switch(state: &mut State) -> Option<Switch> {
     state.switched.take()
 }
 
-/// Show the session a switch picked: one on this device in this TUI, in
-/// place; one on another device through the line-based front end.
+/// Show the session a switch picked: one on this machine in this TUI, in
+/// place; one on another machine through the line-based front end.
 #[cfg(unix)]
 pub(super) async fn carry_on(
     app: &mut App,
@@ -441,7 +437,7 @@ pub(super) async fn carry_on(
 }
 
 /// What the line-based front end carries on with after a switch to a
-/// session on another device: the link and the terminal's input.
+/// session on another machine: the link and the terminal's input.
 #[cfg(unix)]
 pub(super) struct HandedOver {
     continuation: Continuation,
@@ -613,8 +609,8 @@ mod tests {
                     models_file: Some(provider.catalog_path()),
                     no_context_files: true,
                 },
-                host_id: "01M".into(),
-                host_name: "mbp".into(),
+                machine_id: "01M".into(),
+                machine_name: "mbp".into(),
                 log_level: super_daemon::log::Level::Debug,
                 log_to_stderr: false,
                 sweep_interval: Duration::from_secs(3600),
@@ -683,19 +679,19 @@ mod tests {
             "/sessions is the picker's while attached too"
         );
 
-        // `/sessions` opens on its own link, listing this device's daemon
-        // (signed out here: no other devices).
+        // `/sessions` opens on its own link, listing this machine's daemon
+        // (signed out here: no other machines).
         let (picker_client, picker_events) = connect().await;
         let hello = picker_client.hello().clone();
         let sessions = picker_client.list_sessions(None).await.unwrap();
         let listing = Listing {
             local: Ok(crate::sessions::LocalListing {
-                host_id: hello.host_id.clone(),
-                host_name: hello.host_name.clone(),
+                machine_id: hello.machine_id.clone(),
+                machine_name: hello.machine_name.clone(),
                 sessions,
             }),
             registry: None,
-            local_host_id: Some(hello.host_id),
+            local_machine_id: Some(hello.machine_id),
             current: Some(first.session_id.clone()),
         };
         let link = Link::local(picker_client, picker_events);

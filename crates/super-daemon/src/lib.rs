@@ -35,8 +35,8 @@ use std::time::Duration;
 pub struct DaemonConfig {
     pub paths: DaemonPaths,
     pub host: HostConfig,
-    pub host_id: String,
-    pub host_name: String,
+    pub machine_id: String,
+    pub machine_name: String,
     pub log_level: log::Level,
     pub log_to_stderr: bool,
     /// How often the idle sweep runs.
@@ -100,8 +100,8 @@ pub async fn run(
     let host = host::SessionHost::new(config.host.clone());
     let info = DaemonInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        host_id: config.host_id.clone(),
-        host_name: config.host_name.clone(),
+        machine_id: config.machine_id.clone(),
+        machine_name: config.machine_name.clone(),
         platform: std::env::consts::OS.to_string(),
         socket_path: config.paths.socket.clone(),
         protocol_versions: config.protocol_versions,
@@ -122,9 +122,9 @@ pub async fn run(
         super_remote::credentials::configure_platform_url(Some(&presence_config.platform_url));
         presence::Presence::supervise(
             ctx.clone(),
-            super_remote::HostIdentity {
-                host_id: config.host_id.clone(),
-                name: config.host_name.clone(),
+            super_remote::MachineIdentity {
+                machine_id: config.machine_id.clone(),
+                name: config.machine_name.clone(),
                 platform: std::env::consts::OS.to_string(),
             },
             presence_config,

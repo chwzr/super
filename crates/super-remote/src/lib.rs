@@ -1,10 +1,11 @@
 //! Remote control for SUPER sessions.
 //!
 //! A signed-in `super` mirrors every RPC event of a session to an S2 stream,
-//! tails a second stream for RPC commands, and announces the session in a
-//! registry stream. Phones, desktops and the web read those streams through
-//! the SUPER platform. See `super-platform/docs/ARCHITECTURE.md` for the
-//! stream layout this crate implements.
+//! tails a second stream for RPC commands, and announces its machine and the
+//! session in the platform's registry. Phones, desktops and the web read the
+//! streams and the registry through the SUPER platform. See
+//! `super-platform/docs/ARCHITECTURE.md` for the stream layout and
+//! `super-platform/docs/API.md` for the registry endpoints this crate uses.
 //!
 //! Nothing in this crate runs unless something calls [`Remote::start`], so a
 //! signed-out `super` never touches the network.
@@ -14,8 +15,8 @@ pub mod controller;
 pub mod credentials;
 #[cfg(feature = "fake")]
 pub mod fake;
-pub mod host;
 mod log;
+pub mod machine;
 pub mod registry;
 pub mod s2;
 pub mod transport;
@@ -26,8 +27,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 pub use credentials::PlatformCredentials;
-pub use host::HostIdentity;
-pub use registry::{RegistryWriter, SessionRecord, SessionState};
+pub use machine::MachineIdentity;
+pub use registry::{RegistryClient, RegistryWriter, SessionRecord, SessionState};
 pub use s2::S2Client;
 pub use transport::{RemoteNotice, RemoteStatus, SessionTransport};
 
@@ -79,32 +80,39 @@ impl RemoteConfig {
 }
 
 /// Everything one process shares across its sessions: the platform
-/// configuration, the HTTP client and the host identity.
+/// configuration, the clients for the streams and the registry, and the
+/// machine identity.
 pub struct Remote {
     pub config: RemoteConfig,
-    pub host: HostIdentity,
+    pub machine: MachineIdentity,
     pub client: Arc<S2Client>,
+    pub registry: Arc<RegistryClient>,
     pub credentials: Arc<dyn RemoteCredentials>,
 }
 
 impl Remote {
-    /// Resolve the configuration and build the shared S2 client. Call this
+    /// Resolve the configuration and build the shared clients. Call this
     /// off the UI thread; it makes one HTTP request.
     pub async fn start(
         credentials: Arc<dyn RemoteCredentials>,
-        host: HostIdentity,
+        machine: MachineIdentity,
     ) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("super-remote/", env!("CARGO_PKG_VERSION")))
             .build()?;
         let config = RemoteConfig::fetch(&http, credentials.as_ref()).await?;
         log::line(format!(
-            "remote start: platform {} basin {} device {} host {} ({})",
+            "remote start: platform {} basin {} device {} machine {} ({})",
             credentials.platform_url(),
             config.s2.basin,
             config.device_id,
-            host.host_id,
-            host.name
+            machine.machine_id,
+            machine.name
+        ));
+        let registry = Arc::new(RegistryClient::new(
+            http.clone(),
+            credentials.platform_url(),
+            credentials.clone(),
         ));
         let client = Arc::new(S2Client::new(
             http,
@@ -113,15 +121,16 @@ impl Remote {
         ));
         Ok(Self {
             config,
-            host,
+            machine,
             client,
+            registry,
             credentials,
         })
     }
 
-    /// Stream names for one session on this host.
+    /// Stream names for one session on this machine.
     pub fn session_streams(&self, session_id: &str) -> transport::SessionStreams {
-        transport::SessionStreams::new(&self.host.host_id, session_id)
+        transport::SessionStreams::new(&self.machine.machine_id, session_id)
     }
 }
 

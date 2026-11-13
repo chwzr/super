@@ -1,6 +1,6 @@
 # The SUPER daemon
 
-`super daemon run` keeps every SUPER session on a device alive in one
+`super daemon run` keeps every SUPER session on a machine alive in one
 long-running process. Clients (the terminal, the macOS app, `super daemon
 status`) connect to it over a local Unix socket, attach to a session, and
 speak the RPC protocol from [rpc.md](rpc.md) to it. A session outlives the
@@ -26,7 +26,7 @@ an account works as it always did.
 
 Without `--socket` every command uses `SUPER_DAEMON_SOCKET` when it is set,
 else `~/.super/run/daemon.sock`; the lock sits beside a socket given either
-way. `SUPER_DAEMON_PROTOCOL_VERSIONS=2-3 super daemon run` makes a daemon
+way. `SUPER_DAEMON_PROTOCOL_VERSIONS=3-4 super daemon run` makes a daemon
 advertise another protocol range, to see what clients say to a newer or
 older daemon.
 
@@ -38,6 +38,7 @@ older daemon.
 | `~/.super/run/daemon.lock` | Exclusive lock with the daemon's pid inside. |
 | `~/.super/agent/logs/daemon.log` | Log, rotated at 5 MiB keeping `daemon.log.1`. `SUPER_LOG=daemon=debug` adds detail. Never contains tokens, prompts or record bodies. |
 | `~/.super/agent/sessions/` | The session files, shared with the terminal. |
+| `~/.super/agent/machine.json` | `{"machineId": "01J…", "name": "mbp", "platform": "macos"}`: which machine this is, created when the daemon or a signed-in `super` first starts and shared between them. `/remote name <name>` changes the name. When only `host.json`, the file of earlier versions, exists, its id is taken over once and `host.json` is left where it is. |
 | `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60, "attach": true}}`: minutes an idle, unattached session stays loaded (`0` keeps sessions loaded until stopped); whether `super` in a terminal attaches to the daemon when signed in. |
 | `~/.config/systemd/user/super-daemon.service` | Linux: the unit `super install` writes (`$XDG_CONFIG_HOME/systemd/user` when that is set). |
 
@@ -120,19 +121,22 @@ The first line must be `hello`; anything else is answered with an error and
 the connection closes.
 
 ```json
-{"id":"1","type":"hello","client":"tui","name":"Terminal","version":"0.0.38","protocolVersions":[1,1]}
-{"type":"response","id":"1","command":"hello","success":true,"data":{"protocolVersion":1,"daemonVersion":"0.0.41","hostId":"01J…","hostName":"mbp","platform":"macos","pid":4242,"startedAt":"2026-10-29T09:00:00Z"}}
+{"id":"1","type":"hello","client":"tui","name":"Terminal","version":"0.0.40","protocolVersions":[2,2]}
+{"type":"response","id":"1","command":"hello","success":true,"data":{"protocolVersion":2,"daemonVersion":"0.0.41","machineId":"01J…","machineName":"mbp","platform":"macos","pid":4242,"startedAt":"2026-10-29T09:00:00Z"}}
 ```
 
 `client` is `tui`, `cli`, `macos`, `ios` or `other`. `name` is what other
 clients see as the origin of your commands and approvals (`by: "Terminal"`).
 `protocolVersions` is `[min, max]`; the daemon answers with the highest
 version both sides speak. With no overlap the response fails with
-`"this SUPER daemon speaks protocol 2 to 3; this client speaks 1"` and
+`"this SUPER daemon speaks protocol 3 to 4; this client speaks 2"` and
 `data.protocolVersions` naming the daemon's range, then the connection closes.
 Additive changes (new commands, optional fields, events) never bump the
 version; a breaking change bumps it and the daemon keeps the previous version
-for one release.
+for one release. The version is 2. It names the machine, `machineId` and
+`machineName` where version 1 said `hostId` and `hostName`, and it is the
+exception to that rule: no daemon speaks version 1 any more, so the daemon
+and its clients are updated together.
 
 A connection is attached to at most one session. After `attach`, session
 commands (`prompt`, `get_state`, `get_entries`, `answer_approval`, ...) go to
@@ -145,7 +149,7 @@ connection.
 
 | Command | Payload | Response `data` |
 | --- | --- | --- |
-| `status` | | `daemonVersion`, `protocolVersions`, `hostId`, `hostName`, `platform`, `pid`, `startedAt`, `uptimeSeconds`, `hostedSessions`, `storedSessions`, `clients`, `socketPath`, `sessionDir` |
+| `status` | | `daemonVersion`, `protocolVersions`, `machineId`, `machineName`, `platform`, `pid`, `startedAt`, `uptimeSeconds`, `hostedSessions`, `storedSessions`, `clients`, `socketPath`, `sessionDir` |
 | `list_sessions` | `cwd?` | `sessions`: hosted and stored sessions, newest first |
 | `list_workspaces` | | `workspaces`: `{path, name, sessionCount, latestState, latestModifiedAt}` derived from the sessions' directories |
 | `list_directories` | `path` | `path`, `directories`: `{name, path}` for the subdirectories, hidden ones skipped |
@@ -245,7 +249,7 @@ session becomes a view of the daemon's:
 - `/session` names the daemon's session file and `/remote` reports the
   attachment: the daemon, not the terminal, keeps the session visible in the
   apps.
-- `/sessions` switches to any other session, on this device or another one
+- `/sessions` switches to any other session, on this machine or another one
   (below). `/new` starts a new session in the daemon and switches to it.
   `/resume`, `/fork`, `/clone`, `/tree`, `/import`, `/fast`, `/loop`,
   `/autoresearch`, `/jobs` and saved workflows work on a session in the
@@ -322,7 +326,7 @@ client names both ranges and the update that fixes it, read from how this
 `super` was installed:
 
 ```
-the SUPER daemon speaks protocol 2 to 3, this build speaks 1: run `brew upgrade chwzr/tap/super`
+the SUPER daemon speaks protocol 3 to 4, this build speaks 2: run `brew upgrade chwzr/tap/super`
 ```
 
 | This `super` is | The hint |
@@ -386,12 +390,12 @@ still control the terminal's own mirror of an in-process session.
 
 ### Switching sessions: `/sessions`
 
-`/sessions` lists every session the terminal can reach, grouped by device,
+`/sessions` lists every session the terminal can reach, grouped by machine,
 then by workspace, with the apps' status model:
 
 ```
 Sessions
-● mbp  this device
+● mbp  this machine
   super  /Users/felix/dev/super
 →   ◐ working         Fix the login bug  current · 2m
     ○ idle            Add tests for the parser  1h
@@ -403,44 +407,47 @@ Sessions
 ↑/↓ move · enter open · type to filter · esc close
 ```
 
-- This device comes first, its sessions from the daemon over the socket
-  (`list_sessions`). Signed in, other devices follow from the platform's
-  `registry` stream, online ones first: a device is online when anything
-  about it is at most 90 seconds old, as in the apps. A session is
-  `working`, `needs an answer` (blocked), `idle` or `ended` (not loaded);
-  on a device that is offline, a session that has not ended reads
-  `offline`, since its last state may be stale.
-- Typing filters by title, workspace and device; Enter opens the row under
+- This machine comes first, its sessions from the daemon over the socket
+  (`list_sessions`). Signed in, other machines follow from the platform's
+  registry, read with one `GET /api/registry`, online ones first. The
+  platform says which machines are online (it heard from them in the last
+  90 seconds) and which of them run a daemon; the terminal shows both as
+  the platform says them. A session is `working`, `needs an answer`
+  (blocked), `idle` or `ended` (not loaded); on a machine that is offline,
+  a session that has not ended reads `offline`, since its last state may be
+  stale. The time on a row is the session's last activity: `modifiedAt` on
+  this machine, `lastActivityAt` on another one.
+- Typing filters by title, workspace and machine; Enter opens the row under
   the cursor; Esc clears the filter, then closes.
-- A session on this device: the connection attaches to it and its last
+- A session on this machine: the connection attaches to it and its last
   messages are replayed. The previous session keeps running in the daemon.
   An ended session is loaded.
-- A session on another device: the terminal drives it through the platform
-  the way the apps do. Commands go to `sessions/{hostId}/{sessionId}/commands`
-  with `t`, `from` (this device), `name` (`Terminal on <host>`) and `exp`
+- A session on another machine: the terminal drives it through the platform
+  the way the apps do. Commands go to
+  `sessions/{machineId}/{sessionId}/commands` with `t`, `from` (the device
+  id of this terminal's sign-in), `name` (`Terminal on <machine>`) and `exp`
   headers; events and the answers come from its `events` stream and are
   rendered like a local session's. An ended session there is resumed first
-  with `resume_session` on `hosts/{hostId}/commands`, which needs a daemon on
-  that device. `/stop` stops it through its daemon; `/detach` stops
-  following it and leaves it running.
+  with `resume_session` on `machines/{machineId}/commands`, which needs a
+  daemon on that machine. `/stop` stops it through its daemon; `/detach`
+  stops following it and leaves it running.
 - `+ new session in <workspace>` starts a session in that directory
-  (`create_session`, over the socket or through `hosts/{hostId}/commands`).
-  `+ new workspace on <device>…` browses the device's directories with
-  `list_directories`, starting at the parent of its newest workspace (the
-  home directory on this device), and starts a session in the one chosen.
-  Both are offered for devices whose daemon answers. As in the apps, a
-  device runs a daemon when its newest host record says so, a host record
-  said so within the last six hours (a standalone `super` there writes host
-  records without the flag), or one of its session records says so.
+  (`create_session`, over the socket or through
+  `machines/{machineId}/commands`). `+ new workspace on <machine>…` browses
+  the machine's directories with `list_directories`, starting at the parent
+  of its newest workspace (the home directory on this machine), and starts
+  a session in the one chosen. Both are offered for this machine when its
+  daemon answers, and for another machine when the registry says that it is
+  online and runs a daemon.
 - When the daemon refuses the session picked (another process has its file
   open, say), the terminal stays attached to the session it showed.
 
 In the full-screen TUI, in-process or attached, `/sessions` looks the same,
-in place of the editor. Picking a session on this device turns the TUI into
+in place of the editor. Picking a session on this machine turns the TUI into
 the attached TUI on it, in place as after `/remote`, with its transcript: a
 session the TUI ran in-process stays saved (it is listed as ended and can
 be picked again), one it was attached to keeps running in the daemon. A
-session on another device is shown by the line-based front end, which
+session on another machine is shown by the line-based front end, which
 takes over below the TUI's last frame on the same terminal. Switching waits
 for no turn: while one runs it is refused.
 
@@ -485,31 +492,79 @@ approvals, `command_applied`, the connection and the session's end as
 While the user is signed in to the SUPER platform (and `remote.enabled` is
 not false), the daemon keeps a link to it, checked every 30 seconds:
 
-- `registry`: one `host` record when the link starts, a heartbeat every
-  30 seconds, and one `session` record per session the daemon knows, hosted
-  ones with their live state and stored ones as `ended`. Every record, the
-  host record included, is sent again every six hours. The host record
-  carries `"daemon": true`, so the apps know the daemon runs there before it
-  has a session; a standalone `super` leaves the field out. Daemon sessions
-  carry `"daemon": true` and `"resumeArgv": ["super", "--session", <file>]`.
+- The registry, which is rows in the platform's database, written over
+  HTTP with the sign-in's bearer token:
+  - `PUT /api/machines/{machineId}` with `{"name", "platform", "daemon":
+    true}` announces the machine when the link starts, before anything
+    else. `"daemon": true` lets the apps know that the daemon runs there
+    before it has a session.
+  - `PUT /api/machines/{machineId}/sessions` then carries the complete
+    list of the sessions the daemon knows, `{"sessions": [{"id", …}]}`,
+    hosted ones with their live state and stored ones as `ended`, in one
+    request. The platform creates or replaces every session in it and
+    removes this machine's daemon sessions that are not in it. The list
+    goes out again only when the daemon lost events of its own.
+  - `PUT /api/machines/{machineId}/sessions/{sessionId}` carries a session
+    whenever it changed. The daemon keeps the newest state per session and
+    tries a failed call again every 5 seconds.
+  - `DELETE /api/machines/{machineId}/sessions/{sessionId}` takes a session
+    out of the registry when it ends with nothing said in it (no first
+    message and no name): there is nothing of it to open again.
+  - `POST /api/machines/{machineId}/heartbeat` with `{"daemon": true}`
+    follows every 30 seconds, on its own timer, whatever else is being
+    sent. The platform lists a machine as online for 90 seconds after it
+    last heard from it. While the machine is online it lists it as running
+    a daemon for 90 seconds after the last announcement or heartbeat that
+    said so; a machine that is off keeps what it said last, so the apps
+    know that sessions can be started on it once it is back.
 
-  ```json
-  {"kind":"host","hostId":"01J…","name":"mbp","platform":"macos","deviceId":"…","daemon":true,"at":1761728400000}
+  A call the platform answers with 404 (it does not know the machine, or
+  the machine was removed there) is followed by a new announcement and the
+  complete list; a 401 stops the link like any rejected token. A session
+  the platform refuses for what it says (another 4xx) is not sent again
+  until it changes and holds up no other session; a list it refuses is
+  sent session by session instead. Nothing is sent again on a schedule:
+  the platform keeps a machine and its sessions until they are removed.
+
+  A session carries `workspace`, `cwd`, `state`, `blockedReason`, `model`,
+  `thinkingLevel`, `name`, `firstMessage`, `"daemon": true`, `"resumeArgv":
+  ["super", "--session", <file>]` and `lastActivityAt`: when something was
+  last said in it, RFC 3339 in UTC, which is its file's modification time
+  (the `modifiedAt` of `list_sessions`). A state that differs from the one
+  the platform has only in `lastActivityAt` is not sent, so the time moves
+  with the next change: when a turn ends, not while it runs.
+
+  ```
+  PUT /api/machines/01J…/sessions/a1b2c3d4
+  {"workspace":"/Users/felix/dev/super","cwd":"/Users/felix/dev/super","state":"idle",
+   "blockedReason":null,"model":"super/gpt-5","thinkingLevel":"medium","name":null,
+   "firstMessage":"Fix the login bug",
+   "resumeArgv":["super","--session","/Users/felix/.super/agent/sessions/…_a1b2c3d4.jsonl"],
+   "headless":false,"daemon":true,"lastActivityAt":"2026-11-12T16:00:12Z"}
   ```
 
-- `sessions/{hostId}/{sessionId}/{events,entries,commands}`: every hosted
-  session is mirrored exactly like a terminal session, from the moment it
-  loads until it unloads.
-- `hosts/{hostId}/commands`: controllers append daemon-level commands here
-  with the same headers as session commands (`t`, `from`, `name`, `exp`).
-  `status`, `list_sessions`, `list_workspaces`, `list_directories`,
+  When the link stops, every session that had not ended is sent once more
+  as `ended` (within three seconds); there is no goodbye for the machine,
+  which goes offline when its heartbeats stop. A `super` that runs a
+  session in-process writes the registry the same way for its one session:
+  the announcement and the heartbeats without `daemon`, the session with
+  `"daemon": false` and no complete list. When it exits, a session with
+  something said in it stays listed as `ended`, with the `resumeArgv` that
+  opens it again; one nothing was said in has no file and is removed.
+
+- `sessions/{machineId}/{sessionId}/{events,entries,commands}`: every
+  hosted session is mirrored exactly like a terminal session, from the
+  moment it loads until it unloads.
+- `machines/{machineId}/commands`: controllers append daemon-level commands
+  here with the same headers as session commands (`t`, `from`, `name`,
+  `exp`). `status`, `list_sessions`, `list_workspaces`, `list_directories`,
   `create_session`, `resume_session` and `stop_session` run exactly as over
   the socket; `hello`, `attach`, `detach` and `shutdown` answer
   `not available over the platform`. Expired commands are dropped and the
   cursor in `~/.super/agent/remote/cursors/` keeps a restarted daemon from
   running recent commands again.
-- `hosts/{hostId}/events`: the response to every host command (with its
-  `id`, also on a parse error) and every daemon-level event
+- `machines/{machineId}/events`: the response to every machine command
+  (with its `id`, also on a parse error) and every daemon-level event
   (`session_created`, `session_updated`, `session_ended`, `daemon_shutdown`).
 
 Signing out, or a token the platform rejects, stops the link; signing in

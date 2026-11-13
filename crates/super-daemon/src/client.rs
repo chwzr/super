@@ -647,8 +647,8 @@ fn placeholder_hello() -> HelloReply {
     HelloReply {
         protocol_version: 0,
         daemon_version: String::new(),
-        host_id: String::new(),
-        host_name: String::new(),
+        machine_id: String::new(),
+        machine_name: String::new(),
         platform: String::new(),
         pid: 0,
         started_at: String::new(),
@@ -683,7 +683,7 @@ mod tests {
                             "type": "response", "id": hello["id"], "command": "hello",
                             "success": true,
                             "data": {"protocolVersion": version, "daemonVersion": "9.9.9",
-                                     "hostId": "h", "hostName": "box", "platform": "macos",
+                                     "machineId": "h", "machineName": "box", "platform": "macos",
                                      "pid": 7, "startedAt": "2026-10-30T00:00:00Z"}
                         }),
                         Err(error) => serde_json::json!({
@@ -764,8 +764,8 @@ mod tests {
             DaemonClient::connect_or_start_with(&socket, &info(), Some(&service), START_WAIT)
                 .await
                 .expect("connected");
-        assert_eq!(client.protocol_version(), 1);
-        assert_eq!(client.hello().host_name, "box");
+        assert_eq!(client.protocol_version(), 2);
+        assert_eq!(client.hello().machine_name, "box");
         assert_eq!(service.starts.load(Ordering::SeqCst), 0);
     }
 
@@ -839,7 +839,7 @@ mod tests {
     async fn a_daemon_with_another_range_is_a_skew_error() {
         let dir = tempdir();
         let socket = socket_in(&dir);
-        let _daemon = fake_daemon(&socket, [2, 3]);
+        let _daemon = fake_daemon(&socket, [3, 4]);
         let service = FakeService::new(true);
         let error =
             DaemonClient::connect_or_start_with(&socket, &info(), Some(&service), START_WAIT)
@@ -849,12 +849,12 @@ mod tests {
         let ClientError::Skew(skew) = error else {
             panic!("expected a skew error, got {error}");
         };
-        assert_eq!(skew.daemon, [2, 3]);
-        assert_eq!(skew.client, [1, 1]);
+        assert_eq!(skew.daemon, [3, 4]);
+        assert_eq!(skew.client, [2, 2]);
         assert_eq!(skew.daemon_version.as_deref(), Some("9.9.9"));
         assert!(
             skew.to_string()
-                .starts_with("the SUPER daemon speaks protocol 2 to 3, this build speaks 1: "),
+                .starts_with("the SUPER daemon speaks protocol 3 to 4, this build speaks 2: "),
             "{skew}"
         );
         assert_eq!(

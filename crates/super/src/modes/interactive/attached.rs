@@ -861,7 +861,7 @@ pub(super) fn shell(
 }
 
 /// Stop showing the session and leave it running in the daemon, quietly:
-/// `/sessions` picked one on another device.
+/// `/sessions` picked one on another machine.
 pub(super) async fn detach(attached: Attached) {
     attached.remote.detach().await;
 }

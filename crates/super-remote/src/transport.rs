@@ -31,8 +31,8 @@ pub struct SessionStreams {
 }
 
 impl SessionStreams {
-    pub fn new(host_id: &str, session_id: &str) -> Self {
-        let base = format!("sessions/{host_id}/{session_id}");
+    pub fn new(machine_id: &str, session_id: &str) -> Self {
+        let base = format!("sessions/{machine_id}/{session_id}");
         Self {
             events: format!("{base}/events"),
             entries: format!("{base}/entries"),

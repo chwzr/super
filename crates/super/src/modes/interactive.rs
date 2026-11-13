@@ -142,7 +142,7 @@ struct App {
     remote_signed_in: bool,
     /// The picker question remote controllers may answer too.
     open_approval: Option<OpenApproval>,
-    /// What the last published registry record was built from.
+    /// What the session state last sent to the registry was built from.
     remote_record_key: Option<RemoteRecordKey>,
     /// Flags and settings allow mirroring; a sign-in turns it on.
     remote_allowed: bool,
@@ -1246,7 +1246,7 @@ pub async fn run_attached(args: &Args, target: crate::attach::Target) -> Result<
     continue_after(result, handed_over).await
 }
 
-/// `/sessions` switched to a session on another device: the line-based
+/// `/sessions` switched to a session on another machine: the line-based
 /// front end shows it from here on.
 async fn continue_after(result: Result<i32>, handed_over: sessions_ui::Slot) -> Result<i32> {
     match handed_over {
@@ -1663,7 +1663,7 @@ async fn run_with_hosts(
     spawn_platform_model_refresh(&command_tx);
 
     let mut stranded = None;
-    // `/sessions` picked a session on another device.
+    // `/sessions` picked a session on another machine.
     #[cfg(unix)]
     let mut leave = None;
     'main: loop {
@@ -6131,9 +6131,9 @@ fn run_remote_command(
                     remote.is_held(),
                     remote.is_starting(),
                 );
-                let host = remote
-                    .host()
-                    .map(|host| format!(" · host {} ({})", host.name, host.host_id))
+                let machine = remote
+                    .machine()
+                    .map(|machine| format!(" · machine {} ({})", machine.name, machine.machine_id))
                     .unwrap_or_default();
                 let basin = remote
                     .basin()
@@ -6144,7 +6144,7 @@ fn run_remote_command(
                     .map(|status| format!(" · {}", status.label()))
                     .unwrap_or_default();
                 app.cells
-                    .push(Cell::Notice(format!("{label}{state}{host}{basin}")));
+                    .push(Cell::Notice(format!("{label}{state}{machine}{basin}")));
             } else {
                 app.cells.push(Cell::Notice(
                     "Remote control is off for this session. /remote on to enable it.".into(),
@@ -6184,20 +6184,20 @@ fn run_remote_command(
                 app.cells
                     .push(Cell::Notice("usage: /remote name <name>".into()));
             } else {
-                let result = super_remote::HostIdentity::default_path()
+                let result = super_remote::MachineIdentity::default_path()
                     .ok_or_else(|| anyhow::anyhow!("no home directory"))
                     .and_then(|path| {
-                        let mut host = super_remote::HostIdentity::load_or_create(&path)?;
-                        host.rename(value, &path)?;
-                        Ok(host.name)
+                        let mut machine = super_remote::MachineIdentity::load_or_create(&path)?;
+                        machine.rename(value, &path)?;
+                        Ok(machine.name)
                     });
                 match result {
                     Ok(name) => app.cells.push(Cell::Notice(format!(
-                        "Host renamed to {name}. New sessions announce the new name."
+                        "Machine renamed to {name}. New sessions announce the new name."
                     ))),
-                    Err(error) => app
-                        .cells
-                        .push(Cell::Error(format!("could not rename host: {error:#}"))),
+                    Err(error) => app.cells.push(Cell::Error(format!(
+                        "could not rename the machine: {error:#}"
+                    ))),
                 }
             }
         }

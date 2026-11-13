@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use super_remote::RemoteStatus;
-use super_remote::fake::{FakeS2, TestCredentials, now_ms, serve};
+use super_remote::fake::{FakePlatform, TestCredentials, now_ms, serve};
 use super_remote::s2::S2Client;
 use super_remote::transport::{RemoteNotice, SessionStreams, SessionTransport, TransportOptions};
 use super_sdk::mock::{MockProvider, MockScript};
@@ -46,7 +46,7 @@ async fn wait_until(mut check: impl FnMut() -> bool) {
 async fn a_restarted_transport_does_not_execute_applied_commands_again() {
     let directory = tempfile::tempdir().unwrap();
     let cursors = tempfile::tempdir().unwrap();
-    let fake = Arc::new(FakeS2::default());
+    let fake = Arc::new(FakePlatform::default());
     let base_url = serve(fake.clone()).await;
     let (_provider, session) = session_with(directory.path(), MockScript::text("Hello")).await;
     let client = Arc::new(S2Client::new(
@@ -54,13 +54,13 @@ async fn a_restarted_transport_does_not_execute_applied_commands_again() {
         base_url,
         Arc::new(TestCredentials),
     ));
-    let streams = SessionStreams::new("host1", "sess1");
+    let streams = SessionStreams::new("machine1", "sess1");
     let options = TransportOptions {
         linger: Duration::from_millis(5),
         cursor_dir: Some(cursors.path().to_path_buf()),
         ..TransportOptions::default()
     };
-    let responses = |fake: &FakeS2| -> Vec<String> {
+    let responses = |fake: &FakePlatform| -> Vec<String> {
         fake.records(&streams.events)
             .iter()
             .filter(|record| {
@@ -134,7 +134,7 @@ async fn a_restarted_transport_does_not_execute_applied_commands_again() {
 #[tokio::test]
 async fn events_entries_and_commands_flow_through_the_streams() {
     let directory = tempfile::tempdir().unwrap();
-    let fake = Arc::new(FakeS2::default());
+    let fake = Arc::new(FakePlatform::default());
     let base_url = serve(fake.clone()).await;
     let (_provider, session) =
         session_with(directory.path(), MockScript::text("Hello from the mock")).await;
@@ -143,7 +143,7 @@ async fn events_entries_and_commands_flow_through_the_streams() {
         base_url,
         Arc::new(TestCredentials),
     ));
-    let streams = SessionStreams::new("host1", "sess1");
+    let streams = SessionStreams::new("machine1", "sess1");
     let notices: Arc<Mutex<Vec<RemoteNotice>>> = Default::default();
     let sink = notices.clone();
     let transport = SessionTransport::start(
@@ -277,7 +277,7 @@ async fn events_entries_and_commands_flow_through_the_streams() {
 #[tokio::test]
 async fn shell_can_be_refused_by_policy() {
     let directory = tempfile::tempdir().unwrap();
-    let fake = Arc::new(FakeS2::default());
+    let fake = Arc::new(FakePlatform::default());
     let base_url = serve(fake.clone()).await;
     let (_provider, session) = session_with(directory.path(), MockScript::text("unused")).await;
     let client = Arc::new(S2Client::new(
@@ -285,7 +285,7 @@ async fn shell_can_be_refused_by_policy() {
         base_url,
         Arc::new(TestCredentials),
     ));
-    let streams = SessionStreams::new("host1", "sess2");
+    let streams = SessionStreams::new("machine1", "sess2");
     let notices: Arc<Mutex<Vec<RemoteNotice>>> = Default::default();
     let sink = notices.clone();
     let transport = SessionTransport::start(

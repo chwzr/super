@@ -701,7 +701,7 @@ and events as JSONL RPC. All connected clients share one SUPER session.
 
 ### The daemon
 
-`super daemon run` hosts every session on the device in one long-running
+`super daemon run` hosts every session on the machine in one long-running
 process and serves them over `~/.super/run/daemon.sock`, so the terminal and
 the SUPER app can attach to the same session and a session outlives the
 client that started it. `super daemon status` and `super daemon stop` talk to
@@ -746,7 +746,7 @@ in one notice.
 - `SUPER_LOG=remote` writes transport diagnostics to
   `~/.super/agent/logs/remote.log` without tokens or message bodies.
 
-The machine identity lives in `~/.super/agent/host.json`.
+The machine identity lives in `~/.super/agent/machine.json`.
 
 ## Performance
 

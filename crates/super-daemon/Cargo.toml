@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The SUPER daemon: hosts coding-agent sessions on a device and serves them over a local socket"
+description = "The SUPER daemon: hosts coding-agent sessions on a machine and serves them over a local socket"
 
 [lints]
 workspace = true

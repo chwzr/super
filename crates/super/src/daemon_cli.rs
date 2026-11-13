@@ -39,18 +39,18 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
     use std::io::IsTerminal as _;
     use std::time::Duration;
     use super_daemon::host::HostConfig;
-    use super_remote::HostIdentity;
+    use super_remote::MachineIdentity;
 
     let paths = paths(socket)?;
     let home = dirs::home_dir().context("no home directory")?;
     let settings = super_coding::Settings::load(&home, false);
     let session_dir = crate::setup::session_dir(args, &settings);
-    let host = match HostIdentity::default_path() {
-        Some(path) => HostIdentity::load_or_create(&path)?,
-        None => HostIdentity {
-            host_id: "local".into(),
+    let machine = match MachineIdentity::default_path() {
+        Some(path) => MachineIdentity::load_or_create(&path)?,
+        None => MachineIdentity {
+            machine_id: "local".into(),
             name: "local".into(),
-            platform: super_remote::host::platform_name().into(),
+            platform: super_remote::machine::platform_name().into(),
         },
     };
     let presence = settings
@@ -60,7 +60,7 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
             platform_url: super_remote::credentials::resolve_platform_url(
                 settings.platform.url.as_deref(),
             ),
-            device_name: host.name.clone(),
+            device_name: machine.name.clone(),
             check_interval: Duration::from_secs(30),
             link: super_daemon::presence::LinkConfig {
                 allow_shell: settings.remote.shell_allowed(),
@@ -75,8 +75,8 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
             models_file: std::env::var_os("SUPER_MODELS_FILE").map(PathBuf::from),
             no_context_files: args.no_context_files,
         },
-        host_id: host.host_id,
-        host_name: host.name,
+        machine_id: machine.machine_id,
+        machine_name: machine.name,
         log_level: super_daemon::log::Level::from_env(),
         log_to_stderr: std::io::stderr().is_terminal(),
         sweep_interval: Duration::from_secs(60),
@@ -86,7 +86,7 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
     super_daemon::run(config, tokio_util::sync::CancellationToken::new()).await
 }
 
-/// Lets a test daemon advertise another protocol range (`2-3`), to see what
+/// Lets a test daemon advertise another protocol range (`3-4`), to see what
 /// a client says to a newer or older daemon.
 #[cfg(unix)]
 const PROTOCOL_ENV: &str = "SUPER_DAEMON_PROTOCOL_VERSIONS";
@@ -103,7 +103,7 @@ fn advertised_protocol(value: Option<&str>) -> Result<[u32; 2]> {
     };
     match range {
         Some([low, high]) if low <= high => Ok([low, high]),
-        _ => anyhow::bail!("{PROTOCOL_ENV} must be a version or a range like 2-3, not '{value}'"),
+        _ => anyhow::bail!("{PROTOCOL_ENV} must be a version or a range like 3-4, not '{value}'"),
     }
 }
 

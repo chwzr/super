@@ -1,53 +1,54 @@
-//! `/sessions`: every session this terminal can reach, grouped by device and
+//! `/sessions`: every session this terminal can reach, grouped by machine and
 //! workspace with the apps' status model, and the switch to the one picked.
 //!
-//! Sessions on this device come from the local daemon over its socket;
-//! signed in, sessions on other devices come from the platform registry.
+//! Sessions on this machine come from the local daemon over its socket;
+//! signed in, sessions on other machines come from the platform registry.
 //! The picker is keyboard only and looks like the other pickers of the
-//! terminal. Picking a session on this device attaches the daemon connection
-//! to it (the previous session keeps running); picking one on another device
+//! terminal. Picking a session on this machine attaches the daemon connection
+//! to it (the previous session keeps running); picking one on another machine
 //! drives it through the platform with the same commands and rendering
 //! ([`crate::session_link`]). The picker also starts a new session in a
-//! workspace, or in a directory of a device ("new workspace on device…").
+//! workspace, or in a directory of a machine ("new workspace on machine…").
 
 use std::collections::BTreeMap;
-use super_remote::registry::{RegistrySession, RegistryView};
+use super_remote::registry::{Registry, RegistrySession};
 use super_sdk::daemon::{DirectoryEntry, SessionState, SessionSummary};
 use super_tui::text::{display_width, fit_to_width, truncate_to_width};
 use super_tui::{Key, KeyEvent, Theme};
 
-/// This device's daemon and what it lists.
+/// This machine's daemon and what it lists.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LocalListing {
-    pub host_id: String,
-    pub host_name: String,
+    pub machine_id: String,
+    pub machine_name: String,
     pub sessions: Vec<SessionSummary>,
 }
 
 /// Everything `/sessions` knows when it opens.
 #[derive(Debug, Clone)]
 pub(crate) struct Listing {
-    /// This device's daemon, or why there is none.
+    /// This machine's daemon, or why there is none.
     pub local: Result<LocalListing, String>,
-    /// Other devices from the platform registry; `None` when signed out.
-    pub registry: Option<Result<RegistryView, String>>,
-    /// This device's host id, so its registry records are not listed twice.
-    pub local_host_id: Option<String>,
+    /// Other machines from the platform registry; `None` when signed out.
+    pub registry: Option<Result<Registry, String>>,
+    /// This machine's machine id, so the registry's copy of it is not
+    /// listed twice.
+    pub local_machine_id: Option<String>,
     /// The session this terminal shows.
     pub current: Option<String>,
 }
 
-/// A device with its workspaces, as the picker lists it.
+/// A machine with its workspaces, as the picker lists it.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Device {
-    pub host_id: String,
+pub(crate) struct Machine {
+    pub machine_id: String,
     pub name: String,
     pub platform: String,
     pub local: bool,
     pub online: bool,
     /// A SUPER daemon answers there: new sessions can start on it.
     pub can_start: bool,
-    /// Why the device shows nothing, when that needs saying.
+    /// Why the machine shows nothing, when that needs saying.
     pub note: Option<String>,
     pub workspaces: Vec<Workspace>,
 }
@@ -102,9 +103,9 @@ pub(crate) fn status(state: SessionState) -> Status {
 }
 
 /// A session's status as the apps show it: an ended session stays ended,
-/// any other state is only current while its device is online.
-pub(crate) fn session_status(state: SessionState, device_online: bool) -> Status {
-    if state != SessionState::Ended && !device_online {
+/// any other state is only current while its machine is online.
+pub(crate) fn session_status(state: SessionState, machine_online: bool) -> Status {
+    if state != SessionState::Ended && !machine_online {
         return Status {
             label: "offline",
             mark: "○",
@@ -114,7 +115,7 @@ pub(crate) fn session_status(state: SessionState, device_online: bool) -> Status
     status(state)
 }
 
-/// A device's presence dot, label and colour.
+/// A machine's presence dot, label and colour.
 pub(crate) fn presence(online: bool) -> Status {
     if online {
         Status {
@@ -171,7 +172,8 @@ pub(crate) fn ago(then: i64, now: i64) -> String {
     }
 }
 
-/// A registry record in the shape the daemon lists sessions.
+/// A session of the registry in the shape the daemon lists sessions. Its
+/// time is the time of its last activity.
 pub(crate) fn summary_from_record(session: &RegistrySession) -> SessionSummary {
     let record = &session.record;
     let session_file = record
@@ -195,9 +197,7 @@ pub(crate) fn summary_from_record(session: &RegistrySession) -> SessionSummary {
         attached_clients: 0,
         model: non_empty(&record.model),
         thinking_level: non_empty(&record.thinking_level),
-        modified_at: chrono::DateTime::from_timestamp_millis(session.at)
-            .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-            .unwrap_or_default(),
+        modified_at: record.last_activity_at.clone().unwrap_or_default(),
     }
 }
 
@@ -259,16 +259,16 @@ fn workspaces(entries: Vec<Entry>) -> Vec<Workspace> {
     workspaces
 }
 
-/// Devices → workspaces → sessions. This device comes first; other devices
+/// Machines → workspaces → sessions. This machine comes first; other machines
 /// follow, online ones first, then by name.
-pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
+pub(crate) fn group(listing: &Listing) -> Vec<Machine> {
     let current = listing.current.as_deref();
-    let mut devices = Vec::new();
-    let local_host = match &listing.local {
+    let mut machines = Vec::new();
+    let local_machine = match &listing.local {
         Ok(local) => {
-            devices.push(Device {
-                host_id: local.host_id.clone(),
-                name: local.host_name.clone(),
+            machines.push(Machine {
+                machine_id: local.machine_id.clone(),
+                name: local.machine_name.clone(),
                 platform: String::new(),
                 local: true,
                 online: true,
@@ -282,12 +282,12 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
                         .collect(),
                 ),
             });
-            Some(local.host_id.clone())
+            Some(local.machine_id.clone())
         }
         Err(reason) => {
-            devices.push(Device {
-                host_id: listing.local_host_id.clone().unwrap_or_default(),
-                name: "this device".into(),
+            machines.push(Machine {
+                machine_id: listing.local_machine_id.clone().unwrap_or_default(),
+                name: "this machine".into(),
                 platform: String::new(),
                 local: true,
                 online: false,
@@ -300,9 +300,9 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
     };
     match &listing.registry {
         None => {}
-        Some(Err(reason)) => devices.push(Device {
-            host_id: String::new(),
-            name: "other devices".into(),
+        Some(Err(reason)) => machines.push(Machine {
+            machine_id: String::new(),
+            name: "other machines".into(),
             platform: String::new(),
             local: false,
             online: false,
@@ -310,28 +310,33 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
             note: Some(reason.clone()),
             workspaces: Vec::new(),
         }),
-        Some(Ok(view)) => {
-            let mut others: Vec<Device> = view
-                .hosts()
-                .filter(|host| {
-                    Some(&host.host_id) != local_host.as_ref()
-                        && Some(&host.host_id) != listing.local_host_id.as_ref()
+        Some(Ok(registry)) => {
+            let mut others: Vec<Machine> = registry
+                .machines
+                .iter()
+                .filter(|machine| {
+                    Some(&machine.id) != local_machine.as_ref()
+                        && Some(&machine.id) != listing.local_machine_id.as_ref()
                 })
-                .filter_map(|host| {
-                    let online = view.is_online(&host.host_id, now);
-                    let entries: Vec<Entry> = view
-                        .sessions()
-                        .filter(|session| session.host_id == host.host_id)
+                .filter_map(|machine| {
+                    let entries: Vec<Entry> = registry
+                        .sessions_on(&machine.id)
                         .map(|session| entry(summary_from_record(session), current))
                         .collect();
-                    let can_start = online && view.runs_daemon(&host.host_id, now);
-                    // A device with nothing to show and nothing to start is noise.
-                    (!entries.is_empty() || can_start).then(|| Device {
-                        host_id: host.host_id.clone(),
-                        name: host.name.clone(),
-                        platform: host.platform.clone(),
+                    // The platform says which machines are online and which
+                    // of them run a daemon.
+                    let can_start = machine.online && machine.daemon;
+                    // A machine with nothing to show and nothing to start is noise.
+                    (!entries.is_empty() || can_start).then(|| Machine {
+                        machine_id: machine.id.clone(),
+                        name: if machine.name.is_empty() {
+                            machine.id.clone()
+                        } else {
+                            machine.name.clone()
+                        },
+                        platform: machine.platform.clone(),
                         local: false,
-                        online,
+                        online: machine.online,
                         can_start,
                         note: None,
                         workspaces: workspaces(entries),
@@ -342,32 +347,32 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
                 b.online
                     .cmp(&a.online)
                     .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                    .then(a.host_id.cmp(&b.host_id))
+                    .then(a.machine_id.cmp(&b.machine_id))
             });
-            devices.extend(others);
+            machines.extend(others);
         }
     }
-    devices
+    machines
 }
 
-/// Where a device is reached: over the local socket or through the platform.
+/// Where a machine is reached: over the local socket or through the platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DeviceRef {
-    pub host_id: String,
+pub(crate) struct MachineRef {
+    pub machine_id: String,
     pub name: String,
     pub local: bool,
     pub online: bool,
     pub can_start: bool,
 }
 
-impl DeviceRef {
-    fn of(device: &Device) -> Self {
+impl MachineRef {
+    fn of(machine: &Machine) -> Self {
         Self {
-            host_id: device.host_id.clone(),
-            name: device.name.clone(),
-            local: device.local,
-            online: device.online,
-            can_start: device.can_start,
+            machine_id: machine.machine_id.clone(),
+            name: machine.name.clone(),
+            local: machine.local,
+            online: machine.online,
+            can_start: machine.can_start,
         }
     }
 }
@@ -376,18 +381,18 @@ impl DeviceRef {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Choice {
     Session {
-        device: DeviceRef,
+        machine: MachineRef,
         session: Box<SessionSummary>,
     },
     NewSession {
-        device: DeviceRef,
+        machine: MachineRef,
         cwd: String,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
-    Device(usize),
+    Machine(usize),
     Workspace(usize, usize),
     Session(usize, usize, usize),
     NewSession(usize, usize),
@@ -409,19 +414,19 @@ pub(crate) enum Outcome {
     Stay,
     Close,
     Pick(Choice),
-    /// Show the directories of `device` under `path`.
+    /// Show the directories of `machine` under `path`.
     Browse {
-        device: DeviceRef,
+        machine: MachineRef,
         path: String,
     },
     /// Tell the user why nothing happened.
     Say(String),
 }
 
-/// The session picker: device and workspace headers, sessions and the
+/// The session picker: machine and workspace headers, sessions and the
 /// "new session" and "new workspace" actions, filtered by what is typed.
 pub(crate) struct SessionsPicker {
-    devices: Vec<Device>,
+    machines: Vec<Machine>,
     now: i64,
     filter: String,
     rows: Vec<Row>,
@@ -431,9 +436,9 @@ pub(crate) struct SessionsPicker {
 }
 
 impl SessionsPicker {
-    pub fn new(devices: Vec<Device>, now: i64, theme: Theme) -> Self {
+    pub fn new(machines: Vec<Machine>, now: i64, theme: Theme) -> Self {
         let mut picker = Self {
-            devices,
+            machines,
             now,
             filter: String::new(),
             rows: Vec::new(),
@@ -444,7 +449,7 @@ impl SessionsPicker {
         picker.rebuild();
         // Start on the current session, else on the first row to pick.
         let current = picker.rows.iter().position(|row| match row {
-            Row::Session(d, w, s) => picker.devices[*d].workspaces[*w].sessions[*s].current,
+            Row::Session(d, w, s) => picker.machines[*d].workspaces[*w].sessions[*s].current,
             _ => false,
         });
         picker.selected = current
@@ -455,20 +460,20 @@ impl SessionsPicker {
 
     fn label(&self, row: Row) -> String {
         match row {
-            Row::Device(d) => self.devices[d].name.clone(),
-            Row::Workspace(d, w) => self.devices[d].workspaces[w].name.clone(),
+            Row::Machine(d) => self.machines[d].name.clone(),
+            Row::Workspace(d, w) => self.machines[d].workspaces[w].name.clone(),
             Row::Session(d, w, s) => {
-                let workspace = &self.devices[d].workspaces[w];
+                let workspace = &self.machines[d].workspaces[w];
                 format!(
                     "{} {} {}",
-                    workspace.sessions[s].title, workspace.name, self.devices[d].name
+                    workspace.sessions[s].title, workspace.name, self.machines[d].name
                 )
             }
             Row::NewSession(d, w) => format!(
                 "new session in {} {}",
-                self.devices[d].workspaces[w].name, self.devices[d].name
+                self.machines[d].workspaces[w].name, self.machines[d].name
             ),
-            Row::NewWorkspace(d) => format!("new workspace on {}", self.devices[d].name),
+            Row::NewWorkspace(d) => format!("new workspace on {}", self.machines[d].name),
         }
     }
 
@@ -482,28 +487,28 @@ impl SessionsPicker {
 
     fn rebuild(&mut self) {
         let mut rows = Vec::new();
-        for (d, device) in self.devices.iter().enumerate() {
-            let mut device_rows = Vec::new();
-            for (w, workspace) in device.workspaces.iter().enumerate() {
+        for (d, machine) in self.machines.iter().enumerate() {
+            let mut machine_rows = Vec::new();
+            for (w, workspace) in machine.workspaces.iter().enumerate() {
                 let mut workspace_rows: Vec<Row> = (0..workspace.sessions.len())
                     .map(|s| Row::Session(d, w, s))
                     .collect();
-                if device.can_start {
+                if machine.can_start {
                     workspace_rows.push(Row::NewSession(d, w));
                 }
                 workspace_rows.retain(|row| self.matches(*row));
                 if !workspace_rows.is_empty() {
-                    device_rows.push(Row::Workspace(d, w));
-                    device_rows.extend(workspace_rows);
+                    machine_rows.push(Row::Workspace(d, w));
+                    machine_rows.extend(workspace_rows);
                 }
             }
-            if device.can_start && self.matches(Row::NewWorkspace(d)) {
-                device_rows.push(Row::NewWorkspace(d));
+            if machine.can_start && self.matches(Row::NewWorkspace(d)) {
+                machine_rows.push(Row::NewWorkspace(d));
             }
-            // A device stays listed without a filter, so its state shows.
-            if !device_rows.is_empty() || self.filter.is_empty() {
-                rows.push(Row::Device(d));
-                rows.extend(device_rows);
+            // A machine stays listed without a filter, so its state shows.
+            if !machine_rows.is_empty() || self.filter.is_empty() {
+                rows.push(Row::Machine(d));
+                rows.extend(machine_rows);
             }
         }
         self.rows = rows;
@@ -571,27 +576,27 @@ impl SessionsPicker {
         };
         match row {
             Row::Session(d, w, s) => {
-                let device = &self.devices[d];
-                let entry = &device.workspaces[w].sessions[s];
+                let machine = &self.machines[d];
+                let entry = &machine.workspaces[w].sessions[s];
                 if entry.current {
                     return Outcome::Close;
                 }
-                if !device.local && !device.online {
-                    return Outcome::Say(format!("{} is offline", device.name));
+                if !machine.local && !machine.online {
+                    return Outcome::Say(format!("{} is offline", machine.name));
                 }
                 Outcome::Pick(Choice::Session {
-                    device: DeviceRef::of(device),
+                    machine: MachineRef::of(machine),
                     session: Box::new(entry.summary.clone()),
                 })
             }
             Row::NewSession(d, w) => Outcome::Pick(Choice::NewSession {
-                device: DeviceRef::of(&self.devices[d]),
-                cwd: self.devices[d].workspaces[w].path.clone(),
+                machine: MachineRef::of(&self.machines[d]),
+                cwd: self.machines[d].workspaces[w].path.clone(),
             }),
             Row::NewWorkspace(d) => {
-                let device = &self.devices[d];
-                // Start where the device's newest workspace lives.
-                let path = device
+                let machine = &self.machines[d];
+                // Start where the machine's newest workspace lives.
+                let path = machine
                     .workspaces
                     .first()
                     .and_then(|workspace| {
@@ -600,14 +605,14 @@ impl SessionsPicker {
                             .map(|parent| parent.display().to_string())
                     })
                     .or_else(|| {
-                        device
+                        machine
                             .local
                             .then(|| dirs::home_dir().map(|home| home.display().to_string()))
                             .flatten()
                     })
                     .unwrap_or_else(|| "/".into());
                 Outcome::Browse {
-                    device: DeviceRef::of(device),
+                    machine: MachineRef::of(machine),
                     path,
                 }
             }
@@ -648,27 +653,27 @@ impl SessionsPicker {
         let selected = index == self.selected && row.selectable();
         let marker = if selected { "→ " } else { "  " };
         let line = match row {
-            Row::Device(d) => {
-                let device = &self.devices[d];
-                let dot = presence(device.online || device.local && device.note.is_none());
+            Row::Machine(d) => {
+                let machine = &self.machines[d];
+                let dot = presence(machine.online || machine.local && machine.note.is_none());
                 let mut detail = Vec::new();
-                if device.local {
-                    detail.push("this device".to_string());
+                if machine.local {
+                    detail.push("this machine".to_string());
                 } else {
                     detail.push(dot.label.to_string());
                 }
-                if let Some(note) = &device.note {
+                if let Some(note) = &machine.note {
                     detail.push(note.clone());
                 }
                 format!(
                     "{} {}  {}",
                     theme.fg(dot.token, dot.mark),
-                    theme.bold(&device.name),
+                    theme.bold(&machine.name),
                     theme.fg("muted", &detail.join(" · "))
                 )
             }
             Row::Workspace(d, w) => {
-                let workspace = &self.devices[d].workspaces[w];
+                let workspace = &self.machines[d].workspaces[w];
                 format!(
                     "  {}  {}",
                     theme.bold(&workspace.name),
@@ -676,9 +681,9 @@ impl SessionsPicker {
                 )
             }
             Row::Session(d, w, s) => {
-                let device = &self.devices[d];
-                let entry = &device.workspaces[w].sessions[s];
-                let state = session_status(entry.summary.state, device.online || device.local);
+                let machine = &self.machines[d];
+                let entry = &machine.workspaces[w].sessions[s];
+                let state = session_status(entry.summary.state, machine.online || machine.local);
                 let mut detail = Vec::new();
                 if entry.current {
                     detail.push("current".to_string());
@@ -702,14 +707,14 @@ impl SessionsPicker {
                 "{marker}  {}",
                 theme.fg(
                     "accent",
-                    &format!("+ new session in {}", self.devices[d].workspaces[w].name)
+                    &format!("+ new session in {}", self.machines[d].workspaces[w].name)
                 )
             ),
             Row::NewWorkspace(d) => format!(
                 "{marker}{}",
                 theme.fg(
                     "accent",
-                    &format!("+ new workspace on {}…", self.devices[d].name)
+                    &format!("+ new workspace on {}…", self.machines[d].name)
                 )
             ),
         };
@@ -742,10 +747,10 @@ pub(crate) enum BrowseOutcome {
     Use(String),
 }
 
-/// "New workspace on device…": a directory of the device, its
+/// "New workspace on machine…": a directory of the machine, its
 /// subdirectories, and "start a session here".
 pub(crate) struct DirectoryPicker {
-    pub device: DeviceRef,
+    pub machine: MachineRef,
     path: String,
     entries: Vec<DirectoryEntry>,
     filter: String,
@@ -756,13 +761,13 @@ pub(crate) struct DirectoryPicker {
 
 impl DirectoryPicker {
     pub fn new(
-        device: DeviceRef,
+        machine: MachineRef,
         path: String,
         entries: Vec<DirectoryEntry>,
         theme: Theme,
     ) -> Self {
         Self {
-            device,
+            machine,
             path,
             entries,
             filter: String::new(),
@@ -838,7 +843,7 @@ impl DirectoryPicker {
         let mut lines = vec![
             theme.fg(
                 "accent",
-                &theme.bold(&format!("New workspace on {}", self.device.name)),
+                &theme.bold(&format!("New workspace on {}", self.machine.name)),
             ),
             theme.fg("muted", &self.path),
         ];
@@ -896,32 +901,29 @@ mod daemon {
     use super_sdk::daemon::DaemonCommand;
 
     /// How long reading the platform registry may take before `/sessions`
-    /// shows this device alone.
+    /// shows this machine alone.
     const REGISTRY_WAIT: Duration = Duration::from_secs(8);
 
-    /// Everything the picker lists: this device's daemon over the link, other
-    /// devices from the registry when signed in. Connects to the platform on
+    /// Everything the picker lists: this machine's daemon over the link, other
+    /// machines from the registry when signed in. Connects to the platform on
     /// first use and keeps that connection in the link.
     pub(crate) async fn load(link: &mut Link, current: Option<&str>) -> Listing {
         let local = match link.daemon() {
             Some(client) => local_listing(client).await,
-            None => Err("no SUPER daemon is running on this device".into()),
+            None => Err("no SUPER daemon is running on this machine".into()),
         };
         let registry = if crate::remote::signed_in() {
             // A platform out of reach must not keep the picker from opening.
-            let read = tokio::time::timeout(REGISTRY_WAIT, async {
-                match link.platform_or_connect().await {
-                    Ok(platform) => {
-                        super_remote::registry::read_registry(&platform.client, REGISTRY_WAIT)
-                            .await
-                            .map_err(|error| {
-                                format!("could not read the platform registry: {error}")
-                            })
+            let read =
+                tokio::time::timeout(REGISTRY_WAIT, async {
+                    match link.platform_or_connect().await {
+                        Ok(platform) => platform.registry.read().await.map_err(|error| {
+                            format!("could not read the platform registry: {error}")
+                        }),
+                        Err(error) => Err(format!("could not reach the platform: {error}")),
                     }
-                    Err(error) => Err(format!("could not reach the platform: {error}")),
-                }
-            })
-            .await;
+                })
+                .await;
             Some(read.unwrap_or_else(|_| {
                 Err(format!(
                     "the platform did not answer within {}s",
@@ -931,14 +933,14 @@ mod daemon {
         } else {
             None
         };
-        let local_host_id = match &local {
-            Ok(listing) => Some(listing.host_id.clone()),
-            Err(_) => link.platform().map(|platform| platform.host_id.clone()),
+        let local_machine_id = match &local {
+            Ok(listing) => Some(listing.machine_id.clone()),
+            Err(_) => link.platform().map(|platform| platform.machine_id.clone()),
         };
         Listing {
             local,
             registry,
-            local_host_id,
+            local_machine_id,
             current: current.map(str::to_string),
         }
     }
@@ -950,31 +952,31 @@ mod daemon {
             .map_err(|error| error.to_string())?;
         let hello = client.hello();
         Ok(LocalListing {
-            host_id: hello.host_id.clone(),
-            host_name: hello.host_name.clone(),
+            machine_id: hello.machine_id.clone(),
+            machine_name: hello.machine_name.clone(),
             sessions,
         })
     }
 
-    /// The subdirectories of `path` on `device`.
+    /// The subdirectories of `path` on `machine`.
     pub(crate) async fn list_directories(
         link: &mut Link,
-        device: &DeviceRef,
+        machine: &MachineRef,
         path: &str,
     ) -> Result<Vec<DirectoryEntry>, String> {
-        if device.local {
+        if machine.local {
             let client = link
                 .daemon()
-                .ok_or("no SUPER daemon is running on this device")?;
+                .ok_or("no SUPER daemon is running on this machine")?;
             return client
                 .list_directories(std::path::Path::new(path))
                 .await
                 .map_err(|error| error.to_string());
         }
         let platform = link.platform_or_connect().await?;
-        let data = host_call(
+        let data = machine_call(
             &platform,
-            device,
+            machine,
             &DaemonCommand::ListDirectories {
                 path: path.to_string(),
             },
@@ -983,13 +985,13 @@ mod daemon {
         serde_json::from_value(data["directories"].clone()).map_err(|error| error.to_string())
     }
 
-    async fn host_call(
+    async fn machine_call(
         platform: &Arc<Platform>,
-        device: &DeviceRef,
+        machine: &MachineRef,
         command: &DaemonCommand,
     ) -> Result<serde_json::Value, String> {
         let response = platform
-            .host_commands(&device.host_id)
+            .machine_commands(&machine.machine_id)
             .call(command)
             .await
             .map_err(|error| format!("{error:#}"))?;
@@ -1008,13 +1010,13 @@ mod daemon {
     /// where it runs; on failure the link stays where it was.
     pub(crate) async fn switch(link: &mut Link, choice: Choice) -> Result<SessionSummary, String> {
         match choice {
-            Choice::Session { device, session } if device.local => {
+            Choice::Session { machine, session } if machine.local => {
                 attach_local(link, &session.session_id).await
             }
-            Choice::NewSession { device, cwd } if device.local => {
+            Choice::NewSession { machine, cwd } if machine.local => {
                 let client = link
                     .daemon()
-                    .ok_or("no SUPER daemon is running on this device")?;
+                    .ok_or("no SUPER daemon is running on this machine")?;
                 let created = client
                     .create_session(NewSession {
                         cwd: cwd.into(),
@@ -1024,40 +1026,40 @@ mod daemon {
                     .map_err(|error| error.to_string())?;
                 attach_local(link, &created.session_id).await
             }
-            Choice::Session { device, session } => {
-                if !device.online {
-                    return Err(format!("{} is offline", device.name));
+            Choice::Session { machine, session } => {
+                if !machine.online {
+                    return Err(format!("{} is offline", machine.name));
                 }
                 let platform = link.platform_or_connect().await?;
                 if session.state == SessionState::Ended {
-                    if !device.can_start {
+                    if !machine.can_start {
                         return Err(format!(
                             "the session ended on {}, which runs no SUPER daemon to resume it",
-                            device.name
+                            machine.name
                         ));
                     }
-                    host_call(
+                    machine_call(
                         &platform,
-                        &device,
+                        &machine,
                         &DaemonCommand::ResumeSession {
                             session_id: session.session_id.clone(),
                         },
                     )
                     .await?;
                 }
-                attach_remote(link, platform, &device, *session).await
+                attach_remote(link, platform, &machine, *session).await
             }
-            Choice::NewSession { device, cwd } => {
-                if !device.can_start {
+            Choice::NewSession { machine, cwd } => {
+                if !machine.can_start {
                     return Err(format!(
                         "{} runs no SUPER daemon that could start a session",
-                        device.name
+                        machine.name
                     ));
                 }
                 let platform = link.platform_or_connect().await?;
-                let data = host_call(
+                let data = machine_call(
                     &platform,
-                    &device,
+                    &machine,
                     &DaemonCommand::CreateSession {
                         cwd,
                         model: None,
@@ -1069,17 +1071,17 @@ mod daemon {
                 .await?;
                 let session: SessionSummary = serde_json::from_value(data["session"].clone())
                     .map_err(|error| format!("create_session: {error}"))?;
-                attach_remote(link, platform, &device, session).await
+                attach_remote(link, platform, &machine, session).await
             }
         }
     }
 
-    /// Attach the daemon connection to a session on this device. Detaching
+    /// Attach the daemon connection to a session on this machine. Detaching
     /// first, and dropping what queued up, keeps the previous session's last
     /// events from showing under the new one. When the daemon refuses the
     /// new one, the connection goes back to the session it showed.
     async fn attach_local(link: &mut Link, session_id: &str) -> Result<SessionSummary, String> {
-        const NO_DAEMON: &str = "no SUPER daemon is running on this device";
+        const NO_DAEMON: &str = "no SUPER daemon is running on this machine";
         let previous = link
             .daemon()
             .ok_or(NO_DAEMON)?
@@ -1111,12 +1113,16 @@ mod daemon {
     async fn attach_remote(
         link: &mut Link,
         platform: Arc<Platform>,
-        device: &DeviceRef,
+        machine: &MachineRef,
         session: SessionSummary,
     ) -> Result<SessionSummary, String> {
-        let remote =
-            RemoteSession::open(platform, &device.host_id, &device.name, &session.session_id)
-                .await?;
+        let remote = RemoteSession::open(
+            platform,
+            &machine.machine_id,
+            &machine.name,
+            &session.session_id,
+        )
+        .await?;
         if let Some(client) = link.daemon() {
             let _ = client.detach().await;
         }
@@ -1152,7 +1158,7 @@ mod daemon {
         let listing = load(link, Some(current)).await;
         let now = chrono::Utc::now().timestamp_millis();
         let theme = picker_theme();
-        let mut sessions = SessionsPicker::new(group(&listing, now), now, theme.clone());
+        let mut sessions = SessionsPicker::new(group(&listing), now, theme.clone());
         let mut browser: Option<DirectoryPicker> = None;
         let mut note: Option<String> = None;
 
@@ -1207,12 +1213,12 @@ mod daemon {
                         }
                         BrowseOutcome::Use(path) => {
                             next = Next::Pick(Choice::NewSession {
-                                device: open.device.clone(),
+                                machine: open.machine.clone(),
                                 cwd: path,
                             });
                             None
                         }
-                        BrowseOutcome::Open(path) => Some((open.device.clone(), path)),
+                        BrowseOutcome::Open(path) => Some((open.machine.clone(), path)),
                     },
                     None => match sessions.handle_key(&key) {
                         Outcome::Stay => None,
@@ -1228,14 +1234,14 @@ mod daemon {
                             next = Next::Pick(choice);
                             None
                         }
-                        Outcome::Browse { device, path } => Some((device, path)),
+                        Outcome::Browse { machine, path } => Some((machine, path)),
                     },
                 };
-                if let Some((device, path)) = browse {
-                    match list_directories(link, &device, &path).await {
+                if let Some((machine, path)) = browse {
+                    match list_directories(link, &machine, &path).await {
                         Ok(entries) => {
                             browser =
-                                Some(DirectoryPicker::new(device, path, entries, theme.clone()));
+                                Some(DirectoryPicker::new(machine, path, entries, theme.clone()));
                         }
                         Err(error) => note = Some(error),
                     }
@@ -1318,40 +1324,66 @@ mod tests {
         }
     }
 
-    fn registry() -> RegistryView {
-        let mut view = RegistryView::default();
-        let host = |id: &str, name: &str, daemon: bool, at: i64| {
-            format!(
-                r#"{{"kind":"host","hostId":"{id}","name":"{name}","platform":"linux","daemon":{daemon},"at":{at}}}"#
-            )
+    /// A session as `GET /api/registry` lists it.
+    fn listed(
+        machine: &str,
+        id: &str,
+        workspace: &str,
+        state: &str,
+        last_activity: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "machineId": machine, "id": id, "workspace": workspace, "cwd": workspace,
+            "state": state, "blockedReason": null, "model": "super/gpt-5",
+            "thinkingLevel": "low", "name": null, "firstMessage": null,
+            "resumeArgv": ["super", "--session", format!("/h/{id}.jsonl")],
+            "daemon": true, "headless": false, "lastActivityAt": time(last_activity),
+            "createdAt": time(last_activity), "updatedAt": time(NOW - 1_000),
+        })
+    }
+
+    fn registry_with(extra: Vec<serde_json::Value>) -> Registry {
+        let machine = |id: &str, name: &str, online: bool, daemon: bool| {
+            serde_json::json!({
+                "id": id, "name": name, "platform": "linux", "daemon": daemon,
+                "online": online, "lastSeenAt": time(NOW - 5_000), "createdAt": time(0),
+            })
         };
-        let session = |host: &str, id: &str, workspace: &str, state: &str, at: i64| {
-            format!(
-                r#"{{"kind":"session","hostId":"{host}","sessionId":"{id}","workspace":"{workspace}","cwd":"{workspace}","state":"{state}","model":"super/gpt-5","thinkingLevel":"low","resumeArgv":["super","--session","/h/{id}.jsonl"],"at":{at}}}"#
-            )
-        };
-        // This device announces itself too; the daemon's listing wins.
-        view.apply(&host("01M", "mbp", true, NOW - 5_000));
-        view.apply(&session("01M", "s1", "/w/super", "idle", NOW - 5_000));
-        view.apply(&host("02L", "linuxbox", true, NOW - 10_000));
-        view.apply(&session("02L", "r1", "/srv/app", "working", NOW - 10_000));
-        // A standalone `super` there announces the host without the daemon
-        // flag; the daemon still runs, as the apps see it.
-        view.apply(&host("02L", "linuxbox", false, NOW - 9_000));
-        view.apply(&host("03O", "old-laptop", false, NOW - 3_600_000));
-        view.apply(&session("03O", "o1", "/home/o", "ended", NOW - 3_600_000));
-        // Nothing to show and nothing to start: left out.
-        view.apply(&host("04E", "empty", false, NOW - 1_000));
-        // A daemon with no session yet: listed, for "new workspace".
-        view.apply(&host("05Z", "zeta", true, NOW - 1_000));
-        view
+        let mut sessions = vec![
+            listed("01M", "s1", "/w/super", "idle", NOW - 5_000),
+            listed("02L", "r1", "/srv/app", "working", NOW - 10_000),
+            listed("03O", "o1", "/home/o", "ended", NOW - 3_600_000),
+        ];
+        sessions.extend(extra);
+        Registry::from_value(&serde_json::json!({
+            "version": 7,
+            "reset": true,
+            "machines": [
+                // This machine is in the registry too; the daemon's listing wins.
+                machine("01M", "mbp", true, true),
+                machine("02L", "linuxbox", true, true),
+                machine("03O", "old-laptop", false, false),
+                // Nothing to show and nothing to start: left out.
+                machine("04E", "empty", true, false),
+                // A daemon with no session yet: listed, for "new workspace".
+                machine("05Z", "zeta", true, true),
+            ],
+            "sessions": sessions,
+            "projects": [],
+            "chats": [],
+            "deleted": [],
+        }))
+    }
+
+    fn registry() -> Registry {
+        registry_with(Vec::new())
     }
 
     fn listing() -> Listing {
         Listing {
             local: Ok(LocalListing {
-                host_id: "01M".into(),
-                host_name: "mbp".into(),
+                machine_id: "01M".into(),
+                machine_name: "mbp".into(),
                 sessions: vec![
                     summary("s1", "/w/super", SessionState::Idle, NOW - 7_200_000),
                     summary("s2", "/w/super", SessionState::Working, NOW - 60_000),
@@ -1364,7 +1396,7 @@ mod tests {
                 ],
             }),
             registry: Some(Ok(registry())),
-            local_host_id: Some("01M".into()),
+            local_machine_id: Some("01M".into()),
             current: Some("s3".into()),
         }
     }
@@ -1388,12 +1420,44 @@ mod tests {
     }
 
     #[test]
-    fn sessions_group_by_device_then_workspace_this_device_first() {
-        let devices = group(&listing(), NOW);
-        let names: Vec<&str> = devices.iter().map(|device| device.name.as_str()).collect();
+    fn a_session_on_another_machine_shows_when_it_was_last_active() {
+        // The registry heard of the session a second ago (its daemon signed
+        // in again); the session itself was last used three days ago.
+        let three_days = NOW - 3 * 86_400_000;
+        let registry = registry_with(vec![listed("02L", "r2", "/srv/app", "ended", three_days)]);
+        let machines = group(&Listing {
+            registry: Some(Ok(registry)),
+            ..listing()
+        });
+        let linuxbox = machines
+            .iter()
+            .find(|machine| machine.name == "linuxbox")
+            .unwrap();
+        let entries = &linuxbox.workspaces[0].sessions;
+        let ids: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.summary.session_id.as_str())
+            .collect();
+        assert_eq!(ids, ["r1", "r2"], "the session used last comes first");
+        assert_eq!(entries[1].modified, three_days);
+        assert_eq!(ago(entries[1].modified, NOW), "3d");
+
+        let mut picker = SessionsPicker::new(machines, NOW, Theme::dark());
+        picker.max_visible = 40;
+        let text = strip_ansi(&picker.render(120).join("\n"));
+        assert!(text.contains("✓ ended           r2  3d"), "{text}");
+    }
+
+    #[test]
+    fn sessions_group_by_machine_then_workspace_this_machine_first() {
+        let machines = group(&listing());
+        let names: Vec<&str> = machines
+            .iter()
+            .map(|machine| machine.name.as_str())
+            .collect();
         assert_eq!(names, ["mbp", "linuxbox", "zeta", "old-laptop"]);
 
-        let mbp = &devices[0];
+        let mbp = &machines[0];
         assert!(mbp.local && mbp.online && mbp.can_start);
         let workspaces: Vec<&str> = mbp.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(workspaces, ["super", "harness"], "newest workspace first");
@@ -1406,7 +1470,7 @@ mod tests {
         assert!(mbp.workspaces[1].sessions[0].current);
         assert_eq!(mbp.workspaces[1].sessions[0].title, "question s3");
 
-        let linuxbox = &devices[1];
+        let linuxbox = &machines[1];
         assert!(!linuxbox.local && linuxbox.online && linuxbox.can_start);
         let remote = &linuxbox.workspaces[0].sessions[0];
         assert_eq!(remote.summary.state, SessionState::Working);
@@ -1414,8 +1478,8 @@ mod tests {
         assert_eq!(remote.summary.model.as_deref(), Some("super/gpt-5"));
         assert!(remote.summary.hosted);
 
-        assert!(devices[2].workspaces.is_empty() && devices[2].can_start);
-        let laptop = &devices[3];
+        assert!(machines[2].workspaces.is_empty() && machines[2].can_start);
+        let laptop = &machines[3];
         assert!(!laptop.online && !laptop.can_start);
         assert_eq!(
             laptop.workspaces[0].sessions[0].summary.state,
@@ -1424,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_on_an_offline_device_reads_offline_unless_it_ended() {
+    fn a_session_on_an_offline_machine_reads_offline_unless_it_ended() {
         assert_eq!(
             session_status(SessionState::Working, false).label,
             "offline"
@@ -1437,14 +1501,13 @@ mod tests {
         assert_eq!(session_status(SessionState::Ended, false).label, "ended");
         assert_eq!(session_status(SessionState::Working, true).label, "working");
 
-        let mut listing = listing();
-        if let Some(Ok(view)) = &mut listing.registry {
-            view.apply(&format!(
-                r#"{{"kind":"session","hostId":"03O","sessionId":"o2","workspace":"/home/o","cwd":"/home/o","state":"working","model":"m","thinkingLevel":"off","firstMessage":"left running","at":{}}}"#,
-                NOW - 3_600_000
-            ));
-        }
-        let mut picker = SessionsPicker::new(group(&listing, NOW), NOW, Theme::dark());
+        let mut left_running = listed("03O", "o2", "/home/o", "working", NOW - 3_600_000);
+        left_running["firstMessage"] = "left running".into();
+        let listing = Listing {
+            registry: Some(Ok(registry_with(vec![left_running]))),
+            ..listing()
+        };
+        let mut picker = SessionsPicker::new(group(&listing), NOW, Theme::dark());
         picker.max_visible = 40;
         let text = strip_ansi(&picker.render(120).join("\n"));
         assert!(text.contains("○ offline         left running"), "{text}");
@@ -1454,27 +1517,27 @@ mod tests {
     #[test]
     fn a_missing_daemon_or_registry_says_why() {
         let listing = Listing {
-            local: Err("no SUPER daemon is running on this device".into()),
+            local: Err("no SUPER daemon is running on this machine".into()),
             registry: Some(Err("could not reach the platform: offline".into())),
-            local_host_id: None,
+            local_machine_id: None,
             current: None,
         };
-        let devices = group(&listing, NOW);
-        assert_eq!(devices.len(), 2);
-        assert_eq!(devices[0].name, "this device");
-        assert!(!devices[0].can_start);
+        let machines = group(&listing);
+        assert_eq!(machines.len(), 2);
+        assert_eq!(machines[0].name, "this machine");
+        assert!(!machines[0].can_start);
         assert_eq!(
-            devices[0].note.as_deref(),
-            Some("no SUPER daemon is running on this device")
+            machines[0].note.as_deref(),
+            Some("no SUPER daemon is running on this machine")
         );
-        assert_eq!(devices[1].name, "other devices");
-        assert!(devices[1].note.as_deref().unwrap().contains("offline"));
+        assert_eq!(machines[1].name, "other machines");
+        assert!(machines[1].note.as_deref().unwrap().contains("offline"));
 
         let signed_out = Listing {
             registry: None,
             ..listing
         };
-        assert_eq!(group(&signed_out, NOW).len(), 1);
+        assert_eq!(group(&signed_out).len(), 1);
     }
 
     fn key(key: Key) -> KeyEvent {
@@ -1485,7 +1548,7 @@ mod tests {
     }
 
     fn picker() -> SessionsPicker {
-        SessionsPicker::new(group(&listing(), NOW), NOW, Theme::dark())
+        SessionsPicker::new(group(&listing()), NOW, Theme::dark())
     }
 
     #[test]
@@ -1498,8 +1561,8 @@ mod tests {
         assert_eq!(
             picker.handle_key(&key(Key::Enter)),
             Outcome::Pick(Choice::NewSession {
-                device: DeviceRef {
-                    host_id: "01M".into(),
+                machine: MachineRef {
+                    machine_id: "01M".into(),
                     name: "mbp".into(),
                     local: true,
                     online: true,
@@ -1509,17 +1572,17 @@ mod tests {
             })
         );
         picker.handle_key(&key(Key::Up));
-        let Outcome::Pick(Choice::Session { device, session }) =
+        let Outcome::Pick(Choice::Session { machine, session }) =
             picker.handle_key(&key(Key::Enter))
         else {
             panic!("a session row");
         };
-        assert!(device.local);
+        assert!(machine.local);
         assert_eq!(session.session_id, "s1");
     }
 
     #[test]
-    fn typing_filters_and_offline_devices_are_refused() {
+    fn typing_filters_and_offline_machines_are_refused() {
         let mut picker = picker();
         for c in "o1".chars() {
             picker.handle_key(&key(Key::Char(c)));
@@ -1533,13 +1596,13 @@ mod tests {
         for c in "r1 app".chars() {
             picker.handle_key(&key(Key::Char(c)));
         }
-        let Outcome::Pick(Choice::Session { device, session }) =
+        let Outcome::Pick(Choice::Session { machine, session }) =
             picker.handle_key(&key(Key::Enter))
         else {
             panic!("the remote session");
         };
-        assert_eq!(device.name, "linuxbox");
-        assert!(!device.local && device.online);
+        assert_eq!(machine.name, "linuxbox");
+        assert!(!machine.local && machine.online);
         assert_eq!(session.session_id, "r1");
         // Esc clears the filter first, then closes.
         assert_eq!(picker.handle_key(&key(Key::Escape)), Outcome::Stay);
@@ -1552,10 +1615,10 @@ mod tests {
         for c in "new workspace on linuxbox".chars() {
             picker.handle_key(&key(Key::Char(c)));
         }
-        let Outcome::Browse { device, path } = picker.handle_key(&key(Key::Enter)) else {
+        let Outcome::Browse { machine, path } = picker.handle_key(&key(Key::Enter)) else {
             panic!("a browse");
         };
-        assert_eq!(device.host_id, "02L");
+        assert_eq!(machine.machine_id, "02L");
         assert_eq!(path, "/srv");
 
         let entries = vec![
@@ -1568,7 +1631,7 @@ mod tests {
                 path: "/srv/web".into(),
             },
         ];
-        let mut browser = DirectoryPicker::new(device, path, entries, Theme::dark());
+        let mut browser = DirectoryPicker::new(machine, path, entries, Theme::dark());
         assert_eq!(
             browser.handle_key(&key(Key::Enter)),
             BrowseOutcome::Use("/srv".into())
@@ -1589,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_renders_devices_workspaces_states_and_actions() {
+    fn the_picker_renders_machines_workspaces_states_and_actions() {
         let mut picker = picker();
         picker.max_visible = 40;
         let text: Vec<String> = picker
@@ -1599,7 +1662,7 @@ mod tests {
             .collect();
         let joined = text.join("\n");
         assert_eq!(text[0], "Sessions");
-        assert!(joined.contains("● mbp  this device"), "{joined}");
+        assert!(joined.contains("● mbp  this machine"), "{joined}");
         assert!(joined.contains("  super  /w/super"), "{joined}");
         assert!(joined.contains("◐ working         question s2"), "{joined}");
         assert!(
@@ -1611,7 +1674,7 @@ mod tests {
         assert!(joined.contains("○ old-laptop  offline"), "{joined}");
         assert!(
             !joined.contains("new session in o"),
-            "no actions on an offline device"
+            "no actions on an offline machine"
         );
         assert!(
             text.last().unwrap().contains("esc close"),
@@ -1622,7 +1685,7 @@ mod tests {
 }
 
 /// Two sessions in a daemon on a temporary socket, and a third on "another
-/// device": a daemon whose platform link runs against the fake S2. The link
+/// machine": a daemon whose platform link runs against the fake S2. The link
 /// switches between all three and drives each with the same commands.
 #[cfg(all(test, unix))]
 mod end_to_end {
@@ -1638,7 +1701,7 @@ mod end_to_end {
     use super_daemon::presence::{Link as PresenceLink, LinkConfig};
     use super_daemon::server::{DaemonInfo, ServerContext};
     use super_remote::controller::Sender;
-    use super_remote::fake::{FakeS2, TestCredentials, serve};
+    use super_remote::fake::{FakePlatform, TestCredentials, registry_client, serve};
     use super_sdk::mock::{MockProvider, MockScript};
     use super_sdk::protocol::Command;
     use tokio_util::sync::CancellationToken;
@@ -1699,7 +1762,7 @@ mod end_to_end {
             .collect()
     }
 
-    /// A stored session of this device's daemon that nothing hosts.
+    /// A stored session of this machine's daemon that nothing hosts.
     async fn client_create_and_unload(link: &Link, cwd: &std::path::Path) -> SessionSummary {
         let client = link.daemon().unwrap();
         let created = client
@@ -1714,7 +1777,7 @@ mod end_to_end {
         created
     }
 
-    /// How many clients each session of this device's daemon has attached.
+    /// How many clients each session of this machine's daemon has attached.
     async fn attachments(link: &Link) -> std::collections::BTreeMap<String, usize> {
         link.daemon()
             .unwrap()
@@ -1736,7 +1799,7 @@ mod end_to_end {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_link_switches_between_sessions_here_and_on_another_device() {
+    async fn the_link_switches_between_sessions_here_and_on_another_machine() {
         let dir = tempfile::Builder::new().prefix("sw").tempdir().unwrap();
         let provider = MockProvider::start(dir.path().join("mock"), MockScript::text("Hello."))
             .await
@@ -1744,7 +1807,7 @@ mod end_to_end {
         let work: PathBuf = dir.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
 
-        // This device's daemon, on a temporary socket.
+        // This machine's daemon, on a temporary socket.
         let socket = dir.path().join("d.sock");
         let shutdown = CancellationToken::new();
         let daemon = tokio::spawn(super_daemon::run(
@@ -1761,8 +1824,8 @@ mod end_to_end {
                     models_file: Some(provider.catalog_path()),
                     no_context_files: true,
                 },
-                host_id: "01M".into(),
-                host_name: "mbp".into(),
+                machine_id: "01M".into(),
+                machine_name: "mbp".into(),
                 log_level: super_daemon::log::Level::Debug,
                 log_to_stderr: false,
                 sweep_interval: Duration::from_secs(3600),
@@ -1790,7 +1853,7 @@ mod end_to_end {
         let second = client.create_session(new()).await.unwrap();
         client.attach(&first.session_id).await.unwrap();
 
-        // Another device: a daemon whose link to the fake platform announces
+        // Another machine: a daemon whose link to the fake platform announces
         // it and its session.
         let remote_host = SessionHost::new(HostConfig {
             session_dir: dir.path().join("remote-sessions"),
@@ -1809,94 +1872,113 @@ mod end_to_end {
         let remote_id = remote_session.session_id.clone();
         let remote_file = remote_session.file.clone();
         drop(remote_session);
+        // It was last used two days ago.
+        std::fs::File::options()
+            .write(true)
+            .open(&remote_file)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 86_400))
+            .unwrap();
+        let remote_activity = super_remote::registry::modified_at(&remote_file).unwrap();
         let ctx = ServerContext::new(
             remote_host,
             DaemonInfo {
                 version: "test".into(),
-                host_id: "01L".into(),
-                host_name: "linuxbox".into(),
+                machine_id: "01L".into(),
+                machine_name: "linuxbox".into(),
                 platform: "linux".into(),
                 socket_path: dir.path().join("remote.sock"),
                 protocol_versions: super_sdk::daemon::PROTOCOL_VERSIONS,
             },
             CancellationToken::new(),
         );
-        let fake = Arc::new(FakeS2::default());
+        let fake = Arc::new(FakePlatform::default());
         let s2 = Arc::new(super_remote::s2::S2Client::new(
             reqwest::Client::new(),
-            serve(fake).await,
+            serve(fake.clone()).await,
             Arc::new(TestCredentials),
         ));
+        let registry = registry_client(&fake);
         let presence = PresenceLink::start(
             s2.clone(),
+            registry.clone(),
             ctx.clone(),
-            super_remote::HostIdentity {
-                host_id: "01L".into(),
+            super_remote::MachineIdentity {
+                machine_id: "01L".into(),
                 name: "linuxbox".into(),
                 platform: "linux".into(),
             },
-            "device-linux".into(),
             LinkConfig {
                 cursor_dir: Some(dir.path().join("cursors")),
-                republish_interval: Duration::from_secs(3600),
                 ..LinkConfig::default()
             },
         );
         let platform = Arc::new(Platform {
             client: s2,
+            registry,
             sender: Sender {
                 device_id: "device-mac".into(),
                 name: "Terminal on mbp".into(),
             },
-            host_id: "01M".into(),
+            machine_id: "01M".into(),
         });
         let mut link = Link::new(Some((client, events)), Some(platform));
 
-        // `/sessions` lists both devices once the other one announced itself.
-        let mut devices = Vec::new();
+        // `/sessions` lists both machines once the other one announced itself.
+        let mut machines = Vec::new();
         for _ in 0..200 {
             let mut listing = load(&mut link, Some(&first.session_id)).await;
             // The test is not signed in; read the registry the way a
             // signed-in terminal does.
             listing.registry = Some(
-                super_remote::registry::read_registry(
-                    &link.platform().unwrap().client,
-                    Duration::from_secs(5),
-                )
-                .await
-                .map_err(|error| error.to_string()),
+                link.platform()
+                    .unwrap()
+                    .registry
+                    .read()
+                    .await
+                    .map_err(|error| error.to_string()),
             );
-            devices = group(&listing, chrono::Utc::now().timestamp_millis());
-            if devices.len() == 2 && !devices[1].workspaces.is_empty() {
+            machines = group(&listing);
+            if machines.len() == 2 && !machines[1].workspaces.is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        assert_eq!(devices.len(), 2, "{devices:?}");
-        let here = DeviceRef::of(&devices[0]);
-        let there = DeviceRef::of(&devices[1]);
+        assert_eq!(machines.len(), 2, "{machines:?}");
+        let here = MachineRef::of(&machines[0]);
+        let there = MachineRef::of(&machines[1]);
         assert!(here.local && there.online && there.can_start);
         assert_eq!(there.name, "linuxbox");
-        let local_ids: Vec<&str> = devices[0].workspaces[0]
+        let local_ids: Vec<&str> = machines[0].workspaces[0]
             .sessions
             .iter()
             .map(|entry| entry.summary.session_id.as_str())
             .collect();
         assert_eq!(local_ids.len(), 2);
         assert!(
-            devices[0].workspaces[0]
+            machines[0].workspaces[0]
                 .sessions
                 .iter()
                 .any(|entry| entry.current)
         );
-        let remote_entry = devices[1].workspaces[0].sessions[0].summary.clone();
+        let remote_entry = machines[1].workspaces[0].sessions[0].summary.clone();
         assert_eq!(remote_entry.session_id, remote_id);
+        // Its time is when it was last used, as its daemon told the
+        // registry, not when the registry heard of it.
+        assert_eq!(remote_entry.modified_at, remote_activity);
+        assert_eq!(
+            ago(
+                machines[1].workspaces[0].sessions[0].modified,
+                chrono::Utc::now().timestamp_millis()
+            ),
+            "2d"
+        );
 
         // Over to the second session here, a prompt, and back.
         let shown = switch(
             &mut link,
             Choice::Session {
-                device: here.clone(),
+                machine: here.clone(),
                 session: Box::new(second.clone()),
             },
         )
@@ -1913,7 +1995,7 @@ mod end_to_end {
         let shown = switch(
             &mut link,
             Choice::Session {
-                device: here.clone(),
+                machine: here.clone(),
                 session: Box::new(first.clone()),
             },
         )
@@ -1935,7 +2017,7 @@ mod end_to_end {
         let refused = switch(
             &mut link,
             Choice::Session {
-                device: here.clone(),
+                machine: here.clone(),
                 session: Box::new(held.clone()),
             },
         )
@@ -1948,11 +2030,11 @@ mod end_to_end {
         assert_eq!(attached[&second.session_id], 0);
         drop(other_process);
 
-        // Over to the session on the other device: the same commands.
+        // Over to the session on the other machine: the same commands.
         switch(
             &mut link,
             Choice::Session {
-                device: there.clone(),
+                machine: there.clone(),
                 session: Box::new(remote_entry),
             },
         )
@@ -1961,7 +2043,7 @@ mod end_to_end {
         assert!(link.remote().is_some());
         assert!(
             attachments(&link).await.values().all(|count| *count == 0),
-            "the terminal follows the other device only"
+            "the terminal follows the other machine only"
         );
         assert_eq!(link.describe(), "linuxbox through the SUPER platform");
         assert_eq!(prompt_and_settle(&mut link, "for linuxbox").await, "Hello.");
@@ -1972,7 +2054,7 @@ mod end_to_end {
                 .contains("for linuxbox")
         );
 
-        // A new session on the other device, in a directory it lists.
+        // A new session on the other machine, in a directory it lists.
         let directories = list_directories(&mut link, &there, &dir.path().display().to_string())
             .await
             .unwrap();
@@ -1980,7 +2062,7 @@ mod end_to_end {
         let created = switch(
             &mut link,
             Choice::NewSession {
-                device: there.clone(),
+                machine: there.clone(),
                 cwd: work.display().to_string(),
             },
         )
@@ -1992,7 +2074,7 @@ mod end_to_end {
         switch(
             &mut link,
             Choice::Session {
-                device: here.clone(),
+                machine: here.clone(),
                 session: Box::new(first.clone()),
             },
         )

@@ -10,7 +10,8 @@ description = "Remote control for SUPER sessions: mirrors the RPC protocol to S2
 workspace = true
 
 [features]
-# An in-memory S2 server for tests of this crate and of crates that build on it.
+# An in-memory platform (the S2 proxy and the registry endpoints) for tests of
+# this crate and of crates that build on it.
 fake = []
 
 [dependencies]
