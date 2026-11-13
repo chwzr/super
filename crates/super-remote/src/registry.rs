@@ -41,6 +41,11 @@ pub struct SessionRecord {
     /// Set when the session is hosted by the SUPER daemon.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub daemon: bool,
+    /// Unix milliseconds of the session's last activity: when its newest
+    /// entry was written. The record's own `at` is when the record was
+    /// written, which moves every time the record is sent again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -282,6 +287,15 @@ pub struct RegistrySession {
     pub at: i64,
 }
 
+impl RegistrySession {
+    /// Unix milliseconds of the session's last activity. A record without
+    /// `lastActivityAt` (a terminal session, an older daemon) only has the
+    /// time it was written.
+    pub fn last_activity_at(&self) -> i64 {
+        self.record.last_activity_at.unwrap_or(self.at)
+    }
+}
+
 /// The `registry` stream folded to the newest record per host and per
 /// session, as the apps fold it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -464,6 +478,7 @@ mod tests {
             resume_argv: vec!["super".into()],
             headless: false,
             daemon: false,
+            last_activity_at: None,
         };
         let body = SessionBody {
             kind: "session",
@@ -479,6 +494,45 @@ mod tests {
         assert_eq!(json["blockedReason"], "Workflow approval required");
         assert!(json.get("headless").is_none());
         assert!(json.get("name").is_none());
+        assert!(json.get("lastActivityAt").is_none());
+
+        // The daemon says when the session last did something; `at` stays
+        // the time of the record.
+        let record = SessionRecord {
+            last_activity_at: Some(1_760_600_000_000),
+            ..record
+        };
+        let body = SessionBody {
+            kind: "session",
+            host_id: "01H",
+            session: &record,
+            at: 2,
+        };
+        let json = serde_json::to_value(&body).expect("json");
+        assert_eq!(json["lastActivityAt"], 1_760_600_000_000_i64);
+        assert_eq!(json["at"], 2);
+    }
+
+    #[test]
+    fn a_session_is_last_active_when_its_record_says_else_when_it_was_written() {
+        let session = |id: &str, extra: &str, at: i64| {
+            format!(
+                r#"{{"kind":"session","hostId":"01H","sessionId":"{id}","workspace":"/w","cwd":"/w","state":"ended","model":"","thinkingLevel":"","daemon":true{extra},"at":{at}}}"#
+            )
+        };
+        let mut view = RegistryView::default();
+        view.apply(&session("a1", r#","lastActivityAt":1000"#, 50_000));
+        // Sent again six hours later: the same session, nothing new in it.
+        view.apply(&session("a1", r#","lastActivityAt":1000"#, 21_650_000));
+        // A terminal session, or a daemon from before the field existed.
+        view.apply(&session("b2", "", 60_000));
+        let sessions: Vec<&RegistrySession> = view.sessions().collect();
+        assert_eq!(sessions[0].at, 21_650_000);
+        assert_eq!(sessions[0].last_activity_at(), 1000);
+        assert_eq!(sessions[1].last_activity_at(), 60_000);
+        // The host was seen when the record was written, whatever it says
+        // about the session.
+        assert_eq!(view.host_by_id("01H").unwrap().last_seen, 21_650_000);
     }
 
     #[test]

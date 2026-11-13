@@ -23,6 +23,7 @@ fn record(id: &str, state: SessionState) -> SessionRecord {
         resume_argv: vec!["super".into(), "--session".into(), format!("/s/{id}.jsonl")],
         headless: false,
         daemon: true,
+        last_activity_at: None,
     }
 }
 

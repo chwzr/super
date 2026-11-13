@@ -409,7 +409,9 @@ Sessions
   about it is at most 90 seconds old, as in the apps. A session is
   `working`, `needs an answer` (blocked), `idle` or `ended` (not loaded);
   on a device that is offline, a session that has not ended reads
-  `offline`, since its last state may be stale.
+  `offline`, since its last state may be stale. The time on a row is the
+  session's last activity: `modifiedAt` on this device, the record's
+  `lastActivityAt` on another one (its `at` when the record has none).
 - Typing filters by title, workspace and device; Enter opens the row under
   the cursor; Esc clears the filter, then closes.
 - A session on this device: the connection attaches to it and its last
@@ -491,7 +493,13 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
   host record included, is sent again every six hours. The host record
   carries `"daemon": true`, so the apps know the daemon runs there before it
   has a session; a standalone `super` leaves the field out. Daemon sessions
-  carry `"daemon": true` and `"resumeArgv": ["super", "--session", <file>]`.
+  carry `"daemon": true`, `"resumeArgv": ["super", "--session", <file>]` and
+  `"lastActivityAt"`: Unix milliseconds of the session's newest entry (its
+  file's modification time, the `modifiedAt` of `list_sessions`). A record's
+  `at` is when the record was written, so it moves with every republish and
+  when a session loads or unloads; `lastActivityAt` moves only when
+  something is said in the session. Readers show `lastActivityAt` as the
+  session's time and fall back to `at` for a record without it.
 
   ```json
   {"kind":"host","hostId":"01J…","name":"mbp","platform":"macos","deviceId":"…","daemon":true,"at":1761728400000}

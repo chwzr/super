@@ -195,7 +195,7 @@ pub(crate) fn summary_from_record(session: &RegistrySession) -> SessionSummary {
         attached_clients: 0,
         model: non_empty(&record.model),
         thinking_level: non_empty(&record.thinking_level),
-        modified_at: chrono::DateTime::from_timestamp_millis(session.at)
+        modified_at: chrono::DateTime::from_timestamp_millis(session.last_activity_at())
             .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
             .unwrap_or_default(),
     }
@@ -1385,6 +1385,31 @@ mod tests {
         assert_eq!(ago(NOW - 3 * 3_600_000, NOW), "3h");
         assert_eq!(ago(NOW - 2 * 86_400_000, NOW), "2d");
         assert_eq!(ago(0, NOW), "");
+    }
+
+    #[test]
+    fn a_session_on_another_device_shows_when_it_was_last_active() {
+        let record = |last_activity: &str, at: i64| {
+            let mut view = RegistryView::default();
+            view.apply(&format!(
+                r#"{{"kind":"session","hostId":"02L","sessionId":"r1","workspace":"/srv/app","cwd":"/srv/app","state":"ended","model":"","thinkingLevel":"","daemon":true,"resumeArgv":["super","--session","/h/r1.jsonl"]{last_activity},"at":{at}}}"#
+            ));
+            let session = view.sessions().next().unwrap().clone();
+            entry(summary_from_record(&session), None)
+        };
+        // Its daemon sent the record again an hour ago; the session itself
+        // was last used three days ago.
+        let three_days = NOW - 3 * 86_400_000;
+        let listed = record(
+            &format!(r#","lastActivityAt":{three_days}"#),
+            NOW - 3_600_000,
+        );
+        assert_eq!(listed.modified, three_days);
+        assert_eq!(ago(listed.modified, NOW), "3d");
+        // A record without the time (a terminal session, an older daemon)
+        // has only the time it was written.
+        let listed = record("", NOW - 3_600_000);
+        assert_eq!(ago(listed.modified, NOW), "1h");
     }
 
     #[test]

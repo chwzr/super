@@ -6,7 +6,7 @@ use crate::log;
 use crate::server::{ServerContext, run_host_command};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -74,6 +74,12 @@ pub fn record_from_summary(summary: &SessionSummary) -> SessionRecord {
         ],
         headless: false,
         daemon: true,
+        // The session's file changes with every entry, so its age is the
+        // session's. The record's own time is no measure of it: every record
+        // is written again when the link starts and on each republish.
+        last_activity_at: chrono::DateTime::parse_from_rfc3339(&summary.modified_at)
+            .ok()
+            .map(|time| time.timestamp_millis()),
     }
 }
 
@@ -297,6 +303,12 @@ async fn follow_host(shared: Arc<Shared>, cancel: CancellationToken) {
                     summary.attached_clients = 0;
                     summary.model = None;
                     summary.thinking_level = None;
+                    // What the session wrote since its last update counts.
+                    if let Some(modified) =
+                        crate::host::file_modified_at(Path::new(&summary.session_file))
+                    {
+                        summary.modified_at = modified;
+                    }
                     shared.publish(&summary);
                 }
             }
@@ -572,5 +584,7 @@ mod tests {
         assert!(record.daemon);
         assert!(!record.headless);
         assert_eq!(record.model, "mock/mock-1");
+        // 2026-10-29T00:00:00Z: when the session's file was last written.
+        assert_eq!(record.last_activity_at, Some(1_793_232_000_000));
     }
 }

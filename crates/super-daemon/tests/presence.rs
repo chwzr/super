@@ -153,6 +153,123 @@ async fn the_host_and_every_stored_session_are_announced_at_start() {
     fixture.link.stop().await;
 }
 
+/// When a file was last written, in Unix milliseconds to the second, as the
+/// daemon's listing names it (`modifiedAt` has no fraction).
+fn modified_ms(file: &std::path::Path) -> i64 {
+    let modified = std::fs::metadata(file).unwrap().modified().unwrap();
+    let since = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    since as i64 * 1000
+}
+
+#[tokio::test]
+async fn a_record_sent_again_keeps_the_time_of_the_last_activity() {
+    let fixture = fixture().await;
+    wait_until(|| bodies(&fixture.fake, "registry").len() >= 2).await;
+    fixture.link.stop().await;
+    let before = bodies(&fixture.fake, "registry").len();
+
+    // The stored session was last used two days ago.
+    let announced = bodies(&fixture.fake, "registry");
+    let file = std::path::PathBuf::from(announced[1]["resumeArgv"][2].as_str().unwrap());
+    let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 86_400);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(two_days_ago)
+        .unwrap();
+    let activity = modified_ms(&file);
+
+    // A link that sends everything again after 300 ms instead of six hours.
+    let link = Link::start(
+        fixture.client.clone(),
+        fixture.ctx.clone(),
+        identity(),
+        "device-1".into(),
+        LinkConfig {
+            republish_interval: Duration::from_millis(300),
+            ..link_config(fixture.dir.path())
+        },
+    );
+    let stored = |fake: &FakeS2| -> Vec<Value> {
+        bodies(fake, "registry")
+            .into_iter()
+            .skip(before)
+            .filter(|b| b["kind"] == "session")
+            .collect()
+    };
+    wait_until(|| stored(&fixture.fake).len() >= 2).await;
+    let records = stored(&fixture.fake);
+    let (first, again) = (&records[0], &records[1]);
+    assert_eq!(first["sessionId"], again["sessionId"]);
+    assert_eq!(again["state"], "ended");
+
+    // That is the session's last activity, however often its record is
+    // written; `at` is when each record was written.
+    assert_eq!(first["lastActivityAt"], activity, "{first}");
+    assert_eq!(again["lastActivityAt"], activity, "{again}");
+    let written = |record: &Value| record["at"].as_i64().unwrap();
+    assert!(written(again) >= written(first) + 250, "{first} {again}");
+    assert!(written(first) - activity > 86_400_000, "{first}");
+    link.stop().await;
+}
+
+#[tokio::test]
+async fn a_turn_moves_the_time_of_the_last_activity() {
+    let fixture = fixture().await;
+    wait_until(|| bodies(&fixture.fake, "registry").len() >= 2).await;
+    let hosted = fixture
+        .ctx
+        .host
+        .create(CreateRequest {
+            cwd: fixture.dir.path().join("work"),
+            model: Some("mock/mock-1".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = hosted.session_id.clone();
+    let records = |fake: &FakeS2| -> Vec<Value> {
+        bodies(fake, "registry")
+            .into_iter()
+            .filter(|b| b["sessionId"] == id)
+            .collect()
+    };
+    wait_until(|| records(&fixture.fake).len() == 1).await;
+
+    // Pretend the session was started two days ago and left alone since.
+    let file =
+        std::path::PathBuf::from(records(&fixture.fake)[0]["resumeArgv"][2].as_str().unwrap());
+    let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 86_400);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(two_days_ago)
+        .unwrap();
+    let started = modified_ms(&file);
+
+    hosted.session.prompt("hi").await.unwrap();
+    wait_until(|| {
+        records(&fixture.fake)
+            .last()
+            .is_some_and(|b| b["state"] == "idle" && b["lastActivityAt"] != started)
+    })
+    .await;
+    // The record after the turn names the time of the reply, which is the
+    // last thing written to the session's file.
+    let settled = records(&fixture.fake).pop().unwrap();
+    assert_eq!(settled["lastActivityAt"], modified_ms(&file), "{settled}");
+    assert!(
+        settled["lastActivityAt"].as_i64().unwrap() - started > 86_400_000,
+        "{settled}"
+    );
+    fixture.link.stop().await;
+}
+
 #[tokio::test]
 async fn a_create_session_over_the_platform_is_answered_mirrored_and_registered() {
     let fixture = fixture().await;

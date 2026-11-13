@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- A session's registry record carries `lastActivityAt`, Unix milliseconds of
+  the session's newest entry, and `/sessions` shows it for sessions on other
+  devices. The daemon writes every record again every six hours and when
+  its link to the platform starts, so the record's own `at`, which the apps
+  and `/sessions` showed, said a session was last active a few hours ago at
+  most, however long ago it was used.
+
 ## 0.0.39 - 2026-10-30
 
 ### Changed

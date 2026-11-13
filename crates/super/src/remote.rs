@@ -284,6 +284,9 @@ pub fn session_record(
         resume_argv,
         headless,
         daemon: false,
+        // A terminal writes a record only when something about the session
+        // changed, so the record's own time says when that was.
+        last_activity_at: None,
     }
 }
 
