@@ -16,7 +16,7 @@ use super_remote::s2::{
 };
 use super_remote::transport::{NoticeSink, SessionStreams, TransportOptions, event_record};
 use super_remote::{
-    MachineIdentity, RegistryWriter, RemoteStatus, SessionRecord, SessionTransport,
+    MachineIdentity, RegistryClient, RegistryWriter, RemoteStatus, SessionRecord, SessionTransport,
 };
 use super_sdk::daemon::{
     ClientLine, DaemonEvent, DaemonRequest, SessionState, SessionSummary, decode_client_line,
@@ -39,8 +39,6 @@ pub struct LinkConfig {
     pub allow_shell: bool,
     /// Where command cursors live; `None` means `~/.super/agent/remote/cursors`.
     pub cursor_dir: Option<PathBuf>,
-    /// Every record is sent again this often, for readers whose copy expired.
-    pub republish_interval: Duration,
     pub command_lookback: u64,
     pub default_command_expiry: Duration,
 }
@@ -50,14 +48,13 @@ impl Default for LinkConfig {
         Self {
             allow_shell: true,
             cursor_dir: None,
-            republish_interval: Duration::from_secs(6 * 3600),
             command_lookback: 50,
             default_command_expiry: Duration::from_secs(5 * 60),
         }
     }
 }
 
-/// The registry record for a session as the daemon sees it.
+/// A session as the daemon sends it to the registry.
 pub fn record_from_summary(summary: &SessionSummary) -> SessionRecord {
     SessionRecord {
         session_id: summary.session_id.clone(),
@@ -77,11 +74,10 @@ pub fn record_from_summary(summary: &SessionSummary) -> SessionRecord {
         headless: false,
         daemon: true,
         // The session's file changes with every entry, so its age is the
-        // session's. The record's own time is no measure of it: every record
-        // is written again when the link starts and on each republish.
+        // session's.
         last_activity_at: chrono::DateTime::parse_from_rfc3339(&summary.modified_at)
             .ok()
-            .map(|time| time.timestamp_millis()),
+            .map(|time| super_remote::registry::timestamp(time.into())),
     }
 }
 
@@ -101,11 +97,15 @@ struct Shared {
 }
 
 impl Shared {
-    fn publish(&self, summary: &SessionSummary) {
+    fn remember(&self, summary: &SessionSummary) {
         self.summaries
             .lock()
             .unwrap()
             .insert(summary.session_id.clone(), summary.clone());
+    }
+
+    fn publish(&self, summary: &SessionSummary) {
+        self.remember(summary);
         self.registry.publish(record_from_summary(summary));
     }
 
@@ -153,16 +153,21 @@ impl Shared {
             .any(|transport| transport.status() == RemoteStatus::Unauthorized)
     }
 
-    /// Announce every session the daemon knows and mirror the hosted ones.
+    /// Mirror the hosted sessions and send the registry the complete list
+    /// of the sessions the daemon knows, in one request. The platform drops
+    /// the daemon sessions of this machine that are not in it.
     async fn sync_all(&self) {
-        for summary in self.ctx.host.list(None).await {
+        let sessions = self.ctx.host.list(None).await;
+        for summary in &sessions {
             if summary.hosted
                 && let Some(hosted) = self.ctx.host.get(&summary.session_id)
             {
                 self.mirror(&hosted);
             }
-            self.publish(&summary);
+            self.remember(summary);
         }
+        self.registry
+            .publish_all(sessions.iter().map(record_from_summary).collect());
     }
 }
 
@@ -177,9 +182,9 @@ pub struct Link {
 impl Link {
     pub fn start(
         client: Arc<S2Client>,
+        registry: Arc<RegistryClient>,
         ctx: Arc<ServerContext>,
         identity: MachineIdentity,
-        device_id: String,
         config: LinkConfig,
     ) -> Self {
         let cancel = CancellationToken::new();
@@ -191,7 +196,7 @@ impl Link {
             ctx,
             machine_id: identity.machine_id.clone(),
             config,
-            registry: RegistryWriter::start_daemon(client.clone(), identity, device_id),
+            registry: RegistryWriter::start_daemon(registry, identity),
             transports: Mutex::new(BTreeMap::new()),
             summaries: Mutex::new(BTreeMap::new()),
             notices: Arc::new(|notice| log::debug("presence", format!("{notice:?}"))),
@@ -223,10 +228,13 @@ impl Link {
 
     /// The platform rejected the token; a new sign-in is needed.
     pub fn unauthorized(&self) -> bool {
-        self.unauthorized.load(Ordering::Relaxed) || self.shared.unauthorized_transport()
+        self.unauthorized.load(Ordering::Relaxed)
+            || self.shared.registry.unauthorized()
+            || self.shared.unauthorized_transport()
     }
 
-    /// Stop tailing, flush every mirror and the registry, announce the end.
+    /// Stop tailing, flush every mirror, mark the sessions as ended in the
+    /// registry.
     pub async fn stop(self) {
         self.cancel.cancel();
         let tasks: Vec<tokio::task::JoinHandle<()>> =
@@ -260,21 +268,15 @@ impl Link {
 async fn follow_daemon(shared: Arc<Shared>, cancel: CancellationToken) {
     let mut events = shared.ctx.host.subscribe();
     shared.sync_all().await;
-    let mut republish = tokio::time::interval(shared.config.republish_interval);
-    republish.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    republish.tick().await; // the first tick fires at once
     loop {
         let event = tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = republish.tick() => {
-                shared.sync_all().await;
-                shared.registry.refresh();
-                continue;
-            }
             event = events.recv() => event,
         };
         let event = match event {
             Ok(event) => event,
+            // Events were lost, and with them what they said about some
+            // sessions: the complete list says it all again.
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                 shared.sync_all().await;
                 continue;
@@ -297,8 +299,7 @@ async fn follow_daemon(shared: Arc<Shared>, cancel: CancellationToken) {
                 shared.unmirror(session_id);
                 let ended = shared.summaries.lock().unwrap().get(session_id).cloned();
                 if let Some(mut summary) = ended {
-                    // Exactly what a listing of the stored session says, so
-                    // the next resync has nothing new to send for it.
+                    // Exactly what a listing of the stored session says.
                     summary.state = SessionState::Ended;
                     summary.blocked_reason = None;
                     summary.hosted = false;
@@ -520,9 +521,9 @@ async fn supervise(
                         );
                         link = Some(Link::start(
                             remote.client.clone(),
+                            remote.registry.clone(),
                             ctx.clone(),
                             identity.clone(),
-                            remote.config.device_id.clone(),
                             config.link.clone(),
                         ));
                     }
@@ -589,7 +590,19 @@ mod tests {
         assert!(record.daemon);
         assert!(!record.headless);
         assert_eq!(record.model, "mock/mock-1");
-        // 2026-10-29T00:00:00Z: when the session's file was last written.
-        assert_eq!(record.last_activity_at, Some(1_793_232_000_000));
+        // When the session's file was last written.
+        assert_eq!(
+            record.last_activity_at.as_deref(),
+            Some("2026-10-29T00:00:00Z")
+        );
+        // Whatever offset the listing names, the registry gets UTC.
+        let elsewhere = SessionSummary {
+            modified_at: "2026-10-29T01:00:00+01:00".into(),
+            ..summary
+        };
+        assert_eq!(
+            record_from_summary(&elsewhere).last_activity_at.as_deref(),
+            Some("2026-10-29T00:00:00Z")
+        );
     }
 }

@@ -165,11 +165,8 @@ pub(super) fn on_event(app: &mut App, event: Event, session: &AgentSession) {
             Event::Loaded(loaded) => {
                 let (link, listing) = *loaded;
                 let now = chrono::Utc::now().timestamp_millis();
-                let sessions = SessionsPicker::new(
-                    crate::sessions::group(&listing, now),
-                    now,
-                    app.theme.clone(),
-                );
+                let sessions =
+                    SessionsPicker::new(crate::sessions::group(&listing), now, app.theme.clone());
                 app.sessions.open = Some(Open {
                     link: Some(link),
                     sessions,

@@ -142,7 +142,7 @@ struct App {
     remote_signed_in: bool,
     /// The picker question remote controllers may answer too.
     open_approval: Option<OpenApproval>,
-    /// What the last published registry record was built from.
+    /// What the session state last sent to the registry was built from.
     remote_record_key: Option<RemoteRecordKey>,
     /// Flags and settings allow mirroring; a sign-in turns it on.
     remote_allowed: bool,

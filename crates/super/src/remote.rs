@@ -65,8 +65,8 @@ pub struct RemoteControl {
     _lock: Option<std::fs::File>,
     held: bool,
     starting: bool,
-    /// The newest record handed to [`publish`](Self::publish). Shared with the
-    /// start task so a record published before the platform answered is sent
+    /// The newest state handed to [`publish`](Self::publish). Shared with the
+    /// start task so a state published before the platform answered is sent
     /// as soon as the registry writer exists.
     last_record: Arc<Mutex<Option<SessionRecord>>>,
 }
@@ -145,11 +145,7 @@ impl RemoteControl {
             let streams = remote.session_streams(&session_id);
             let transport =
                 SessionTransport::start(remote.client.clone(), sdk, streams, options, notices);
-            let registry = RegistryWriter::start(
-                remote.client.clone(),
-                machine.clone(),
-                remote.config.device_id.clone(),
-            );
+            let registry = RegistryWriter::start(remote.registry.clone(), machine.clone());
             *status.lock().unwrap() = Some(transport.status_watch());
             let basin = remote.config.s2.basin.clone();
             // Anything published while the platform was still answering.
@@ -208,8 +204,8 @@ impl RemoteControl {
             .map(|live| live.remote.config.s2.basin.clone())
     }
 
-    /// Announce the session's current shape. Cheap to call every frame: the
-    /// registry only sends changes.
+    /// Announce the session's current shape. Cheap to call every frame:
+    /// only changes are sent.
     pub fn publish(&self, record: SessionRecord) {
         if self.last_record.lock().unwrap().as_ref() == Some(&record) {
             return;
@@ -220,7 +216,7 @@ impl RemoteControl {
         *self.last_record.lock().unwrap() = Some(record);
     }
 
-    /// A handle that publishes registry records without borrowing the control.
+    /// A handle that publishes session states without borrowing the control.
     pub fn publisher(&self) -> impl Fn(SessionRecord) + Send + Sync + 'static {
         let live = self.live.clone();
         move |record: SessionRecord| {
@@ -230,7 +226,7 @@ impl RemoteControl {
         }
     }
 
-    /// Flush and announce the end. Bounded; never hangs an exit.
+    /// Flush and mark the session as ended. Bounded; never hangs an exit.
     pub async fn stop(self) {
         let live = self.live.lock().unwrap().take();
         if let Some(live) = live {
@@ -240,7 +236,7 @@ impl RemoteControl {
     }
 }
 
-/// Build the registry record for a session from the terminal's view of it.
+/// A session as the registry gets it, from the terminal's view of it.
 pub fn session_record(
     state: SessionState,
     blocked_reason: Option<&str>,
@@ -252,6 +248,12 @@ pub fn session_record(
     let thinking = session.thinking_level();
     let manager = session.manager.lock().unwrap();
     let cwd = manager.cwd().display().to_string();
+    // The session's file changes with every entry, so its age is the
+    // session's. A session with nothing said yet has no file, and the
+    // platform takes the time it first hears of it.
+    let last_activity_at = manager
+        .session_file()
+        .and_then(super_remote::registry::modified_at);
     let resume_argv = manager
         .session_file()
         .filter(|_| !manager.entries().is_empty())
@@ -284,9 +286,7 @@ pub fn session_record(
         resume_argv,
         headless,
         daemon: false,
-        // A terminal writes a record only when something about the session
-        // changed, so the record's own time says when that was.
-        last_activity_at: None,
+        last_activity_at,
     }
 }
 
@@ -371,6 +371,67 @@ mod tests {
         off.remote.enabled = Some(false);
         let args = Args::parse_from(["super"]);
         assert!(!wanted(&args, &off));
+    }
+
+    fn session(directory: &Path, saved: bool) -> Arc<AgentSession> {
+        let registry = super_ai::Registry::from_builtin();
+        let model = registry.all()[0].clone();
+        let mut manager =
+            super_coding::SessionManager::create(directory, Some(directory.join("sessions")))
+                .unwrap();
+        if saved {
+            manager
+                .append_message(super_agent::AgentMessage::user("Fix the login bug"))
+                .unwrap();
+        }
+        AgentSession::new(
+            manager,
+            Vec::new(),
+            registry,
+            Settings::default(),
+            "test".into(),
+            model,
+            super_ai::ThinkingLevel::Off,
+            None,
+            Arc::new(|_| {}),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_terminal_session_was_last_active_when_its_file_was_last_written() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let args = Args::parse_from(["super"]);
+
+        // Nothing said yet, so no file: the platform takes its own time.
+        let fresh = session(&dir.path().join("fresh"), false);
+        let record = session_record(SessionState::Idle, None, &fresh, &args, false);
+        assert_eq!(record.last_activity_at, None);
+        assert!(!record.daemon);
+
+        // A session last used two days ago, opened again today.
+        let saved = session(&dir.path().join("saved"), true);
+        let file = saved
+            .manager
+            .lock()
+            .unwrap()
+            .session_file()
+            .expect("a session file")
+            .to_path_buf();
+        let two_days_ago =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .expect("open")
+            .set_modified(two_days_ago)
+            .expect("set the modification time");
+        let record = session_record(SessionState::Idle, None, &saved, &args, false);
+        assert_eq!(
+            record.last_activity_at,
+            Some(super_remote::registry::timestamp(two_days_ago))
+        );
+        assert_eq!(record.first_message.as_deref(), Some("Fix the login bug"));
+        assert!(!record.daemon);
     }
 
     #[test]

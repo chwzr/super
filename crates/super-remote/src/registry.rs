@@ -1,222 +1,391 @@
-//! The `registry` stream: which hosts exist, which sessions run on them, and
-//! what state they are in. Readers fold the stream to the latest record per
-//! host and per session.
+//! The registry: which machines exist, which sessions they have and what
+//! state those are in. It lives in the platform's database. A signed-in
+//! `super` writes its own machine and sessions over HTTP ([`RegistryWriter`])
+//! and reads everyone's with one request ([`RegistryClient::read`]).
 
+use crate::RemoteCredentials;
 use crate::machine::MachineIdentity;
-use crate::s2::{AppendOptions, AppendRecord, ReadEvent, ReadStart, S2Client, S2Error};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-pub const REGISTRY_STREAM: &str = "registry";
+/// How often a writer tells the platform that its machine is there. The
+/// platform takes a machine offline 90 seconds after its last heartbeat.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// How long a writer waits before it sends again what the platform did not
+/// take.
+pub const RETRY_INTERVAL: Duration = Duration::from_secs(5);
+/// The most sessions the platform takes in one complete list.
+pub const MAX_LISTED_SESSIONS: usize = 10_000;
+/// No registry call may take longer, so a hanging one cannot hold up the
+/// heartbeat for long.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub use super_sdk::daemon::SessionState;
 
-/// One session as announced to controllers.
+/// One session as the registry holds it, without the machine it is on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
+    #[serde(rename = "id")]
     pub session_id: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub workspace: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub cwd: String,
     pub state: SessionState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub blocked_reason: Option<String>,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub model: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub thinking_level: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub first_message: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub resume_argv: Vec<String>,
     /// Set when the session is driven by a headless process a desktop app
     /// controls over local RPC.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub headless: bool,
     /// Set when the session is hosted by the SUPER daemon.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub daemon: bool,
-    /// Unix milliseconds of the session's last activity: when its newest
-    /// entry was written. The record's own `at` is when the record was
-    /// written, which moves every time the record is sent again.
+    /// When something was last said in the session, RFC 3339 in UTC: the
+    /// time its file was last written. A writer that leaves it out gets the
+    /// time of the request for a new session and keeps the stored time for
+    /// one the platform knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_activity_at: Option<i64>,
+    pub last_activity_at: Option<String>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HostBody<'a> {
-    kind: &'static str,
-    machine_id: &'a str,
-    name: &'a str,
-    platform: &'a str,
-    device_id: &'a str,
-    /// Set when the SUPER daemon runs on the host, so apps can ask it to
-    /// start and resume sessions there.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    daemon: bool,
-    at: i64,
+impl SessionRecord {
+    /// Whether `other` says the same about the session, whatever time of
+    /// last activity each of them names.
+    fn same_but_activity(&self, other: &Self) -> bool {
+        self.session_id == other.session_id
+            && self.workspace == other.workspace
+            && self.cwd == other.cwd
+            && self.state == other.state
+            && self.blocked_reason == other.blocked_reason
+            && self.model == other.model
+            && self.thinking_level == other.thinking_level
+            && self.name == other.name
+            && self.first_message == other.first_message
+            && self.resume_argv == other.resume_argv
+            && self.headless == other.headless
+            && self.daemon == other.daemon
+    }
+
+    /// The body of `PUT …/sessions/{sessionId}`: every field but the id,
+    /// which the path names.
+    fn body(&self) -> Value {
+        let mut body = serde_json::to_value(self).unwrap_or_default();
+        if let Some(fields) = body.as_object_mut() {
+            fields.remove("id");
+        }
+        body
+    }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionBody<'a> {
-    kind: &'static str,
-    machine_id: &'a str,
-    #[serde(flatten)]
-    session: &'a SessionRecord,
-    at: i64,
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeartbeatBody<'a> {
-    kind: &'static str,
-    machine_id: &'a str,
-    at: i64,
+/// A point in time as the registry writes it: RFC 3339, seconds, UTC.
+pub fn timestamp(time: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// When `file` was last written, as [`timestamp`] gives it; `None` when
+/// there is no such file.
+pub fn modified_at(file: &Path) -> Option<String> {
+    std::fs::metadata(file)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(timestamp)
+}
+
+#[derive(Debug)]
+pub enum RegistryError {
+    /// The platform rejected the token.
+    Unauthorized,
+    /// The platform does not know the machine: it was never announced, or
+    /// it was removed.
+    NotFound,
+    /// Any other HTTP status.
+    Status(u16, String),
+    /// Network or protocol failure.
+    Transport(String),
+}
+
+impl std::fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => write!(f, "unauthorized"),
+            Self::NotFound => write!(f, "not found"),
+            Self::Status(status, body) => write!(f, "http {status}: {body}"),
+            Self::Transport(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for RegistryError {}
+
+/// The platform's registry endpoints, with the bearer token every other
+/// platform call of this process uses.
+pub struct RegistryClient {
+    http: reqwest::Client,
+    base_url: String,
+    credentials: Arc<dyn RemoteCredentials>,
+}
+
+impl RegistryClient {
+    /// `platform_url` is the platform's base URL, for example
+    /// `https://super.flxkpe.io`.
+    pub fn new(
+        http: reqwest::Client,
+        platform_url: String,
+        credentials: Arc<dyn RemoteCredentials>,
+    ) -> Self {
+        Self {
+            http,
+            base_url: platform_url.trim_end_matches('/').to_string(),
+            credentials,
+        }
+    }
+
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<reqwest::Response, RegistryError> {
+        let token = self
+            .credentials
+            .access_token()
+            .await
+            .map_err(|error| RegistryError::Transport(format!("access token: {error:#}")))?;
+        let mut request = self
+            .http
+            .request(method, format!("{}{path}", self.base_url))
+            .bearer_auth(token)
+            .timeout(REQUEST_TIMEOUT);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| RegistryError::Transport(error.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let text = response.text().await.unwrap_or_default();
+        Err(match status.as_u16() {
+            401 => RegistryError::Unauthorized,
+            404 => RegistryError::NotFound,
+            code => RegistryError::Status(code, text),
+        })
+    }
+
+    /// `PUT /api/machines/{machineId}`: create the machine or update its
+    /// name and platform. Counts as a heartbeat.
+    pub async fn announce(
+        &self,
+        machine: &MachineIdentity,
+        daemon: bool,
+    ) -> Result<(), RegistryError> {
+        let mut body = json!({"name": machine.name, "platform": machine.platform});
+        if daemon {
+            body["daemon"] = Value::Bool(true);
+        }
+        self.send(
+            reqwest::Method::PUT,
+            &machine_path(&machine.machine_id),
+            Some(&body),
+        )
+        .await
+        .map(drop)
+    }
+
+    /// `POST /api/machines/{machineId}/heartbeat`.
+    pub async fn heartbeat(&self, machine_id: &str, daemon: bool) -> Result<(), RegistryError> {
+        let body = if daemon {
+            json!({"daemon": true})
+        } else {
+            json!({})
+        };
+        let path = format!("{}/heartbeat", machine_path(machine_id));
+        self.send(reqwest::Method::POST, &path, Some(&body))
+            .await
+            .map(drop)
+    }
+
+    /// `PUT /api/machines/{machineId}/sessions/{sessionId}`: create the
+    /// session or replace what the platform has of it.
+    pub async fn put_session(
+        &self,
+        machine_id: &str,
+        session: &SessionRecord,
+    ) -> Result<(), RegistryError> {
+        let path = format!(
+            "{}/sessions/{}",
+            machine_path(machine_id),
+            crate::s2::encode_segment(&session.session_id)
+        );
+        self.send(reqwest::Method::PUT, &path, Some(&session.body()))
+            .await
+            .map(drop)
+    }
+
+    /// `PUT /api/machines/{machineId}/sessions`: a daemon's complete list.
+    /// The platform creates or replaces every session in it and removes the
+    /// machine's daemon sessions that are not in it.
+    pub async fn put_sessions(
+        &self,
+        machine_id: &str,
+        sessions: &[SessionRecord],
+    ) -> Result<(), RegistryError> {
+        let path = format!("{}/sessions", machine_path(machine_id));
+        self.send(
+            reqwest::Method::PUT,
+            &path,
+            Some(&json!({"sessions": sessions})),
+        )
+        .await
+        .map(drop)
+    }
+
+    /// `GET /api/registry`: every machine and session of the account as
+    /// the platform knows them now.
+    pub async fn read(&self) -> Result<Registry, RegistryError> {
+        let response = self
+            .send(reqwest::Method::GET, "/api/registry", None)
+            .await?;
+        let value: Value = response
+            .json()
+            .await
+            .map_err(|error| RegistryError::Transport(format!("decode registry: {error}")))?;
+        Ok(Registry::from_value(&value))
+    }
+}
+
+fn machine_path(machine_id: &str) -> String {
+    format!("/api/machines/{}", crate::s2::encode_segment(machine_id))
+}
+
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+/// The pace of a [`RegistryWriter`].
+#[derive(Debug, Clone, Copy)]
+pub struct WriterOptions {
+    pub heartbeat: Duration,
+    pub retry: Duration,
+}
+
+impl Default for WriterOptions {
+    fn default() -> Self {
+        Self {
+            heartbeat: HEARTBEAT_INTERVAL,
+            retry: RETRY_INTERVAL,
+        }
+    }
 }
 
 enum Update {
     Publish(Box<SessionRecord>),
-    Refresh,
+    PublishAll(Vec<SessionRecord>),
 }
 
-/// Publishes the host's presence and a record per session. Drop or call
-/// [`RegistryWriter::stop`] to announce the end.
+/// Keeps this machine and its sessions current in the registry. Drop or call
+/// [`RegistryWriter::stop`] to mark the sessions as ended.
 pub struct RegistryWriter {
     updates: mpsc::UnboundedSender<Update>,
     cancel: CancellationToken,
+    unauthorized: Arc<AtomicBool>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RegistryWriter {
-    /// Start announcing. The host record goes out first, then every change
-    /// to any session record, and a heartbeat every 30 seconds.
-    pub fn start(client: Arc<S2Client>, host: MachineIdentity, device_id: String) -> Self {
-        Self::spawn(client, host, device_id, false)
+    /// Start writing. The machine is announced first, then every change to
+    /// a session is sent, and a heartbeat every 30 seconds.
+    pub fn start(client: Arc<RegistryClient>, machine: MachineIdentity) -> Self {
+        Self::start_with(client, machine, false, WriterOptions::default())
     }
 
-    /// [`start`](Self::start) for the SUPER daemon: the host record carries
-    /// `"daemon": true`, also when no session exists yet.
-    pub fn start_daemon(client: Arc<S2Client>, host: MachineIdentity, device_id: String) -> Self {
-        Self::spawn(client, host, device_id, true)
+    /// [`start`](Self::start) for the SUPER daemon: the announcement and
+    /// the heartbeats carry `"daemon": true`, also when no session exists
+    /// yet.
+    pub fn start_daemon(client: Arc<RegistryClient>, machine: MachineIdentity) -> Self {
+        Self::start_with(client, machine, true, WriterOptions::default())
     }
 
-    fn spawn(
-        client: Arc<S2Client>,
-        host: MachineIdentity,
-        device_id: String,
+    pub fn start_with(
+        client: Arc<RegistryClient>,
+        machine: MachineIdentity,
         daemon: bool,
+        options: WriterOptions,
     ) -> Self {
-        let (updates, mut updates_rx) = mpsc::unbounded_channel::<Update>();
+        let (updates, updates_rx) = mpsc::unbounded_channel::<Update>();
         let cancel = CancellationToken::new();
-        let worker_cancel = cancel.clone();
-        let task = tokio::spawn(async move {
-            let mut announced_host = false;
-            let mut sent: BTreeMap<String, SessionRecord> = BTreeMap::new();
-            let mut pending: BTreeMap<String, SessionRecord> = BTreeMap::new();
-            loop {
-                if !announced_host {
-                    let body = HostBody {
-                        kind: "host",
-                        machine_id: &host.machine_id,
-                        name: &host.name,
-                        platform: &host.platform,
-                        device_id: &device_id,
-                        daemon,
-                        at: crate::now_ms(),
-                    };
-                    announced_host = append(&client, "host", &body).await;
-                }
-                let due: Vec<SessionRecord> = pending.values().cloned().collect();
-                for record in due {
-                    if sent.get(&record.session_id) == Some(&record) {
-                        pending.remove(&record.session_id);
-                        continue;
-                    }
-                    let body = SessionBody {
-                        kind: "session",
-                        machine_id: &host.machine_id,
-                        session: &record,
-                        at: crate::now_ms(),
-                    };
-                    if append(&client, "session", &body).await {
-                        pending.remove(&record.session_id);
-                        sent.insert(record.session_id.clone(), record);
-                    } else {
-                        break;
-                    }
-                }
-                let retry = if pending.is_empty() {
-                    HEARTBEAT_INTERVAL
-                } else {
-                    Duration::from_secs(5)
-                };
-                tokio::select! {
-                    _ = worker_cancel.cancelled() => break,
-                    update = updates_rx.recv() => match update {
-                        Some(Update::Publish(record)) => {
-                            pending.insert(record.session_id.clone(), *record);
-                        }
-                        Some(Update::Refresh) => {
-                            // Forget what was sent, the host record included, so
-                            // the next pass sends it all again.
-                            announced_host = false;
-                            let known = std::mem::take(&mut sent);
-                            for (id, record) in known {
-                                pending.entry(id).or_insert(record);
-                            }
-                        }
-                        None => break,
-                    },
-                    _ = tokio::time::sleep(retry) => {
-                        if pending.is_empty() {
-                            let body = HeartbeatBody { kind: "heartbeat", machine_id: &host.machine_id, at: crate::now_ms() };
-                            append(&client, "heartbeat", &body).await;
-                        }
-                    }
-                }
-            }
-            // Say goodbye so controllers do not show a stale "working".
-            for (_, mut record) in sent {
-                if record.state == SessionState::Ended {
-                    continue;
-                }
-                record.state = SessionState::Ended;
-                record.blocked_reason = None;
-                let body = SessionBody {
-                    kind: "session",
-                    machine_id: &host.machine_id,
-                    session: &record,
-                    at: crate::now_ms(),
-                };
-                append(&client, "session", &body).await;
-            }
-        });
+        let unauthorized = Arc::new(AtomicBool::new(false));
+        let worker = Worker {
+            client,
+            machine,
+            daemon,
+            announced: false,
+            sent: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            list: None,
+            unauthorized: unauthorized.clone(),
+        };
+        let task = tokio::spawn(worker.run(updates_rx, cancel.clone(), options));
         Self {
             updates,
             cancel,
+            unauthorized,
             task: Some(task),
         }
     }
 
-    /// Publish a session's snapshot. An unchanged snapshot is not re-sent.
+    /// Publish a session's state. Returns at once: the writer keeps the
+    /// newest state per session and sends it, again every few seconds until
+    /// the platform took it. A state that differs from the one the platform
+    /// has only in the time of the last activity is not sent.
     pub fn publish(&self, record: SessionRecord) {
         let _ = self.updates.send(Update::Publish(Box::new(record)));
     }
 
-    /// Send the host record and every known session record again, for
-    /// readers whose copy expired.
-    pub fn refresh(&self) {
-        let _ = self.updates.send(Update::Refresh);
+    /// Publish a daemon's complete list in one request: the platform takes
+    /// every session in it and drops this machine's daemon sessions that
+    /// are not in it. Only the daemon may call this.
+    pub fn publish_all(&self, records: Vec<SessionRecord>) {
+        let _ = self.updates.send(Update::PublishAll(records));
     }
 
-    /// Announce the end and wait for the last append.
+    /// The platform rejected the token; a new sign-in is needed.
+    pub fn unauthorized(&self) -> bool {
+        self.unauthorized.load(Ordering::Relaxed)
+    }
+
+    /// Mark the sessions as ended and wait for that, three seconds at most.
     pub async fn stop(mut self) {
         self.cancel.cancel();
         if let Some(task) = self.task.take() {
@@ -231,22 +400,211 @@ impl Drop for RegistryWriter {
     }
 }
 
-async fn append<T: Serialize>(client: &S2Client, kind: &str, body: &T) -> bool {
-    let Ok(body) = serde_json::to_string(body) else {
-        return false;
-    };
-    let record = AppendRecord::new(body).header("t", kind);
-    match client
-        .append(REGISTRY_STREAM, &[record], &AppendOptions::default())
-        .await
-    {
-        Ok(ack) => {
-            crate::log::line(format!("registry append {kind} seq {}", ack.start.seq_num));
-            true
+struct Worker {
+    client: Arc<RegistryClient>,
+    machine: MachineIdentity,
+    daemon: bool,
+    /// The platform knows the machine, as far as this writer can tell.
+    announced: bool,
+    /// What the platform has of each session.
+    sent: BTreeMap<String, SessionRecord>,
+    /// The newest state of each session that is still to send.
+    pending: BTreeMap<String, SessionRecord>,
+    /// A complete list that is still to send. It goes out before `pending`,
+    /// which holds what changed after the list was made.
+    list: Option<Vec<SessionRecord>>,
+    unauthorized: Arc<AtomicBool>,
+}
+
+impl Worker {
+    async fn run(
+        mut self,
+        mut updates: mpsc::UnboundedReceiver<Update>,
+        cancel: CancellationToken,
+        options: WriterOptions,
+    ) {
+        let mut heartbeat =
+            tokio::time::interval_at(Instant::now() + options.heartbeat, options.heartbeat);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The announcement comes before anything else.
+        let mut retry_at = self.flush_or_retry(options.retry).await;
+        loop {
+            let retry = async {
+                match retry_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                // In this order, so that a stream of updates never keeps a
+                // heartbeat from going out.
+                biased;
+                _ = cancel.cancelled() => break,
+                _ = heartbeat.tick() => {
+                    if self.beat().await && retry_at.is_none() {
+                        retry_at = self.flush_or_retry(options.retry).await;
+                    }
+                }
+                _ = retry => retry_at = self.flush_or_retry(options.retry).await,
+                update = updates.recv() => {
+                    let Some(update) = update else { break };
+                    self.take(update);
+                    // A burst is sent once, with the newest state of each.
+                    while let Ok(update) = updates.try_recv() {
+                        self.take(update);
+                    }
+                    // While something waits for its retry, so does this.
+                    if retry_at.is_none() {
+                        retry_at = self.flush_or_retry(options.retry).await;
+                    }
+                }
+            }
         }
-        Err(error) => {
-            crate::log::line(format!("registry append {kind} failed: {error}"));
-            false
+        self.goodbye().await;
+    }
+
+    fn take(&mut self, update: Update) {
+        match update {
+            Update::Publish(record) => {
+                self.pending.insert(record.session_id.clone(), *record);
+            }
+            Update::PublishAll(mut records) => {
+                if records.len() > MAX_LISTED_SESSIONS {
+                    crate::log::line(format!(
+                        "registry: {} sessions, the first {MAX_LISTED_SESSIONS} are listed",
+                        records.len()
+                    ));
+                    records.truncate(MAX_LISTED_SESSIONS);
+                }
+                // The list is newer than anything that waited.
+                self.pending.clear();
+                self.list = Some(records);
+            }
+        }
+    }
+
+    /// Send what is to send. `None` when the platform has it all, else when
+    /// to try again.
+    async fn flush_or_retry(&mut self, retry: Duration) -> Option<Instant> {
+        // A 404 means the platform forgot the machine: announce it again at
+        // once, and wait for the retry only when that did not help.
+        for _ in 0..2 {
+            match self.flush().await {
+                Ok(()) => return None,
+                Err(RegistryError::NotFound) => self.forgotten(),
+                Err(_) => break,
+            }
+        }
+        Some(Instant::now() + retry)
+    }
+
+    async fn flush(&mut self) -> Result<(), RegistryError> {
+        if !self.announced {
+            let announced = self.client.announce(&self.machine, self.daemon).await;
+            self.note("announce", announced)?;
+            self.announced = true;
+        }
+        if let Some(list) = &self.list {
+            let listed = self
+                .client
+                .put_sessions(&self.machine.machine_id, list)
+                .await;
+            self.note("sessions", listed)?;
+            self.sent = self
+                .list
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|record| (record.session_id.clone(), record))
+                .collect();
+        }
+        while let Some((id, record)) = self.pending.pop_first() {
+            if self
+                .sent
+                .get(&id)
+                .is_some_and(|sent| sent.same_but_activity(&record))
+            {
+                continue;
+            }
+            let put = self
+                .client
+                .put_session(&self.machine.machine_id, &record)
+                .await;
+            if let Err(error) = self.note("session", put) {
+                self.pending.insert(id, record);
+                return Err(error);
+            }
+            self.sent.insert(id, record);
+        }
+        Ok(())
+    }
+
+    /// One heartbeat. Returns whether there is something to send after it:
+    /// the machine was not announced yet, or the platform forgot it.
+    async fn beat(&mut self) -> bool {
+        if !self.announced {
+            // The announcement that is due counts as the heartbeat.
+            return true;
+        }
+        let beat = self
+            .client
+            .heartbeat(&self.machine.machine_id, self.daemon)
+            .await;
+        match self.note("heartbeat", beat) {
+            Err(RegistryError::NotFound) => {
+                self.forgotten();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The platform does not know the machine, so it has none of its
+    /// sessions either: announce it again and send them all again.
+    fn forgotten(&mut self) {
+        self.announced = false;
+        let known = std::mem::take(&mut self.sent);
+        if self.daemon {
+            if self.list.is_none() {
+                self.list = Some(known.into_values().collect());
+            }
+        } else {
+            for (id, record) in known {
+                self.pending.entry(id).or_insert(record);
+            }
+        }
+    }
+
+    fn note(&self, what: &str, result: Result<(), RegistryError>) -> Result<(), RegistryError> {
+        match &result {
+            Ok(()) => crate::log::line(format!("registry {what} sent")),
+            Err(error) => {
+                if matches!(error, RegistryError::Unauthorized) {
+                    self.unauthorized.store(true, Ordering::Relaxed);
+                }
+                crate::log::line(format!("registry {what} failed: {error}"));
+            }
+        }
+        result
+    }
+
+    /// Mark every session the platform has as live as ended, so no client
+    /// shows a stale "working".
+    async fn goodbye(self) {
+        for mut record in self.sent.into_values() {
+            if record.state == SessionState::Ended {
+                continue;
+            }
+            record.state = SessionState::Ended;
+            record.blocked_reason = None;
+            let put = self
+                .client
+                .put_session(&self.machine.machine_id, &record)
+                .await;
+            if let Err(error) = put {
+                crate::log::line(format!("registry goodbye failed: {error}"));
+                break;
+            }
         }
     }
 }
@@ -255,212 +613,75 @@ async fn append<T: Serialize>(client: &S2Client, kind: &str, body: &T) -> bool {
 // Reading
 // ---------------------------------------------------------------------------
 
-/// A host is online when anything about it (host record, heartbeat, session
-/// record) is at most this old. Heartbeats come every 30 seconds; the apps
-/// use the same window.
-pub const ONLINE_WINDOW: Duration = Duration::from_secs(90);
-
-/// How long a host record's `daemon` flag outlives a newer host record
-/// without it, as in the apps. A daemon sends its host record again every six
-/// hours; a standalone `super` on the same machine (`-p`, `--mode rpc`,
-/// `daemon.attach: false`) writes host records without the flag, which must
-/// not hide the daemon in between.
-pub const DAEMON_FLAG_WINDOW: Duration = Duration::from_secs(6 * 3600 + 90);
-
-/// A host as the registry knows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegistryHost {
-    pub machine_id: String,
-    /// The host id until a host record names it.
+/// A machine as the registry lists it. The platform decides `online` and
+/// `daemon` from the machine's heartbeats.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryMachine {
+    pub id: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub platform: String,
-    /// The newest host record says the SUPER daemon runs there. Whether it
-    /// takes host commands is [`RegistryView::runs_daemon`].
+    /// A SUPER daemon runs there, so sessions can be started and resumed.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub daemon: bool,
-    /// Unix milliseconds of the newest host record that said `daemon: true`.
-    pub daemon_flagged_at: Option<i64>,
-    /// Unix milliseconds of the newest record about the host.
-    pub last_seen: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub online: bool,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
 }
 
-/// A session record and the host that announced it.
+/// A session and the machine it is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistrySession {
     pub machine_id: String,
     pub record: SessionRecord,
-    /// Unix milliseconds of the record.
-    pub at: i64,
 }
 
-impl RegistrySession {
-    /// Unix milliseconds of the session's last activity. A record without
-    /// `lastActivityAt` (a terminal session, an older daemon) only has the
-    /// time it was written.
-    pub fn last_activity_at(&self) -> i64 {
-        self.record.last_activity_at.unwrap_or(self.at)
-    }
-}
-
-/// The `registry` stream folded to the newest record per host and per
-/// session, as the apps fold it.
+/// What `GET /api/registry` answers, as far as a terminal uses it: the
+/// machines and their sessions. Chats and projects are left out.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RegistryView {
-    hosts: BTreeMap<String, RegistryHost>,
-    sessions: BTreeMap<(String, String), RegistrySession>,
+pub struct Registry {
+    pub machines: Vec<RegistryMachine>,
+    pub sessions: Vec<RegistrySession>,
 }
 
-impl RegistryView {
-    /// Apply one record body, in stream order. Unknown kinds and malformed
-    /// bodies are skipped.
-    pub fn apply(&mut self, body: &str) {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-            return;
-        };
-        let machine_id = value["machineId"].as_str().unwrap_or_default().to_string();
-        if machine_id.is_empty() {
-            return;
-        }
-        let at = value["at"].as_i64().unwrap_or(0);
-        match value["kind"].as_str() {
-            Some("host") => {
-                let host = self.host(&machine_id);
-                if let Some(name) = value["name"].as_str() {
-                    host.name = name.to_string();
-                }
-                if let Some(platform) = value["platform"].as_str() {
-                    host.platform = platform.to_string();
-                }
-                host.daemon = value["daemon"].as_bool().unwrap_or(false);
-                if host.daemon && host.daemon_flagged_at.is_none_or(|flagged| flagged < at) {
-                    host.daemon_flagged_at = Some(at);
-                }
-                host.last_seen = host.last_seen.max(at);
-            }
-            Some("heartbeat") => {
-                let host = self.host(&machine_id);
-                host.last_seen = host.last_seen.max(at);
-            }
-            Some("session") => {
-                let Ok(record) = serde_json::from_value::<SessionRecord>(value) else {
-                    return;
-                };
-                let host = self.host(&machine_id);
-                host.last_seen = host.last_seen.max(at);
-                self.sessions.insert(
-                    (machine_id.clone(), record.session_id.clone()),
-                    RegistrySession {
-                        machine_id,
-                        record,
-                        at,
-                    },
-                );
-            }
-            _ => {}
+impl Registry {
+    /// Read the answer. A machine or session this build cannot read (a
+    /// state it does not know, say) is skipped.
+    pub fn from_value(value: &Value) -> Self {
+        let list = |name: &str| value[name].as_array().cloned().unwrap_or_default();
+        Self {
+            machines: list("machines")
+                .into_iter()
+                .filter_map(|machine| serde_json::from_value::<RegistryMachine>(machine).ok())
+                .filter(|machine| !machine.id.is_empty())
+                .collect(),
+            sessions: list("sessions")
+                .into_iter()
+                .filter_map(|session| {
+                    let machine_id = session["machineId"].as_str()?.to_string();
+                    let record = serde_json::from_value::<SessionRecord>(session).ok()?;
+                    Some(RegistrySession { machine_id, record })
+                })
+                .collect(),
         }
     }
 
-    fn host(&mut self, machine_id: &str) -> &mut RegistryHost {
-        self.hosts
-            .entry(machine_id.to_string())
-            .or_insert_with(|| RegistryHost {
-                machine_id: machine_id.to_string(),
-                name: machine_id.to_string(),
-                platform: "unknown".into(),
-                daemon: false,
-                daemon_flagged_at: None,
-                last_seen: 0,
-            })
+    pub fn machine(&self, machine_id: &str) -> Option<&RegistryMachine> {
+        self.machines
+            .iter()
+            .find(|machine| machine.id == machine_id)
     }
 
-    pub fn hosts(&self) -> impl Iterator<Item = &RegistryHost> {
-        self.hosts.values()
-    }
-
-    pub fn host_by_id(&self, machine_id: &str) -> Option<&RegistryHost> {
-        self.hosts.get(machine_id)
-    }
-
-    pub fn sessions(&self) -> impl Iterator<Item = &RegistrySession> {
-        self.sessions.values()
-    }
-
-    /// Whether anything about the host is at most [`ONLINE_WINDOW`] old at
-    /// `now` (Unix milliseconds).
-    pub fn is_online(&self, machine_id: &str, now: i64) -> bool {
-        self.hosts.get(machine_id).is_some_and(|host| {
-            host.last_seen > 0 && now - host.last_seen <= ONLINE_WINDOW.as_millis() as i64
-        })
-    }
-
-    /// Whether the SUPER daemon runs on the host at `now`, as the apps
-    /// decide it: its newest host record says so, a host record said so
-    /// within [`DAEMON_FLAG_WINDOW`], or one of its session records says so
-    /// (a daemon marks every session it hosts or keeps).
-    pub fn runs_daemon(&self, machine_id: &str, now: i64) -> bool {
-        let flagged = self.hosts.get(machine_id).is_some_and(|host| {
-            host.daemon
-                || host
-                    .daemon_flagged_at
-                    .is_some_and(|flagged| now - flagged <= DAEMON_FLAG_WINDOW.as_millis() as i64)
-        });
-        flagged
-            || self
-                .sessions
-                .values()
-                .any(|session| session.machine_id == machine_id && session.record.daemon)
-    }
-}
-
-/// Read the whole `registry` stream as it is now and fold it. Gives up after
-/// `limit`.
-pub async fn read_registry(
-    client: &Arc<S2Client>,
-    limit: Duration,
-) -> Result<RegistryView, S2Error> {
-    let mut view = RegistryView::default();
-    let tail = match client.tail(REGISTRY_STREAM).await {
-        Ok(tail) => tail,
-        // Nobody has announced anything yet.
-        Err(S2Error::Status(404, _)) => return Ok(view),
-        Err(error) => return Err(error),
-    };
-    if tail == 0 {
-        return Ok(view);
-    }
-    let cancel = CancellationToken::new();
-    let mut reader = client.tail_stream(
-        REGISTRY_STREAM.to_string(),
-        ReadStart::SeqNum(0),
-        cancel.clone(),
-    );
-    let read = tokio::time::timeout(limit, async {
-        while let Some(event) = reader.recv().await {
-            match event {
-                ReadEvent::Records(records) => {
-                    for record in &records {
-                        view.apply(&record.body);
-                    }
-                    if records.last().is_some_and(|last| last.seq_num + 1 >= tail) {
-                        return Ok(());
-                    }
-                }
-                // Older records may be gone; a ping at the tail means done.
-                ReadEvent::Ping { tail: Some(at) } if at >= tail => return Ok(()),
-                ReadEvent::Failed(reason) => return Err(S2Error::Transport(reason)),
-                _ => {}
-            }
-        }
-        Err(S2Error::Transport("the registry read ended early".into()))
-    })
-    .await;
-    cancel.cancel();
-    match read {
-        Ok(Ok(())) => Ok(view),
-        Ok(Err(error)) => Err(error),
-        Err(_) => Err(S2Error::Transport(format!(
-            "reading the registry took longer than {}s",
-            limit.as_secs()
-        ))),
+    pub fn sessions_on<'a>(
+        &'a self,
+        machine_id: &'a str,
+    ) -> impl Iterator<Item = &'a RegistrySession> {
+        self.sessions
+            .iter()
+            .filter(move |session| session.machine_id == machine_id)
     }
 }
 
@@ -468,9 +689,8 @@ pub async fn read_registry(
 mod tests {
     use super::*;
 
-    #[test]
-    fn session_records_serialize_in_the_documented_shape() {
-        let record = SessionRecord {
+    fn record() -> SessionRecord {
+        SessionRecord {
             session_id: "a1b2c3d4".into(),
             workspace: "/w".into(),
             cwd: "/w".into(),
@@ -484,160 +704,126 @@ mod tests {
             headless: false,
             daemon: false,
             last_activity_at: None,
-        };
-        let body = SessionBody {
-            kind: "session",
-            machine_id: "01H",
-            session: &record,
-            at: 1,
-        };
-        let json = serde_json::to_value(&body).expect("json");
-        assert_eq!(json["kind"], "session");
-        assert_eq!(json["machineId"], "01H");
-        assert_eq!(json["sessionId"], "a1b2c3d4");
-        assert_eq!(json["state"], "blocked");
-        assert_eq!(json["blockedReason"], "Workflow approval required");
-        assert!(json.get("headless").is_none());
-        assert!(json.get("name").is_none());
-        assert!(json.get("lastActivityAt").is_none());
-
-        // The daemon says when the session last did something; `at` stays
-        // the time of the record.
-        let record = SessionRecord {
-            last_activity_at: Some(1_760_600_000_000),
-            ..record
-        };
-        let body = SessionBody {
-            kind: "session",
-            machine_id: "01H",
-            session: &record,
-            at: 2,
-        };
-        let json = serde_json::to_value(&body).expect("json");
-        assert_eq!(json["lastActivityAt"], 1_760_600_000_000_i64);
-        assert_eq!(json["at"], 2);
+        }
     }
 
     #[test]
-    fn a_session_is_last_active_when_its_record_says_else_when_it_was_written() {
-        let session = |id: &str, extra: &str, at: i64| {
-            format!(
-                r#"{{"kind":"session","machineId":"01H","sessionId":"{id}","workspace":"/w","cwd":"/w","state":"ended","model":"","thinkingLevel":"","daemon":true{extra},"at":{at}}}"#
-            )
-        };
-        let mut view = RegistryView::default();
-        view.apply(&session("a1", r#","lastActivityAt":1000"#, 50_000));
-        // Sent again six hours later: the same session, nothing new in it.
-        view.apply(&session("a1", r#","lastActivityAt":1000"#, 21_650_000));
-        // A terminal session, or a daemon from before the field existed.
-        view.apply(&session("b2", "", 60_000));
-        let sessions: Vec<&RegistrySession> = view.sessions().collect();
-        assert_eq!(sessions[0].at, 21_650_000);
-        assert_eq!(sessions[0].last_activity_at(), 1000);
-        assert_eq!(sessions[1].last_activity_at(), 60_000);
-        // The host was seen when the record was written, whatever it says
-        // about the session.
-        assert_eq!(view.host_by_id("01H").unwrap().last_seen, 21_650_000);
-    }
-
-    #[test]
-    fn a_daemon_stays_known_beside_a_standalone_super_on_the_same_host() {
-        let host = |daemon: bool, at: i64| {
-            format!(
-                r#"{{"kind":"host","machineId":"01H","name":"linuxbox","platform":"linux","daemon":{daemon},"at":{at}}}"#
-            )
-        };
-        let window = DAEMON_FLAG_WINDOW.as_millis() as i64;
-        let mut view = RegistryView::default();
-        view.apply(&host(true, 1_000));
-        // A `super -p` there announces the host without the flag.
-        view.apply(&host(false, 2_000));
-        assert!(!view.host_by_id("01H").unwrap().daemon, "the newest record");
-        assert!(view.runs_daemon("01H", 2_000));
-        assert!(view.runs_daemon("01H", 1_000 + window));
-        assert!(
-            !view.runs_daemon("01H", 1_000 + window + 1),
-            "a daemon renews its host record well before the flag lapses"
-        );
-
-        // A session record of the daemon says it runs there too.
-        let mut sessions = RegistryView::default();
-        sessions.apply(&host(false, 1_000));
-        assert!(!sessions.runs_daemon("01H", 1_000));
-        sessions.apply(
-            r#"{"kind":"session","machineId":"01H","sessionId":"a1","workspace":"/w","cwd":"/w","state":"ended","model":"m","thinkingLevel":"off","daemon":true,"at":900}"#,
-        );
-        assert!(sessions.runs_daemon("01H", 1_000 + window + 1));
-        assert!(!sessions.runs_daemon("02X", 1_000));
-    }
-
-    #[test]
-    fn the_view_keeps_the_newest_record_per_host_and_session() {
-        let mut view = RegistryView::default();
-        view.apply(
-            r#"{"kind":"host","machineId":"01H","name":"mbp","platform":"macos","deviceId":"d","daemon":true,"at":1000}"#,
-        );
-        let session = |state: &str, at: i64| {
-            format!(
-                r#"{{"kind":"session","machineId":"01H","sessionId":"a1","workspace":"/w","cwd":"/w","state":"{state}","model":"mock/mock-1","thinkingLevel":"off","at":{at}}}"#
-            )
-        };
-        view.apply(&session("working", 2000));
-        view.apply(&session("idle", 3000));
-        // A session on a host whose host record has expired, and junk.
-        view.apply(
-            r#"{"kind":"session","machineId":"02L","sessionId":"b2","workspace":"/srv","cwd":"/srv","state":"ended","model":"m","thinkingLevel":"off","at":500}"#,
-        );
-        view.apply("not json");
-        view.apply(
-            r#"{"kind":"session","machineId":"02L","sessionId":"c3","state":"strange","at":9}"#,
-        );
-        view.apply(r#"{"kind":"heartbeat","machineId":"01H","at":120000}"#);
-
-        let hosts: Vec<&RegistryHost> = view.hosts().collect();
-        assert_eq!(hosts.len(), 2);
-        assert_eq!(hosts[0].name, "mbp");
-        assert!(hosts[0].daemon);
-        assert_eq!(hosts[0].last_seen, 120_000);
-        assert_eq!(hosts[1].name, "02L", "no host record: the id stands in");
-        assert!(!hosts[1].daemon);
-
-        let sessions: Vec<&RegistrySession> = view.sessions().collect();
+    fn a_session_is_sent_in_the_documented_shape() {
+        let body = record().body();
         assert_eq!(
-            sessions.len(),
-            2,
-            "the record with an unknown state is skipped"
+            body,
+            json!({
+                "workspace": "/w", "cwd": "/w", "state": "blocked",
+                "blockedReason": "Workflow approval required",
+                "model": "super/gpt-5", "thinkingLevel": "medium", "name": null,
+                "firstMessage": "Fix it", "resumeArgv": ["super"],
+                "headless": false, "daemon": false
+            }),
+            "the path names the id; no time of last activity means the platform's"
         );
-        assert_eq!(sessions[0].record.state, SessionState::Idle);
-        assert_eq!(sessions[0].at, 3000);
 
-        assert!(view.is_online("01H", 120_000 + 90_000));
-        assert!(!view.is_online("01H", 120_000 + 90_001));
-        assert!(!view.is_online("02L", 500 + 90_001));
-        assert!(!view.is_online("nobody", 0));
+        // In a complete list every session names its id.
+        let listed = SessionRecord {
+            last_activity_at: Some("2026-11-12T16:00:12Z".into()),
+            daemon: true,
+            ..record()
+        };
+        let json = serde_json::to_value(&listed).expect("json");
+        assert_eq!(json["id"], "a1b2c3d4");
+        assert_eq!(json["lastActivityAt"], "2026-11-12T16:00:12Z");
+        assert_eq!(json["daemon"], true);
+        assert!(json.get("sessionId").is_none());
     }
 
     #[test]
-    fn the_host_record_names_a_daemon_and_omits_the_flag_otherwise() {
-        let body = |daemon| HostBody {
-            kind: "host",
-            machine_id: "01H",
-            name: "mbp",
-            platform: "macos",
-            device_id: "device-1",
-            daemon,
-            at: 1,
+    fn only_the_time_of_the_last_activity_may_differ_unsent() {
+        let sent = record();
+        let later = SessionRecord {
+            last_activity_at: Some("2026-11-12T16:00:12Z".into()),
+            ..record()
         };
-        let json = serde_json::to_value(body(true)).expect("json");
+        assert!(sent.same_but_activity(&later));
+        let idle = SessionRecord {
+            state: SessionState::Idle,
+            blocked_reason: None,
+            ..later.clone()
+        };
+        assert!(!sent.same_but_activity(&idle));
+        let named = SessionRecord {
+            name: Some("login".into()),
+            ..later
+        };
+        assert!(!sent.same_but_activity(&named));
+    }
+
+    #[test]
+    fn times_are_rfc_3339_seconds_in_utc() {
+        let time = std::time::UNIX_EPOCH + Duration::from_millis(1_793_232_000_750);
+        assert_eq!(timestamp(time), "2026-10-29T00:00:00Z");
+        assert_eq!(modified_at(Path::new("/nonexistent/session.jsonl")), None);
+    }
+
+    #[test]
+    fn the_registry_is_read_as_the_platform_answers_it() {
+        let registry = Registry::from_value(&json!({
+            "version": 1234,
+            "reset": true,
+            "machines": [
+                {"id": "01J", "name": "mbp", "platform": "macos", "daemon": true, "online": true,
+                 "lastSeenAt": "2026-11-13T08:12:00Z", "createdAt": "2026-10-01T00:00:00Z"},
+                {"id": "02L", "name": "linuxbox", "platform": "linux", "daemon": false,
+                 "online": false, "lastSeenAt": "2026-11-12T08:12:00Z"},
+                {"name": "no id"}
+            ],
+            "sessions": [
+                {"machineId": "01J", "id": "a1b2", "workspace": "/Users/felix/dev/super",
+                 "cwd": "/Users/felix/dev/super", "state": "idle", "blockedReason": null,
+                 "model": "super/gpt-5", "thinkingLevel": "medium", "name": null,
+                 "firstMessage": "Fix the login bug",
+                 "resumeArgv": ["super", "--session", "/Users/felix/a1b2.jsonl"],
+                 "daemon": true, "headless": false,
+                 "lastActivityAt": "2026-11-12T16:00:12Z",
+                 "createdAt": "2026-11-12T15:00:00Z", "updatedAt": "2026-11-13T08:00:00Z"},
+                // A stored session: no model, no thinking level.
+                {"machineId": "02L", "id": "c3d4", "workspace": "/srv", "cwd": "/srv",
+                 "state": "ended", "model": null, "thinkingLevel": null, "resumeArgv": null,
+                 "lastActivityAt": "2026-11-01T00:00:00Z"},
+                // A state from the future, and a session of no machine.
+                {"machineId": "02L", "id": "e5f6", "state": "strange"},
+                {"id": "g7h8", "state": "idle"}
+            ],
+            "projects": [{"id": "019a", "name": "Default"}],
+            "chats": [{"id": "019b", "machineId": "cloud", "state": "idle"}],
+            "deleted": []
+        }));
+
+        assert_eq!(registry.machines.len(), 2);
+        let mbp = registry.machine("01J").expect("mbp");
+        assert_eq!(mbp.name, "mbp");
+        assert!(mbp.online && mbp.daemon);
+        let linuxbox = registry.machine("02L").expect("linuxbox");
+        assert!(!linuxbox.online && !linuxbox.daemon);
         assert_eq!(
-            json,
-            serde_json::json!({
-                "kind": "host", "machineId": "01H", "name": "mbp", "platform": "macos",
-                "deviceId": "device-1", "daemon": true, "at": 1
-            })
+            linuxbox.last_seen_at.as_deref(),
+            Some("2026-11-12T08:12:00Z")
         );
-        let json = serde_json::to_value(body(false)).expect("json");
-        assert!(json.get("daemon").is_none(), "{json}");
-        assert_eq!(json["kind"], "host");
+
+        assert_eq!(registry.sessions.len(), 2, "{:?}", registry.sessions);
+        let first = registry.sessions_on("01J").next().expect("a1b2");
+        assert_eq!(first.record.session_id, "a1b2");
+        assert_eq!(first.record.state, SessionState::Idle);
+        assert_eq!(first.record.blocked_reason, None);
+        assert!(first.record.daemon);
+        assert_eq!(
+            first.record.last_activity_at.as_deref(),
+            Some("2026-11-12T16:00:12Z")
+        );
+        let stored = registry.sessions_on("02L").next().expect("c3d4");
+        assert_eq!(stored.record.state, SessionState::Ended);
+        assert_eq!(stored.record.model, "");
+        assert!(stored.record.resume_argv.is_empty());
+        assert!(!stored.record.daemon);
+
+        assert_eq!(Registry::from_value(&json!({})), Registry::default());
     }
 }

@@ -11,7 +11,7 @@
 //! workspace, or in a directory of a device ("new workspace on device…").
 
 use std::collections::BTreeMap;
-use super_remote::registry::{RegistrySession, RegistryView};
+use super_remote::registry::{Registry, RegistrySession};
 use super_sdk::daemon::{DirectoryEntry, SessionState, SessionSummary};
 use super_tui::text::{display_width, fit_to_width, truncate_to_width};
 use super_tui::{Key, KeyEvent, Theme};
@@ -30,8 +30,9 @@ pub(crate) struct Listing {
     /// This device's daemon, or why there is none.
     pub local: Result<LocalListing, String>,
     /// Other devices from the platform registry; `None` when signed out.
-    pub registry: Option<Result<RegistryView, String>>,
-    /// This device's host id, so its registry records are not listed twice.
+    pub registry: Option<Result<Registry, String>>,
+    /// This device's machine id, so the registry's copy of it is not
+    /// listed twice.
     pub local_machine_id: Option<String>,
     /// The session this terminal shows.
     pub current: Option<String>,
@@ -171,7 +172,8 @@ pub(crate) fn ago(then: i64, now: i64) -> String {
     }
 }
 
-/// A registry record in the shape the daemon lists sessions.
+/// A session of the registry in the shape the daemon lists sessions. Its
+/// time is the time of its last activity.
 pub(crate) fn summary_from_record(session: &RegistrySession) -> SessionSummary {
     let record = &session.record;
     let session_file = record
@@ -195,9 +197,7 @@ pub(crate) fn summary_from_record(session: &RegistrySession) -> SessionSummary {
         attached_clients: 0,
         model: non_empty(&record.model),
         thinking_level: non_empty(&record.thinking_level),
-        modified_at: chrono::DateTime::from_timestamp_millis(session.last_activity_at())
-            .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-            .unwrap_or_default(),
+        modified_at: record.last_activity_at.clone().unwrap_or_default(),
     }
 }
 
@@ -261,10 +261,10 @@ fn workspaces(entries: Vec<Entry>) -> Vec<Workspace> {
 
 /// Devices → workspaces → sessions. This device comes first; other devices
 /// follow, online ones first, then by name.
-pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
+pub(crate) fn group(listing: &Listing) -> Vec<Device> {
     let current = listing.current.as_deref();
     let mut devices = Vec::new();
-    let local_host = match &listing.local {
+    let local_machine = match &listing.local {
         Ok(local) => {
             devices.push(Device {
                 machine_id: local.machine_id.clone(),
@@ -310,28 +310,33 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
             note: Some(reason.clone()),
             workspaces: Vec::new(),
         }),
-        Some(Ok(view)) => {
-            let mut others: Vec<Device> = view
-                .hosts()
-                .filter(|host| {
-                    Some(&host.machine_id) != local_host.as_ref()
-                        && Some(&host.machine_id) != listing.local_machine_id.as_ref()
+        Some(Ok(registry)) => {
+            let mut others: Vec<Device> = registry
+                .machines
+                .iter()
+                .filter(|machine| {
+                    Some(&machine.id) != local_machine.as_ref()
+                        && Some(&machine.id) != listing.local_machine_id.as_ref()
                 })
-                .filter_map(|host| {
-                    let online = view.is_online(&host.machine_id, now);
-                    let entries: Vec<Entry> = view
-                        .sessions()
-                        .filter(|session| session.machine_id == host.machine_id)
+                .filter_map(|machine| {
+                    let entries: Vec<Entry> = registry
+                        .sessions_on(&machine.id)
                         .map(|session| entry(summary_from_record(session), current))
                         .collect();
-                    let can_start = online && view.runs_daemon(&host.machine_id, now);
+                    // The platform says which machines are online and which
+                    // of them run a daemon.
+                    let can_start = machine.online && machine.daemon;
                     // A device with nothing to show and nothing to start is noise.
                     (!entries.is_empty() || can_start).then(|| Device {
-                        machine_id: host.machine_id.clone(),
-                        name: host.name.clone(),
-                        platform: host.platform.clone(),
+                        machine_id: machine.id.clone(),
+                        name: if machine.name.is_empty() {
+                            machine.id.clone()
+                        } else {
+                            machine.name.clone()
+                        },
+                        platform: machine.platform.clone(),
                         local: false,
-                        online,
+                        online: machine.online,
                         can_start,
                         note: None,
                         workspaces: workspaces(entries),
@@ -909,19 +914,16 @@ mod daemon {
         };
         let registry = if crate::remote::signed_in() {
             // A platform out of reach must not keep the picker from opening.
-            let read = tokio::time::timeout(REGISTRY_WAIT, async {
-                match link.platform_or_connect().await {
-                    Ok(platform) => {
-                        super_remote::registry::read_registry(&platform.client, REGISTRY_WAIT)
-                            .await
-                            .map_err(|error| {
-                                format!("could not read the platform registry: {error}")
-                            })
+            let read =
+                tokio::time::timeout(REGISTRY_WAIT, async {
+                    match link.platform_or_connect().await {
+                        Ok(platform) => platform.registry.read().await.map_err(|error| {
+                            format!("could not read the platform registry: {error}")
+                        }),
+                        Err(error) => Err(format!("could not reach the platform: {error}")),
                     }
-                    Err(error) => Err(format!("could not reach the platform: {error}")),
-                }
-            })
-            .await;
+                })
+                .await;
             Some(read.unwrap_or_else(|_| {
                 Err(format!(
                     "the platform did not answer within {}s",
@@ -1156,7 +1158,7 @@ mod daemon {
         let listing = load(link, Some(current)).await;
         let now = chrono::Utc::now().timestamp_millis();
         let theme = picker_theme();
-        let mut sessions = SessionsPicker::new(group(&listing, now), now, theme.clone());
+        let mut sessions = SessionsPicker::new(group(&listing), now, theme.clone());
         let mut browser: Option<DirectoryPicker> = None;
         let mut note: Option<String> = None;
 
@@ -1322,33 +1324,59 @@ mod tests {
         }
     }
 
-    fn registry() -> RegistryView {
-        let mut view = RegistryView::default();
-        let host = |id: &str, name: &str, daemon: bool, at: i64| {
-            format!(
-                r#"{{"kind":"host","machineId":"{id}","name":"{name}","platform":"linux","daemon":{daemon},"at":{at}}}"#
-            )
+    /// A session as `GET /api/registry` lists it.
+    fn listed(
+        machine: &str,
+        id: &str,
+        workspace: &str,
+        state: &str,
+        last_activity: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "machineId": machine, "id": id, "workspace": workspace, "cwd": workspace,
+            "state": state, "blockedReason": null, "model": "super/gpt-5",
+            "thinkingLevel": "low", "name": null, "firstMessage": null,
+            "resumeArgv": ["super", "--session", format!("/h/{id}.jsonl")],
+            "daemon": true, "headless": false, "lastActivityAt": time(last_activity),
+            "createdAt": time(last_activity), "updatedAt": time(NOW - 1_000),
+        })
+    }
+
+    fn registry_with(extra: Vec<serde_json::Value>) -> Registry {
+        let machine = |id: &str, name: &str, online: bool, daemon: bool| {
+            serde_json::json!({
+                "id": id, "name": name, "platform": "linux", "daemon": daemon,
+                "online": online, "lastSeenAt": time(NOW - 5_000), "createdAt": time(0),
+            })
         };
-        let session = |host: &str, id: &str, workspace: &str, state: &str, at: i64| {
-            format!(
-                r#"{{"kind":"session","machineId":"{host}","sessionId":"{id}","workspace":"{workspace}","cwd":"{workspace}","state":"{state}","model":"super/gpt-5","thinkingLevel":"low","resumeArgv":["super","--session","/h/{id}.jsonl"],"at":{at}}}"#
-            )
-        };
-        // This device announces itself too; the daemon's listing wins.
-        view.apply(&host("01M", "mbp", true, NOW - 5_000));
-        view.apply(&session("01M", "s1", "/w/super", "idle", NOW - 5_000));
-        view.apply(&host("02L", "linuxbox", true, NOW - 10_000));
-        view.apply(&session("02L", "r1", "/srv/app", "working", NOW - 10_000));
-        // A standalone `super` there announces the host without the daemon
-        // flag; the daemon still runs, as the apps see it.
-        view.apply(&host("02L", "linuxbox", false, NOW - 9_000));
-        view.apply(&host("03O", "old-laptop", false, NOW - 3_600_000));
-        view.apply(&session("03O", "o1", "/home/o", "ended", NOW - 3_600_000));
-        // Nothing to show and nothing to start: left out.
-        view.apply(&host("04E", "empty", false, NOW - 1_000));
-        // A daemon with no session yet: listed, for "new workspace".
-        view.apply(&host("05Z", "zeta", true, NOW - 1_000));
-        view
+        let mut sessions = vec![
+            listed("01M", "s1", "/w/super", "idle", NOW - 5_000),
+            listed("02L", "r1", "/srv/app", "working", NOW - 10_000),
+            listed("03O", "o1", "/home/o", "ended", NOW - 3_600_000),
+        ];
+        sessions.extend(extra);
+        Registry::from_value(&serde_json::json!({
+            "version": 7,
+            "reset": true,
+            "machines": [
+                // This device is in the registry too; the daemon's listing wins.
+                machine("01M", "mbp", true, true),
+                machine("02L", "linuxbox", true, true),
+                machine("03O", "old-laptop", false, false),
+                // Nothing to show and nothing to start: left out.
+                machine("04E", "empty", true, false),
+                // A daemon with no session yet: listed, for "new workspace".
+                machine("05Z", "zeta", true, true),
+            ],
+            "sessions": sessions,
+            "projects": [],
+            "chats": [],
+            "deleted": [],
+        }))
+    }
+
+    fn registry() -> Registry {
+        registry_with(Vec::new())
     }
 
     fn listing() -> Listing {
@@ -1392,33 +1420,37 @@ mod tests {
     }
 
     #[test]
-    fn a_session_on_another_device_shows_when_it_was_last_active() {
-        let record = |last_activity: &str, at: i64| {
-            let mut view = RegistryView::default();
-            view.apply(&format!(
-                r#"{{"kind":"session","machineId":"02L","sessionId":"r1","workspace":"/srv/app","cwd":"/srv/app","state":"ended","model":"","thinkingLevel":"","daemon":true,"resumeArgv":["super","--session","/h/r1.jsonl"]{last_activity},"at":{at}}}"#
-            ));
-            let session = view.sessions().next().unwrap().clone();
-            entry(summary_from_record(&session), None)
-        };
-        // Its daemon sent the record again an hour ago; the session itself
-        // was last used three days ago.
+    fn a_session_on_another_machine_shows_when_it_was_last_active() {
+        // The registry heard of the session a second ago (its daemon signed
+        // in again); the session itself was last used three days ago.
         let three_days = NOW - 3 * 86_400_000;
-        let listed = record(
-            &format!(r#","lastActivityAt":{three_days}"#),
-            NOW - 3_600_000,
-        );
-        assert_eq!(listed.modified, three_days);
-        assert_eq!(ago(listed.modified, NOW), "3d");
-        // A record without the time (a terminal session, an older daemon)
-        // has only the time it was written.
-        let listed = record("", NOW - 3_600_000);
-        assert_eq!(ago(listed.modified, NOW), "1h");
+        let registry = registry_with(vec![listed("02L", "r2", "/srv/app", "ended", three_days)]);
+        let devices = group(&Listing {
+            registry: Some(Ok(registry)),
+            ..listing()
+        });
+        let linuxbox = devices
+            .iter()
+            .find(|device| device.name == "linuxbox")
+            .unwrap();
+        let entries = &linuxbox.workspaces[0].sessions;
+        let ids: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.summary.session_id.as_str())
+            .collect();
+        assert_eq!(ids, ["r1", "r2"], "the session used last comes first");
+        assert_eq!(entries[1].modified, three_days);
+        assert_eq!(ago(entries[1].modified, NOW), "3d");
+
+        let mut picker = SessionsPicker::new(devices, NOW, Theme::dark());
+        picker.max_visible = 40;
+        let text = strip_ansi(&picker.render(120).join("\n"));
+        assert!(text.contains("✓ ended           r2  3d"), "{text}");
     }
 
     #[test]
     fn sessions_group_by_device_then_workspace_this_device_first() {
-        let devices = group(&listing(), NOW);
+        let devices = group(&listing());
         let names: Vec<&str> = devices.iter().map(|device| device.name.as_str()).collect();
         assert_eq!(names, ["mbp", "linuxbox", "zeta", "old-laptop"]);
 
@@ -1466,14 +1498,13 @@ mod tests {
         assert_eq!(session_status(SessionState::Ended, false).label, "ended");
         assert_eq!(session_status(SessionState::Working, true).label, "working");
 
-        let mut listing = listing();
-        if let Some(Ok(view)) = &mut listing.registry {
-            view.apply(&format!(
-                r#"{{"kind":"session","machineId":"03O","sessionId":"o2","workspace":"/home/o","cwd":"/home/o","state":"working","model":"m","thinkingLevel":"off","firstMessage":"left running","at":{}}}"#,
-                NOW - 3_600_000
-            ));
-        }
-        let mut picker = SessionsPicker::new(group(&listing, NOW), NOW, Theme::dark());
+        let mut left_running = listed("03O", "o2", "/home/o", "working", NOW - 3_600_000);
+        left_running["firstMessage"] = "left running".into();
+        let listing = Listing {
+            registry: Some(Ok(registry_with(vec![left_running]))),
+            ..listing()
+        };
+        let mut picker = SessionsPicker::new(group(&listing), NOW, Theme::dark());
         picker.max_visible = 40;
         let text = strip_ansi(&picker.render(120).join("\n"));
         assert!(text.contains("○ offline         left running"), "{text}");
@@ -1488,7 +1519,7 @@ mod tests {
             local_machine_id: None,
             current: None,
         };
-        let devices = group(&listing, NOW);
+        let devices = group(&listing);
         assert_eq!(devices.len(), 2);
         assert_eq!(devices[0].name, "this device");
         assert!(!devices[0].can_start);
@@ -1503,7 +1534,7 @@ mod tests {
             registry: None,
             ..listing
         };
-        assert_eq!(group(&signed_out, NOW).len(), 1);
+        assert_eq!(group(&signed_out).len(), 1);
     }
 
     fn key(key: Key) -> KeyEvent {
@@ -1514,7 +1545,7 @@ mod tests {
     }
 
     fn picker() -> SessionsPicker {
-        SessionsPicker::new(group(&listing(), NOW), NOW, Theme::dark())
+        SessionsPicker::new(group(&listing()), NOW, Theme::dark())
     }
 
     #[test]
@@ -1667,7 +1698,7 @@ mod end_to_end {
     use super_daemon::presence::{Link as PresenceLink, LinkConfig};
     use super_daemon::server::{DaemonInfo, ServerContext};
     use super_remote::controller::Sender;
-    use super_remote::fake::{FakeS2, TestCredentials, serve};
+    use super_remote::fake::{FakePlatform, TestCredentials, registry_client, serve};
     use super_sdk::mock::{MockProvider, MockScript};
     use super_sdk::protocol::Command;
     use tokio_util::sync::CancellationToken;
@@ -1838,6 +1869,14 @@ mod end_to_end {
         let remote_id = remote_session.session_id.clone();
         let remote_file = remote_session.file.clone();
         drop(remote_session);
+        // It was last used two days ago.
+        std::fs::File::options()
+            .write(true)
+            .open(&remote_file)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 86_400))
+            .unwrap();
+        let remote_activity = super_remote::registry::modified_at(&remote_file).unwrap();
         let ctx = ServerContext::new(
             remote_host,
             DaemonInfo {
@@ -1850,29 +1889,30 @@ mod end_to_end {
             },
             CancellationToken::new(),
         );
-        let fake = Arc::new(FakeS2::default());
+        let fake = Arc::new(FakePlatform::default());
         let s2 = Arc::new(super_remote::s2::S2Client::new(
             reqwest::Client::new(),
-            serve(fake).await,
+            serve(fake.clone()).await,
             Arc::new(TestCredentials),
         ));
+        let registry = registry_client(&fake);
         let presence = PresenceLink::start(
             s2.clone(),
+            registry.clone(),
             ctx.clone(),
             super_remote::MachineIdentity {
                 machine_id: "01L".into(),
                 name: "linuxbox".into(),
                 platform: "linux".into(),
             },
-            "device-linux".into(),
             LinkConfig {
                 cursor_dir: Some(dir.path().join("cursors")),
-                republish_interval: Duration::from_secs(3600),
                 ..LinkConfig::default()
             },
         );
         let platform = Arc::new(Platform {
             client: s2,
+            registry,
             sender: Sender {
                 device_id: "device-mac".into(),
                 name: "Terminal on mbp".into(),
@@ -1888,14 +1928,14 @@ mod end_to_end {
             // The test is not signed in; read the registry the way a
             // signed-in terminal does.
             listing.registry = Some(
-                super_remote::registry::read_registry(
-                    &link.platform().unwrap().client,
-                    Duration::from_secs(5),
-                )
-                .await
-                .map_err(|error| error.to_string()),
+                link.platform()
+                    .unwrap()
+                    .registry
+                    .read()
+                    .await
+                    .map_err(|error| error.to_string()),
             );
-            devices = group(&listing, chrono::Utc::now().timestamp_millis());
+            devices = group(&listing);
             if devices.len() == 2 && !devices[1].workspaces.is_empty() {
                 break;
             }
@@ -1920,6 +1960,16 @@ mod end_to_end {
         );
         let remote_entry = devices[1].workspaces[0].sessions[0].summary.clone();
         assert_eq!(remote_entry.session_id, remote_id);
+        // Its time is when it was last used, as its daemon told the
+        // registry, not when the registry heard of it.
+        assert_eq!(remote_entry.modified_at, remote_activity);
+        assert_eq!(
+            ago(
+                devices[1].workspaces[0].sessions[0].modified,
+                chrono::Utc::now().timestamp_millis()
+            ),
+            "2d"
+        );
 
         // Over to the second session here, a prompt, and back.
         let shown = switch(

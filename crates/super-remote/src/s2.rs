@@ -180,7 +180,7 @@ impl S2Client {
         format!(
             "{}/streams/{}/records",
             self.base_url,
-            encode_stream(stream)
+            encode_segment(stream)
         )
     }
 
@@ -455,12 +455,13 @@ enum ReadOutcome {
     Fatal(String),
 }
 
-fn encode_stream(stream: &str) -> String {
+/// `text` as one path segment: only the unreserved characters stay as they
+/// are.
+pub(crate) fn encode_segment(text: &str) -> String {
     // A stream name is one path segment to S2: `sessions/h/s/events` must
-    // travel as `sessions%2Fh%2Fs%2Fevents`, or s2 lite answers 404. Only the
-    // unreserved characters stay as they are.
-    let mut out = String::with_capacity(stream.len());
-    for byte in stream.bytes() {
+    // travel as `sessions%2Fh%2Fs%2Fevents`, or s2 lite answers 404.
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(byte as char);
@@ -545,11 +546,11 @@ mod tests {
     #[test]
     fn stream_names_are_one_percent_encoded_segment() {
         assert_eq!(
-            encode_stream("sessions/h/s/events"),
+            encode_segment("sessions/h/s/events"),
             "sessions%2Fh%2Fs%2Fevents"
         );
-        assert_eq!(encode_stream("a b"), "a%20b");
-        assert_eq!(encode_stream("registry"), "registry");
+        assert_eq!(encode_segment("a b"), "a%20b");
+        assert_eq!(encode_segment("a1b2-c3_d4.e5~"), "a1b2-c3_d4.e5~");
     }
 
     #[test]

@@ -9,6 +9,7 @@
 use serde_json::Value;
 use std::sync::Arc;
 use super_daemon::client::{ClientError, ClientEvent, DaemonClient};
+use super_remote::RegistryClient;
 use super_remote::controller::{MachineCommands, Sender, SessionController};
 use super_remote::s2::S2Client;
 use super_sdk::daemon::DaemonCommand;
@@ -18,6 +19,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 /// The platform, as this terminal reaches it.
 pub(crate) struct Platform {
     pub client: Arc<S2Client>,
+    /// Where `/sessions` reads the machines and sessions of the account.
+    pub registry: Arc<RegistryClient>,
     /// The headers this terminal's commands carry.
     pub sender: Sender,
     /// This machine's id.
@@ -43,6 +46,7 @@ impl Platform {
             .map_err(|error| format!("{error:#}"))?;
         Ok(Arc::new(Self {
             client: remote.client,
+            registry: remote.registry,
             sender: Sender {
                 device_id: remote.config.device_id,
                 name: format!("Terminal on {}", remote.machine.name),

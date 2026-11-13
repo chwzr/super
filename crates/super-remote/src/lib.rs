@@ -1,10 +1,11 @@
 //! Remote control for SUPER sessions.
 //!
 //! A signed-in `super` mirrors every RPC event of a session to an S2 stream,
-//! tails a second stream for RPC commands, and announces the session in a
-//! registry stream. Phones, desktops and the web read those streams through
-//! the SUPER platform. See `super-platform/docs/ARCHITECTURE.md` for the
-//! stream layout this crate implements.
+//! tails a second stream for RPC commands, and announces its machine and the
+//! session in the platform's registry. Phones, desktops and the web read the
+//! streams and the registry through the SUPER platform. See
+//! `super-platform/docs/ARCHITECTURE.md` for the stream layout and
+//! `super-platform/docs/API.md` for the registry endpoints this crate uses.
 //!
 //! Nothing in this crate runs unless something calls [`Remote::start`], so a
 //! signed-out `super` never touches the network.
@@ -27,7 +28,7 @@ use std::sync::Arc;
 
 pub use credentials::PlatformCredentials;
 pub use machine::MachineIdentity;
-pub use registry::{RegistryWriter, SessionRecord, SessionState};
+pub use registry::{RegistryClient, RegistryWriter, SessionRecord, SessionState};
 pub use s2::S2Client;
 pub use transport::{RemoteNotice, RemoteStatus, SessionTransport};
 
@@ -79,16 +80,18 @@ impl RemoteConfig {
 }
 
 /// Everything one process shares across its sessions: the platform
-/// configuration, the HTTP client and the machine identity.
+/// configuration, the clients for the streams and the registry, and the
+/// machine identity.
 pub struct Remote {
     pub config: RemoteConfig,
     pub machine: MachineIdentity,
     pub client: Arc<S2Client>,
+    pub registry: Arc<RegistryClient>,
     pub credentials: Arc<dyn RemoteCredentials>,
 }
 
 impl Remote {
-    /// Resolve the configuration and build the shared S2 client. Call this
+    /// Resolve the configuration and build the shared clients. Call this
     /// off the UI thread; it makes one HTTP request.
     pub async fn start(
         credentials: Arc<dyn RemoteCredentials>,
@@ -106,6 +109,11 @@ impl Remote {
             machine.machine_id,
             machine.name
         ));
+        let registry = Arc::new(RegistryClient::new(
+            http.clone(),
+            credentials.platform_url(),
+            credentials.clone(),
+        ));
         let client = Arc::new(S2Client::new(
             http,
             config.s2.base_url.clone(),
@@ -115,6 +123,7 @@ impl Remote {
             config,
             machine,
             client,
+            registry,
             credentials,
         })
     }

@@ -1,7 +1,7 @@
-//! A terminal on another device drives this daemon through the platform:
-//! the registry reader finds the host and its sessions, host commands list
+//! A terminal on another machine drives this daemon through the platform:
+//! the registry lists the machine and its sessions, machine commands list
 //! directories and create a session, and a session controller prompts it and
-//! follows its events. The fake S2 stands in for the platform, the mock
+//! follows its events. The fake stands in for the platform, the mock
 //! provider for the model.
 
 #![cfg(unix)]
@@ -14,8 +14,8 @@ use super_daemon::presence::{Link, LinkConfig};
 use super_daemon::server::{DaemonInfo, ServerContext};
 use super_remote::MachineIdentity;
 use super_remote::controller::{MachineCommands, Sender, SessionController};
-use super_remote::fake::{FakeS2, TestCredentials, serve};
-use super_remote::registry::{RegistryView, read_registry};
+use super_remote::fake::{FakePlatform, TestCredentials, registry_client, serve};
+use super_remote::registry::{Registry, RegistryClient};
 use super_remote::s2::S2Client;
 use super_sdk::daemon::{DaemonCommand, EndReason, SessionState};
 use super_sdk::mock::{MockProvider, MockScript};
@@ -25,8 +25,9 @@ use tokio_util::sync::CancellationToken;
 struct Fixture {
     _provider: MockProvider,
     dir: tempfile::TempDir,
-    fake: Arc<FakeS2>,
+    fake: Arc<FakePlatform>,
     client: Arc<S2Client>,
+    registry: Arc<RegistryClient>,
     ctx: Arc<ServerContext>,
     link: Link,
     stored_id: String,
@@ -69,25 +70,25 @@ async fn fixture() -> Fixture {
         },
         CancellationToken::new(),
     );
-    let fake = Arc::new(FakeS2::default());
+    let fake = Arc::new(FakePlatform::default());
     let base = serve(fake.clone()).await;
     let client = Arc::new(S2Client::new(
         reqwest::Client::new(),
         base,
         Arc::new(TestCredentials),
     ));
+    let registry = registry_client(&fake);
     let link = Link::start(
         client.clone(),
+        registry.clone(),
         ctx.clone(),
         MachineIdentity {
             machine_id: "01L".into(),
             name: "linuxbox".into(),
             platform: "linux".into(),
         },
-        "device-linux".into(),
         LinkConfig {
             cursor_dir: Some(dir.path().join("cursors")),
-            republish_interval: Duration::from_secs(3600),
             ..LinkConfig::default()
         },
     );
@@ -96,6 +97,7 @@ async fn fixture() -> Fixture {
         dir,
         fake,
         client,
+        registry,
         ctx,
         link,
         stored_id,
@@ -109,14 +111,11 @@ fn terminal() -> Sender {
     }
 }
 
-async fn registry_until(
-    client: &Arc<S2Client>,
-    check: impl Fn(&RegistryView) -> bool,
-) -> RegistryView {
+async fn registry_until(client: &RegistryClient, check: impl Fn(&Registry) -> bool) -> Registry {
     for _ in 0..500 {
-        let view = read_registry(client, Duration::from_secs(5)).await.unwrap();
-        if check(&view) {
-            return view;
+        let registry = client.read().await.unwrap();
+        if check(&registry) {
+            return registry;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -128,7 +127,10 @@ fn now_ms() -> i64 {
 }
 
 /// The headers of the newest record on `stream`, and its body.
-fn newest(fake: &FakeS2, stream: &str) -> (std::collections::BTreeMap<String, String>, Value) {
+fn newest(
+    fake: &FakePlatform,
+    stream: &str,
+) -> (std::collections::BTreeMap<String, String>, Value) {
     let record = fake.records(stream).pop().expect("a record");
     (
         record.headers.into_iter().collect(),
@@ -136,8 +138,8 @@ fn newest(fake: &FakeS2, stream: &str) -> (std::collections::BTreeMap<String, St
     )
 }
 
-/// What the apps put on every command: its type, this device, the name the
-/// others see, and an expiry in the future.
+/// What the apps put on every command: its type, the device that sends it,
+/// the name the others see, and an expiry in the future.
 fn assert_command_headers(headers: &std::collections::BTreeMap<String, String>, kind: &str) {
     assert_eq!(headers["t"], kind, "{headers:?}");
     assert_eq!(headers["from"], "device-mac");
@@ -147,16 +149,17 @@ fn assert_command_headers(headers: &std::collections::BTreeMap<String, String>, 
 }
 
 #[tokio::test]
-async fn the_registry_reader_sees_the_daemon_host_and_its_stored_session() {
+async fn the_registry_lists_the_daemon_machine_and_its_stored_session() {
     let fixture = fixture().await;
-    let view = registry_until(&fixture.client, |view| view.sessions().count() == 1).await;
-    let host = view.host_by_id("01L").expect("the host");
-    assert_eq!(host.name, "linuxbox");
-    assert_eq!(host.platform, "linux");
-    assert!(host.daemon);
-    assert!(view.is_online("01L", now_ms()));
-    let session = view.sessions().next().unwrap();
+    let registry = registry_until(&fixture.registry, |registry| registry.sessions.len() == 1).await;
+    let machine = registry.machine("01L").expect("the machine");
+    assert_eq!(machine.name, "linuxbox");
+    assert_eq!(machine.platform, "linux");
+    assert!(machine.daemon);
+    assert!(machine.online);
+    let session = registry.sessions_on("01L").next().unwrap();
     assert_eq!(session.record.session_id, fixture.stored_id);
+    assert!(session.record.daemon);
     assert_eq!(session.record.state, SessionState::Ended);
     assert_eq!(
         session.record.first_message.as_deref(),
@@ -166,23 +169,26 @@ async fn the_registry_reader_sees_the_daemon_host_and_its_stored_session() {
 }
 
 #[tokio::test]
-async fn a_controller_creates_prompts_and_follows_a_session_on_another_host() {
+async fn a_controller_creates_prompts_and_follows_a_session_on_another_machine() {
     let fixture = fixture().await;
-    registry_until(&fixture.client, |view| view.host_by_id("01L").is_some()).await;
-    let host = MachineCommands::new(fixture.client.clone(), "01L", terminal());
+    registry_until(&fixture.registry, |registry| {
+        registry.machine("01L").is_some()
+    })
+    .await;
+    let machine = MachineCommands::new(fixture.client.clone(), "01L", terminal());
 
-    // "New workspace on device…": the device's directories, then a session
+    // "New workspace on machine…": the machine's directories, then a session
     // in the one picked.
     let work = fixture.dir.path().join("work");
-    let listing = host
+    let listing = machine
         .call(&DaemonCommand::ListDirectories {
             path: work.display().to_string(),
         })
         .await
         .unwrap();
     assert!(listing.success, "{listing:?}");
-    // The command went to the host's commands stream with the apps' headers,
-    // and its answer, matched by id, came from the host's events stream.
+    // The command went to the machine's commands stream with the apps'
+    // headers, and its answer, matched by id, came from its events stream.
     let (headers, body) = newest(&fixture.fake, "machines/01L/commands");
     assert_command_headers(&headers, "list_directories");
     assert_eq!(body["type"], "list_directories");
@@ -202,7 +208,7 @@ async fn a_controller_creates_prompts_and_follows_a_session_on_another_host() {
         .filter_map(|entry| entry["name"].as_str())
         .collect();
     assert_eq!(names, ["app"]);
-    let created = host
+    let created = machine
         .call(&DaemonCommand::CreateSession {
             cwd: work.join("app").display().to_string(),
             model: Some("mock/mock-1".into()),
@@ -272,8 +278,8 @@ async fn a_controller_creates_prompts_and_follows_a_session_on_another_host() {
         .collect();
     assert_eq!(roles, ["user", "assistant"]);
 
-    // Resuming the stored session over the host stream hosts it again.
-    let resumed = host
+    // Resuming the stored session over the machine's stream hosts it again.
+    let resumed = machine
         .call(&DaemonCommand::ResumeSession {
             session_id: fixture.stored_id.clone(),
         })
@@ -283,7 +289,7 @@ async fn a_controller_creates_prompts_and_follows_a_session_on_another_host() {
     assert!(fixture.ctx.host.get(&fixture.stored_id).is_some());
 
     // A command for an unknown session answers with the daemon's error.
-    let missing = host
+    let missing = machine
         .call(&DaemonCommand::StopSession {
             session_id: "nope".into(),
         })
