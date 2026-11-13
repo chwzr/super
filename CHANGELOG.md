@@ -2,14 +2,38 @@
 
 ## Unreleased
 
+### Changed
+
+- The registry of machines and sessions is rows in the platform's database
+  instead of the `registry` S2 stream. A signed-in `super` announces its
+  machine with `PUT /api/machines/{machineId}`, sends a heartbeat every 30
+  seconds and each changed session with
+  `PUT /api/machines/{machineId}/sessions/{sessionId}`; the daemon sends its
+  complete list in one request when its link starts. Nothing is sent again
+  every six hours. `/sessions` reads the other machines with one
+  `GET /api/registry`, in which the platform says which machines are online
+  and which run a daemon. This needs a platform that has these endpoints:
+  nothing is written to or read from the old stream.
+- A computer that runs sessions is a "machine" everywhere, where it was a
+  "host" or a "device": `~/.super/agent/machine.json` with `machineId` (the
+  id in an existing `host.json` is taken over once), the streams
+  `machines/{machineId}/commands` and `machines/{machineId}/events`, and
+  "this machine" in `/sessions`. "Device" stays for a sign-in.
+- The daemon socket protocol is version 2: `hello` and `status` answer
+  `machineId` and `machineName` in place of `hostId` and `hostName`. Version
+  1 is not kept, so the daemon and its clients are updated together; a
+  client on the other version is refused with both ranges, as before.
+
 ### Fixed
 
-- A session's registry record carries `lastActivityAt`, Unix milliseconds of
-  the session's newest entry, and `/sessions` shows it for sessions on other
-  devices. The daemon writes every record again every six hours and when
-  its link to the platform starts, so the record's own `at`, which the apps
-  and `/sessions` showed, said a session was last active a few hours ago at
-  most, however long ago it was used.
+- A session on another machine shows when it was last used. A session in
+  the registry carries `lastActivityAt`, the time of its newest entry (its
+  file's modification time), from the daemon and from a `super` in a
+  terminal alike, and `/sessions` shows it. Before, the apps and `/sessions`
+  showed when the session's registry record was written, which the daemon
+  did every six hours and whenever its link to the platform started, so a
+  session read as last active a few hours ago at most, however long ago it
+  was used.
 
 ## 0.0.39 - 2026-10-30
 
