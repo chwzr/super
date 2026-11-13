@@ -9,7 +9,7 @@
 use serde_json::Value;
 use std::sync::Arc;
 use super_daemon::client::{ClientError, ClientEvent, DaemonClient};
-use super_remote::controller::{HostCommands, Sender, SessionController};
+use super_remote::controller::{MachineCommands, Sender, SessionController};
 use super_remote::s2::S2Client;
 use super_sdk::daemon::DaemonCommand;
 use super_sdk::protocol::{Command, Event, Response};
@@ -20,8 +20,8 @@ pub(crate) struct Platform {
     pub client: Arc<S2Client>,
     /// The headers this terminal's commands carry.
     pub sender: Sender,
-    /// This device's host id.
-    pub host_id: String,
+    /// This machine's id.
+    pub machine_id: String,
 }
 
 impl Platform {
@@ -29,37 +29,37 @@ impl Platform {
     pub async fn connect() -> Result<Arc<Self>, String> {
         let cwd = std::env::current_dir().unwrap_or_default();
         let settings = super_coding::Settings::load(&cwd, false);
-        let host = match super_remote::HostIdentity::default_path() {
-            Some(path) => super_remote::HostIdentity::load_or_create(&path)
-                .map_err(|error| format!("host identity: {error:#}"))?,
+        let machine = match super_remote::MachineIdentity::default_path() {
+            Some(path) => super_remote::MachineIdentity::load_or_create(&path)
+                .map_err(|error| format!("machine identity: {error:#}"))?,
             None => return Err("no home directory".into()),
         };
         let credentials = super_remote::PlatformCredentials::new(
             crate::remote::platform_url(&settings),
-            host.name.clone(),
+            machine.name.clone(),
         );
-        let remote = super_remote::Remote::start(Arc::new(credentials), host)
+        let remote = super_remote::Remote::start(Arc::new(credentials), machine)
             .await
             .map_err(|error| format!("{error:#}"))?;
         Ok(Arc::new(Self {
             client: remote.client,
             sender: Sender {
                 device_id: remote.config.device_id,
-                name: format!("Terminal on {}", remote.host.name),
+                name: format!("Terminal on {}", remote.machine.name),
             },
-            host_id: remote.host.host_id,
+            machine_id: remote.machine.machine_id,
         }))
     }
 
-    pub fn host_commands(&self, host_id: &str) -> HostCommands {
-        HostCommands::new(self.client.clone(), host_id, self.sender.clone())
+    pub fn machine_commands(&self, machine_id: &str) -> MachineCommands {
+        MachineCommands::new(self.client.clone(), machine_id, self.sender.clone())
     }
 }
 
 /// A session on another device, followed through its streams.
 pub(crate) struct RemoteSession {
-    pub host_id: String,
-    pub host_name: String,
+    pub machine_id: String,
+    pub machine_name: String,
     controller: SessionController,
     events: UnboundedReceiver<Value>,
     platform: Arc<Platform>,
@@ -68,21 +68,21 @@ pub(crate) struct RemoteSession {
 impl RemoteSession {
     pub async fn open(
         platform: Arc<Platform>,
-        host_id: &str,
-        host_name: &str,
+        machine_id: &str,
+        machine_name: &str,
         session_id: &str,
     ) -> Result<Self, String> {
         let (controller, events) = SessionController::open(
             platform.client.clone(),
-            host_id,
+            machine_id,
             session_id,
             platform.sender.clone(),
         )
         .await
         .map_err(|error| format!("{error:#}"))?;
         Ok(Self {
-            host_id: host_id.to_string(),
-            host_name: host_name.to_string(),
+            machine_id: machine_id.to_string(),
+            machine_name: machine_name.to_string(),
             controller,
             events,
             platform,
@@ -228,7 +228,7 @@ impl Link {
         if let Some(remote) = &self.remote {
             let response = remote
                 .platform
-                .host_commands(&remote.host_id)
+                .machine_commands(&remote.machine_id)
                 .call(&DaemonCommand::StopSession {
                     session_id: session_id.to_string(),
                 })
@@ -269,7 +269,7 @@ impl Link {
     /// platform", for the line that introduces a session.
     pub fn describe(&self) -> String {
         match (&self.remote, self.daemon()) {
-            (Some(remote), _) => format!("{} through the SUPER platform", remote.host_name),
+            (Some(remote), _) => format!("{} through the SUPER platform", remote.machine_name),
             (None, Some(client)) => {
                 let hello = client.hello();
                 format!("SUPER daemon {} (pid {})", hello.daemon_version, hello.pid)
@@ -284,7 +284,7 @@ impl Link {
             (Some(remote), _) => format!(
                 "♦ controlling session {} on {} through the SUPER platform",
                 crate::sessions::short_id(session_id),
-                remote.host_name
+                remote.machine_name
             ),
             (None, Some(client)) => crate::handover::attached_status(client, session_id),
             (None, None) => "not connected".into(),

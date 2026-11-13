@@ -2,7 +2,7 @@
 //! what state they are in. Readers fold the stream to the latest record per
 //! host and per session.
 
-use crate::host::HostIdentity;
+use crate::machine::MachineIdentity;
 use crate::s2::{AppendOptions, AppendRecord, ReadEvent, ReadStart, S2Client, S2Error};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -52,7 +52,7 @@ pub struct SessionRecord {
 #[serde(rename_all = "camelCase")]
 struct HostBody<'a> {
     kind: &'static str,
-    host_id: &'a str,
+    machine_id: &'a str,
     name: &'a str,
     platform: &'a str,
     device_id: &'a str,
@@ -67,7 +67,7 @@ struct HostBody<'a> {
 #[serde(rename_all = "camelCase")]
 struct SessionBody<'a> {
     kind: &'static str,
-    host_id: &'a str,
+    machine_id: &'a str,
     #[serde(flatten)]
     session: &'a SessionRecord,
     at: i64,
@@ -77,7 +77,7 @@ struct SessionBody<'a> {
 #[serde(rename_all = "camelCase")]
 struct HeartbeatBody<'a> {
     kind: &'static str,
-    host_id: &'a str,
+    machine_id: &'a str,
     at: i64,
 }
 
@@ -97,17 +97,22 @@ pub struct RegistryWriter {
 impl RegistryWriter {
     /// Start announcing. The host record goes out first, then every change
     /// to any session record, and a heartbeat every 30 seconds.
-    pub fn start(client: Arc<S2Client>, host: HostIdentity, device_id: String) -> Self {
+    pub fn start(client: Arc<S2Client>, host: MachineIdentity, device_id: String) -> Self {
         Self::spawn(client, host, device_id, false)
     }
 
     /// [`start`](Self::start) for the SUPER daemon: the host record carries
     /// `"daemon": true`, also when no session exists yet.
-    pub fn start_daemon(client: Arc<S2Client>, host: HostIdentity, device_id: String) -> Self {
+    pub fn start_daemon(client: Arc<S2Client>, host: MachineIdentity, device_id: String) -> Self {
         Self::spawn(client, host, device_id, true)
     }
 
-    fn spawn(client: Arc<S2Client>, host: HostIdentity, device_id: String, daemon: bool) -> Self {
+    fn spawn(
+        client: Arc<S2Client>,
+        host: MachineIdentity,
+        device_id: String,
+        daemon: bool,
+    ) -> Self {
         let (updates, mut updates_rx) = mpsc::unbounded_channel::<Update>();
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
@@ -119,7 +124,7 @@ impl RegistryWriter {
                 if !announced_host {
                     let body = HostBody {
                         kind: "host",
-                        host_id: &host.host_id,
+                        machine_id: &host.machine_id,
                         name: &host.name,
                         platform: &host.platform,
                         device_id: &device_id,
@@ -136,7 +141,7 @@ impl RegistryWriter {
                     }
                     let body = SessionBody {
                         kind: "session",
-                        host_id: &host.host_id,
+                        machine_id: &host.machine_id,
                         session: &record,
                         at: crate::now_ms(),
                     };
@@ -171,7 +176,7 @@ impl RegistryWriter {
                     },
                     _ = tokio::time::sleep(retry) => {
                         if pending.is_empty() {
-                            let body = HeartbeatBody { kind: "heartbeat", host_id: &host.host_id, at: crate::now_ms() };
+                            let body = HeartbeatBody { kind: "heartbeat", machine_id: &host.machine_id, at: crate::now_ms() };
                             append(&client, "heartbeat", &body).await;
                         }
                     }
@@ -186,7 +191,7 @@ impl RegistryWriter {
                 record.blocked_reason = None;
                 let body = SessionBody {
                     kind: "session",
-                    host_id: &host.host_id,
+                    machine_id: &host.machine_id,
                     session: &record,
                     at: crate::now_ms(),
                 };
@@ -265,7 +270,7 @@ pub const DAEMON_FLAG_WINDOW: Duration = Duration::from_secs(6 * 3600 + 90);
 /// A host as the registry knows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryHost {
-    pub host_id: String,
+    pub machine_id: String,
     /// The host id until a host record names it.
     pub name: String,
     pub platform: String,
@@ -281,7 +286,7 @@ pub struct RegistryHost {
 /// A session record and the host that announced it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistrySession {
-    pub host_id: String,
+    pub machine_id: String,
     pub record: SessionRecord,
     /// Unix milliseconds of the record.
     pub at: i64,
@@ -311,14 +316,14 @@ impl RegistryView {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
             return;
         };
-        let host_id = value["hostId"].as_str().unwrap_or_default().to_string();
-        if host_id.is_empty() {
+        let machine_id = value["machineId"].as_str().unwrap_or_default().to_string();
+        if machine_id.is_empty() {
             return;
         }
         let at = value["at"].as_i64().unwrap_or(0);
         match value["kind"].as_str() {
             Some("host") => {
-                let host = self.host(&host_id);
+                let host = self.host(&machine_id);
                 if let Some(name) = value["name"].as_str() {
                     host.name = name.to_string();
                 }
@@ -332,19 +337,19 @@ impl RegistryView {
                 host.last_seen = host.last_seen.max(at);
             }
             Some("heartbeat") => {
-                let host = self.host(&host_id);
+                let host = self.host(&machine_id);
                 host.last_seen = host.last_seen.max(at);
             }
             Some("session") => {
                 let Ok(record) = serde_json::from_value::<SessionRecord>(value) else {
                     return;
                 };
-                let host = self.host(&host_id);
+                let host = self.host(&machine_id);
                 host.last_seen = host.last_seen.max(at);
                 self.sessions.insert(
-                    (host_id.clone(), record.session_id.clone()),
+                    (machine_id.clone(), record.session_id.clone()),
                     RegistrySession {
-                        host_id,
+                        machine_id,
                         record,
                         at,
                     },
@@ -354,12 +359,12 @@ impl RegistryView {
         }
     }
 
-    fn host(&mut self, host_id: &str) -> &mut RegistryHost {
+    fn host(&mut self, machine_id: &str) -> &mut RegistryHost {
         self.hosts
-            .entry(host_id.to_string())
+            .entry(machine_id.to_string())
             .or_insert_with(|| RegistryHost {
-                host_id: host_id.to_string(),
-                name: host_id.to_string(),
+                machine_id: machine_id.to_string(),
+                name: machine_id.to_string(),
                 platform: "unknown".into(),
                 daemon: false,
                 daemon_flagged_at: None,
@@ -371,8 +376,8 @@ impl RegistryView {
         self.hosts.values()
     }
 
-    pub fn host_by_id(&self, host_id: &str) -> Option<&RegistryHost> {
-        self.hosts.get(host_id)
+    pub fn host_by_id(&self, machine_id: &str) -> Option<&RegistryHost> {
+        self.hosts.get(machine_id)
     }
 
     pub fn sessions(&self) -> impl Iterator<Item = &RegistrySession> {
@@ -381,8 +386,8 @@ impl RegistryView {
 
     /// Whether anything about the host is at most [`ONLINE_WINDOW`] old at
     /// `now` (Unix milliseconds).
-    pub fn is_online(&self, host_id: &str, now: i64) -> bool {
-        self.hosts.get(host_id).is_some_and(|host| {
+    pub fn is_online(&self, machine_id: &str, now: i64) -> bool {
+        self.hosts.get(machine_id).is_some_and(|host| {
             host.last_seen > 0 && now - host.last_seen <= ONLINE_WINDOW.as_millis() as i64
         })
     }
@@ -391,8 +396,8 @@ impl RegistryView {
     /// decide it: its newest host record says so, a host record said so
     /// within [`DAEMON_FLAG_WINDOW`], or one of its session records says so
     /// (a daemon marks every session it hosts or keeps).
-    pub fn runs_daemon(&self, host_id: &str, now: i64) -> bool {
-        let flagged = self.hosts.get(host_id).is_some_and(|host| {
+    pub fn runs_daemon(&self, machine_id: &str, now: i64) -> bool {
+        let flagged = self.hosts.get(machine_id).is_some_and(|host| {
             host.daemon
                 || host
                     .daemon_flagged_at
@@ -402,7 +407,7 @@ impl RegistryView {
             || self
                 .sessions
                 .values()
-                .any(|session| session.host_id == host_id && session.record.daemon)
+                .any(|session| session.machine_id == machine_id && session.record.daemon)
     }
 }
 
@@ -482,13 +487,13 @@ mod tests {
         };
         let body = SessionBody {
             kind: "session",
-            host_id: "01H",
+            machine_id: "01H",
             session: &record,
             at: 1,
         };
         let json = serde_json::to_value(&body).expect("json");
         assert_eq!(json["kind"], "session");
-        assert_eq!(json["hostId"], "01H");
+        assert_eq!(json["machineId"], "01H");
         assert_eq!(json["sessionId"], "a1b2c3d4");
         assert_eq!(json["state"], "blocked");
         assert_eq!(json["blockedReason"], "Workflow approval required");
@@ -504,7 +509,7 @@ mod tests {
         };
         let body = SessionBody {
             kind: "session",
-            host_id: "01H",
+            machine_id: "01H",
             session: &record,
             at: 2,
         };
@@ -517,7 +522,7 @@ mod tests {
     fn a_session_is_last_active_when_its_record_says_else_when_it_was_written() {
         let session = |id: &str, extra: &str, at: i64| {
             format!(
-                r#"{{"kind":"session","hostId":"01H","sessionId":"{id}","workspace":"/w","cwd":"/w","state":"ended","model":"","thinkingLevel":"","daemon":true{extra},"at":{at}}}"#
+                r#"{{"kind":"session","machineId":"01H","sessionId":"{id}","workspace":"/w","cwd":"/w","state":"ended","model":"","thinkingLevel":"","daemon":true{extra},"at":{at}}}"#
             )
         };
         let mut view = RegistryView::default();
@@ -539,7 +544,7 @@ mod tests {
     fn a_daemon_stays_known_beside_a_standalone_super_on_the_same_host() {
         let host = |daemon: bool, at: i64| {
             format!(
-                r#"{{"kind":"host","hostId":"01H","name":"linuxbox","platform":"linux","daemon":{daemon},"at":{at}}}"#
+                r#"{{"kind":"host","machineId":"01H","name":"linuxbox","platform":"linux","daemon":{daemon},"at":{at}}}"#
             )
         };
         let window = DAEMON_FLAG_WINDOW.as_millis() as i64;
@@ -560,7 +565,7 @@ mod tests {
         sessions.apply(&host(false, 1_000));
         assert!(!sessions.runs_daemon("01H", 1_000));
         sessions.apply(
-            r#"{"kind":"session","hostId":"01H","sessionId":"a1","workspace":"/w","cwd":"/w","state":"ended","model":"m","thinkingLevel":"off","daemon":true,"at":900}"#,
+            r#"{"kind":"session","machineId":"01H","sessionId":"a1","workspace":"/w","cwd":"/w","state":"ended","model":"m","thinkingLevel":"off","daemon":true,"at":900}"#,
         );
         assert!(sessions.runs_daemon("01H", 1_000 + window + 1));
         assert!(!sessions.runs_daemon("02X", 1_000));
@@ -570,24 +575,24 @@ mod tests {
     fn the_view_keeps_the_newest_record_per_host_and_session() {
         let mut view = RegistryView::default();
         view.apply(
-            r#"{"kind":"host","hostId":"01H","name":"mbp","platform":"macos","deviceId":"d","daemon":true,"at":1000}"#,
+            r#"{"kind":"host","machineId":"01H","name":"mbp","platform":"macos","deviceId":"d","daemon":true,"at":1000}"#,
         );
         let session = |state: &str, at: i64| {
             format!(
-                r#"{{"kind":"session","hostId":"01H","sessionId":"a1","workspace":"/w","cwd":"/w","state":"{state}","model":"mock/mock-1","thinkingLevel":"off","at":{at}}}"#
+                r#"{{"kind":"session","machineId":"01H","sessionId":"a1","workspace":"/w","cwd":"/w","state":"{state}","model":"mock/mock-1","thinkingLevel":"off","at":{at}}}"#
             )
         };
         view.apply(&session("working", 2000));
         view.apply(&session("idle", 3000));
         // A session on a host whose host record has expired, and junk.
         view.apply(
-            r#"{"kind":"session","hostId":"02L","sessionId":"b2","workspace":"/srv","cwd":"/srv","state":"ended","model":"m","thinkingLevel":"off","at":500}"#,
+            r#"{"kind":"session","machineId":"02L","sessionId":"b2","workspace":"/srv","cwd":"/srv","state":"ended","model":"m","thinkingLevel":"off","at":500}"#,
         );
         view.apply("not json");
         view.apply(
-            r#"{"kind":"session","hostId":"02L","sessionId":"c3","state":"strange","at":9}"#,
+            r#"{"kind":"session","machineId":"02L","sessionId":"c3","state":"strange","at":9}"#,
         );
-        view.apply(r#"{"kind":"heartbeat","hostId":"01H","at":120000}"#);
+        view.apply(r#"{"kind":"heartbeat","machineId":"01H","at":120000}"#);
 
         let hosts: Vec<&RegistryHost> = view.hosts().collect();
         assert_eq!(hosts.len(), 2);
@@ -616,7 +621,7 @@ mod tests {
     fn the_host_record_names_a_daemon_and_omits_the_flag_otherwise() {
         let body = |daemon| HostBody {
             kind: "host",
-            host_id: "01H",
+            machine_id: "01H",
             name: "mbp",
             platform: "macos",
             device_id: "device-1",
@@ -627,7 +632,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "kind": "host", "hostId": "01H", "name": "mbp", "platform": "macos",
+                "kind": "host", "machineId": "01H", "name": "mbp", "platform": "macos",
                 "deviceId": "device-1", "daemon": true, "at": 1
             })
         );

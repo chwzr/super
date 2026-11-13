@@ -213,7 +213,7 @@ pub(crate) fn confirmation(session_id: &str, daemon_pid: u32, signed_in: bool) -
 pub(crate) fn status_line(
     session_id: &str,
     daemon_version: &str,
-    host_name: &str,
+    machine_name: &str,
     daemon_pid: u32,
     signed_in: bool,
 ) -> String {
@@ -223,7 +223,7 @@ pub(crate) fn status_line(
         "not signed in to SUPER, so the apps do not see it: `super login super` signs in"
     };
     format!(
-        "♦ attached to session {} in the SUPER daemon {daemon_version} on {host_name} (pid {daemon_pid}); {apps}",
+        "♦ attached to session {} in the SUPER daemon {daemon_version} on {machine_name} (pid {daemon_pid}); {apps}",
         short_id(session_id)
     )
 }
@@ -565,7 +565,7 @@ mod daemon {
         status_line(
             session_id,
             &hello.daemon_version,
-            &hello.host_name,
+            &hello.machine_name,
             hello.pid,
             crate::remote::signed_in(),
         )
@@ -794,8 +794,8 @@ mod end_to_end {
                     models_file: Some(provider.catalog_path()),
                     no_context_files: true,
                 },
-                host_id: "01TEST".into(),
-                host_name: "testbox".into(),
+                machine_id: "01TEST".into(),
+                machine_name: "testbox".into(),
                 log_level: super_daemon::log::Level::Debug,
                 log_to_stderr: false,
                 sweep_interval: Duration::from_secs(3600),

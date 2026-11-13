@@ -14,8 +14,8 @@ pub mod controller;
 pub mod credentials;
 #[cfg(feature = "fake")]
 pub mod fake;
-pub mod host;
 mod log;
+pub mod machine;
 pub mod registry;
 pub mod s2;
 pub mod transport;
@@ -26,7 +26,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 pub use credentials::PlatformCredentials;
-pub use host::HostIdentity;
+pub use machine::MachineIdentity;
 pub use registry::{RegistryWriter, SessionRecord, SessionState};
 pub use s2::S2Client;
 pub use transport::{RemoteNotice, RemoteStatus, SessionTransport};
@@ -79,10 +79,10 @@ impl RemoteConfig {
 }
 
 /// Everything one process shares across its sessions: the platform
-/// configuration, the HTTP client and the host identity.
+/// configuration, the HTTP client and the machine identity.
 pub struct Remote {
     pub config: RemoteConfig,
-    pub host: HostIdentity,
+    pub machine: MachineIdentity,
     pub client: Arc<S2Client>,
     pub credentials: Arc<dyn RemoteCredentials>,
 }
@@ -92,19 +92,19 @@ impl Remote {
     /// off the UI thread; it makes one HTTP request.
     pub async fn start(
         credentials: Arc<dyn RemoteCredentials>,
-        host: HostIdentity,
+        machine: MachineIdentity,
     ) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("super-remote/", env!("CARGO_PKG_VERSION")))
             .build()?;
         let config = RemoteConfig::fetch(&http, credentials.as_ref()).await?;
         log::line(format!(
-            "remote start: platform {} basin {} device {} host {} ({})",
+            "remote start: platform {} basin {} device {} machine {} ({})",
             credentials.platform_url(),
             config.s2.basin,
             config.device_id,
-            host.host_id,
-            host.name
+            machine.machine_id,
+            machine.name
         ));
         let client = Arc::new(S2Client::new(
             http,
@@ -113,15 +113,15 @@ impl Remote {
         ));
         Ok(Self {
             config,
-            host,
+            machine,
             client,
             credentials,
         })
     }
 
-    /// Stream names for one session on this host.
+    /// Stream names for one session on this machine.
     pub fn session_streams(&self, session_id: &str) -> transport::SessionStreams {
-        transport::SessionStreams::new(&self.host.host_id, session_id)
+        transport::SessionStreams::new(&self.machine.machine_id, session_id)
     }
 }
 

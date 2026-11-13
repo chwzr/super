@@ -1,9 +1,9 @@
 //! The daemon's presence on the SUPER platform: the registry, one mirror per
-//! hosted session, and the host-level command and event streams.
+//! hosted session, and the machine-level command and event streams.
 
 use crate::host::Hosted;
 use crate::log;
-use crate::server::{ServerContext, run_host_command};
+use crate::server::{ServerContext, run_machine_command};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,9 @@ use super_remote::s2::{
     AppendOptions, AppendRecord, ReadEvent, S2Client, S2Error, SequencedRecord,
 };
 use super_remote::transport::{NoticeSink, SessionStreams, TransportOptions, event_record};
-use super_remote::{HostIdentity, RegistryWriter, RemoteStatus, SessionRecord, SessionTransport};
+use super_remote::{
+    MachineIdentity, RegistryWriter, RemoteStatus, SessionRecord, SessionTransport,
+};
 use super_sdk::daemon::{
     ClientLine, DaemonEvent, DaemonRequest, SessionState, SessionSummary, decode_client_line,
 };
@@ -23,11 +25,11 @@ use super_sdk::protocol::Response;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// The two host-level streams: `(commands, events)`.
-pub fn host_streams(host_id: &str) -> (String, String) {
+/// The two machine-level streams: `(commands, events)`.
+pub fn machine_streams(machine_id: &str) -> (String, String) {
     (
-        format!("hosts/{host_id}/commands"),
-        format!("hosts/{host_id}/events"),
+        format!("machines/{machine_id}/commands"),
+        format!("machines/{machine_id}/events"),
     )
 }
 
@@ -87,7 +89,7 @@ pub fn record_from_summary(summary: &SessionSummary) -> SessionRecord {
 struct Shared {
     client: Arc<S2Client>,
     ctx: Arc<ServerContext>,
-    host_id: String,
+    machine_id: String,
     config: LinkConfig,
     registry: RegistryWriter,
     transports: Mutex<BTreeMap<String, SessionTransport>>,
@@ -112,7 +114,7 @@ impl Shared {
         if transports.contains_key(&hosted.session_id) {
             return;
         }
-        let streams = SessionStreams::new(&self.host_id, &hosted.session_id);
+        let streams = SessionStreams::new(&self.machine_id, &hosted.session_id);
         let options = TransportOptions {
             allow_shell: self.config.allow_shell,
             cursor_dir: self.config.cursor_dir.clone(),
@@ -176,18 +178,18 @@ impl Link {
     pub fn start(
         client: Arc<S2Client>,
         ctx: Arc<ServerContext>,
-        identity: HostIdentity,
+        identity: MachineIdentity,
         device_id: String,
         config: LinkConfig,
     ) -> Self {
         let cancel = CancellationToken::new();
-        let (commands_stream, events_stream) = host_streams(&identity.host_id);
+        let (commands_stream, events_stream) = machine_streams(&identity.machine_id);
         let (out, out_rx) = mpsc::unbounded_channel::<AppendRecord>();
         let unauthorized = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             client: client.clone(),
             ctx,
-            host_id: identity.host_id.clone(),
+            machine_id: identity.machine_id.clone(),
             config,
             registry: RegistryWriter::start_daemon(client.clone(), identity, device_id),
             transports: Mutex::new(BTreeMap::new()),
@@ -196,15 +198,15 @@ impl Link {
             out,
         });
         let tasks = vec![
-            tokio::spawn(append_host_events(
+            tokio::spawn(append_machine_events(
                 client,
                 events_stream,
                 out_rx,
                 cancel.clone(),
                 unauthorized.clone(),
             )),
-            tokio::spawn(follow_host(shared.clone(), cancel.clone())),
-            tokio::spawn(tail_host_commands(
+            tokio::spawn(follow_daemon(shared.clone(), cancel.clone())),
+            tokio::spawn(tail_machine_commands(
                 shared.clone(),
                 commands_stream,
                 cancel.clone(),
@@ -253,9 +255,9 @@ impl Link {
     }
 }
 
-/// Mirror the host's daemon events to `hosts/{id}/events`, keep the registry
+/// Mirror the daemon-level events to `machines/{id}/events`, keep the registry
 /// current, and start or stop per-session mirrors as sessions load and unload.
-async fn follow_host(shared: Arc<Shared>, cancel: CancellationToken) {
+async fn follow_daemon(shared: Arc<Shared>, cancel: CancellationToken) {
     let mut events = shared.ctx.host.subscribe();
     shared.sync_all().await;
     let mut republish = tokio::time::interval(shared.config.republish_interval);
@@ -317,9 +319,9 @@ async fn follow_host(shared: Arc<Shared>, cancel: CancellationToken) {
     }
 }
 
-/// Append host events in order; retry with backoff while the platform is
+/// Append machine events in order; retry with backoff while the platform is
 /// unreachable; note a rejected token.
-async fn append_host_events(
+async fn append_machine_events(
     client: Arc<S2Client>,
     stream: String,
     mut queue: mpsc::UnboundedReceiver<AppendRecord>,
@@ -352,7 +354,7 @@ async fn append_host_events(
                     if matches!(error, S2Error::Unauthorized) {
                         unauthorized.store(true, Ordering::Relaxed);
                     }
-                    log::warn("presence", format!("host event append failed: {error}"));
+                    log::warn("presence", format!("machine event append failed: {error}"));
                     tokio::select! {
                         _ = cancel.cancelled() => return,
                         _ = tokio::time::sleep(backoff) => {}
@@ -364,8 +366,8 @@ async fn append_host_events(
     }
 }
 
-/// Run the commands controllers append to `hosts/{id}/commands`.
-async fn tail_host_commands(
+/// Run the commands controllers append to `machines/{id}/commands`.
+async fn tail_machine_commands(
     shared: Arc<Shared>,
     stream: String,
     cancel: CancellationToken,
@@ -387,7 +389,10 @@ async fn tail_host_commands(
             ReadEvent::Connected => log::info("presence", format!("tailing {stream}")),
             ReadEvent::Ping { .. } | ReadEvent::Disconnected(_) => {}
             ReadEvent::Failed(reason) => {
-                log::warn("presence", format!("host commands tail failed: {reason}"));
+                log::warn(
+                    "presence",
+                    format!("machine commands tail failed: {reason}"),
+                );
                 if reason.contains("401") {
                     unauthorized.store(true, Ordering::Relaxed);
                 }
@@ -397,7 +402,7 @@ async fn tail_host_commands(
                 for record in records {
                     let seq_num = record.seq_num;
                     if !is_expired(&record, shared.config.default_command_expiry) {
-                        run_host_record(&shared, &record).await;
+                        run_machine_record(&shared, &record).await;
                     }
                     cursor.store(seq_num);
                 }
@@ -406,7 +411,7 @@ async fn tail_host_commands(
     }
 }
 
-async fn run_host_record(shared: &Arc<Shared>, record: &SequencedRecord) {
+async fn run_machine_record(shared: &Arc<Shared>, record: &SequencedRecord) {
     let origin = record
         .header("name")
         .or_else(|| record.header("from"))
@@ -427,7 +432,7 @@ async fn run_host_record(shared: &Arc<Shared>, record: &SequencedRecord) {
         Ok(ClientLine::Daemon(DaemonRequest { id, command })) => {
             let name = command.name();
             log::info("presence", format!("{origin}: {name}"));
-            match run_host_command(&shared.ctx, command).await {
+            match run_machine_command(&shared.ctx, command).await {
                 Ok(data) => Response::ok_data(name, data).with_id(id),
                 Err(error) => Response::err(name, error).with_id(id),
             }
@@ -473,7 +478,7 @@ pub struct Presence {
 impl Presence {
     pub fn supervise(
         ctx: Arc<ServerContext>,
-        identity: HostIdentity,
+        identity: MachineIdentity,
         config: PresenceConfig,
     ) -> Self {
         let cancel = CancellationToken::new();
@@ -489,7 +494,7 @@ impl Presence {
 
 async fn supervise(
     ctx: Arc<ServerContext>,
-    identity: HostIdentity,
+    identity: MachineIdentity,
     config: PresenceConfig,
     cancel: CancellationToken,
 ) {

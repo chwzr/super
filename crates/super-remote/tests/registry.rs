@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use super_remote::fake::{FakeS2, TestCredentials, serve};
 use super_remote::s2::S2Client;
-use super_remote::{HostIdentity, RegistryWriter, SessionRecord, SessionState};
+use super_remote::{MachineIdentity, RegistryWriter, SessionRecord, SessionState};
 
 fn record(id: &str, state: SessionState) -> SessionRecord {
     SessionRecord {
@@ -45,9 +45,9 @@ async fn fake_client() -> (Arc<FakeS2>, Arc<S2Client>) {
     (fake, client)
 }
 
-fn host() -> HostIdentity {
-    HostIdentity {
-        host_id: "01H".into(),
+fn host() -> MachineIdentity {
+    MachineIdentity {
+        machine_id: "01H".into(),
         name: "mbp".into(),
         platform: "macos".into(),
     }
@@ -76,7 +76,7 @@ async fn one_host_record_then_one_record_per_session() {
     wait_until(|| bodies(&fake).len() == 4).await;
     let all = bodies(&fake);
     assert_eq!(all[0]["kind"], "host");
-    assert_eq!(all[0]["hostId"], "01H");
+    assert_eq!(all[0]["machineId"], "01H");
     // A standalone `super` is no daemon: the host record leaves the flag out.
     assert!(all[0].get("daemon").is_none(), "{}", all[0]);
     let sessions: Vec<(String, String)> = all[1..]
@@ -104,7 +104,7 @@ async fn one_host_record_then_one_record_per_session() {
     wait_until(|| bodies(&fake).len() == 7).await;
     let all = bodies(&fake);
     assert_eq!(all[4]["kind"], "host");
-    assert_eq!(all[4]["hostId"], "01H");
+    assert_eq!(all[4]["machineId"], "01H");
     assert_eq!(
         (all[5]["sessionId"].as_str(), all[5]["state"].as_str()),
         (Some("a"), Some("working"))
@@ -130,7 +130,7 @@ async fn a_daemon_host_record_says_daemon_even_without_sessions() {
     wait_until(|| bodies(&fake).len() == 1).await;
     let all = bodies(&fake);
     assert_eq!(all[0]["kind"], "host");
-    assert_eq!(all[0]["hostId"], "01H");
+    assert_eq!(all[0]["machineId"], "01H");
     assert_eq!(all[0]["deviceId"], "device-1");
     assert_eq!(all[0]["daemon"], true);
 

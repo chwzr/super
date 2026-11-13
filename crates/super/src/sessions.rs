@@ -19,8 +19,8 @@ use super_tui::{Key, KeyEvent, Theme};
 /// This device's daemon and what it lists.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LocalListing {
-    pub host_id: String,
-    pub host_name: String,
+    pub machine_id: String,
+    pub machine_name: String,
     pub sessions: Vec<SessionSummary>,
 }
 
@@ -32,7 +32,7 @@ pub(crate) struct Listing {
     /// Other devices from the platform registry; `None` when signed out.
     pub registry: Option<Result<RegistryView, String>>,
     /// This device's host id, so its registry records are not listed twice.
-    pub local_host_id: Option<String>,
+    pub local_machine_id: Option<String>,
     /// The session this terminal shows.
     pub current: Option<String>,
 }
@@ -40,7 +40,7 @@ pub(crate) struct Listing {
 /// A device with its workspaces, as the picker lists it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Device {
-    pub host_id: String,
+    pub machine_id: String,
     pub name: String,
     pub platform: String,
     pub local: bool,
@@ -267,8 +267,8 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
     let local_host = match &listing.local {
         Ok(local) => {
             devices.push(Device {
-                host_id: local.host_id.clone(),
-                name: local.host_name.clone(),
+                machine_id: local.machine_id.clone(),
+                name: local.machine_name.clone(),
                 platform: String::new(),
                 local: true,
                 online: true,
@@ -282,11 +282,11 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
                         .collect(),
                 ),
             });
-            Some(local.host_id.clone())
+            Some(local.machine_id.clone())
         }
         Err(reason) => {
             devices.push(Device {
-                host_id: listing.local_host_id.clone().unwrap_or_default(),
+                machine_id: listing.local_machine_id.clone().unwrap_or_default(),
                 name: "this device".into(),
                 platform: String::new(),
                 local: true,
@@ -301,7 +301,7 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
     match &listing.registry {
         None => {}
         Some(Err(reason)) => devices.push(Device {
-            host_id: String::new(),
+            machine_id: String::new(),
             name: "other devices".into(),
             platform: String::new(),
             local: false,
@@ -314,20 +314,20 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
             let mut others: Vec<Device> = view
                 .hosts()
                 .filter(|host| {
-                    Some(&host.host_id) != local_host.as_ref()
-                        && Some(&host.host_id) != listing.local_host_id.as_ref()
+                    Some(&host.machine_id) != local_host.as_ref()
+                        && Some(&host.machine_id) != listing.local_machine_id.as_ref()
                 })
                 .filter_map(|host| {
-                    let online = view.is_online(&host.host_id, now);
+                    let online = view.is_online(&host.machine_id, now);
                     let entries: Vec<Entry> = view
                         .sessions()
-                        .filter(|session| session.host_id == host.host_id)
+                        .filter(|session| session.machine_id == host.machine_id)
                         .map(|session| entry(summary_from_record(session), current))
                         .collect();
-                    let can_start = online && view.runs_daemon(&host.host_id, now);
+                    let can_start = online && view.runs_daemon(&host.machine_id, now);
                     // A device with nothing to show and nothing to start is noise.
                     (!entries.is_empty() || can_start).then(|| Device {
-                        host_id: host.host_id.clone(),
+                        machine_id: host.machine_id.clone(),
                         name: host.name.clone(),
                         platform: host.platform.clone(),
                         local: false,
@@ -342,7 +342,7 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
                 b.online
                     .cmp(&a.online)
                     .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                    .then(a.host_id.cmp(&b.host_id))
+                    .then(a.machine_id.cmp(&b.machine_id))
             });
             devices.extend(others);
         }
@@ -353,7 +353,7 @@ pub(crate) fn group(listing: &Listing, now: i64) -> Vec<Device> {
 /// Where a device is reached: over the local socket or through the platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeviceRef {
-    pub host_id: String,
+    pub machine_id: String,
     pub name: String,
     pub local: bool,
     pub online: bool,
@@ -363,7 +363,7 @@ pub(crate) struct DeviceRef {
 impl DeviceRef {
     fn of(device: &Device) -> Self {
         Self {
-            host_id: device.host_id.clone(),
+            machine_id: device.machine_id.clone(),
             name: device.name.clone(),
             local: device.local,
             online: device.online,
@@ -931,14 +931,14 @@ mod daemon {
         } else {
             None
         };
-        let local_host_id = match &local {
-            Ok(listing) => Some(listing.host_id.clone()),
-            Err(_) => link.platform().map(|platform| platform.host_id.clone()),
+        let local_machine_id = match &local {
+            Ok(listing) => Some(listing.machine_id.clone()),
+            Err(_) => link.platform().map(|platform| platform.machine_id.clone()),
         };
         Listing {
             local,
             registry,
-            local_host_id,
+            local_machine_id,
             current: current.map(str::to_string),
         }
     }
@@ -950,8 +950,8 @@ mod daemon {
             .map_err(|error| error.to_string())?;
         let hello = client.hello();
         Ok(LocalListing {
-            host_id: hello.host_id.clone(),
-            host_name: hello.host_name.clone(),
+            machine_id: hello.machine_id.clone(),
+            machine_name: hello.machine_name.clone(),
             sessions,
         })
     }
@@ -972,7 +972,7 @@ mod daemon {
                 .map_err(|error| error.to_string());
         }
         let platform = link.platform_or_connect().await?;
-        let data = host_call(
+        let data = machine_call(
             &platform,
             device,
             &DaemonCommand::ListDirectories {
@@ -983,13 +983,13 @@ mod daemon {
         serde_json::from_value(data["directories"].clone()).map_err(|error| error.to_string())
     }
 
-    async fn host_call(
+    async fn machine_call(
         platform: &Arc<Platform>,
         device: &DeviceRef,
         command: &DaemonCommand,
     ) -> Result<serde_json::Value, String> {
         let response = platform
-            .host_commands(&device.host_id)
+            .machine_commands(&device.machine_id)
             .call(command)
             .await
             .map_err(|error| format!("{error:#}"))?;
@@ -1036,7 +1036,7 @@ mod daemon {
                             device.name
                         ));
                     }
-                    host_call(
+                    machine_call(
                         &platform,
                         &device,
                         &DaemonCommand::ResumeSession {
@@ -1055,7 +1055,7 @@ mod daemon {
                     ));
                 }
                 let platform = link.platform_or_connect().await?;
-                let data = host_call(
+                let data = machine_call(
                     &platform,
                     &device,
                     &DaemonCommand::CreateSession {
@@ -1114,9 +1114,13 @@ mod daemon {
         device: &DeviceRef,
         session: SessionSummary,
     ) -> Result<SessionSummary, String> {
-        let remote =
-            RemoteSession::open(platform, &device.host_id, &device.name, &session.session_id)
-                .await?;
+        let remote = RemoteSession::open(
+            platform,
+            &device.machine_id,
+            &device.name,
+            &session.session_id,
+        )
+        .await?;
         if let Some(client) = link.daemon() {
             let _ = client.detach().await;
         }
@@ -1322,12 +1326,12 @@ mod tests {
         let mut view = RegistryView::default();
         let host = |id: &str, name: &str, daemon: bool, at: i64| {
             format!(
-                r#"{{"kind":"host","hostId":"{id}","name":"{name}","platform":"linux","daemon":{daemon},"at":{at}}}"#
+                r#"{{"kind":"host","machineId":"{id}","name":"{name}","platform":"linux","daemon":{daemon},"at":{at}}}"#
             )
         };
         let session = |host: &str, id: &str, workspace: &str, state: &str, at: i64| {
             format!(
-                r#"{{"kind":"session","hostId":"{host}","sessionId":"{id}","workspace":"{workspace}","cwd":"{workspace}","state":"{state}","model":"super/gpt-5","thinkingLevel":"low","resumeArgv":["super","--session","/h/{id}.jsonl"],"at":{at}}}"#
+                r#"{{"kind":"session","machineId":"{host}","sessionId":"{id}","workspace":"{workspace}","cwd":"{workspace}","state":"{state}","model":"super/gpt-5","thinkingLevel":"low","resumeArgv":["super","--session","/h/{id}.jsonl"],"at":{at}}}"#
             )
         };
         // This device announces itself too; the daemon's listing wins.
@@ -1350,8 +1354,8 @@ mod tests {
     fn listing() -> Listing {
         Listing {
             local: Ok(LocalListing {
-                host_id: "01M".into(),
-                host_name: "mbp".into(),
+                machine_id: "01M".into(),
+                machine_name: "mbp".into(),
                 sessions: vec![
                     summary("s1", "/w/super", SessionState::Idle, NOW - 7_200_000),
                     summary("s2", "/w/super", SessionState::Working, NOW - 60_000),
@@ -1364,7 +1368,7 @@ mod tests {
                 ],
             }),
             registry: Some(Ok(registry())),
-            local_host_id: Some("01M".into()),
+            local_machine_id: Some("01M".into()),
             current: Some("s3".into()),
         }
     }
@@ -1392,7 +1396,7 @@ mod tests {
         let record = |last_activity: &str, at: i64| {
             let mut view = RegistryView::default();
             view.apply(&format!(
-                r#"{{"kind":"session","hostId":"02L","sessionId":"r1","workspace":"/srv/app","cwd":"/srv/app","state":"ended","model":"","thinkingLevel":"","daemon":true,"resumeArgv":["super","--session","/h/r1.jsonl"]{last_activity},"at":{at}}}"#
+                r#"{{"kind":"session","machineId":"02L","sessionId":"r1","workspace":"/srv/app","cwd":"/srv/app","state":"ended","model":"","thinkingLevel":"","daemon":true,"resumeArgv":["super","--session","/h/r1.jsonl"]{last_activity},"at":{at}}}"#
             ));
             let session = view.sessions().next().unwrap().clone();
             entry(summary_from_record(&session), None)
@@ -1465,7 +1469,7 @@ mod tests {
         let mut listing = listing();
         if let Some(Ok(view)) = &mut listing.registry {
             view.apply(&format!(
-                r#"{{"kind":"session","hostId":"03O","sessionId":"o2","workspace":"/home/o","cwd":"/home/o","state":"working","model":"m","thinkingLevel":"off","firstMessage":"left running","at":{}}}"#,
+                r#"{{"kind":"session","machineId":"03O","sessionId":"o2","workspace":"/home/o","cwd":"/home/o","state":"working","model":"m","thinkingLevel":"off","firstMessage":"left running","at":{}}}"#,
                 NOW - 3_600_000
             ));
         }
@@ -1481,7 +1485,7 @@ mod tests {
         let listing = Listing {
             local: Err("no SUPER daemon is running on this device".into()),
             registry: Some(Err("could not reach the platform: offline".into())),
-            local_host_id: None,
+            local_machine_id: None,
             current: None,
         };
         let devices = group(&listing, NOW);
@@ -1524,7 +1528,7 @@ mod tests {
             picker.handle_key(&key(Key::Enter)),
             Outcome::Pick(Choice::NewSession {
                 device: DeviceRef {
-                    host_id: "01M".into(),
+                    machine_id: "01M".into(),
                     name: "mbp".into(),
                     local: true,
                     online: true,
@@ -1580,7 +1584,7 @@ mod tests {
         let Outcome::Browse { device, path } = picker.handle_key(&key(Key::Enter)) else {
             panic!("a browse");
         };
-        assert_eq!(device.host_id, "02L");
+        assert_eq!(device.machine_id, "02L");
         assert_eq!(path, "/srv");
 
         let entries = vec![
@@ -1786,8 +1790,8 @@ mod end_to_end {
                     models_file: Some(provider.catalog_path()),
                     no_context_files: true,
                 },
-                host_id: "01M".into(),
-                host_name: "mbp".into(),
+                machine_id: "01M".into(),
+                machine_name: "mbp".into(),
                 log_level: super_daemon::log::Level::Debug,
                 log_to_stderr: false,
                 sweep_interval: Duration::from_secs(3600),
@@ -1838,8 +1842,8 @@ mod end_to_end {
             remote_host,
             DaemonInfo {
                 version: "test".into(),
-                host_id: "01L".into(),
-                host_name: "linuxbox".into(),
+                machine_id: "01L".into(),
+                machine_name: "linuxbox".into(),
                 platform: "linux".into(),
                 socket_path: dir.path().join("remote.sock"),
                 protocol_versions: super_sdk::daemon::PROTOCOL_VERSIONS,
@@ -1855,8 +1859,8 @@ mod end_to_end {
         let presence = PresenceLink::start(
             s2.clone(),
             ctx.clone(),
-            super_remote::HostIdentity {
-                host_id: "01L".into(),
+            super_remote::MachineIdentity {
+                machine_id: "01L".into(),
                 name: "linuxbox".into(),
                 platform: "linux".into(),
             },
@@ -1873,7 +1877,7 @@ mod end_to_end {
                 device_id: "device-mac".into(),
                 name: "Terminal on mbp".into(),
             },
-            host_id: "01M".into(),
+            machine_id: "01M".into(),
         });
         let mut link = Link::new(Some((client, events)), Some(platform));
 

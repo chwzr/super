@@ -13,8 +13,10 @@ use serde_json::Value;
 ///
 /// Additive changes (new commands, new optional fields, new events) do not
 /// bump the version. Renaming or removing a command, or changing what one
-/// means, bumps `max`; `min` follows one release later.
-pub const PROTOCOL_VERSIONS: [u32; 2] = [1, 1];
+/// means, bumps `max`; `min` follows one release later. Version 2 names the
+/// machine (`machineId`, `machineName` where version 1 said `hostId`,
+/// `hostName`) and was introduced without keeping version 1.
+pub const PROTOCOL_VERSIONS: [u32; 2] = [2, 2];
 
 /// What a client sees of a session's life. `Ended` means "not loaded in the
 /// daemon right now", never "gone": every ended session can be resumed.
@@ -122,8 +124,8 @@ pub struct DirectoryEntry {
 pub struct HelloReply {
     pub protocol_version: u32,
     pub daemon_version: String,
-    pub host_id: String,
-    pub host_name: String,
+    pub machine_id: String,
+    pub machine_name: String,
     pub platform: String,
     pub pid: u32,
     pub started_at: String,
@@ -135,8 +137,8 @@ pub struct HelloReply {
 pub struct DaemonStatus {
     pub daemon_version: String,
     pub protocol_versions: [u32; 2],
-    pub host_id: String,
-    pub host_name: String,
+    pub machine_id: String,
+    pub machine_name: String,
     pub platform: String,
     pub pid: u32,
     pub started_at: String,
@@ -316,7 +318,7 @@ mod tests {
 
     #[test]
     fn hello_round_trips_in_camel_case() {
-        let line = r#"{"id":"1","type":"hello","client":"tui","name":"Terminal","version":"0.0.38","protocolVersions":[1,1]}"#;
+        let line = r#"{"id":"1","type":"hello","client":"tui","name":"Terminal","version":"0.0.38","protocolVersions":[2,2]}"#;
         let ClientLine::Daemon(request) = decode_client_line(line).expect("decodes") else {
             panic!("hello is a daemon command");
         };
@@ -327,12 +329,31 @@ mod tests {
                 client: ClientKind::Tui,
                 name: Some("Terminal".into()),
                 version: "0.0.38".into(),
-                protocol_versions: [1, 1],
+                protocol_versions: [2, 2],
             }
         );
         let encoded = serde_json::to_value(&request.command).unwrap();
         assert_eq!(encoded["type"], "hello");
-        assert_eq!(encoded["protocolVersions"], json!([1, 1]));
+        assert_eq!(encoded["protocolVersions"], json!([2, 2]));
+    }
+
+    #[test]
+    fn the_hello_reply_and_the_status_name_the_machine() {
+        let reply = HelloReply {
+            protocol_version: PROTOCOL_VERSIONS[1],
+            daemon_version: "0.0.41".into(),
+            machine_id: "01J".into(),
+            machine_name: "mbp".into(),
+            platform: "macos".into(),
+            pid: 4242,
+            started_at: "2026-10-29T09:00:00Z".into(),
+        };
+        let value = serde_json::to_value(&reply).unwrap();
+        assert_eq!(value["protocolVersion"], 2);
+        assert_eq!(value["machineId"], "01J");
+        assert_eq!(value["machineName"], "mbp");
+        assert!(value.get("hostId").is_none() && value.get("hostName").is_none());
+        assert_eq!(serde_json::from_value::<HelloReply>(value).unwrap(), reply);
     }
 
     #[test]

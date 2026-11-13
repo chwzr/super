@@ -12,8 +12,8 @@ use std::time::Duration;
 use super_daemon::host::{CreateRequest, HostConfig, SessionHost};
 use super_daemon::presence::{Link, LinkConfig};
 use super_daemon::server::{DaemonInfo, ServerContext};
-use super_remote::HostIdentity;
-use super_remote::controller::{HostCommands, Sender, SessionController};
+use super_remote::MachineIdentity;
+use super_remote::controller::{MachineCommands, Sender, SessionController};
 use super_remote::fake::{FakeS2, TestCredentials, serve};
 use super_remote::registry::{RegistryView, read_registry};
 use super_remote::s2::S2Client;
@@ -61,8 +61,8 @@ async fn fixture() -> Fixture {
         host,
         DaemonInfo {
             version: "test".into(),
-            host_id: "01L".into(),
-            host_name: "linuxbox".into(),
+            machine_id: "01L".into(),
+            machine_name: "linuxbox".into(),
             platform: "linux".into(),
             socket_path: dir.path().join("d.sock"),
             protocol_versions: super_sdk::daemon::PROTOCOL_VERSIONS,
@@ -79,8 +79,8 @@ async fn fixture() -> Fixture {
     let link = Link::start(
         client.clone(),
         ctx.clone(),
-        HostIdentity {
-            host_id: "01L".into(),
+        MachineIdentity {
+            machine_id: "01L".into(),
             name: "linuxbox".into(),
             platform: "linux".into(),
         },
@@ -169,7 +169,7 @@ async fn the_registry_reader_sees_the_daemon_host_and_its_stored_session() {
 async fn a_controller_creates_prompts_and_follows_a_session_on_another_host() {
     let fixture = fixture().await;
     registry_until(&fixture.client, |view| view.host_by_id("01L").is_some()).await;
-    let host = HostCommands::new(fixture.client.clone(), "01L", terminal());
+    let host = MachineCommands::new(fixture.client.clone(), "01L", terminal());
 
     // "New workspace on device…": the device's directories, then a session
     // in the one picked.
@@ -183,18 +183,18 @@ async fn a_controller_creates_prompts_and_follows_a_session_on_another_host() {
     assert!(listing.success, "{listing:?}");
     // The command went to the host's commands stream with the apps' headers,
     // and its answer, matched by id, came from the host's events stream.
-    let (headers, body) = newest(&fixture.fake, "hosts/01L/commands");
+    let (headers, body) = newest(&fixture.fake, "machines/01L/commands");
     assert_command_headers(&headers, "list_directories");
     assert_eq!(body["type"], "list_directories");
     let answered = fixture
         .fake
-        .records("hosts/01L/events")
+        .records("machines/01L/events")
         .into_iter()
         .any(|record| {
             serde_json::from_str::<Value>(&record.body)
                 .is_ok_and(|event| event["type"] == "response" && event["id"] == body["id"])
         });
-    assert!(answered, "the answer is on hosts/01L/events");
+    assert!(answered, "the answer is on machines/01L/events");
     let names: Vec<&str> = listing.data.as_ref().unwrap()["directories"]
         .as_array()
         .unwrap()

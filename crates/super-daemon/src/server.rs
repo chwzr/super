@@ -24,8 +24,8 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone)]
 pub struct DaemonInfo {
     pub version: String,
-    pub host_id: String,
-    pub host_name: String,
+    pub machine_id: String,
+    pub machine_name: String,
     pub platform: String,
     pub socket_path: PathBuf,
     /// The range `hello` accepts and advertises.
@@ -67,8 +67,8 @@ impl ServerContext {
         HelloReply {
             protocol_version,
             daemon_version: self.info.version.clone(),
-            host_id: self.info.host_id.clone(),
-            host_name: self.info.host_name.clone(),
+            machine_id: self.info.machine_id.clone(),
+            machine_name: self.info.machine_name.clone(),
             platform: self.info.platform.clone(),
             pid: std::process::id(),
             started_at: self.started_at.clone(),
@@ -81,8 +81,8 @@ impl ServerContext {
         DaemonStatus {
             daemon_version: self.info.version.clone(),
             protocol_versions: self.info.protocol_versions,
-            host_id: self.info.host_id.clone(),
-            host_name: self.info.host_name.clone(),
+            machine_id: self.info.machine_id.clone(),
+            machine_name: self.info.machine_name.clone(),
             platform: self.info.platform.clone(),
             pid: std::process::id(),
             started_at: self.started_at.clone(),
@@ -412,7 +412,7 @@ async fn daemon_command(
             ctx.shutdown.cancel();
             return response;
         }
-        other => run_host_command(ctx, other).await,
+        other => run_machine_command(ctx, other).await,
     };
     match result {
         Ok(data) => Response::ok_data(name, data).with_id(id),
@@ -423,7 +423,7 @@ async fn daemon_command(
 /// The commands that do not depend on a connection. The socket server and
 /// the platform link both run them here, so a command means the same thing
 /// wherever it came from.
-pub async fn run_host_command(
+pub async fn run_machine_command(
     ctx: &Arc<ServerContext>,
     command: DaemonCommand,
 ) -> Result<Value, String> {

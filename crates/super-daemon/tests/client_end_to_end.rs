@@ -53,8 +53,8 @@ impl Daemon {
                 models_file: Some(provider.catalog_path()),
                 no_context_files: true,
             },
-            host_id: "01TEST".into(),
-            host_name: "testbox".into(),
+            machine_id: "01TEST".into(),
+            machine_name: "testbox".into(),
             log_level: Level::Debug,
             log_to_stderr: false,
             sweep_interval: Duration::from_secs(60),
@@ -140,8 +140,8 @@ async fn a_terminal_creates_attaches_prompts_and_detaches() {
     let mut client = DaemonClient::connect_to(&daemon.socket, &terminal())
         .await
         .expect("hello");
-    assert_eq!(client.protocol_version(), 1);
-    assert_eq!(client.hello().host_name, "testbox");
+    assert_eq!(client.protocol_version(), 2);
+    assert_eq!(client.hello().machine_name, "testbox");
     assert_eq!(client.hello().pid, std::process::id());
     let mut events = client.take_events().expect("the event stream");
     assert!(client.take_events().is_none(), "the stream is taken once");
@@ -251,7 +251,7 @@ async fn a_terminal_creates_attaches_prompts_and_detaches() {
 
 #[tokio::test]
 async fn a_daemon_on_another_protocol_range_is_a_skew_error() {
-    let daemon = Daemon::start([2, 3]).await;
+    let daemon = Daemon::start([3, 4]).await;
     let error = DaemonClient::connect_to(&daemon.socket, &terminal())
         .await
         .err()
@@ -259,7 +259,7 @@ async fn a_daemon_on_another_protocol_range_is_a_skew_error() {
     let ClientError::Skew(skew) = &error else {
         panic!("expected a skew error, got {error}");
     };
-    assert_eq!(skew.daemon, [2, 3]);
+    assert_eq!(skew.daemon, [3, 4]);
     assert_eq!(skew.client, PROTOCOL_VERSIONS);
     assert_eq!(
         skew.daemon_version.as_deref(),
@@ -267,13 +267,13 @@ async fn a_daemon_on_another_protocol_range_is_a_skew_error() {
     );
     let message = error.to_string();
     assert!(
-        message.starts_with("the SUPER daemon speaks protocol 2 to 3, this build speaks 1: "),
+        message.starts_with("the SUPER daemon speaks protocol 3 to 4, this build speaks 2: "),
         "{message}"
     );
 
     // A client from the future meets the same daemon's older side.
     let mut newer = terminal();
-    newer.protocol_versions = [4, 4];
+    newer.protocol_versions = [5, 5];
     let error = DaemonClient::connect_to(&daemon.socket, &newer)
         .await
         .err()
@@ -281,7 +281,7 @@ async fn a_daemon_on_another_protocol_range_is_a_skew_error() {
     assert!(
         error
             .to_string()
-            .starts_with("the SUPER daemon speaks protocol 2 to 3, this build speaks 4: "),
+            .starts_with("the SUPER daemon speaks protocol 3 to 4, this build speaks 5: "),
         "{error}"
     );
     assert_eq!(daemon.stop().await, 0);

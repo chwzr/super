@@ -54,7 +54,7 @@ async fn a_restarted_transport_does_not_execute_applied_commands_again() {
         base_url,
         Arc::new(TestCredentials),
     ));
-    let streams = SessionStreams::new("host1", "sess1");
+    let streams = SessionStreams::new("machine1", "sess1");
     let options = TransportOptions {
         linger: Duration::from_millis(5),
         cursor_dir: Some(cursors.path().to_path_buf()),
@@ -143,7 +143,7 @@ async fn events_entries_and_commands_flow_through_the_streams() {
         base_url,
         Arc::new(TestCredentials),
     ));
-    let streams = SessionStreams::new("host1", "sess1");
+    let streams = SessionStreams::new("machine1", "sess1");
     let notices: Arc<Mutex<Vec<RemoteNotice>>> = Default::default();
     let sink = notices.clone();
     let transport = SessionTransport::start(
@@ -285,7 +285,7 @@ async fn shell_can_be_refused_by_policy() {
         base_url,
         Arc::new(TestCredentials),
     ));
-    let streams = SessionStreams::new("host1", "sess2");
+    let streams = SessionStreams::new("machine1", "sess2");
     let notices: Arc<Mutex<Vec<RemoteNotice>>> = Default::default();
     let sink = notices.clone();
     let transport = SessionTransport::start(

@@ -175,7 +175,7 @@ fn status_finds_the_socket_in_the_environment() {
         let mut writer = &terminal;
         writeln!(
             writer,
-            r#"{{"type":"hello","id":"h1","client":"tui","name":"Terminal","version":"0.0.0","protocolVersions":[1,1]}}"#
+            r#"{{"type":"hello","id":"h1","client":"tui","name":"Terminal","version":"0.0.0","protocolVersions":[2,2]}}"#
         )
         .expect("hello");
         let mut reply = String::new();
@@ -205,7 +205,7 @@ fn status_finds_the_socket_in_the_environment() {
 #[test]
 fn a_daemon_on_another_protocol_range_names_both_and_the_update() {
     let sandbox = Sandbox::new();
-    let child = sandbox.spawn_daemon_with(&[("SUPER_DAEMON_PROTOCOL_VERSIONS", "2-3")]);
+    let child = sandbox.spawn_daemon_with(&[("SUPER_DAEMON_PROTOCOL_VERSIONS", "3-4")]);
     let output = sandbox
         .command(&[
             "daemon",
@@ -218,7 +218,7 @@ fn a_daemon_on_another_protocol_range_names_both_and_the_update() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(2), "{stderr}");
     assert!(
-        stderr.contains("the SUPER daemon speaks protocol 2 to 3, this build speaks 1: "),
+        stderr.contains("the SUPER daemon speaks protocol 3 to 4, this build speaks 2: "),
         "{stderr}"
     );
     // It cannot be asked to stop, but `stop` finds its pid.

@@ -1,6 +1,6 @@
 //! What a command stream reader needs: where to start, when a command is
 //! too old to run, and the cursor file that survives a restart. The session
-//! transport and the daemon's host-command tailer share these.
+//! transport and the daemon's machine-command tailer share these.
 
 use crate::s2::{ReadStart, S2Client, SequencedRecord};
 use std::path::PathBuf;
@@ -123,10 +123,10 @@ mod tests {
     #[test]
     fn the_cursor_round_trips_through_its_file() {
         let dir = tempfile::tempdir().unwrap();
-        let cursor = CommandCursor::new(Some(dir.path().to_path_buf()), "hosts/01H/commands");
+        let cursor = CommandCursor::new(Some(dir.path().to_path_buf()), "machines/01H/commands");
         assert_eq!(cursor.load(), None);
         cursor.store(41);
         assert_eq!(cursor.load(), Some(41));
-        assert!(dir.path().join("hosts_01H_commands").exists());
+        assert!(dir.path().join("machines_01H_commands").exists());
     }
 }

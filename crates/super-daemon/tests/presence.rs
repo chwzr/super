@@ -8,7 +8,7 @@ use std::time::Duration;
 use super_daemon::host::{CreateRequest, HostConfig, SessionHost};
 use super_daemon::presence::{Link, LinkConfig};
 use super_daemon::server::{DaemonInfo, ServerContext};
-use super_remote::HostIdentity;
+use super_remote::MachineIdentity;
 use super_remote::fake::{FakeS2, TestCredentials, serve};
 use super_remote::s2::S2Client;
 use super_sdk::daemon::EndReason;
@@ -24,9 +24,9 @@ struct Fixture {
     link: Link,
 }
 
-fn identity() -> HostIdentity {
-    HostIdentity {
-        host_id: "01H".into(),
+fn identity() -> MachineIdentity {
+    MachineIdentity {
+        machine_id: "01H".into(),
         name: "mbp".into(),
         platform: "macos".into(),
     }
@@ -70,8 +70,8 @@ async fn fixture() -> Fixture {
         host,
         DaemonInfo {
             version: "test".into(),
-            host_id: "01H".into(),
-            host_name: "mbp".into(),
+            machine_id: "01H".into(),
+            machine_name: "mbp".into(),
             platform: "macos".into(),
             socket_path: dir.path().join("d.sock"),
             protocol_versions: super_sdk::daemon::PROTOCOL_VERSIONS,
@@ -123,7 +123,7 @@ fn command(fake: &FakeS2, id: &str, body: Value) {
     let mut body = body;
     body["id"] = Value::String(id.into());
     fake.append(
-        "hosts/01H/commands",
+        "machines/01H/commands",
         vec![(
             vec![
                 ("t".to_string(), body["type"].as_str().unwrap().to_string()),
@@ -282,12 +282,12 @@ async fn a_create_session_over_the_platform_is_answered_mirrored_and_registered(
     );
 
     wait_until(|| {
-        bodies(&fixture.fake, "hosts/01H/events")
+        bodies(&fixture.fake, "machines/01H/events")
             .iter()
             .any(|b| b["type"] == "response" && b["id"] == "c1")
     })
     .await;
-    let events = bodies(&fixture.fake, "hosts/01H/events");
+    let events = bodies(&fixture.fake, "machines/01H/events");
     let response = events.iter().find(|b| b["type"] == "response").unwrap();
     assert_eq!(response["success"], true, "{response}");
     let id = response["data"]["session"]["sessionId"]
@@ -328,7 +328,7 @@ async fn a_create_session_over_the_platform_is_answered_mirrored_and_registered(
         json!({"type": "stop_session", "sessionId": id}),
     );
     wait_until(|| {
-        bodies(&fixture.fake, "hosts/01H/events")
+        bodies(&fixture.fake, "machines/01H/events")
             .iter()
             .any(|b| b["type"] == "session_ended" && b["sessionId"] == id)
     })
@@ -361,7 +361,7 @@ async fn a_restarted_link_resumes_from_its_cursor_and_runs_nothing_twice() {
     wait_until(|| bodies(&fixture.fake, "registry").len() >= 2).await;
     command(&fixture.fake, "c1", json!({"type": "status"}));
     wait_until(|| {
-        bodies(&fixture.fake, "hosts/01H/events")
+        bodies(&fixture.fake, "machines/01H/events")
             .iter()
             .any(|b| b["id"] == "c1")
     })
@@ -378,12 +378,12 @@ async fn a_restarted_link_resumes_from_its_cursor_and_runs_nothing_twice() {
         link_config(fixture.dir.path()),
     );
     wait_until(|| {
-        bodies(&fixture.fake, "hosts/01H/events")
+        bodies(&fixture.fake, "machines/01H/events")
             .iter()
             .any(|b| b["id"] == "c2")
     })
     .await;
-    let events = bodies(&fixture.fake, "hosts/01H/events");
+    let events = bodies(&fixture.fake, "machines/01H/events");
     let answers = |id: &str| events.iter().filter(|b| b["id"] == id).count();
     assert_eq!(answers("c1"), 1, "{events:?}");
     assert_eq!(answers("c2"), 1, "{events:?}");
@@ -459,7 +459,7 @@ async fn connection_bound_and_malformed_commands_are_refused_and_expired_ones_dr
         json!({"type": "attach", "sessionId": "x"}),
     );
     fixture.fake.append(
-        "hosts/01H/commands",
+        "machines/01H/commands",
         vec![(
             vec![
                 ("t".into(), "list_sessions".into()),
@@ -471,12 +471,12 @@ async fn connection_bound_and_malformed_commands_are_refused_and_expired_ones_dr
     command(&fixture.fake, "c3", json!({"type": "teleport"}));
     command(&fixture.fake, "c4", json!({"type": "list_workspaces"}));
     wait_until(|| {
-        bodies(&fixture.fake, "hosts/01H/events")
+        bodies(&fixture.fake, "machines/01H/events")
             .iter()
             .any(|b| b["id"] == "c4")
     })
     .await;
-    let events = bodies(&fixture.fake, "hosts/01H/events");
+    let events = bodies(&fixture.fake, "machines/01H/events");
     let by_id = |id: &str| events.iter().find(|b| b["id"] == id).cloned();
     assert_eq!(
         by_id("c1").unwrap()["error"],

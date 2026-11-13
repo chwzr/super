@@ -613,8 +613,8 @@ mod tests {
                     models_file: Some(provider.catalog_path()),
                     no_context_files: true,
                 },
-                host_id: "01M".into(),
-                host_name: "mbp".into(),
+                machine_id: "01M".into(),
+                machine_name: "mbp".into(),
                 log_level: super_daemon::log::Level::Debug,
                 log_to_stderr: false,
                 sweep_interval: Duration::from_secs(3600),
@@ -690,12 +690,12 @@ mod tests {
         let sessions = picker_client.list_sessions(None).await.unwrap();
         let listing = Listing {
             local: Ok(crate::sessions::LocalListing {
-                host_id: hello.host_id.clone(),
-                host_name: hello.host_name.clone(),
+                machine_id: hello.machine_id.clone(),
+                machine_name: hello.machine_name.clone(),
                 sessions,
             }),
             registry: None,
-            local_host_id: Some(hello.host_id),
+            local_machine_id: Some(hello.machine_id),
             current: Some(first.session_id.clone()),
         };
         let link = Link::local(picker_client, picker_events);

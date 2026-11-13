@@ -3,7 +3,7 @@
 //!
 //! A command is one record on a `commands` stream with the headers `t` (its
 //! type), `from` (this device's id), `name` (shown to others as its origin)
-//! and `exp` (Unix milliseconds after which the host drops it). The host
+//! and `exp` (Unix milliseconds after which the machine drops it). The machine
 //! answers with a `response` line carrying the command's `id` on the matching
 //! events stream, which this side reads from the tail it had before the
 //! append, so the answer cannot slip past.
@@ -62,20 +62,20 @@ fn answer_for(body: &str, id: &str) -> Option<Response> {
     serde_json::from_value(value).ok()
 }
 
-/// Daemon-level commands for the SUPER daemon on another host:
-/// `hosts/{hostId}/commands` in, `hosts/{hostId}/events` out.
-pub struct HostCommands {
+/// Daemon-level commands for the SUPER daemon on another machine:
+/// `machines/{machineId}/commands` in, `machines/{machineId}/events` out.
+pub struct MachineCommands {
     client: Arc<S2Client>,
-    host_id: String,
+    machine_id: String,
     sender: Sender,
     timeout: Duration,
 }
 
-impl HostCommands {
-    pub fn new(client: Arc<S2Client>, host_id: impl Into<String>, sender: Sender) -> Self {
+impl MachineCommands {
+    pub fn new(client: Arc<S2Client>, machine_id: impl Into<String>, sender: Sender) -> Self {
         Self {
             client,
-            host_id: host_id.into(),
+            machine_id: machine_id.into(),
             sender,
             timeout: ANSWER_TIMEOUT,
         }
@@ -86,16 +86,16 @@ impl HostCommands {
         self
     }
 
-    pub fn host_id(&self) -> &str {
-        &self.host_id
+    pub fn machine_id(&self) -> &str {
+        &self.machine_id
     }
 
     /// Send `command` and wait for its response. The command expires when the
     /// wait ends, so a daemon that comes back later never runs one this side
     /// already reported as lost.
     pub async fn call(&self, command: &DaemonCommand) -> Result<Response> {
-        let events = format!("hosts/{}/events", self.host_id);
-        let commands = format!("hosts/{}/commands", self.host_id);
+        let events = format!("machines/{}/events", self.machine_id);
+        let commands = format!("machines/{}/commands", self.machine_id);
         let start = tail_or_start(&self.client, &events)
             .await
             .map_err(|error| anyhow!("{events}: {error}"))?;
@@ -132,7 +132,7 @@ impl HostCommands {
                     _ => {}
                 }
             }
-            Err(anyhow!("the host's event stream ended"))
+            Err(anyhow!("the machine's event stream ended"))
         })
         .await;
         cancel.cancel();
@@ -148,7 +148,7 @@ impl HostCommands {
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Response>>>>;
 
-/// Drive one session on another host: its `events` stream in, its
+/// Drive one session on another machine: its `events` stream in, its
 /// `commands` stream out, the same RPC commands and events a local client
 /// speaks.
 pub struct SessionController {
@@ -166,11 +166,11 @@ impl SessionController {
     /// for good or the controller goes away.
     pub async fn open(
         client: Arc<S2Client>,
-        host_id: &str,
+        machine_id: &str,
         session_id: &str,
         sender: Sender,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Value>)> {
-        let streams = SessionStreams::new(host_id, session_id);
+        let streams = SessionStreams::new(machine_id, session_id);
         let start = tail_or_start(&client, &streams.events)
             .await
             .map_err(|error| anyhow!("{}: {error}", streams.events))?;

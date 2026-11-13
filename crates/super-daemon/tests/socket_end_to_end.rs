@@ -51,8 +51,8 @@ impl Daemon {
                 models_file: Some(provider.catalog_path()),
                 no_context_files: true,
             },
-            host_id: "01TEST".into(),
-            host_name: "testbox".into(),
+            machine_id: "01TEST".into(),
+            machine_name: "testbox".into(),
             log_level: Level::Debug,
             log_to_stderr: false,
             sweep_interval,
@@ -97,12 +97,12 @@ impl Daemon {
         let reply = client
             .call(json!({
                 "type": "hello", "client": "other", "name": name,
-                "version": "test", "protocolVersions": [1, 1]
+                "version": "test", "protocolVersions": [2, 2]
             }))
             .await;
         assert_eq!(reply["success"], true, "{reply}");
-        assert_eq!(reply["data"]["protocolVersion"], 1);
-        assert_eq!(reply["data"]["hostName"], "testbox");
+        assert_eq!(reply["data"]["protocolVersion"], 2);
+        assert_eq!(reply["data"]["machineName"], "testbox");
         client
     }
 
@@ -211,9 +211,9 @@ async fn a_protocol_mismatch_names_both_ranges() {
     assert_eq!(reply["success"], false);
     assert_eq!(
         reply["error"],
-        "this SUPER daemon speaks protocol 1; this client speaks 9"
+        "this SUPER daemon speaks protocol 2; this client speaks 9"
     );
-    assert_eq!(reply["data"]["protocolVersions"], json!([1, 1]));
+    assert_eq!(reply["data"]["protocolVersions"], json!([2, 2]));
     assert!(client.next().await.is_none());
     daemon.stop().await;
 }
@@ -314,7 +314,7 @@ async fn two_clients_share_one_session_until_it_is_stopped_and_resumed() {
     let status = a.call(json!({"type": "status"})).await;
     assert_eq!(status["data"]["hostedSessions"], 1);
     assert_eq!(status["data"]["clients"], 2);
-    assert_eq!(status["data"]["hostId"], "01TEST");
+    assert_eq!(status["data"]["machineId"], "01TEST");
 
     daemon.stop().await;
 }
@@ -462,8 +462,8 @@ async fn a_second_daemon_on_the_same_lock_exits_with_one() {
             models_file: None,
             no_context_files: true,
         },
-        host_id: "01TEST".into(),
-        host_name: "testbox".into(),
+        machine_id: "01TEST".into(),
+        machine_name: "testbox".into(),
         log_level: Level::Info,
         log_to_stderr: false,
         sweep_interval: Duration::from_secs(60),

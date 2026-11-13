@@ -13,7 +13,7 @@ use super_coding::Settings;
 use super_coding::session_runner::AgentSession;
 use super_remote::transport::{NoticeSink, TransportOptions};
 use super_remote::{
-    HostIdentity, RegistryWriter, Remote, RemoteCredentials, RemoteNotice, RemoteStatus,
+    MachineIdentity, RegistryWriter, Remote, RemoteCredentials, RemoteNotice, RemoteStatus,
     SessionRecord, SessionState, SessionTransport,
 };
 use tokio::sync::{mpsc, watch};
@@ -42,7 +42,7 @@ pub fn wanted(args: &Args, settings: &Settings) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteEvent {
     Started {
-        host: HostIdentity,
+        machine: MachineIdentity,
         basin: String,
     },
     Notice(RemoteNotice),
@@ -92,25 +92,25 @@ impl RemoteControl {
             }
             None => None,
         };
-        let host_path = HostIdentity::default_path();
-        let host = match host_path
+        let machine_path = MachineIdentity::default_path();
+        let machine = match machine_path
             .as_deref()
-            .map(HostIdentity::load_or_create)
+            .map(MachineIdentity::load_or_create)
             .transpose()
         {
-            Ok(Some(host)) => host,
-            Ok(None) => HostIdentity {
-                host_id: "local".into(),
+            Ok(Some(machine)) => machine,
+            Ok(None) => MachineIdentity {
+                machine_id: "local".into(),
                 name: "local".into(),
-                platform: super_remote::host::platform_name().into(),
+                platform: super_remote::machine::platform_name().into(),
             },
             Err(error) => {
-                let _ = events.send(RemoteEvent::Failed(format!("host identity: {error:#}")));
+                let _ = events.send(RemoteEvent::Failed(format!("machine identity: {error:#}")));
                 return Self::inert(false);
             }
         };
         let credentials: Arc<dyn RemoteCredentials> = Arc::new(
-            super_remote::PlatformCredentials::new(platform_url(settings), host.name.clone()),
+            super_remote::PlatformCredentials::new(platform_url(settings), machine.name.clone()),
         );
         let options = TransportOptions {
             allow_shell: settings.remote.shell_allowed(),
@@ -135,7 +135,7 @@ impl RemoteControl {
             })
         };
         tokio::spawn(async move {
-            let remote = match Remote::start(credentials, host.clone()).await {
+            let remote = match Remote::start(credentials, machine.clone()).await {
                 Ok(remote) => remote,
                 Err(error) => {
                     let _ = events.send(RemoteEvent::Failed(format!("{error:#}")));
@@ -147,7 +147,7 @@ impl RemoteControl {
                 SessionTransport::start(remote.client.clone(), sdk, streams, options, notices);
             let registry = RegistryWriter::start(
                 remote.client.clone(),
-                host.clone(),
+                machine.clone(),
                 remote.config.device_id.clone(),
             );
             *status.lock().unwrap() = Some(transport.status_watch());
@@ -161,7 +161,7 @@ impl RemoteControl {
                 transport,
                 registry,
             });
-            let _ = events.send(RemoteEvent::Started { host, basin });
+            let _ = events.send(RemoteEvent::Started { machine, basin });
         });
         control
     }
@@ -192,12 +192,12 @@ impl RemoteControl {
         self.starting && self.live.lock().unwrap().is_none()
     }
 
-    pub fn host(&self) -> Option<HostIdentity> {
+    pub fn machine(&self) -> Option<MachineIdentity> {
         self.live
             .lock()
             .unwrap()
             .as_ref()
-            .map(|live| live.remote.host.clone())
+            .map(|live| live.remote.machine.clone())
     }
 
     pub fn basin(&self) -> Option<String> {
