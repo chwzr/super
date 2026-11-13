@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.40 - 2026-11-13
+
 ### Changed
 
 - The registry of machines and sessions is rows in the platform's database
