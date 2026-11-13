@@ -320,6 +320,47 @@ async fn the_complete_list_at_link_start_removes_only_what_the_daemon_no_longer_
 }
 
 #[tokio::test]
+async fn events_the_link_lost_are_made_up_for_with_the_complete_list() {
+    let fixture = fixture().await;
+    started(&fixture).await;
+    let hosted = fixture
+        .ctx
+        .host
+        .create(CreateRequest {
+            cwd: fixture.dir.path().join("work"),
+            model: Some("mock/mock-1".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = hosted.session_id.clone();
+    wait_until(|| has_state(&fixture.fake, &id, "idle")).await;
+    assert_eq!(lists(&fixture.fake).len(), 1);
+
+    // More events than the daemon keeps for a subscriber, before the link
+    // gets to read one of them.
+    for _ in 0..200 {
+        fixture.ctx.host.attach(&hosted);
+        fixture.ctx.host.detach(&hosted);
+    }
+    wait_until(|| lists(&fixture.fake).len() == 2).await;
+    let list = lists(&fixture.fake).pop().unwrap();
+    let mut ids: Vec<&str> = list.body["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|session| session["id"].as_str())
+        .collect();
+    ids.sort_unstable();
+    let mut expected = [fixture.stored_id.as_str(), id.as_str()];
+    expected.sort_unstable();
+    assert_eq!(ids, expected);
+    assert!(has_state(&fixture.fake, &id, "idle"));
+    assert!(has_state(&fixture.fake, &fixture.stored_id, "ended"));
+    fixture.link.stop().await;
+}
+
+#[tokio::test]
 async fn a_listed_session_names_the_time_of_its_last_activity() {
     let fixture = fixture().await;
     started(&fixture).await;

@@ -30,7 +30,7 @@ pub struct FakeMachine {
     pub platform: String,
     /// An announcement or a heartbeat said `"daemon": true`. The real
     /// platform turns this off 90 seconds after the last one that did; here
-    /// a test does with [`FakePlatform::set_daemon`].
+    /// it stays on until the machine is taken offline.
     pub daemon: bool,
     /// On from the first announcement; a test turns it off with
     /// [`FakePlatform::set_online`], as the platform's sweep would.
@@ -172,16 +172,6 @@ impl FakePlatform {
         registry.version += 1;
     }
 
-    /// What the platform's sweep does when a machine's heartbeats with
-    /// `"daemon": true` stop while others go on.
-    pub fn set_daemon(&self, machine_id: &str, daemon: bool) {
-        let mut registry = self.registry.lock().unwrap();
-        if let Some(machine) = registry.machines.get_mut(machine_id) {
-            machine.daemon = daemon;
-        }
-        registry.version += 1;
-    }
-
     /// Remove a machine and its sessions, as `DELETE /api/machines/{id}`
     /// does for one that is offline. Its next call is answered 404.
     pub fn remove_machine(&self, machine_id: &str) {
@@ -231,6 +221,13 @@ impl FakePlatform {
                 registry.version += 1;
                 (204, Value::Null)
             }
+            ("DELETE", ["machines", id, "sessions", session_id]) => {
+                registry
+                    .sessions
+                    .remove(&(id.to_string(), session_id.to_string()));
+                registry.version += 1;
+                (204, Value::Null)
+            }
             (_, ["machines", id, ..]) if !registry.machines.contains_key(*id) => {
                 (404, api_error("not_found"))
             }
@@ -266,13 +263,6 @@ impl FakePlatform {
             }
             ("PUT", ["machines", id, "sessions", session_id]) => {
                 (200, registry.upsert(id, session_id, &body))
-            }
-            ("DELETE", ["machines", id, "sessions", session_id]) => {
-                registry
-                    .sessions
-                    .remove(&(id.to_string(), session_id.to_string()));
-                registry.version += 1;
-                (204, Value::Null)
             }
             _ => (404, api_error("not_found")),
         }
