@@ -12,7 +12,7 @@
 //! end here is line based: it streams the reply, names each tool call, asks
 //! approvals as numbered choices and sends each line as a prompt (a steer
 //! while the session works). `/sessions` switches what it shows, also to a
-//! session on another device through the platform ([`crate::session_link`]);
+//! session on another machine through the platform ([`crate::session_link`]);
 //! the full TUI continues here when it switches to one.
 
 use crate::args::Args;
@@ -239,7 +239,7 @@ pub(crate) struct Continuation {
 }
 
 /// Carry on line based after the full-screen TUI switched to a session on
-/// another device, which only this front end shows, with that session's
+/// another machine, which only this front end shows, with that session's
 /// header and last messages.
 pub(crate) async fn run_continued(continuation: Continuation, input: Input) -> Result<i32> {
     let Continuation { link, session } = continuation;
@@ -588,7 +588,7 @@ async fn run(
         link.detach().await;
         if code == 0 && remote {
             screen.meta(&format!(
-                "detached from {}; it keeps running on its device",
+                "detached from {}; it keeps running on its machine",
                 short_id(&session.session_id)
             ));
         } else if code == 0 {

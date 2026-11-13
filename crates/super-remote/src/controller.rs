@@ -1,5 +1,5 @@
 //! The controlling side of the platform: what the apps, and a terminal that
-//! switches to a session on another device, do to drive it.
+//! switches to a session on another machine, do to drive it.
 //!
 //! A command is one record on a `commands` stream with the headers `t` (its
 //! type), `from` (this device's id), `name` (shown to others as its origin)
@@ -138,7 +138,7 @@ impl MachineCommands {
         cancel.cancel();
         answer.unwrap_or_else(|_| {
             Err(anyhow!(
-                "the SUPER daemon on that device did not answer `{}` within {}s",
+                "the SUPER daemon on that machine did not answer `{}` within {}s",
                 command.name(),
                 self.timeout.as_secs()
             ))
@@ -255,7 +255,7 @@ impl SessionController {
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
                 Err(anyhow!(
-                    "the session did not answer `{name}` within {}s; is its device online?",
+                    "the session did not answer `{name}` within {}s; is its machine online?",
                     self.timeout.as_secs()
                 ))
             }

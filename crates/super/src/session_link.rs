@@ -1,5 +1,5 @@
-//! What the attached terminal talks to: a session in this device's daemon,
-//! over its socket, or a session on another device, through the platform.
+//! What the attached terminal talks to: a session in this machine's daemon,
+//! over its socket, or a session on another machine, through the platform.
 //!
 //! Both speak the same RPC: session commands go out and come back as
 //! responses, session events arrive as `--mode rpc` emits them. The attached
@@ -60,7 +60,7 @@ impl Platform {
     }
 }
 
-/// A session on another device, followed through its streams.
+/// A session on another machine, followed through its streams.
 pub(crate) struct RemoteSession {
     pub machine_id: String,
     pub machine_name: String,
@@ -95,7 +95,7 @@ impl RemoteSession {
 }
 
 /// The attached terminal's connection: the local daemon (attached to a
-/// session on this device, or idle while a remote session is shown), a
+/// session on this machine, or idle while a remote session is shown), a
 /// remote session, and the platform once it was needed.
 #[derive(Default)]
 pub(crate) struct Link {
@@ -121,7 +121,7 @@ impl Link {
         }
     }
 
-    /// A connection to this device's daemon, its events taken.
+    /// A connection to this machine's daemon, its events taken.
     pub fn local(client: DaemonClient, events: UnboundedReceiver<ClientEvent>) -> Self {
         Self::new(Some((client, events)), None)
     }
@@ -227,7 +227,7 @@ impl Link {
         }
     }
 
-    /// Stop the session shown: through its daemon, here or on its device.
+    /// Stop the session shown: through its daemon, here or on its machine.
     pub async fn stop_session(&self, session_id: &str) -> Result<(), ClientError> {
         if let Some(remote) = &self.remote {
             let response = remote

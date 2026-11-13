@@ -164,7 +164,7 @@ pub(crate) const SUPER_SLASH_COMMANDS: &[SlashCommand] = &[
     ),
     SlashCommand::new(
         "sessions",
-        "Switch to any session on this device or another one",
+        "Switch to any session on this machine or another one",
         None,
     ),
 ];

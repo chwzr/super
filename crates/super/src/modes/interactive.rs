@@ -1246,7 +1246,7 @@ pub async fn run_attached(args: &Args, target: crate::attach::Target) -> Result<
     continue_after(result, handed_over).await
 }
 
-/// `/sessions` switched to a session on another device: the line-based
+/// `/sessions` switched to a session on another machine: the line-based
 /// front end shows it from here on.
 async fn continue_after(result: Result<i32>, handed_over: sessions_ui::Slot) -> Result<i32> {
     match handed_over {
@@ -1663,7 +1663,7 @@ async fn run_with_hosts(
     spawn_platform_model_refresh(&command_tx);
 
     let mut stranded = None;
-    // `/sessions` picked a session on another device.
+    // `/sessions` picked a session on another machine.
     #[cfg(unix)]
     let mut leave = None;
     'main: loop {

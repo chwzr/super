@@ -3,7 +3,7 @@
 //! terminal.
 //!
 //! The steps, in order: sign in to the platform when signed out; make a
-//! daemon available on this device; wait until the running turn is over;
+//! daemon available on this machine; wait until the running turn is over;
 //! then the daemon resumes the session from its file and the terminal
 //! attaches to it. A failure at any step leaves the in-process session as it
 //! was. The decisions are pure functions with tests; the terminal glue is
