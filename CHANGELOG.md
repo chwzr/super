@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.41 - 2026-11-16
+
 ### Changed
 
 - The SUPER platform is at `https://supersovereign.eu`, where it was at
