@@ -6102,7 +6102,7 @@ fn start_remote(
     app.remote = Some(RemoteControl::start(sdk, session_file, settings, tx));
     if crate::remote::first_run_notice_due() {
         app.cells.push(Cell::Notice(
-            "This session is visible in the SUPER app and at super.flxkpe.io. /remote off to hide it."
+            "This session is visible in the SUPER app and at supersovereign.eu. /remote off to hide it."
                 .into(),
         ));
     }

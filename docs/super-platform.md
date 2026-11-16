@@ -1,7 +1,7 @@
 # SUPER platform provider
 
 The `super` provider connects SUPER to the SUPER platform at
-`https://super.flxkpe.io`: one sign-in gives the terminal agent an inference
+`https://supersovereign.eu`: one sign-in gives the terminal agent an inference
 gateway and the platform's model list. This page describes what the CLI does;
 the platform's HTTP API is documented in the platform repository.
 
@@ -88,7 +88,7 @@ anyway and SUPER says that the device was not revoked.
 
 | Source | Example |
 | ------ | ------- |
-| Default | `https://super.flxkpe.io` |
+| Default | `https://supersovereign.eu` |
 | Setting `platform.url` in `~/.super/agent/settings.json` | `{"platform": {"url": "http://localhost:8080"}}` |
 | Environment variable `SUPER_PLATFORM_URL` | `SUPER_PLATFORM_URL=http://localhost:8080 super` |
 

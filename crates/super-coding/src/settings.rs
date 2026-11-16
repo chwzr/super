@@ -226,13 +226,13 @@ impl RemoteSettings {
     }
 }
 
-/// The SUPER platform (`super.flxkpe.io`) sign-in, inference, and remote
+/// The SUPER platform (`supersovereign.eu`) sign-in, inference, and remote
 /// control.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PlatformSettings {
     /// Platform base URL. `SUPER_PLATFORM_URL` overrides it; unset means
-    /// `https://super.flxkpe.io`.
+    /// `https://supersovereign.eu`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Unknown keys survive load/save.
@@ -637,7 +637,7 @@ mod tests {
 
         // A trusted project may point development builds at another platform.
         let merged = merged_settings(
-            json!({"platform": {"url": "https://super.flxkpe.io"}}),
+            json!({"platform": {"url": "https://supersovereign.eu"}}),
             Some(json!({"platform": {"url": "http://localhost:8080"}})),
         );
         assert_eq!(

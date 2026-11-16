@@ -164,7 +164,7 @@ pub struct RegistryClient {
 
 impl RegistryClient {
     /// `platform_url` is the platform's base URL, for example
-    /// `https://super.flxkpe.io`.
+    /// `https://supersovereign.eu`.
     pub fn new(
         http: reqwest::Client,
         platform_url: String,
