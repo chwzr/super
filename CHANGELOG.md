@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- The SUPER platform is at `https://supersovereign.eu`, where it was at
+  `https://super.flxkpe.io`. The new address is the default for sign-in, the
+  models and remote control; the `platform.url` setting and
+  `SUPER_PLATFORM_URL` override it as before. A stored sign-in stays valid:
+  it is the same platform under a new address.
+
 ## 0.0.40 - 2026-11-13
 
 ### Changed

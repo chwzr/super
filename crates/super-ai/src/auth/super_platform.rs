@@ -21,7 +21,7 @@ pub const PROVIDER: &str = "super";
 /// Provider name shown in `/login` and `/model`.
 pub const DISPLAY_NAME: &str = "SUPER";
 /// Platform base URL when neither the setting nor the variable is set.
-pub const DEFAULT_URL: &str = "https://super.flxkpe.io";
+pub const DEFAULT_URL: &str = "https://supersovereign.eu";
 /// Environment variable that overrides the `platform.url` setting.
 pub const URL_ENV: &str = "SUPER_PLATFORM_URL";
 /// Notice shown when the stored sign-in can no longer be refreshed.

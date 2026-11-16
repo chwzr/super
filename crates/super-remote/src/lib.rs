@@ -36,7 +36,7 @@ pub use transport::{RemoteNotice, RemoteStatus, SessionTransport};
 /// this device is called, and a fresh bearer token on demand.
 pub trait RemoteCredentials: Send + Sync {
     /// Platform base URL without a trailing slash, for example
-    /// `https://super.flxkpe.io`.
+    /// `https://supersovereign.eu`.
     fn platform_url(&self) -> String;
     /// The name this device registered with, shown to other controllers.
     fn device_name(&self) -> String;
@@ -56,7 +56,7 @@ pub struct RemoteConfig {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct S2Config {
-    /// For example `https://super.flxkpe.io/s2/v1`.
+    /// For example `https://supersovereign.eu/s2/v1`.
     pub base_url: String,
     pub basin: String,
 }

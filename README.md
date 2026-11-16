@@ -11,7 +11,7 @@ A [ridiculously fast](#performance) terminal coding agent that keeps the interfa
 control of the model, tools, sessions, and automation.
 
 SUPER has 45 built-in providers. These include the SUPER platform
-(`super.flxkpe.io`), OpenAI Codex (ChatGPT subscription), OpenAI API,
+(`supersovereign.eu`), OpenAI Codex (ChatGPT subscription), OpenAI API,
 Anthropic OAuth (Claude subscription), Anthropic API, Meta Muse, Cursor,
 Google, OpenRouter, Bedrock, Databricks, Snowflake, and GitHub Copilot.
 
@@ -359,7 +359,7 @@ shows `SUPER sign-in expired. /login to restore remote control.`
 `super logout super` revokes this device on the platform and removes the
 `super` models. Signed out, SUPER never contacts the platform.
 
-The platform URL is `https://super.flxkpe.io`. For development, set the
+The platform URL is `https://supersovereign.eu`. For development, set the
 `platform.url` setting or the `SUPER_PLATFORM_URL` environment variable.
 See [docs/super-platform.md](docs/super-platform.md).
 
@@ -718,7 +718,7 @@ See the [SDK guide](docs/sdk.md), [RPC protocol](docs/rpc.md), and
 
 Signed in to the SUPER platform (`/login`, provider `SUPER`), every saved
 session is mirrored to your account: the SUPER app for iOS and macOS and the
-web at super.flxkpe.io show it live, and they can steer it, queue follow-ups,
+web at supersovereign.eu show it live, and they can steer it, queue follow-ups,
 stop it, change the model, and answer workflow and trust questions. Signed
 out, nothing is mirrored and no request leaves the machine.
 
