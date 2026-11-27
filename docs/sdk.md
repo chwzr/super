@@ -40,7 +40,9 @@ async fn main() -> anyhow::Result<()> {
 
 `SessionOptions` configures `cwd`, model/provider/key, `models_file`, thinking
 level, tool allow/exclude lists, custom Rust tools, prompts, project trust,
-event capacity, and session persistence. SDK sessions are in-memory by default;
+event capacity, and session persistence. The `mode` of the settings it loads,
+or of `SessionOptions::settings`, picks the tools and the body of the system
+prompt: `advanced` (the default) or `basic`, as in the terminal. SDK sessions are in-memory by default;
 choose `SessionSource::Create` to persist one. Rust callers can restore caller-owned
 history without creating a file through `SessionBuilder::restore_entries` or
 `SessionSource::InMemoryEntries`.
@@ -230,6 +232,8 @@ resource loading is off by default in SDK sessions. Explicitly enable
 `trust_project_files` only for a trusted directory.
 
 Rust callers can implement `super_agent::AgentTool` and pass `custom_tools`.
+A tool that returns `true` from `AgentTool::advanced_only` is left out of a
+session in the basic mode; the others are there in both modes.
 Cross-language custom callback tools are intentionally not supported yet: a
 callback during an agent tool batch needs cancellation, streaming updates, and
 safe runtime re-entry semantics, and pretending a plain synchronous callback

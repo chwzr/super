@@ -257,7 +257,8 @@ to manage jobs.
 
 Subagents let one task branch into focused child sessions. Open `/settings`
 and set `Subagents` to `on`. SUPER then gives the main agent tools to start,
-guide, wait for, and stop child agents.
+guide, wait for, and stop child agents. Subagents need the advanced mode; see
+[Mode](#mode).
 
 Each child uses the same working directory. SUPER allows four active child turns
 and one child level. Project settings cannot enable subagents, and `--no-tools`
@@ -988,6 +989,23 @@ used.
   "colors": { "accent": "primary", "error": "#ff0000", "text": "" }
 }
 ```
+
+### Mode
+
+The `mode` setting chooses between two sets of tools and system prompts. Open
+`/settings` and change `Mode`, or set `"mode"` to `"advanced"` or `"basic"` in
+your user settings.
+
+- `advanced`, the default, offers every tool. The `Subagents` and `Dynamic
+  workflows` switches decide whether the agent tools and the workflow tool are
+  among them.
+- `basic` offers only the core tools `Read`, `Write`, `Edit`, and `Bash`, and
+  whichever of `grep`, `find`, `ls`, `mcp`, and `webmcp` you configured, with
+  the simple system prompt. Subagents and dynamic workflows are off in this
+  mode, whatever their switches say.
+
+A change in `/settings` applies to the next request. Only your user settings
+decide the mode; a project's settings cannot change it.
 
 ### Tool selection
 

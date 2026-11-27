@@ -101,7 +101,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### Tools and shell
 
-- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`.
+- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. A session in the basic mode (the `mode` setting) lists no agent or workflow tools.
 - `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
 

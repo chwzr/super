@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 use super_agent::{AgentEvent, AgentMessage};
 use super_ai::{AssistantEvent, ContentBlock, StopReason, ThinkingLevel, Transport};
 use super_coding::session_runner::{PromptMode, SessionEvent};
-use super_coding::settings::{CompactionMode, MermaidRendering, QueueMode, ReasoningEffortMode};
+use super_coding::settings::{
+    CompactionMode, MermaidRendering, Mode, QueueMode, ReasoningEffortMode,
+};
 use super_coding::workflows::workflow_trigger;
 use super_remote::{RemoteNotice, SessionState};
 use super_sdk::{ApprovalChoice, ApprovalKind, ApprovalRequest, SessionNotice};
@@ -3751,7 +3753,12 @@ fn handle_input(
     // Picker input intercepts everything.
     if app.picker.is_some() {
         if let InputEvent::Key(key) = event {
-            return handle_picker_key(app, session, key, resources, command_tx);
+            let mode = session.mode();
+            let flow = handle_picker_key(app, session, key, resources, command_tx);
+            if session.mode() != mode {
+                rebuild_system_prompt(session, args, resources);
+            }
+            return flow;
         }
         return Flow::Continue;
     }
@@ -5445,12 +5452,26 @@ fn settings_picker(
             value: 12,
         },
         SelectItem {
+            label: "Mode".into(),
+            detail: Some(
+                match settings.mode {
+                    Mode::Basic => "Basic",
+                    Mode::Advanced => "Advanced",
+                }
+                .into(),
+            ),
+            value: 17,
+        },
+        SelectItem {
             label: "Subagents".into(),
             detail: Some(
-                if settings.subagents.enabled {
+                if !settings.subagents.enabled {
+                    "off"
+                } else if settings.mode.is_advanced() {
                     "on"
                 } else {
-                    "off"
+                    // The basic mode ignores the switch.
+                    "on (needs Advanced mode)"
                 }
                 .into(),
             ),
@@ -5460,10 +5481,12 @@ fn settings_picker(
             label: "Dynamic workflows".into(),
             detail: Some(if !settings.subagents.enabled {
                 "off (needs subagents)".into()
-            } else if settings.workflows.enabled {
+            } else if !settings.workflows.enabled {
+                "off".into()
+            } else if settings.mode.is_advanced() {
                 format!("on · {} size", settings.workflows.size.as_str())
             } else {
-                "off".into()
+                "on (needs Advanced mode)".into()
             }),
             value: 14,
         },
@@ -5511,6 +5534,15 @@ fn reopen_settings_picker(
     app.picker = Some(picker);
 }
 
+/// Why dynamic workflows cannot run in this session, and how to change that.
+fn workflows_unavailable_notice(session: &super_coding::AgentSession) -> String {
+    if session.mode().is_advanced() {
+        "dynamic workflows need subagents. Open /settings and turn Subagents on".into()
+    } else {
+        "dynamic workflows need Advanced mode. Open /settings and set Mode to Advanced".into()
+    }
+}
+
 /// Run a workflow that is already written and saved on disk.
 ///
 /// The script says what to do, so this needs no model turn: it parses the file,
@@ -5524,9 +5556,8 @@ fn start_saved_workflow(
     command_tx: &mpsc::UnboundedSender<CommandEvent>,
 ) {
     let Some(runtime) = session.workflows().filter(|_| session.workflows_enabled()) else {
-        app.cells.push(Cell::Notice(
-            "dynamic workflows need subagents. Open /settings and turn Subagents on".into(),
-        ));
+        app.cells
+            .push(Cell::Notice(workflows_unavailable_notice(session)));
         return;
     };
     let source = match std::fs::read_to_string(&path) {
@@ -7495,6 +7526,12 @@ fn apply_settings_selection(
             };
             resources.settings.reasoning_effort.mode = mode;
         }
+        17 => {
+            resources.settings.mode = match resources.settings.mode {
+                Mode::Basic => Mode::Advanced,
+                Mode::Advanced => Mode::Basic,
+            };
+        }
         _ => return,
     }
     save_interactive_settings(app, session, resources);
@@ -8430,9 +8467,8 @@ fn run_slash_command(
         },
         "workflow" => {
             if !session.workflows_enabled() {
-                app.cells.push(Cell::Notice(
-                    "dynamic workflows need subagents. Open /settings and turn Subagents on".into(),
-                ));
+                app.cells
+                    .push(Cell::Notice(workflows_unavailable_notice(session)));
             } else if rest.is_empty() {
                 app.cells
                     .push(Cell::Notice("usage: /workflow <prompt>".into()));
@@ -9021,6 +9057,31 @@ fn discover_saved_workflows(
         session.settings().default_project_trust,
     );
     super_coding::workflows::discover(&cwd, trusted)
+}
+
+/// Build the system prompt again after the user changed the mode in
+/// `/settings`, so that the next request starts from the prompt of that mode.
+/// The tools follow the mode by themselves.
+fn rebuild_system_prompt(
+    session: &Arc<super_coding::AgentSession>,
+    args: &Args,
+    resources: &InteractiveResources,
+) {
+    let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
+    let context = if args.no_context_files {
+        Vec::new()
+    } else {
+        super_coding::context_files::discover(&cwd)
+    };
+    let prompt = crate::setup::system_prompt(
+        args,
+        &cwd,
+        &session.settings(),
+        &session.available_tool_names(),
+        &context,
+        &resources.skills,
+    );
+    session.set_system_prompt(prompt);
 }
 
 fn reload_interactive(
@@ -10182,6 +10243,79 @@ mod tests {
         let picker = app.picker.as_mut().unwrap();
         assert_eq!(picker.list.current().map(|item| item.value), Some(13));
         assert_eq!(picker.list.current().unwrap().detail.as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn settings_picker_shows_the_mode_next_to_the_switches_it_overrides() {
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        let mut app = test_app();
+        let mut resources = test_resources();
+        let detail = |app: &mut App, value: usize| {
+            let picker = app.picker.as_mut().expect("settings picker");
+            assert!(picker.list.select_value(value));
+            let item = picker.list.current().unwrap();
+            (item.label.clone(), item.detail.clone().unwrap_or_default())
+        };
+
+        open_settings_picker(&mut app, &session, &resources);
+        assert_eq!(detail(&mut app, 17), ("Mode".into(), "Advanced".into()));
+        let labels: Vec<String> = app
+            .picker
+            .as_ref()
+            .unwrap()
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.clone())
+            .collect();
+        let mode = labels.iter().position(|label| label == "Mode").unwrap();
+        assert_eq!(labels[mode + 1], "Subagents");
+        assert_eq!(labels[mode + 2], "Dynamic workflows");
+
+        resources.settings.mode = Mode::Basic;
+        resources.settings.subagents.enabled = true;
+        reopen_settings_picker(&mut app, &session, &resources, String::new(), 17);
+        assert_eq!(detail(&mut app, 17), ("Mode".into(), "Basic".into()));
+        assert_eq!(detail(&mut app, 13).1, "on (needs Advanced mode)");
+        assert_eq!(detail(&mut app, 14).1, "on (needs Advanced mode)");
+
+        resources.settings.mode = Mode::Advanced;
+        reopen_settings_picker(&mut app, &session, &resources, String::new(), 17);
+        assert_eq!(detail(&mut app, 13).1, "on");
+        assert_eq!(detail(&mut app, 14).1, "on · medium size");
+    }
+
+    #[test]
+    fn a_new_mode_brings_the_system_prompt_of_that_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let session = test_session(super_coding::SessionManager::in_memory(directory.path()));
+        let args = Args::parse_from(["super", "--no-context-files"]);
+        let resources = test_resources();
+        // A `SYSTEM.md` of the user's replaces the body in both modes.
+        let replaced = super_coding::context_files::system_prompt_files(directory.path())
+            .replace
+            .is_some();
+        let placeholder = super_agent::placeholder::prompt_todo("SystemPrompt.advanced");
+        for mode in [Mode::Basic, Mode::Advanced] {
+            let mut settings = session.settings();
+            settings.mode = mode;
+            session.update_settings(settings);
+            rebuild_system_prompt(&session, &args, &resources);
+            let prompt = session.system_prompt();
+            assert!(prompt.ends_with(&format!(
+                "Current working directory: {}",
+                directory.path().display().to_string().replace('\\', "/")
+            )));
+            if !replaced {
+                assert_eq!(prompt.starts_with(&placeholder), mode == Mode::Advanced);
+                assert_eq!(
+                    prompt.contains("expert coding assistant"),
+                    mode == Mode::Basic
+                );
+            }
+        }
     }
 
     #[test]

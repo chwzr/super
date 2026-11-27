@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- A `mode` setting, with the values `advanced` (the default) and `basic`, in
+  `/settings` as `Mode`. The basic mode offers only the core tools and the
+  ones you configured, `grep`, `find`, `ls`, `mcp` and `webmcp`, with the
+  simple system prompt; subagents and dynamic workflows are off there,
+  whatever their switches say. The advanced mode offers every tool and starts
+  from its own system prompt. Only the user's settings decide the mode, not a
+  project's.
+- Rust SDK: `AgentTool::advanced_only` marks a tool that a session in the
+  basic mode leaves out. `AgentSession::mode`, `AgentSession::system_prompt`
+  and `AgentSession::set_system_prompt` read the mode and read or replace the
+  system prompt. `super_agent::placeholder` writes the stand-in for prompt
+  text that is not written yet.
+
 ### Changed
 
 - The four core tools are named `Read`, `Write`, `Edit` and `Bash`. The
