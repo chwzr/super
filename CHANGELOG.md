@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- A session answers again after a request that failed before the model said
+  anything, such as one the platform refused because the budget was used up.
+  The failed turn stayed in the history as an assistant message without
+  content, and for a model reached through the OpenAI-compatible API it was
+  sent again with every later request; a provider that refuses such a message
+  then failed each of them with `HTTP 400`, also after the budget was raised.
+  These messages are no longer sent. The Anthropic, Google and Responses
+  adapters already left them out.
+
 ## 0.0.41 - 2026-11-16
 
 ### Changed
