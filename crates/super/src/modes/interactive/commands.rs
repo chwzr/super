@@ -76,6 +76,9 @@ pub(super) fn typed(command: &Command) -> Typed {
         | Command::GetAvailableModels { .. }
         | Command::GetAvailableThinkingLevels {}
         | Command::GetTools {}
+        | Command::GetTasks {}
+        // The task's end shows through its event, as for a task stopped here.
+        | Command::StopTask { .. }
         | Command::GetForkMessages {}
         | Command::GetApprovals {}
         | Command::AnswerApproval { .. }
@@ -417,6 +420,7 @@ mod tests {
         fn is_running(&self) -> bool {
             false
         }
+        fn stop_task(&self, _: &str) {}
     }
 
     fn plan() -> super_coding::workflows::WorkflowPlan {

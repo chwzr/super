@@ -6,11 +6,13 @@ use crate::compaction::{
     should_compact,
 };
 use crate::iterative::IterativeRuntime;
+use crate::notifications::Priority;
 use crate::session::manager::SessionManager;
 use crate::settings::{
     CacheWarmingMode, CompactionMode, Mode, QueueMode, ReasoningEffortMode, Settings,
 };
 use crate::subagents::{ForkTurns, SUBAGENT_SYSTEM_PROMPT, SubagentRuntime, fork_messages};
+use crate::tasks::{BackgroundTasks, TaskInfo, TaskStopError};
 use crate::workflows::{WorkflowApprover, WorkflowRuntime};
 use anyhow::Context as _;
 use futures::future::BoxFuture;
@@ -78,9 +80,23 @@ pub enum SessionEvent {
     /// A pooled account hit its rate limit and the request moved to the
     /// next account. `index` is zero-based; `total` is the pool size.
     AccountSwitched(super_ai::auth::accounts::AccountSwitch),
+    /// A background task was registered; see [`crate::tasks`].
+    TaskStarted(TaskInfo),
+    /// A running background task changed its progress line.
+    TaskUpdated(TaskInfo),
+    /// A background task ended: completed, failed or stopped.
+    TaskEnded(TaskInfo),
 }
 
 pub type SessionEventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
+
+/// Runs a turn the session starts on its own, because an entry was queued
+/// while it was idle ([`AgentSession::queue_entry`]). The future resolves
+/// to whether a turn ran: another run may have taken the entries first.
+/// A host that tracks its runs (the SDK, which announces `agent_settled`)
+/// installs one with [`AgentSession::set_turn_starter`]; without one the
+/// session spawns the future on the current Tokio runtime.
+pub type TurnStarter = Arc<dyn Fn(BoxFuture<'static, bool>) + Send + Sync>;
 
 /// Runs the engine of a session somewhere else, such as the SUPER daemon.
 ///
@@ -106,6 +122,8 @@ pub trait SessionBackend: Send + Sync {
     fn compact(&self, custom_instructions: Option<String>) -> BoxFuture<'static, ()>;
     /// Whether a run is in flight there.
     fn is_running(&self) -> bool;
+    /// Stop one background task there, by id or by name.
+    fn stop_task(&self, task_id: &str);
 }
 
 /// Why an operation that only works on a session this process runs refused.
@@ -136,6 +154,10 @@ pub enum WorkflowTurnStatus {
 struct QueuedPrompt {
     message: AgentMessage,
     mode: PromptMode,
+    /// Queued with [`AgentSession::queue_entry`]: it starts a turn while the
+    /// session is idle, keeps the active prompt mode, is not shown as queued
+    /// input and is not handed back to the editor.
+    starts_turn: bool,
 }
 
 pub struct TreeNavigationOutcome {
@@ -227,6 +249,15 @@ pub struct AgentSession {
     stream_fn: Mutex<Option<StreamFn>>,
     /// Set while the engine runs elsewhere; see [`SessionBackend`].
     backend: Mutex<Option<Arc<dyn SessionBackend>>>,
+    /// This session's background tasks; set once at construction.
+    tasks: OnceLock<Arc<BackgroundTasks>>,
+    /// What the session's process last reported about its tasks, while the
+    /// engine runs elsewhere.
+    remote_tasks: Mutex<Vec<TaskInfo>>,
+    turn_starter: Mutex<Option<TurnStarter>>,
+    /// Bumped when a run ends, an entry is queued or a task ends, so
+    /// [`AgentSession::wait_for_background_work`] looks again.
+    activity: tokio::sync::watch::Sender<u64>,
 }
 
 struct ReasoningRunState {
@@ -278,6 +309,15 @@ impl AgentSession {
         status: WorkflowTurnStatus,
     ) {
         (self.sink)(SessionEvent::WorkflowOutcome { run, name, status });
+    }
+
+    pub(crate) fn emit_event(&self, event: SessionEvent) {
+        (self.sink)(event);
+    }
+
+    pub(crate) fn note_activity(&self) {
+        self.activity
+            .send_modify(|version| *version = version.wrapping_add(1));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -348,7 +388,17 @@ impl AgentSession {
             workflow_approver: Mutex::new(None),
             stream_fn: Mutex::new(None),
             backend: Mutex::new(None),
+            tasks: OnceLock::new(),
+            remote_tasks: Mutex::new(Vec::new()),
+            turn_starter: Mutex::new(None),
+            activity: tokio::sync::watch::channel(0).0,
         });
+        assert!(
+            session
+                .tasks
+                .set(BackgroundTasks::new(Arc::downgrade(&session)))
+                .is_ok()
+        );
         if subagents_allowed {
             let runtime = SubagentRuntime::new(Arc::downgrade(&session));
             assert!(session.subagents.set(runtime).is_ok());
@@ -691,6 +741,13 @@ impl AgentSession {
         if let Some(runtime) = self.iterative.get() {
             runtime.stop_all();
         }
+        // Background work and what it queued belong to the conversation
+        // that is left.
+        self.background_tasks().reset();
+        self.remote_tasks.lock().unwrap().clear();
+        for queue in [&self.steering, &self.follow_up] {
+            queue.lock().unwrap().retain(|prompt| !prompt.starts_turn);
+        }
         let totals = manager.usage_totals();
         let context = manager.build_session_context();
         if let Some((provider, model_id)) = context.model
@@ -870,10 +927,11 @@ impl AgentSession {
             backend.queue(message, mode, false);
             return;
         }
-        self.steering
-            .lock()
-            .unwrap()
-            .push_back(QueuedPrompt { message, mode });
+        self.steering.lock().unwrap().push_back(QueuedPrompt {
+            message,
+            mode,
+            starts_turn: false,
+        });
         self.emit_queues();
     }
 
@@ -886,18 +944,74 @@ impl AgentSession {
             backend.queue(message, mode, true);
             return;
         }
-        self.follow_up
-            .lock()
-            .unwrap()
-            .push_back(QueuedPrompt { message, mode });
+        self.follow_up.lock().unwrap().push_back(QueuedPrompt {
+            message,
+            mode,
+            starts_turn: false,
+        });
         self.emit_queues();
     }
 
-    /// Drain both queues back to the caller (Escape restores to editor).
-    pub fn reclaim_queued(&self) -> Vec<AgentMessage> {
-        if let Some(backend) = self.backend() {
-            return backend.reclaim_queued();
+    /// Queue something that reaches the agent from outside a tool call: the
+    /// notice of a background task, a wake-up. While the session is idle the
+    /// entry starts a new turn (see [`TurnStarter`]); while it is busy a
+    /// [`Priority::Next`] entry is delivered at its next step, between two
+    /// tool rounds, a [`Priority::Now`] entry the same way but ahead of
+    /// everything else, and a [`Priority::Later`] entry once the turn is
+    /// over. The entry enters the session history when it is delivered, so
+    /// a reloaded session still has it. A custom message
+    /// ([`crate::notifications::task_notification`]) is shown by clients as
+    /// a notice, not as something the user typed.
+    ///
+    /// A session whose engine runs elsewhere queues nothing: its entries
+    /// come from the process that runs it.
+    pub fn queue_entry(self: &Arc<Self>, message: AgentMessage, priority: Priority) {
+        if self.is_remote() {
+            return;
         }
+        let entry = QueuedPrompt {
+            message,
+            mode: PromptMode::Ordinary,
+            starts_turn: true,
+        };
+        match priority {
+            Priority::Now => self.steering.lock().unwrap().push_front(entry),
+            Priority::Next => self.steering.lock().unwrap().push_back(entry),
+            Priority::Later => self.follow_up.lock().unwrap().push_back(entry),
+        }
+        self.note_activity();
+        self.wake();
+    }
+
+    /// Install how the session runs the turns it starts on its own; `None`
+    /// spawns them on the current Tokio runtime.
+    pub fn set_turn_starter(&self, starter: Option<TurnStarter>) {
+        *self.turn_starter.lock().unwrap() = starter;
+    }
+
+    /// Whether an entry from [`AgentSession::queue_entry`] waits for a turn.
+    pub fn has_queued_entries(&self) -> bool {
+        self.steering
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|prompt| prompt.starts_turn)
+            || self
+                .follow_up
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|prompt| prompt.starts_turn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn running_flag_for_test(&self) -> std::sync::MutexGuard<'_, bool> {
+        self.running.lock().unwrap()
+    }
+
+    /// Everything queued, in the order it would be delivered.
+    #[cfg(test)]
+    pub(crate) fn take_queued_for_test(&self) -> Vec<AgentMessage> {
         let mut out: Vec<AgentMessage> = self
             .steering
             .lock()
@@ -912,10 +1026,173 @@ impl AgentSession {
                 .drain(..)
                 .map(|prompt| prompt.message),
         );
+        out
+    }
+
+    /// Start a turn for queued entries when nothing runs.
+    fn wake(self: &Arc<Self>) {
+        if self.is_remote() || *self.running.lock().unwrap() {
+            // The run in flight delivers the entries.
+            return;
+        }
+        let turn: BoxFuture<'static, bool> = Box::pin(self.clone().run_queued());
+        let starter = self.turn_starter.lock().unwrap().clone();
+        match starter {
+            Some(starter) => starter(turn),
+            None => {
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    runtime.spawn(turn);
+                }
+            }
+        }
+    }
+
+    /// The turn [`AgentSession::wake`] starts: the queued entries, as the
+    /// queue modes release them, become the turn's prompts.
+    async fn run_queued(self: Arc<Self>) -> bool {
+        let settings = self.settings();
+        let (prompts, mode) = {
+            let mut running = self.running.lock().unwrap();
+            if *running || self.is_remote() {
+                return false;
+            }
+            let mut entries = drain_entries(&self.steering, settings.steering_mode);
+            if entries.is_empty() {
+                entries = drain_entries(&self.follow_up, settings.follow_up_mode);
+            }
+            if entries.is_empty() {
+                return false;
+            }
+            *running = true;
+            let mode = if entries
+                .iter()
+                .any(|entry| !entry.starts_turn && entry.mode == PromptMode::Workflow)
+            {
+                PromptMode::Workflow
+            } else {
+                PromptMode::Ordinary
+            };
+            (
+                entries.into_iter().map(|entry| entry.message).collect(),
+                mode,
+            )
+        };
+        self.emit_queues();
+        self.cache_warm_cancel.lock().unwrap().cancel();
+        self.run_claimed(prompts, mode, true).await;
+        true
+    }
+
+    /// This session's background tasks.
+    pub fn background_tasks(&self) -> Arc<BackgroundTasks> {
+        self.tasks
+            .get()
+            .expect("every session has a task registry")
+            .clone()
+    }
+
+    /// The session's tasks, oldest first: those of the process running its
+    /// engine when that is another one.
+    pub fn tasks(&self) -> Vec<TaskInfo> {
+        if self.is_remote() {
+            return self.remote_tasks.lock().unwrap().clone();
+        }
+        self.background_tasks().list()
+    }
+
+    /// Stop one background task by id or by name. A session whose engine
+    /// runs elsewhere asks that process and answers with what it last
+    /// reported about the task.
+    pub fn stop_task(&self, id_or_name: &str) -> Result<TaskInfo, TaskStopError> {
+        if let Some(backend) = self.backend() {
+            let task = self
+                .remote_tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|task| task.id == id_or_name || task.name.as_deref() == Some(id_or_name))
+                .cloned()
+                .ok_or_else(|| TaskStopError::Unknown(id_or_name.to_string()))?;
+            if !task.status.is_running() {
+                return Err(TaskStopError::NotRunning {
+                    id: task.id,
+                    status: task.status,
+                });
+            }
+            backend.stop_task(&task.id);
+            return Ok(task);
+        }
+        self.background_tasks().stop(id_or_name)
+    }
+
+    /// Stop every background task this process runs; returns how many.
+    pub fn stop_background_tasks(&self) -> usize {
+        self.background_tasks().stop_all().len()
+    }
+
+    /// Follow a task the process running this session's engine reported.
+    pub fn absorb_task(&self, task: TaskInfo) {
+        let mut tasks = self.remote_tasks.lock().unwrap();
+        match tasks.iter_mut().find(|known| known.id == task.id) {
+            Some(known) => *known = task,
+            None => tasks.push(task),
+        }
+    }
+
+    /// Replace what is known of the tasks of the process running this
+    /// session's engine, after attaching to it.
+    pub fn replace_remote_tasks(&self, tasks: Vec<TaskInfo>) {
+        *self.remote_tasks.lock().unwrap() = tasks;
+    }
+
+    /// Whether the session has work that will reach the agent later: a
+    /// running task, a held wake-up, an entry waiting for a turn. A host
+    /// keeps such a session loaded.
+    pub fn has_background_work(&self) -> bool {
+        self.background_tasks().is_busy() || self.has_queued_entries()
+    }
+
+    /// Resolve once no run is in flight, no background task runs and no
+    /// queued entry waits: the turns that task notices start are part of
+    /// the wait. A print-mode run waits here before it exits.
+    pub async fn wait_for_background_work(&self) {
+        let mut activity = self.activity.subscribe();
+        loop {
+            activity.borrow_and_update();
+            let idle = !*self.running.lock().unwrap()
+                && !self.background_tasks().has_running()
+                && !self.has_queued_entries();
+            if idle {
+                return;
+            }
+            if activity.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Drain both queues back to the caller (Escape restores to editor).
+    /// Entries from [`AgentSession::queue_entry`] stay: nobody typed them.
+    pub fn reclaim_queued(&self) -> Vec<AgentMessage> {
+        if let Some(backend) = self.backend() {
+            return backend.reclaim_queued();
+        }
+        let take_typed = |queue: &Mutex<VecDeque<QueuedPrompt>>| {
+            let mut queue = queue.lock().unwrap();
+            let (typed, kept): (VecDeque<QueuedPrompt>, VecDeque<QueuedPrompt>) =
+                queue.drain(..).partition(|prompt| !prompt.starts_turn);
+            *queue = kept;
+            typed.into_iter().map(|prompt| prompt.message)
+        };
+        let mut out: Vec<AgentMessage> = take_typed(&self.steering).collect();
+        out.extend(take_typed(&self.follow_up));
         self.emit_queues();
         out
     }
 
+    /// Cancel the current turn. Background tasks keep running; a client
+    /// without a stop control per task also calls
+    /// [`AgentSession::stop_background_tasks`].
     pub fn abort(&self) {
         if let Some(backend) = self.backend() {
             backend.abort();
@@ -926,6 +1203,7 @@ impl AgentSession {
     fn emit_queues(&self) {
         let preview = |q: &VecDeque<QueuedPrompt>| {
             q.iter()
+                .filter(|prompt| !prompt.starts_turn)
                 .map(|prompt| match &prompt.message {
                     AgentMessage::User(u) => u.content.as_text().chars().take(80).collect(),
                     other => other.role().to_string(),
@@ -1592,6 +1870,19 @@ impl AgentSession {
             }
             *running = true;
         }
+        self.run_claimed(prompts, prompt_mode, false).await;
+    }
+
+    /// Run `prompts` once this caller holds the `running` flag. `announce`
+    /// delivers them through the loop's message events, which records them
+    /// and shows them to clients: entries the session queued itself. A
+    /// prompt the caller submitted is recorded here and shown by the caller.
+    async fn run_claimed(
+        self: &Arc<Self>,
+        prompts: Vec<AgentMessage>,
+        prompt_mode: PromptMode,
+        announce: bool,
+    ) {
         let cancel = {
             let mut guard = self.cancel.lock().unwrap();
             *guard = CancellationToken::new();
@@ -1599,7 +1890,7 @@ impl AgentSession {
         };
 
         // Persist prompts and run.
-        {
+        if !announce {
             let mut manager = self.manager.lock().unwrap();
             for p in &prompts {
                 let _ = manager.append_message(p.clone());
@@ -1615,18 +1906,34 @@ impl AgentSession {
         let active_prompt_mode = Arc::new(Mutex::new(prompt_mode));
         let mut config = self.loop_config(self, active_prompt_mode.clone());
         let mut context = self.build_context_for(prompt_mode);
-        // The prompts were already persisted. Context includes them, so run
-        // as a continuation without a second prompt list.
+        // Persisted prompts are in the context already, so the run is a
+        // continuation without a second prompt list; announced ones are
+        // handed to the loop, which records them as it delivers them.
+        let mut announced = announce.then_some(prompts);
 
         let mut attempt: u32 = 0;
         loop {
-            let messages = super_agent::run_agent_loop_continue(
-                context,
-                config.clone(),
-                cancel.clone(),
-                sink.clone(),
-            )
-            .await;
+            let messages = match announced.take() {
+                Some(prompts) => {
+                    super_agent::run_agent_loop(
+                        prompts,
+                        context,
+                        config.clone(),
+                        cancel.clone(),
+                        sink.clone(),
+                    )
+                    .await
+                }
+                None => {
+                    super_agent::run_agent_loop_continue(
+                        context,
+                        config.clone(),
+                        cancel.clone(),
+                        sink.clone(),
+                    )
+                    .await
+                }
+            };
 
             // Retry on transient error stops.
             let last_error = messages.iter().rev().find_map(|m| match m {
@@ -1688,6 +1995,13 @@ impl AgentSession {
         *self.running.lock().unwrap() = false;
         if self.settings.lock().unwrap().cache_warming == CacheWarmingMode::Streaming {
             self.cache_warm_cancel.lock().unwrap().cancel();
+        }
+        self.note_activity();
+        // An entry that came after the loop last looked starts the next
+        // turn. After an interrupt queued entries wait for the next turn,
+        // so a stopped turn is not followed by one the user did not ask for.
+        if !cancel.is_cancelled() && self.has_queued_entries() {
+            self.wake();
         }
     }
 
@@ -2168,26 +2482,38 @@ fn transcript_excerpt(messages: &[AgentMessage], max_messages: usize, max_chars:
 }
 
 fn drain_queue(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> Vec<AgentMessage> {
+    drain_entries(queue, mode)
+        .into_iter()
+        .map(|prompt| prompt.message)
+        .collect()
+}
+
+fn drain_entries(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> Vec<QueuedPrompt> {
     let mut q = queue.lock().unwrap();
     match mode {
-        QueueMode::All => q.drain(..).map(|prompt| prompt.message).collect(),
-        QueueMode::OneAtATime => q
-            .pop_front()
-            .map(|prompt| prompt.message)
-            .into_iter()
-            .collect(),
+        QueueMode::All => q.drain(..).collect(),
+        QueueMode::OneAtATime => q.pop_front().into_iter().collect(),
     }
 }
 
+/// The prompt mode the next queued input asks for. Entries the session
+/// queued itself keep the mode that is active.
 fn queued_mode(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> Option<PromptMode> {
     let queue = queue.lock().unwrap();
     match mode {
-        QueueMode::All => queue
-            .iter()
-            .any(|prompt| prompt.mode == PromptMode::Workflow)
-            .then_some(PromptMode::Workflow)
-            .or_else(|| (!queue.is_empty()).then_some(PromptMode::Ordinary)),
-        QueueMode::OneAtATime => queue.front().map(|prompt| prompt.mode),
+        QueueMode::All => {
+            let typed: Vec<&QueuedPrompt> =
+                queue.iter().filter(|prompt| !prompt.starts_turn).collect();
+            typed
+                .iter()
+                .any(|prompt| prompt.mode == PromptMode::Workflow)
+                .then_some(PromptMode::Workflow)
+                .or_else(|| (!typed.is_empty()).then_some(PromptMode::Ordinary))
+        }
+        QueueMode::OneAtATime => queue
+            .front()
+            .filter(|prompt| !prompt.starts_turn)
+            .map(|prompt| prompt.mode),
     }
 }
 
@@ -3115,10 +3441,12 @@ mod ephemeral_tests {
             QueuedPrompt {
                 message: AgentMessage::user("ordinary"),
                 mode: PromptMode::Ordinary,
+                starts_turn: false,
             },
             QueuedPrompt {
                 message: AgentMessage::user("workflow"),
                 mode: PromptMode::Workflow,
+                starts_turn: false,
             },
         ])));
 

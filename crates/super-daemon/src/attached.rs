@@ -969,6 +969,14 @@ impl SessionBackend for RemoteSession {
     fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
+
+    fn stop_task(&self, task_id: &str) {
+        // Beside the ordered lane, as `abort`: a stop must not wait behind a
+        // compaction.
+        self.spawn_direct(Command::StopTask {
+            task_id: task_id.to_string(),
+        });
+    }
 }
 
 /// The `prompt` command for one message. A workflow turn the daemon cannot

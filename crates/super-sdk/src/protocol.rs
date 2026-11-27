@@ -159,6 +159,15 @@ pub enum Command {
     // --- tools ---
     GetTools {},
 
+    // --- background tasks ---
+    /// The session's background tasks, oldest first.
+    GetTasks {},
+    /// Stop one running background task, by id or by name.
+    #[serde(rename_all = "camelCase")]
+    StopTask {
+        task_id: String,
+    },
+
     // --- session files ---
     #[serde(rename_all = "camelCase")]
     ExportHtml {
@@ -220,6 +229,8 @@ impl Command {
             Command::Bash { .. } => "bash",
             Command::AbortBash {} => "abort_bash",
             Command::GetTools {} => "get_tools",
+            Command::GetTasks {} => "get_tasks",
+            Command::StopTask { .. } => "stop_task",
             Command::ExportHtml { .. } => "export_html",
             Command::SwitchSession { .. } => "switch_session",
             Command::Fork { .. } => "fork",

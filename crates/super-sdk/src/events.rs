@@ -201,6 +201,9 @@ pub fn session_event_json(event: &SessionEvent) -> Option<Value> {
             "to": switch.to, "index": switch.index, "total": switch.total,
             "retryAfterSecs": switch.retry_after_secs,
         }),
+        SessionEvent::TaskStarted(task) => json!({"type": "task_started", "task": task}),
+        SessionEvent::TaskUpdated(task) => json!({"type": "task_updated", "task": task}),
+        SessionEvent::TaskEnded(task) => json!({"type": "task_ended", "task": task}),
     })
 }
 
@@ -384,6 +387,9 @@ pub fn decode_session_event(value: &Value) -> Option<SessionEvent> {
                 retry_after_secs: value["retryAfterSecs"].as_u64().unwrap_or(0),
             },
         )),
+        "task_started" => Some(SessionEvent::TaskStarted(field(value, "task")?)),
+        "task_updated" => Some(SessionEvent::TaskUpdated(field(value, "task")?)),
+        "task_ended" => Some(SessionEvent::TaskEnded(field(value, "task")?)),
         _ => None,
     }
 }
@@ -560,6 +566,19 @@ mod tests {
             ..Default::default()
         };
         let agent = |event| SessionEvent::Agent(Box::new(event));
+        let task = super_coding::TaskInfo {
+            id: "b1234abcd".into(),
+            name: Some("tests".into()),
+            kind: super_coding::TaskKind::Shell,
+            description: "cargo test".into(),
+            status: super_coding::TaskStatus::Running,
+            tool_use_id: Some("call_1".into()),
+            output_file: Some("/tmp/b1234abcd.output".into()),
+            progress: None,
+            summary: None,
+            started_at: 5,
+            ended_at: None,
+        };
         for event in [
             agent(AgentEvent::AgentStart),
             agent(AgentEvent::AgentEnd {
@@ -635,6 +654,17 @@ mod tests {
                 index: 1,
                 total: 2,
                 retry_after_secs: 60,
+            }),
+            SessionEvent::TaskStarted(task.clone()),
+            SessionEvent::TaskUpdated(super_coding::TaskInfo {
+                progress: Some("12 lines".into()),
+                ..task.clone()
+            }),
+            SessionEvent::TaskEnded(super_coding::TaskInfo {
+                status: super_coding::TaskStatus::Completed,
+                summary: Some("cargo test ended".into()),
+                ended_at: Some(9),
+                ..task.clone()
             }),
         ] {
             round_trip(event);

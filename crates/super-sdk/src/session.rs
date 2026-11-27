@@ -1193,6 +1193,14 @@ impl Session {
                     .collect();
                 Ok(Some(json!({"tools": tools})))
             }
+            Command::GetTasks {} => Ok(Some(json!({"tasks": self.inner.tasks()}))),
+            Command::StopTask { task_id } => {
+                let task = self
+                    .inner
+                    .stop_task(&task_id)
+                    .map_err(|error| SdkErrorText(error.to_string()))?;
+                Ok(Some(json!({"task": task})))
+            }
             Command::ExportHtml { output_path } => {
                 let path = output_path.map(PathBuf::from).unwrap_or_else(|| {
                     self.inner

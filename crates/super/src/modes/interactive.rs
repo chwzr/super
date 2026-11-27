@@ -2222,6 +2222,10 @@ fn handle_session_event(
                 .push(format!("verified workflow{run} `{name}` {result}"));
         }
         SessionEvent::Iterative { .. } => {}
+        // The footer and `/tasks` read the session's tasks when they draw.
+        SessionEvent::TaskStarted(_)
+        | SessionEvent::TaskUpdated(_)
+        | SessionEvent::TaskEnded(_) => {}
         SessionEvent::AccountSwitched(switch) => {
             app.cells.push(Cell::Notice(format!(
                 "{}: {} hit its rate limit (ready again in {}); switched to account {}/{} ({})",
