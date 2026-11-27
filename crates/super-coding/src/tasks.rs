@@ -520,6 +520,15 @@ impl BackgroundTasks {
     }
 }
 
+impl Drop for BackgroundTasks {
+    /// The session is gone: nothing would hear from its tasks any more.
+    fn drop(&mut self) {
+        for record in self.records.get_mut().unwrap().iter() {
+            record.stop.cancel();
+        }
+    }
+}
+
 /// Forget the oldest ended tasks beyond [`MAX_RECORDS`].
 fn prune(records: &mut Vec<Arc<TaskRecord>>) {
     while records.len() > MAX_RECORDS {

@@ -595,6 +595,25 @@ async fn a_held_wake_up_keeps_the_session_busy_and_a_new_conversation_drops_its_
     assert!(tasks.list().is_empty());
 }
 
+#[tokio::test]
+async fn the_tasks_of_a_session_that_goes_away_are_told_to_stop() {
+    let Fixture {
+        session,
+        _directory: directory,
+        ..
+    } = fixture(Vec::new());
+    let handle = session
+        .background_tasks()
+        .register(TaskSpec::new(TaskKind::Shell, "sleep 60"))
+        .unwrap();
+    session.set_stream_fn(None);
+    drop(session);
+    assert!(handle.is_stopped());
+    // Its owner's finish has nobody to tell.
+    assert!(!handle.finish(TaskOutcome::completed("too late")));
+    drop(directory);
+}
+
 impl Fixture {
     fn session_running(&self) -> std::sync::MutexGuard<'_, bool> {
         self.session.running_flag_for_test()
