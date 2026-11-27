@@ -55,6 +55,7 @@ struct ActiveSession {
 impl Drop for ActiveSession {
     fn drop(&mut self) {
         self.agent.abort();
+        self.agent.stop_background_tasks();
     }
 }
 
@@ -120,6 +121,10 @@ impl SuperAcpAgent {
         options.session = source;
         options.mcp_servers = acp_mcp_servers(mcp_servers)?;
         let built = options.build(sink).map_err(internal_error)?;
+        // An ACP client hears from a session only while one of its prompts
+        // runs, so the session starts no turn of its own: what background
+        // work queues reaches the agent at the next prompt's next step.
+        built.session.set_turn_starter(Some(Arc::new(|_turn| {})));
         let session_lock = match crate::setup::keep_session_lock(&built.session) {
             Ok(lock) => lock,
             Err(error) => {
@@ -614,6 +619,8 @@ impl ConnectTo<Client> for SuperAcpAgent {
                         if let Ok(session) = agent.session(&notification.session_id) {
                             session.cancelled.store(true, Ordering::Release);
                             session.agent.abort();
+                            // An ACP client has no stop control per task.
+                            session.agent.stop_background_tasks();
                         }
                         Ok(())
                     }

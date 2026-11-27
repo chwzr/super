@@ -38,11 +38,16 @@ pub async fn run(args: &Args) -> Result<i32> {
         anyhow::bail!("no prompt provided");
     }
     let prompt_mode = startup.session.prompt_mode_for(&prompt);
-    startup
-        .session
-        .prompt_with_mode(vec![super_agent::AgentMessage::user(prompt)], prompt_mode)
-        .await;
-    Ok(0)
+    // As in print mode: the background tasks and their notices' turns are
+    // part of the run, and SIGINT or SIGTERM stops them.
+    let finished = super::print::run_one_prompt(
+        &startup.session,
+        super_agent::AgentMessage::user(prompt),
+        prompt_mode,
+        super::print::told_to_end(),
+    )
+    .await;
+    Ok(if finished { 0 } else { 130 })
 }
 
 #[cfg(test)]
