@@ -771,9 +771,11 @@ fn message_text(message: &Value) -> String {
     }
 }
 
-/// `read src/main.rs`, `bash cargo test`, or the name and its arguments.
+/// `Read /work/src/main.rs`, `Bash cargo test`, or the name and its
+/// arguments. The file tools name their file in `file_path`; the search
+/// tools, and sessions stored before that, in `path`.
 fn tool_summary(name: &str, args: &Value) -> String {
-    let detail = ["path", "file_path", "command", "pattern", "url"]
+    let detail = ["file_path", "path", "command", "pattern", "url"]
         .iter()
         .find_map(|key| args[*key].as_str())
         .map(|value| value.lines().next().unwrap_or_default().to_string())
@@ -988,8 +990,12 @@ mod tests {
             "Bash cargo test"
         );
         assert_eq!(
-            tool_summary("Read", &json!({"path": "src/main.rs"})),
-            "Read src/main.rs"
+            tool_summary("Read", &json!({"file_path": "/work/src/main.rs"})),
+            "Read /work/src/main.rs"
+        );
+        assert_eq!(
+            tool_summary("grep", &json!({"pattern": "fn main", "path": "src"})),
+            "grep src"
         );
         assert_eq!(tool_summary("todo", &Value::Null), "todo");
         assert_eq!(

@@ -1188,7 +1188,11 @@ fn note_user_activity(app: &mut App) {
     }
 }
 
-fn tool_title(name: &str, args: &serde_json::Value) -> String {
+/// The line a tool call shows: its name and what it works on. A file tool's
+/// absolute `file_path` is shown relative to the session's folder `cwd`
+/// when it is inside it; `path` is what the search tools (and sessions
+/// stored before the file tools took `file_path`) name.
+fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
     if name == "mcp"
         && args["action"] == "call"
         && let (Some(server), Some(tool)) = (args["server"].as_str(), args["name"].as_str())
@@ -1197,8 +1201,17 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
     {
         return format!("mcp {server}.{tool}");
     }
-    let detail = args["path"]
-        .as_str()
+    let file = args["file_path"].as_str().map(|path| {
+        Path::new(path)
+            .strip_prefix(cwd)
+            .ok()
+            .map(|inside| inside.display().to_string())
+            .filter(|inside| !inside.is_empty())
+            .unwrap_or_else(|| path.to_string())
+    });
+    let detail = file
+        .as_deref()
+        .or_else(|| args["path"].as_str())
         .or_else(|| args["pattern"].as_str())
         .or_else(|| args["command"].as_str())
         .unwrap_or("");
@@ -2123,8 +2136,9 @@ fn handle_session_event(
             AgentEvent::ToolExecutionStart {
                 tool_name, args, ..
             } => {
+                let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
                 app.cells.push(Cell::ToolCall {
-                    title: tool_title(&tool_name, &args),
+                    title: tool_title(&tool_name, &args, &cwd),
                     output: String::new(),
                     is_error: false,
                     done: false,
@@ -9642,24 +9656,52 @@ mod tests {
 
     #[test]
     fn mcp_tool_title_names_server_and_tool() {
+        let cwd = Path::new("/work");
         assert_eq!(
             tool_title(
                 "mcp",
-                &serde_json::json!({"action": "call", "server": "linkup", "name": "linkup-search"})
+                &serde_json::json!({"action": "call", "server": "linkup", "name": "linkup-search"}),
+                cwd
             ),
             "mcp linkup.linkup-search"
         );
         assert_eq!(
-            tool_title("mcp", &serde_json::json!({"action": "list"})),
+            tool_title("mcp", &serde_json::json!({"action": "list"}), cwd),
             "mcp"
         );
         assert_eq!(
-            tool_title("mcp", &serde_json::json!({"action": "call"})),
+            tool_title("mcp", &serde_json::json!({"action": "call"}), cwd),
             "mcp"
         );
+    }
+
+    #[test]
+    fn file_tool_titles_show_file_path_inside_the_session_folder() {
+        let cwd = Path::new("/work");
         assert_eq!(
-            tool_title("Read", &serde_json::json!({"path": "file.rs"})),
-            "Read file.rs"
+            tool_title(
+                "Read",
+                &serde_json::json!({"file_path": "/work/src/main.rs"}),
+                cwd
+            ),
+            "Read src/main.rs"
+        );
+        assert_eq!(
+            tool_title(
+                "Edit",
+                &serde_json::json!({"file_path": "/etc/hosts", "old_string": "a", "new_string": "b"}),
+                cwd
+            ),
+            "Edit /etc/hosts"
+        );
+        // Search tools and sessions stored with the old parameter name.
+        assert_eq!(
+            tool_title("grep", &serde_json::json!({"path": "src"}), cwd),
+            "grep src"
+        );
+        assert_eq!(
+            tool_title("read", &serde_json::json!({"path": "file.rs"}), cwd),
+            "read file.rs"
         );
     }
 

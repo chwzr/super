@@ -557,7 +557,7 @@ mod tests {
         let tool_call = super_ai::ToolCall {
             id: "call_1".into(),
             name: "Read".into(),
-            arguments: json!({"path": "a.rs"}),
+            arguments: json!({"file_path": "/work/a.rs"}),
             thought_signature: None,
         };
         let result = super_agent::ToolResult {
@@ -598,12 +598,12 @@ mod tests {
             agent(AgentEvent::ToolExecutionStart {
                 tool_call_id: "call_1".into(),
                 tool_name: "Read".into(),
-                args: json!({"path": "a.rs"}),
+                args: json!({"file_path": "/work/a.rs"}),
             }),
             agent(AgentEvent::ToolExecutionUpdate {
                 tool_call_id: "call_1".into(),
                 tool_name: "Read".into(),
-                args: json!({"path": "a.rs"}),
+                args: json!({"file_path": "/work/a.rs"}),
                 partial: result.clone(),
             }),
             agent(AgentEvent::ToolExecutionEnd {

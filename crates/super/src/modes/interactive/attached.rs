@@ -281,7 +281,7 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
                         if let ContentBlock::ToolCall(call) = block {
                             let result = results.get(call.id.as_str());
                             cells.push(Cell::ToolCall {
-                                title: tool_title(&call.name, &call.arguments),
+                                title: tool_title(&call.name, &call.arguments, manager.cwd()),
                                 output: result
                                     .map(|result| {
                                         result

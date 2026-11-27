@@ -150,7 +150,7 @@ pub fn extract_file_ops(messages: &[AgentMessage]) -> (Vec<String>, Vec<String>)
             continue;
         };
         for tc in a.tool_calls() {
-            let Some(path) = tc.arguments["path"].as_str() else {
+            let Some(path) = tc.arguments["file_path"].as_str() else {
                 continue;
             };
             match tc.name.as_str() {
@@ -451,18 +451,24 @@ mod tests {
         a.content.push(ContentBlock::ToolCall(ToolCall {
             id: "1".into(),
             name: "Read".into(),
-            arguments: json!({"path": "src/a.rs"}),
+            arguments: json!({"file_path": "/work/src/a.rs"}),
             thought_signature: None,
         }));
         a.content.push(ContentBlock::ToolCall(ToolCall {
             id: "2".into(),
             name: "Edit".into(),
-            arguments: json!({"path": "src/b.rs"}),
+            arguments: json!({"file_path": "/work/src/b.rs"}),
+            thought_signature: None,
+        }));
+        a.content.push(ContentBlock::ToolCall(ToolCall {
+            id: "3".into(),
+            name: "Write".into(),
+            arguments: json!({"file_path": "/work/src/c.rs", "content": ""}),
             thought_signature: None,
         }));
         let (read, modified) = extract_file_ops(&[AgentMessage::Assistant(a)]);
-        assert_eq!(read, vec!["src/a.rs"]);
-        assert_eq!(modified, vec!["src/b.rs"]);
+        assert_eq!(read, vec!["/work/src/a.rs"]);
+        assert_eq!(modified, vec!["/work/src/b.rs", "/work/src/c.rs"]);
     }
 
     #[test]
@@ -496,7 +502,7 @@ mod tests {
         message.content.push(ContentBlock::ToolCall(ToolCall {
             id: "call-1".into(),
             name: "Read".into(),
-            arguments: json!({"path": "src/lib.rs"}),
+            arguments: json!({"file_path": "/work/src/lib.rs"}),
             thought_signature: None,
         }));
         assert_eq!(
