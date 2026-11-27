@@ -5,6 +5,7 @@ pub mod agent_loop;
 pub mod config;
 pub mod events;
 pub mod message;
+pub mod placeholder;
 pub mod tool;
 #[cfg(feature = "native-tools")]
 pub mod tools;
