@@ -15,6 +15,7 @@ use crate::events::{
 use crate::options::{SessionOptions, UnknownModel};
 use crate::protocol::{Command, Event, ImageInput, QueueMode, Response, StreamingBehavior};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -240,6 +241,22 @@ pub struct Session {
     approvals: Approvals,
     observer: Mutex<Option<SessionObserver>>,
     file_guard: Mutex<Option<SessionFileGuard>>,
+    /// What `initialize` said about stop controls, per origin; `None` is a
+    /// direct client.
+    task_controls: Mutex<HashMap<Option<String>, bool>>,
+}
+
+/// Who sent a command, as far as the session needs to know.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommandSender {
+    /// The name the sending surface gave itself (a daemon client's
+    /// `hello.name`, the device a platform command came from); `None` for a
+    /// direct client.
+    pub origin: Option<String>,
+    /// The sender shows a stop control for each background task, so its
+    /// `abort` cancels the turn only. A sender without one also stops the
+    /// background tasks with `abort`: it has no other way to stop them.
+    pub task_controls: bool,
 }
 
 /// Build the event sink a harness session needs so that every event is also
@@ -479,7 +496,7 @@ impl Session {
         events: broadcast::Sender<Event>,
         catalog: Option<Catalog>,
     ) -> Arc<Session> {
-        Arc::new(Session {
+        let session = Arc::new(Session {
             inner,
             catalog,
             events,
@@ -491,7 +508,40 @@ impl Session {
             approvals: Approvals::default(),
             observer: Mutex::new(None),
             file_guard: Mutex::new(None),
-        })
+            task_controls: Mutex::new(HashMap::new()),
+        });
+        session.install_turn_starter();
+        session
+    }
+
+    /// Run the turns the harness session starts on its own (a background
+    /// task's notice arrived while it was idle) the way a prompt runs: one
+    /// at a time with the prompts, waited for by `wait_idle`, and followed
+    /// by `agent_settled`.
+    fn install_turn_starter(self: &Arc<Self>) {
+        let sdk = Arc::downgrade(self);
+        self.inner.set_turn_starter(Some(Arc::new(move |turn| {
+            let sdk = sdk.clone();
+            tokio::spawn(async move {
+                let Some(session) = sdk.upgrade() else {
+                    turn.await;
+                    return;
+                };
+                let guard = session.run_lock.clone().lock_owned().await;
+                let claimed = session
+                    .running
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok();
+                let ran = turn.await;
+                if claimed {
+                    session.running.store(false, Ordering::SeqCst);
+                }
+                drop(guard);
+                if ran {
+                    session.emit(agent_settled());
+                }
+            });
+        })));
     }
 
     /// Tell clients the agent is idle after a run that another surface drove.
@@ -663,11 +713,53 @@ impl Session {
         Ok(())
     }
 
-    /// Cancel the current run and any running direct shell command.
+    /// Cancel the current run and any running direct shell command. Unless
+    /// this embedder said it shows a stop control for each background task
+    /// ([`Session::set_task_controls`]), the background tasks stop too.
     pub fn abort(&self) {
+        self.interrupt(!self.has_task_controls(None));
+    }
+
+    /// Say whether this embedder (a direct client) shows a stop control for
+    /// each background task, as the `initialize` command does. With one,
+    /// [`Session::abort`] cancels the turn only.
+    pub fn set_task_controls(&self, task_controls: bool) {
+        self.task_controls
+            .lock()
+            .unwrap()
+            .insert(None, task_controls);
+    }
+
+    /// The session's background tasks, oldest first.
+    pub fn tasks(&self) -> Vec<super_coding::TaskInfo> {
+        self.inner.tasks()
+    }
+
+    /// Stop one running background task, by id or by name.
+    pub fn stop_task(&self, id_or_name: &str) -> Result<super_coding::TaskInfo, SdkError> {
+        self.inner
+            .stop_task(id_or_name)
+            .map_err(|error| SdkError::Command(error.to_string()))
+    }
+
+    fn has_task_controls(&self, origin: Option<&str>) -> bool {
+        self.task_controls
+            .lock()
+            .unwrap()
+            .get(&origin.map(str::to_string))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Cancel the turn and a direct shell command; with `stop_tasks` the
+    /// background tasks as well.
+    fn interrupt(&self, stop_tasks: bool) {
         self.inner.abort();
         if let Some(cancel) = self.bash_cancel.lock().unwrap().take() {
             cancel.cancel();
+        }
+        if stop_tasks {
+            self.inner.stop_background_tasks();
         }
     }
 
@@ -828,10 +920,11 @@ impl Session {
         }
     }
 
-    /// Release the event channel. Subscribers see their streams end.
+    /// Release the event channel. Subscribers see their streams end. The
+    /// turn and every background task stop.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
-        self.abort();
+        self.interrupt(true);
     }
 
     // ----------------------------------------------------------------
@@ -869,6 +962,31 @@ impl Session {
         id: Option<String>,
         origin: Option<String>,
     ) -> Response {
+        self.execute_by(
+            command,
+            id,
+            CommandSender {
+                origin,
+                task_controls: false,
+            },
+        )
+        .await
+    }
+
+    /// Execute a command for `sender`. A sender shows a stop control for
+    /// each background task when it says so here (a daemon client in its
+    /// `hello`) or in an earlier `initialize`.
+    pub async fn execute_by(
+        self: &Arc<Self>,
+        command: Command,
+        id: Option<String>,
+        sender: CommandSender,
+    ) -> Response {
+        let CommandSender {
+            origin,
+            task_controls,
+        } = sender;
+        let task_controls = task_controls || self.has_task_controls(origin.as_deref());
         let name = command.name();
         if let Some(origin) = &origin {
             let input = match &command {
@@ -931,6 +1049,18 @@ impl Session {
                 .answer_approval(&approval_id, &choice, &by)
                 .map(|()| None)
                 .map_err(SdkErrorText::from),
+            Command::Initialize { task_controls } => {
+                self.task_controls
+                    .lock()
+                    .unwrap()
+                    .insert(origin.clone(), task_controls);
+                Ok(None)
+            }
+            Command::Abort {} => {
+                self.interrupt(!task_controls);
+                self.wait_idle().await;
+                Ok(None)
+            }
             other => self.execute_inner(other).await,
         };
         if let Some((origin, command)) = announced {
@@ -1011,10 +1141,9 @@ impl Session {
                 self.inner.queue_follow_up(user_message(&args));
                 Ok(Some(json!({"disposition": "queued"})))
             }
-            Command::Abort {} => {
-                self.abort();
-                self.wait_idle().await;
-                Ok(None)
+            // Handled in `execute_by`, where the sender is known.
+            Command::Abort {} | Command::Initialize { .. } => {
+                Err(SdkErrorText("unreachable".into()))
             }
             Command::ClearQueue {} => {
                 let reclaimed: Vec<String> = self

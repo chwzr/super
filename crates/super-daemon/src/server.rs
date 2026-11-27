@@ -136,6 +136,8 @@ struct Attachment {
 struct Client {
     id: u64,
     origin: String,
+    /// `hello.taskControls`: the client's `abort` spares background tasks.
+    task_controls: bool,
     attachment: Mutex<Option<Attachment>>,
     out: mpsc::UnboundedSender<String>,
 }
@@ -219,11 +221,15 @@ async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
     let mut reader = BufReader::new(read);
     let mut buffer = String::new();
 
-    let origin = match read_line(&mut reader, &mut buffer).await {
+    let greeting = match read_line(&mut reader, &mut buffer).await {
         Some(first) => handshake(&ctx, client_id, &first, &out),
         None => None,
     };
-    let Some(origin) = origin else {
+    let Some(Greeting {
+        origin,
+        task_controls,
+    }) = greeting
+    else {
         drop(out);
         let _ = writer.await;
         ctx.clients.fetch_sub(1, Ordering::SeqCst);
@@ -232,6 +238,7 @@ async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
     let client = Arc::new(Client {
         id: client_id,
         origin,
+        task_controls,
         attachment: Mutex::new(None),
         out: out.clone(),
     });
@@ -276,13 +283,20 @@ async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
     log::debug("server", format!("client {client_id} disconnected"));
 }
 
-/// The first line must be `hello`. Returns the client's origin name.
+/// What a client said in `hello` that its commands need.
+struct Greeting {
+    origin: String,
+    task_controls: bool,
+}
+
+/// The first line must be `hello`. Returns the client's origin name and
+/// whether it shows a stop control per background task.
 fn handshake(
     ctx: &ServerContext,
     client_id: u64,
     line: &str,
     out: &mpsc::UnboundedSender<String>,
-) -> Option<String> {
+) -> Option<Greeting> {
     let refuse = |id: Option<String>, message: String, data: Option<Value>| {
         let response = Response {
             kind: "response".into(),
@@ -304,6 +318,7 @@ fn handshake(
                     name,
                     version,
                     protocol_versions,
+                    task_controls,
                 },
         })) => match negotiate(protocol_versions, ctx.info.protocol_versions) {
             Ok(protocol_version) => {
@@ -322,7 +337,10 @@ fn handshake(
                         client.as_str()
                     ),
                 );
-                Some(origin)
+                Some(Greeting {
+                    origin,
+                    task_controls,
+                })
             }
             Err(message) => {
                 log::warn("server", format!("client {client_id} refused: {message}"));
@@ -368,12 +386,15 @@ fn dispatch(ctx: &Arc<ServerContext>, client: &Arc<Client>, line: &str) {
             }
             Some(hosted) => {
                 hosted.touch();
-                let origin = client.origin.clone();
+                let sender = super_sdk::CommandSender {
+                    origin: Some(client.origin.clone()),
+                    task_controls: client.task_controls,
+                };
                 let out = client.out.clone();
                 tokio::spawn(async move {
                     let response = hosted
                         .session
-                        .execute_from(request.command, request.id, Some(origin))
+                        .execute_by(request.command, request.id, sender)
                         .await;
                     let _ = out.send(encode(&response));
                 });
@@ -521,4 +542,57 @@ fn error_line(command: &str, error: impl std::fmt::Display) -> String {
     let message = serde_json::to_string(&error.to_string())
         .unwrap_or_else(|_| "\"internal error\"".to_string());
     format!(r#"{{"type":"response","command":"{command}","success":false,"error":{message}}}"#)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::HostConfig;
+
+    fn context() -> Arc<ServerContext> {
+        let host = SessionHost::new(HostConfig {
+            session_dir: std::env::temp_dir().join("super-server-test-sessions"),
+            idle_unload: Duration::ZERO,
+            models_file: None,
+            no_context_files: true,
+        });
+        ServerContext::new(
+            host,
+            DaemonInfo {
+                version: "0.0.42".into(),
+                machine_id: "01TEST".into(),
+                machine_name: "testbox".into(),
+                platform: "macos".into(),
+                socket_path: PathBuf::from("/tmp/d.sock"),
+                protocol_versions: [2, 2],
+            },
+            CancellationToken::new(),
+        )
+    }
+
+    #[test]
+    fn hello_says_whether_the_client_has_a_stop_control_per_task() {
+        let ctx = context();
+        let (out, mut replies) = mpsc::unbounded_channel();
+        let greeting = handshake(
+            &ctx,
+            1,
+            r#"{"type":"hello","client":"macos","name":"Mac","version":"0.2.15","protocolVersions":[2,2],"taskControls":true}"#,
+            &out,
+        )
+        .expect("hello accepted");
+        assert_eq!(greeting.origin, "Mac");
+        assert!(greeting.task_controls);
+        assert!(replies.try_recv().unwrap().contains(r#""success":true"#));
+
+        let greeting = handshake(
+            &ctx,
+            2,
+            r#"{"type":"hello","client":"ios","version":"0.2.15","protocolVersions":[2,2]}"#,
+            &out,
+        )
+        .expect("hello accepted");
+        assert_eq!(greeting.origin, "ios");
+        assert!(!greeting.task_controls, "no stop controls unless said");
+    }
 }

@@ -130,9 +130,15 @@ fn every_command_serializes_with_a_snake_case_type() {
             "answer_approval",
         ),
         (Command::Ping {}, "ping"),
+        (
+            Command::Initialize {
+                task_controls: true,
+            },
+            "initialize",
+        ),
     ];
 
-    assert_eq!(cases.len(), 34, "keep this list exhaustive");
+    assert_eq!(cases.len(), 35, "keep this list exhaustive");
     for (command, expected) in cases {
         assert_eq!(command.name(), expected);
         let value = serde_json::to_value(&command).unwrap();

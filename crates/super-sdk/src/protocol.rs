@@ -197,6 +197,18 @@ pub enum Command {
 
     // --- liveness ---
     Ping {},
+
+    // --- the client ---
+    /// What a direct client (`--mode rpc`, an embedder) says about itself,
+    /// best as its first command. `taskControls: true` means it shows a stop
+    /// control for each background task, so its `abort` cancels the turn
+    /// only; without it `abort` also stops the background tasks. A daemon
+    /// client says this in `hello` instead.
+    #[serde(rename_all = "camelCase")]
+    Initialize {
+        #[serde(default)]
+        task_controls: bool,
+    },
 }
 
 impl Command {
@@ -238,6 +250,7 @@ impl Command {
             Command::GetApprovals {} => "get_approvals",
             Command::AnswerApproval { .. } => "answer_approval",
             Command::Ping {} => "ping",
+            Command::Initialize { .. } => "initialize",
         }
     }
 }

@@ -52,6 +52,9 @@ pub struct ClientInfo {
     /// The protocol range this client speaks; [`PROTOCOL_VERSIONS`] outside
     /// tests.
     pub protocol_versions: [u32; 2],
+    /// The client shows a stop control for each background task, so its
+    /// `abort` cancels the turn only (`hello.taskControls`).
+    pub task_controls: bool,
 }
 
 impl ClientInfo {
@@ -61,7 +64,14 @@ impl ClientInfo {
             name: name.into(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol_versions: PROTOCOL_VERSIONS,
+            task_controls: false,
         }
+    }
+
+    /// Say that this client shows a stop control for each background task.
+    pub fn with_task_controls(mut self, task_controls: bool) -> Self {
+        self.task_controls = task_controls;
+        self
     }
 }
 
@@ -308,6 +318,7 @@ impl DaemonClient {
                     name: Some(info.name.clone()),
                     version: info.version.clone(),
                     protocol_versions: info.protocol_versions,
+                    task_controls: info.task_controls,
                 })
                 .map_err(|error| ClientError::Protocol(error.to_string()))?,
                 "hello",

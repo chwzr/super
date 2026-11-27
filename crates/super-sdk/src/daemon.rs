@@ -161,6 +161,11 @@ pub enum DaemonCommand {
         name: Option<String>,
         version: String,
         protocol_versions: [u32; 2],
+        /// The client shows a stop control for each background task, so its
+        /// `abort` cancels the turn only. Without one, `abort` also stops the
+        /// session's background tasks.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        task_controls: bool,
     },
     Status {},
     #[serde(rename_all = "camelCase")]
@@ -330,11 +335,28 @@ mod tests {
                 name: Some("Terminal".into()),
                 version: "0.0.38".into(),
                 protocol_versions: [2, 2],
+                task_controls: false,
             }
         );
         let encoded = serde_json::to_value(&request.command).unwrap();
         assert_eq!(encoded["type"], "hello");
         assert_eq!(encoded["protocolVersions"], json!([2, 2]));
+        assert!(encoded.get("taskControls").is_none());
+    }
+
+    #[test]
+    fn a_client_with_a_stop_control_per_task_says_so_in_hello() {
+        let line = r#"{"type":"hello","client":"macos","version":"0.2.15","protocolVersions":[2,2],"taskControls":true}"#;
+        let ClientLine::Daemon(request) = decode_client_line(line).expect("decodes") else {
+            panic!("hello is a daemon command");
+        };
+        assert!(matches!(
+            request.command,
+            DaemonCommand::Hello {
+                task_controls: true,
+                ..
+            }
+        ));
     }
 
     #[test]

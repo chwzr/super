@@ -418,7 +418,7 @@ pub fn bash_execution_update(id: Option<&str>, delta: &str) -> Value {
 /// every client receives them with the message.
 pub fn announced_command(command: &Command) -> Option<Value> {
     let name = command.name();
-    if name.starts_with("get_") || matches!(name, "ping" | "answer_approval") {
+    if name.starts_with("get_") || matches!(name, "ping" | "answer_approval" | "initialize") {
         return None;
     }
     let mut value = serde_json::to_value(command).ok()?;

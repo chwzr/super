@@ -429,6 +429,15 @@ impl RemoteSession {
             self.sync_entries(client).await;
         }
         self.adopt_state(&state);
+        // The background tasks running there, for the view's task list; an
+        // older daemon without the command leaves the list empty.
+        if let Ok(Some(data)) = client.execute_ok(Command::GetTasks {}).await
+            && let Some(view) = self.view()
+        {
+            view.replace_remote_tasks(
+                serde_json::from_value(data["tasks"].clone()).unwrap_or_default(),
+            );
+        }
         // A turn in flight is picked up from its next event on.
         *self.turn.lock().unwrap() = TurnTracker::default();
         // A question asked before this view came is asked again here.
@@ -698,6 +707,14 @@ impl RemoteSession {
                     data: event.get("data").cloned(),
                     own,
                 }));
+            }
+            "task_started" | "task_updated" | "task_ended" => {
+                if let (Some(view), Ok(task)) = (
+                    self.view(),
+                    serde_json::from_value::<super_coding::TaskInfo>(event["task"].clone()),
+                ) {
+                    view.absorb_task(task);
+                }
             }
             "bash_execution_update" if self.shell_running.load(Ordering::SeqCst) => {
                 self.notify(AttachedNotice::ShellOutput(text(&event, "delta")));

@@ -283,12 +283,14 @@ mod daemon {
     }
 
     /// How the terminal introduces itself to the daemon: by its tty, as
-    /// a terminal that attached on start does.
+    /// a terminal that attached on start does. Its `/tasks` view stops a
+    /// background task, so its interrupt spares them.
     pub(crate) fn client_info() -> ClientInfo {
         ClientInfo::new(
             super_sdk::daemon::ClientKind::Tui,
             crate::attach::client_name(),
         )
+        .with_task_controls(true)
     }
 
     /// Connect to the daemon, starting or installing it the way this system

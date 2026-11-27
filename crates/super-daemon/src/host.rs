@@ -350,7 +350,9 @@ impl SessionHost {
     }
 
     /// Unload hosted sessions that are idle, unattached and quiet for longer
-    /// than the configured timeout. Returns how many were unloaded.
+    /// than the configured timeout. A session with a running background
+    /// task, a pending wake-up or a queued notice stays. Returns how many
+    /// were unloaded.
     pub async fn sweep_idle(&self) -> usize {
         if self.config.idle_unload.is_zero() {
             return 0;
@@ -364,6 +366,7 @@ impl SessionHost {
                 hosted.attached() == 0
                     && hosted.state().0 == SessionState::Idle
                     && hosted.idle_for() >= self.config.idle_unload
+                    && !hosted.session.agent_session().has_background_work()
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -800,6 +803,41 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(fixture.host.sweep_idle().await, 1);
         assert_eq!(fixture.host.hosted_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_sweep_keeps_a_session_with_background_work() {
+        let fixture = fixture(Duration::from_millis(10)).await;
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        let tasks = hosted.session.agent_session().background_tasks();
+        let task = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Shell,
+                "sleep 60",
+            ))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            fixture.host.sweep_idle().await,
+            0,
+            "a running task keeps the session"
+        );
+        let wake_up = tasks.hold();
+        // Ends without a notice, so no turn starts.
+        drop(task);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            fixture.host.sweep_idle().await,
+            0,
+            "a pending wake-up keeps it too"
+        );
+        drop(wake_up);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.host.sweep_idle().await, 1);
     }
 
     #[tokio::test]

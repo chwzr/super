@@ -176,7 +176,9 @@ pub async fn try_run(args: &Args) -> Result<Outcome> {
     } else {
         crate::setup::initial_message(args, &cwd)?.map(|message| (args.messages.join(" "), message))
     };
-    let info = ClientInfo::new(ClientKind::Tui, client_name());
+    // The full-screen TUI stops a background task in `/tasks`, so its
+    // interrupt spares them; the line-based front end has no such view.
+    let info = ClientInfo::new(ClientKind::Tui, client_name()).with_task_controls(full_screen);
     let mut client = match DaemonClient::connect_or_start(&info).await {
         Ok(client) => client,
         Err(error) => match connect_failure(&error) {

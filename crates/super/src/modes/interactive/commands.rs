@@ -82,6 +82,7 @@ pub(super) fn typed(command: &Command) -> Typed {
         | Command::GetForkMessages {}
         | Command::GetApprovals {}
         | Command::AnswerApproval { .. }
+        | Command::Initialize { .. }
         | Command::Ping {} => Typed::Nothing,
     }
 }
