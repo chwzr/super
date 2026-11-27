@@ -31,6 +31,7 @@ mod session_sources;
 mod sessions;
 mod setup;
 mod slash_commands;
+mod task_ui;
 mod terminal_hosts;
 mod update;
 mod voice;

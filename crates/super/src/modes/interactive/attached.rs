@@ -308,6 +308,11 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
                     output: bash.output.clone(),
                     exclude_from_context: bash.exclude_from_context,
                 }),
+                AgentMessage::Custom(_) => {
+                    if let Some(task) = super_coding::notifications::notified_task(message) {
+                        cells.push(Cell::Notice(crate::task_ui::notice_line(&task)));
+                    }
+                }
                 _ => {}
             },
             super_coding::SessionEntry::Compaction { tokens_before, .. } => cells.push(

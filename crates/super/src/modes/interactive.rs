@@ -8,6 +8,7 @@ use crate::remote::{RemoteControl, RemoteEvent};
 use crate::session_sources::{self, SessionRecord, SessionSource};
 use crate::setup::{Startup, build_startup, reload_runtime};
 use crate::slash_commands;
+use crate::task_ui::{self, TaskView, TaskViewAction};
 use crate::workflow_ui::{self, ViewAction, WorkflowView};
 use anyhow::{Context as _, Result};
 use std::collections::HashSet;
@@ -129,6 +130,8 @@ struct App {
     workflow_view: Option<WorkflowView>,
     /// The open `/jobs` loop and autoresearch view, if any.
     job_view: Option<JobView>,
+    /// The open `/tasks` view of the background tasks, if any.
+    task_view: Option<TaskView>,
     /// Bumped whenever a workflow run changes, so the frame is marked dirty.
     workflow_version: u64,
     /// Runtime-verified workflow results waiting for the end of this turn.
@@ -629,6 +632,14 @@ impl App {
             return lines;
         }
 
+        if let Some(view) = &mut self.task_view {
+            lines.push(String::new());
+            lines.extend(view.render(width, &self.theme, session));
+            lines.push(String::new());
+            lines.extend(self.footer(width, session));
+            return lines;
+        }
+
         if self.cell_render_cache.len() < self.cells.len() {
             self.cell_render_cache
                 .resize_with(self.cells.len(), || None);
@@ -815,6 +826,9 @@ impl App {
             && runtime.active_count() > 0
         {
             lines.push(job_ui::progress_line(&runtime, &self.theme, width));
+        }
+        if let Some(line) = task_ui::progress_line(session, &self.theme, width) {
+            lines.push(line);
         }
         if let Some(recap) = &self.recap {
             lines.push(self.theme.fg("muted", &format!("※ recap: {recap}")));
@@ -1565,6 +1579,7 @@ async fn run_with_hosts(
         webmcp_manager: webmcp_manager(&settings.webmcp),
         workflow_view: None,
         job_view: None,
+        task_view: None,
         workflow_version: 0,
         workflow_outcomes: Vec::new(),
         pending_account_add: None,
@@ -1828,7 +1843,9 @@ async fn run_with_hosts(
                     && task.is_finished()
                 {
                     running_task = None;
-                    app.working = false;
+                    // A turn the session started itself (a task's notice)
+                    // may have taken over from the prompt that just ended.
+                    app.working = session.is_running();
                     if let Some(sdk) = &app.sdk {
                         sdk.notify_settled();
                     }
@@ -1929,6 +1946,8 @@ async fn run_with_hosts(
         attached::finish(attached).await;
         return Ok(0);
     }
+    // Background tasks end with the process that runs them.
+    session.stop_background_tasks();
     if let Some(remote) = app.remote.take() {
         // Flush what is queued and announce the end; bounded, never hangs.
         remote.stop().await;
@@ -1973,6 +1992,7 @@ fn terminal_host_state(
             .is_some_and(|panel| panel.cancel.is_some())
         || app.recap_loading
         || app.title_generation_pending
+        || session.tasks().iter().any(|task| task.status.is_running())
         || session
             .workflows()
             .is_some_and(|runtime| runtime.active().is_some())
@@ -2077,6 +2097,13 @@ fn handle_session_event(
                 }
                 _ => {}
             },
+            AgentEvent::MessageEnd {
+                message: message @ AgentMessage::Custom(_),
+            } => {
+                if let Some(task) = super_coding::notifications::notified_task(&message) {
+                    app.cells.push(Cell::Notice(task_ui::notice_line(&task)));
+                }
+            }
             AgentEvent::MessageEnd {
                 message: AgentMessage::Assistant(a),
             } => {
@@ -3605,7 +3632,8 @@ fn voice_input(
             || app.secret_prompt.is_some()
             || app.btw_panel.is_some()
             || app.workflow_view.is_some()
-            || app.job_view.is_some())
+            || app.job_view.is_some()
+            || app.task_view.is_some())
     {
         return false;
     }
@@ -3743,6 +3771,15 @@ fn handle_input(
             && view.handle_key(key) == JobViewAction::Close
         {
             app.job_view = None;
+        }
+        return Flow::Continue;
+    }
+
+    if let Some(view) = &mut app.task_view {
+        if let InputEvent::Key(key) = event
+            && view.handle_key(key, session) == TaskViewAction::Close
+        {
+            app.task_view = None;
         }
         return Flow::Continue;
     }
@@ -7618,6 +7655,11 @@ fn session_cells(session: &Arc<super_coding::AgentSession>) -> Vec<Cell> {
                     output: bash.output.clone(),
                     exclude_from_context: bash.exclude_from_context,
                 }),
+                AgentMessage::Custom(_) => {
+                    if let Some(task) = super_coding::notifications::notified_task(message) {
+                        cells.push(Cell::Notice(task_ui::notice_line(&task)));
+                    }
+                }
                 _ => {}
             }
         }
@@ -8499,6 +8541,7 @@ fn run_slash_command(
             &rest,
         ),
         "jobs" => open_job_view(app, session),
+        "tasks" => app.task_view = Some(TaskView::default()),
         "tree" => open_tree_picker(app, session),
         "fork" => open_fork_picker(app, session),
         "clone" => {
@@ -9210,6 +9253,7 @@ mod tests {
             webmcp_manager: webmcp_manager(&Default::default()),
             workflow_view: None,
             job_view: None,
+            task_view: None,
             workflow_version: 0,
             workflow_outcomes: Vec::new(),
             pending_account_add: None,
@@ -9319,6 +9363,58 @@ mod tests {
             .append_message(AgentMessage::Assistant(answer))
             .unwrap();
         test_session(manager)
+    }
+
+    #[test]
+    fn a_task_notice_shows_as_a_notice_live_and_after_a_resume() {
+        use crate::terminal_hosts::State;
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut search = FileSearchService::new(tx);
+        let tasks = session.background_tasks();
+        let handle = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Shell,
+                "npm test",
+            ))
+            .unwrap();
+        assert_eq!(terminal_host_state(&app, &session), State::Working);
+        let id = handle.id().to_string();
+        drop(handle);
+        assert_eq!(terminal_host_state(&app, &session), State::Idle);
+
+        let mut task = tasks.find(&id).unwrap();
+        task.status = super_coding::TaskStatus::Completed;
+        let notice = super_coding::task_notification(
+            &task,
+            &super_coding::TaskOutcome::completed("npm test ended"),
+        );
+        handle_session_event(
+            &mut app,
+            SessionEvent::Agent(Box::new(AgentEvent::MessageEnd {
+                message: notice.clone(),
+            })),
+            &mut search,
+            &session,
+        );
+        let line = format!("task {id} completed · npm test");
+        assert!(matches!(app.cells.last(), Some(Cell::Notice(shown)) if *shown == line));
+        // Not as something the user typed.
+        assert!(!app.cells.iter().any(|cell| matches!(cell, Cell::User(_))));
+
+        session
+            .manager
+            .lock()
+            .unwrap()
+            .append_message(notice)
+            .unwrap();
+        assert!(matches!(
+            session_cells(&session).as_slice(),
+            [Cell::Notice(shown)] if *shown == line
+        ));
     }
 
     #[test]

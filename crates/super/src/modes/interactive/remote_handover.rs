@@ -250,6 +250,7 @@ pub(super) fn busy(app: &App, session: &AgentSession) -> bool {
         || app.btw_panel.is_some()
         || app.workflow_view.is_some()
         || app.job_view.is_some()
+        || app.task_view.is_some()
 }
 
 /// Whether the daemon is ready and nothing runs, so the hand-over can finish.
