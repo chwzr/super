@@ -65,9 +65,19 @@ All payload fields use camelCase.
 - `{"type":"prompt","message":"...","images":[],"streamingBehavior":"steer"}`: accept a prompt. `streamingBehavior` is optional only while idle. Use `steer` or `followUp` while busy.
 - `{"type":"steer","message":"...","images":[]}`: deliver after current-turn tools.
 - `{"type":"follow_up","message":"...","images":[]}`: deliver once the agent stops.
-- `{"type":"abort"}`: cancel and respond once idle.
+- `{"type":"abort"}`: cancel the turn and respond once idle. Unless the
+  client said in `initialize` that it shows a stop control for each
+  background task, `abort` also stops the background tasks (see
+  [Background tasks](#background-tasks)).
 - `{"type":"clear_queue"}`: returns `data.messages`.
 - `{"type":"ping"}`: returns `data.pong: true`.
+- `{"type":"initialize","taskControls":true}`: what the client says about
+  itself, best as its first command. `taskControls: true` means it shows a
+  stop control for each background task, so its `abort` cancels the turn
+  only. It counts for the client that sent it: in `--mode rpc` that is every
+  direct client of the process, a remote client by its name. A client that
+  never sends it, or sends `false`, is one without such controls. A daemon
+  client says this in `hello` instead ([daemon.md](daemon.md#the-connection)).
 
 An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
@@ -105,6 +115,16 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 - `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
 
+### Tasks
+
+See [Background tasks](#background-tasks) for what a task is.
+
+- `get_tasks`: `data.tasks`, every background task the session remembers,
+  oldest first, as the `task` object below.
+- `stop_task` with `taskId`, the task's id or name: stops one running task
+  and returns `data.task` with `status: "stopped"`. Fails when no task has
+  that id or name, or when the task is not running any more.
+
 ### Approvals
 
 Some steps wait for a human: a dynamic workflow before it starts, the project
@@ -129,6 +149,9 @@ and direct-shell `bash_execution_update`.
 Session: `queue_update`, `compaction_start`, `compaction_end`, `retry`,
 `model_changed`, `workflow_progress`, `workflow_outcome`, and `event_lag`.
 
+Background tasks: `task_started`, `task_updated` (its `progress` line
+changed) and `task_ended`, each with `task`.
+
 Approvals: `approval_request` with `approvalId`, `kind`, `title`, `detail`,
 and `choices` (`[{id, label, detail}]`); `approval_resolved` with
 `approvalId`, `choice`, and `by` (`local` for the terminal, `rpc` for a direct
@@ -151,6 +174,42 @@ started itself when the session is mirrored for remote control.
 `text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`,
 `toolcall_start`, `toolcall_delta`, `toolcall_end`, `done`, and `error`. Assemble
 live output by `contentIndex`. `message_end.message` is authoritative.
+
+## Background tasks
+
+A background task is work a tool started that keeps running after the tool
+call returned: a shell command, a monitor, an agent or a workflow. Every
+session keeps a list of them.
+
+```json
+{"type":"task_started","task":{"id":"b3k9x0q2a","kind":"shell","description":"npm test","status":"running","toolUseId":"call_1","outputFile":"/tmp/super-tasks/…/b3k9x0q2a.output","startedAt":1764280000000}}
+{"type":"task_ended","task":{"id":"b3k9x0q2a","kind":"shell","description":"npm test","status":"completed","toolUseId":"call_1","outputFile":"/tmp/super-tasks/…/b3k9x0q2a.output","summary":"…","startedAt":1764280000000,"endedAt":1764280042000}}
+```
+
+A `task` has `id`, `kind` (`shell`, `monitor`, `agent` or `workflow`),
+`description`, `status` (`running`, `completed`, `failed` or `stopped`),
+`startedAt` and, once it ended, `endedAt` (milliseconds since the Unix
+epoch), and, when they are known, `name`, `toolUseId` (the tool call that
+started it), `outputFile` (its full output or transcript), `progress` and
+`summary`.
+
+When a task ends by itself, the session queues a notice for the agent. While
+the agent is idle the notice starts a new run: `agent_start`, the notice's
+`message_start` and `message_end`, the reply, `agent_settled`. While it works
+the notice arrives at its next step, between two tool rounds. The notice is
+a message with `role: "custom"` and `customType: "task_notification"`; its
+`details` carry the `task` and the `outcome` (`status`, `summary` and, when
+there is one, `result` and `usage`). Show it as a notice, not as something
+the user typed. It is part of the session history, so `get_entries` and
+`get_messages` return it too. A task stopped with `stop_task`, with `abort`
+or by the model gets no notice: it ends with `task_ended` and
+`status: "stopped"`.
+
+`abort` cancels the turn. Whether the background tasks stop with it depends
+on the client: one that shows a stop control for each task (`initialize`
+with `taskControls: true`, or `hello.taskControls` on the daemon) keeps them
+running and stops them one by one with `stop_task`; any other client stops
+them all with `abort`, since it has no other way to.
 
 ## Minimal Python subprocess client
 

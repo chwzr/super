@@ -199,6 +199,7 @@ as development-only even on loopback until handshake authentication lands.
 | steer              | `steer`                     | `steer`                     | `steer`                     | `steer`                      |
 | follow up          | `follow_up`                 | `follow_up`                 | `followUp`                  | `follow_up`                  |
 | abort / wait       | `abort` / `wait_idle`       | `abort` / `wait_idle`       | `abort` / `waitIdle`        | `abort`                      |
+| background tasks   | `tasks` / `stop_task`       | `execute`                   | `execute`                   | `get_tasks` / `stop_task`    |
 | state/messages     | `state` / `messages`        | `state` / `messages`        | `state` / `messages`        | `get_state` / `get_messages` |
 | model              | `set_model`                 | `set_model`                 | `setModel`                  | `set_model`                  |
 | thinking           | `set_thinking_level`        | `set_thinking_level`        | `setThinkingLevel`          | `set_thinking_level`         |
@@ -223,6 +224,34 @@ Subscribe before sending a prompt. Important event types are `agent_start`,
 not a repeatedly growing snapshot. A bounded event channel prevents an idle
 consumer from growing memory without limit. `event_lag` says how many events a
 slow subscriber missed.
+
+## Background tasks
+
+A tool can start work that outlives its call: a shell command, a monitor,
+an agent or a workflow. `Session::tasks` lists them and `Session::stop_task`
+stops one by id or by name (RPC `get_tasks` and `stop_task`). When one ends
+by itself, the session announces it to the agent with a notice: an idle
+session starts a run for it, which ends with `agent_settled` as a prompt's
+run does and which `wait_idle` waits for; a busy one reads it at its next
+step. Clients see `task_started`, `task_updated` and `task_ended` events and
+the notice as a `custom` message of type `task_notification`
+([rpc.md](rpc.md#background-tasks)).
+
+`abort` cancels the turn and, unless the embedder said it shows a stop
+control for each task (`Session::set_task_controls(true)`, or the
+`initialize` command with `taskControls: true`), stops the background tasks
+too. `close` always stops them. A command a surface relays on behalf of
+someone else goes through `Session::execute_by` with a `CommandSender`,
+which names the origin and whether that sender has such controls; the
+daemon passes what the client said in `hello`.
+
+In Rust, a tool that runs in the background registers its task with the
+harness session: `agent_session().background_tasks().register(TaskSpec)`
+returns a `TaskHandle`, whose `stop_signal` is cancelled when the task is
+stopped and whose `finish(TaskOutcome)` ends it and queues its notice.
+`AgentSession::queue_entry(message, Priority)` queues anything else that
+reaches the agent from outside a tool call, with the priority `Now`, `Next`
+(the default) or `Later`.
 
 ## Tools and safety
 

@@ -16,6 +16,26 @@
   and `AgentSession::set_system_prompt` read the mode and read or replace the
   system prompt. `super_agent::placeholder` writes the stand-in for prompt
   text that is not written yet.
+- Background tasks: work a tool starts that keeps running after its call,
+  such as a shell command, a monitor, an agent or a workflow. When one ends,
+  the agent is told with a notice that starts a new turn if it is idle and
+  arrives at its next step if it works. The notice is recorded in the
+  session as a notice, not as something the user typed. `/tasks` in the
+  terminal lists the running tasks and stops one; `Esc` and `Ctrl+C` cancel
+  the turn and leave the tasks running. A run with `-p` or `--mode json`
+  waits for its tasks before it exits and stops them on `Ctrl+C` or
+  `SIGTERM`. The daemon keeps a session with running tasks loaded.
+- RPC: `get_tasks` and `stop_task` list and stop background tasks, and the
+  events `task_started`, `task_updated` and `task_ended` report them.
+  `initialize` with `taskControls: true` (on the daemon, `hello` with
+  `taskControls: true`) says that a client shows a stop control for each
+  task, so its `abort` cancels the turn only.
+- Rust SDK: `AgentSession::queue_entry` queues what reaches the agent from
+  outside a tool call with the priority `Now`, `Next` or `Later`;
+  `AgentSession::background_tasks` registers, lists, finds and stops tasks;
+  `super_coding::task_notification` builds a task's notice.
+  `Session::tasks`, `Session::stop_task`, `Session::set_task_controls` and
+  `Session::execute_by` with a `CommandSender` cover the same for embedders.
 
 ### Changed
 
@@ -26,6 +46,10 @@
   entry such as `"-bash"` has to be written as `"-Bash"`. A session saved
   before this change still opens and shows its tool calls under their old
   names. `grep`, `find`, `ls`, `mcp` and `webmcp` keep their names.
+- An `abort` from an RPC client that did not say it shows a stop control for
+  each background task, a remote client through the platform among them,
+  also stops the session's background tasks; so does `session/cancel` from
+  an ACP client.
 
 ## 0.0.42 - 2026-11-27
 

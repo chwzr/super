@@ -127,6 +127,11 @@ the connection closes.
 
 `client` is `tui`, `cli`, `macos`, `ios` or `other`. `name` is what other
 clients see as the origin of your commands and approvals (`by: "Terminal"`).
+`taskControls: true` says that the client shows a stop control for each
+background task: its `abort` then cancels the turn only, and it stops a
+task with `stop_task`. A client that leaves it out also stops the session's
+background tasks with `abort` ([rpc.md](rpc.md#background-tasks)). The
+full-screen terminal says `true`, the line-based front end leaves it out.
 `protocolVersions` is `[min, max]`; the daemon answers with the highest
 version both sides speak. With no overlap the response fails with
 `"this SUPER daemon speaks protocol 3 to 4; this client speaks 2"` and
@@ -193,7 +198,10 @@ null for a stored session.
 - A hosted session with no attached client, in state `idle`, with no command
   or event for `idleUnloadMinutes` is unloaded and reported as `ended`.
   `attach` or `resume_session` loads it again with its full history. A
-  `working` or `blocked` session is never unloaded.
+  `working` or `blocked` session is never unloaded, and neither is one with
+  a running background task, a pending wake-up or a task's notice that waits
+  for a turn. A notice that arrives while the session is idle starts a run
+  in the daemon, which every attached client sees like any other run.
 - While hosting a session the daemon holds `<file>.jsonl.lock` beside it and
   refuses a file another process holds (`session a1b2c3d4 is open in another
   process`). A `super` running the engine in-process (terminal, `-p`,
@@ -240,6 +248,9 @@ session becomes a view of the daemon's:
 - Prompts, steers, follow-ups, esc and ctrl+c (abort, with the queued text
   back in the editor), `/model`, `/thinking`, shift+tab, `/compact` and
   `/name` go to the daemon over the socket, in the order they were made.
+  Esc and ctrl+c cancel the turn only: the session's background tasks keep
+  running in the daemon. `/tasks` lists the running ones, as the daemon
+  reports them, and `x` there stops one (`stop_task`).
   The session's events come back and are rendered by the same code that
   renders an in-process run, so the footer, the context meter and the cost
   follow what the daemon records.

@@ -264,7 +264,12 @@ class Session:
         self._native.follow_up(message)
 
     def abort(self) -> None:
-        """Cancel the current run and any direct shell command."""
+        """Cancel the current run and any direct shell command.
+
+        The background tasks stop too, unless this client sent
+        ``{'type': 'initialize', 'taskControls': True}`` to say that it shows
+        a stop control for each of them.
+        """
         self._native.abort()
 
     async def wait_idle(self) -> None:

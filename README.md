@@ -136,11 +136,17 @@ syntax colors for fenced code.
 Send a new instruction while the agent works. Press `Enter` to steer the
 current task, or `Alt+Enter` to queue the instruction for later.
 
+`Esc` or `Ctrl+C` cancels the current turn. Work the agent started in the
+background keeps running and reports back when it ends, which starts a new
+turn if the agent is idle. `/tasks` lists the running background tasks;
+select one and press `x` to stop it. A run with `-p` waits for its
+background tasks before it prints the answer, and stops them on `Ctrl+C`.
+
 Common commands:
 
 - **Setup:** `/login`, `/model`, `/provider`, `/mcp`, `/settings`, `/hotkeys`.
 - **Sessions:** `/compact`, `/resume`, `/export`, `/cache-usage`.
-- **Automation:** `/loop`, `/autoresearch`, `/jobs`.
+- **Automation:** `/loop`, `/autoresearch`, `/jobs`, `/tasks`.
 - **Support:** `/bug`, `/fast`, `/update`.
 
 Use `/fast` to toggle the low-latency tier for a supported provider. This
