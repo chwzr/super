@@ -8,9 +8,9 @@ use super_ai::{ContentBlock, Message, Model, StreamOptions, ThinkingLevel, UserC
 const TOOL_RESULT_SERIALIZE_CAP: usize = 2000;
 
 /// chars/4 heuristic, matching pi's estimator for messages without usage.
-pub fn estimate_tokens_text(text: &str) -> u64 {
-    (text.len() as u64).div_ceil(4)
-}
+/// It lives in `super_agent::tokens`, where the `Read` limits count with it
+/// too.
+pub use super_agent::tokens::estimate_tokens_text;
 
 pub fn estimate_message_tokens(message: &AgentMessage) -> u64 {
     let text = match message {

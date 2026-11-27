@@ -4,8 +4,10 @@
 pub mod agent_loop;
 pub mod config;
 pub mod events;
+pub mod file_state;
 pub mod message;
 pub mod placeholder;
+pub mod tokens;
 pub mod tool;
 #[cfg(feature = "native-tools")]
 pub mod tools;
@@ -16,8 +18,11 @@ pub use config::{
     AgentContext, AgentLoopConfig, BeforeToolCallResult, StreamFn, TurnInfo, TurnUpdate,
 };
 pub use events::AgentEvent;
+pub use file_state::{FileRead, FileStates};
 pub use message::{
     AgentMessage, BashExecutionMessage, BranchSummaryMessage, CompactionSummaryMessage,
     CustomMessage, convert_to_llm,
 };
-pub use tool::{AgentTool, DynTool, ExecutionMode, ToolResult, ToolUpdateSink};
+pub use tool::{
+    AgentTool, ContextRoomFn, DynTool, ExecutionMode, ToolResult, ToolSession, ToolUpdateSink,
+};

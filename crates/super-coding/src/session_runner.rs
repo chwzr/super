@@ -19,8 +19,8 @@ use futures::future::BoxFuture;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use super_agent::{
-    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, StreamFn,
-    TurnUpdate,
+    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, FileStates,
+    StreamFn, ToolSession, TurnUpdate,
 };
 use super_ai::{Model, Registry, StopReason, ThinkingLevel, Usage};
 use tokio_util::sync::CancellationToken;
@@ -251,6 +251,9 @@ pub struct AgentSession {
     backend: Mutex<Option<Arc<dyn SessionBackend>>>,
     /// This session's background tasks; set once at construction.
     tasks: OnceLock<Arc<BackgroundTasks>>,
+    /// What this session's tools keep per session (what was read of each
+    /// file); set once at construction, and every tool is bound to it.
+    tool_session: OnceLock<ToolSession>,
     /// What the session's process last reported about its tasks, while the
     /// engine runs elsewhere.
     remote_tasks: Mutex<Vec<TaskInfo>>,
@@ -389,6 +392,7 @@ impl AgentSession {
             stream_fn: Mutex::new(None),
             backend: Mutex::new(None),
             tasks: OnceLock::new(),
+            tool_session: OnceLock::new(),
             remote_tasks: Mutex::new(Vec::new()),
             turn_starter: Mutex::new(None),
             activity: tokio::sync::watch::channel(0).0,
@@ -399,6 +403,16 @@ impl AgentSession {
                 .set(BackgroundTasks::new(Arc::downgrade(&session)))
                 .is_ok()
         );
+        let room_of = Arc::downgrade(&session);
+        let tool_session = ToolSession {
+            files: Arc::new(FileStates::new()),
+            context_room: Some(Arc::new(move || {
+                let session = room_of.upgrade()?;
+                let (used, window) = session.context_usage();
+                Some(window.saturating_sub(used))
+            })),
+        };
+        assert!(session.tool_session.set(tool_session).is_ok());
         if subagents_allowed {
             let runtime = SubagentRuntime::new(Arc::downgrade(&session));
             assert!(session.subagents.set(runtime).is_ok());
@@ -687,7 +701,33 @@ impl AgentSession {
         {
             tools.extend(runtime.control_tools());
         }
+        let tools = self.bound_to_session(tools);
         *self.tools.lock().unwrap() = self.offered_in_mode(tools);
+    }
+
+    /// What this session's tools keep per session.
+    fn tool_session(&self) -> &ToolSession {
+        self.tool_session
+            .get()
+            .expect("the tool session is set at construction")
+    }
+
+    /// `tools` bound to this session's own state with
+    /// [`super_agent::AgentTool::for_session`], so a tool list shared with a
+    /// parent or child session keeps each session's reads apart.
+    fn bound_to_session(&self, tools: Vec<DynTool>) -> Vec<DynTool> {
+        let session = self.tool_session();
+        tools
+            .into_iter()
+            .map(|tool| tool.for_session(session).unwrap_or(tool))
+            .collect()
+    }
+
+    /// What this session has read of each file: `Read` records into it,
+    /// `Edit` and `Write` check it. A child agent has its own; a fork starts
+    /// with a copy of its parent's.
+    pub fn file_state(&self) -> Arc<FileStates> {
+        self.tool_session().files.clone()
     }
 
     fn tools_for(&self, mode: PromptMode) -> Vec<DynTool> {
@@ -742,7 +782,8 @@ impl AgentSession {
             runtime.stop_all();
         }
         // Background work and what it queued belong to the conversation
-        // that is left.
+        // that is left, and so does what it read.
+        self.file_state().clear();
         self.background_tasks().reset();
         self.remote_tasks.lock().unwrap().clear();
         for queue in [&self.steering, &self.follow_up] {
@@ -1667,6 +1708,11 @@ impl AgentSession {
             false,
         );
         child.set_stream_fn(self.stream_fn.lock().unwrap().clone());
+        // A fork carries on the parent's conversation and starts from what
+        // the parent read; any other child reads for itself.
+        if fork_turns != ForkTurns::None {
+            child.file_state().copy_from(&self.file_state());
+        }
         Ok(child)
     }
 
@@ -1770,13 +1816,16 @@ impl AgentSession {
         } else {
             format!("Recent session context:\n{transcript}\n\nSide question:\n{question}")
         };
+        // The side question reads with a record of its own: the main
+        // conversation never sees those reads.
+        let side = ToolSession::new();
         let read_tools = self
             .tools
             .lock()
             .unwrap()
             .iter()
             .filter(|tool| tool.name() == "Read")
-            .cloned()
+            .map(|tool| tool.for_session(&side).unwrap_or_else(|| tool.clone()))
             .collect();
         self.run_ephemeral(
             "Answer the side question from the supplied session context. This is a read-only request. Use the Read tool only when a file is needed. Do not propose or perform edits. Give no more than 150 words or 600 characters. Use no more than five bullets. Return only the answer.".into(),
