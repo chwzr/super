@@ -405,6 +405,50 @@ async fn the_sweep_unloads_a_session_nobody_watches() {
 }
 
 #[tokio::test]
+async fn a_model_added_while_a_session_is_hosted_can_be_chosen() {
+    let daemon = Daemon::start(Duration::ZERO, Duration::from_secs(60)).await;
+    let mut a = daemon.client("A").await;
+    let created = a
+        .call(json!({"type": "create_session", "cwd": daemon.work_dir(), "model": "mock/mock-1"}))
+        .await;
+    let id = created["data"]["session"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    a.call(json!({"type": "attach", "sessionId": id})).await;
+
+    // Another process saves a model to the catalog, as a terminal does when
+    // it starts and the platform has one more. The terminal then offers it.
+    let path = daemon._provider.catalog_path();
+    let mut catalog: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    catalog["providers"]["mock"]["models"]
+        .as_array_mut()
+        .unwrap()
+        .push(
+            json!({"id": "mock-2", "name": "Mock 2", "contextWindow": 128000, "maxTokens": 4096}),
+        );
+    std::fs::write(&path, catalog.to_string()).unwrap();
+
+    let model = a
+        .call(json!({"type": "set_model", "provider": "mock", "modelId": "mock-2"}))
+        .await;
+    assert_eq!(model["success"], true, "{model}");
+    assert_eq!(model["data"]["id"], "mock-2");
+    let state = a.call(json!({"type": "get_state"})).await;
+    assert_eq!(state["data"]["model"]["id"], "mock-2", "{state}");
+    let offered = a.call(json!({"type": "get_available_models"})).await;
+    let offered: Vec<&str> = offered["data"]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|model| model["id"].as_str())
+        .collect();
+    assert!(offered.contains(&"mock-2"), "{offered:?}");
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn list_directories_skips_hidden_entries_and_sorts() {
     let daemon = Daemon::start(Duration::ZERO, Duration::from_secs(60)).await;
     let root = daemon.dir.path().join("tree");

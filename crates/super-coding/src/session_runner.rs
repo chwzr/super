@@ -13,7 +13,7 @@ use crate::workflows::{WorkflowApprover, WorkflowRuntime};
 use anyhow::Context as _;
 use futures::future::BoxFuture;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use super_agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, StreamFn,
     TurnUpdate,
@@ -194,7 +194,9 @@ fn normalize_session_title(text: &str) -> Option<String> {
 
 pub struct AgentSession {
     pub manager: Mutex<SessionManager>,
-    pub registry: Arc<Registry>,
+    /// Read with [`AgentSession::registry`]; a host replaces it when the
+    /// catalog changed under a session that keeps running.
+    registry: RwLock<Arc<Registry>>,
     base_tools: Mutex<Vec<DynTool>>,
     session_tools: Mutex<Vec<DynTool>>,
     tools: Mutex<Vec<DynTool>>,
@@ -318,7 +320,7 @@ impl AgentSession {
         let totals = manager.usage_totals();
         let session = Arc::new(AgentSession {
             manager: Mutex::new(manager),
-            registry: registry.into(),
+            registry: RwLock::new(registry.into()),
             base_tools: Mutex::new(tools.clone()),
             session_tools: Mutex::new(Vec::new()),
             tools: Mutex::new(tools),
@@ -357,6 +359,20 @@ impl AgentSession {
         session
     }
 
+    /// The model catalog this session resolves models and credentials with.
+    pub fn registry(&self) -> Arc<Registry> {
+        self.registry.read().unwrap().clone()
+    }
+
+    /// Replace the model catalog. A session outlives changes to it (a
+    /// sign-in, a provider the user adds, models an account gains), and
+    /// whoever hosts the session hands it the catalog as it is now. The
+    /// selected model stays; a subagent that is running keeps the catalog it
+    /// started with.
+    pub fn set_registry(&self, registry: impl Into<Arc<Registry>>) {
+        *self.registry.write().unwrap() = registry.into();
+    }
+
     /// Replace the provider streaming function used by every later request.
     ///
     /// Pass `None` to restore the real provider. Child sessions created after
@@ -392,7 +408,7 @@ impl AgentSession {
             (manager.usage_totals(), manager.build_session_context())
         };
         if let Some((provider, model_id)) = context.model
-            && let Some((model, _)) = self.registry.resolve(&model_id, Some(&provider))
+            && let Some((model, _)) = self.registry().resolve(&model_id, Some(&provider))
         {
             let mut current = self.model.lock().unwrap();
             if current.provider != model.provider || current.id != model.id {
@@ -643,7 +659,7 @@ impl AgentSession {
         let totals = manager.usage_totals();
         let context = manager.build_session_context();
         if let Some((provider, model_id)) = context.model
-            && let Some((model, _)) = self.registry.resolve(&model_id, Some(&provider))
+            && let Some((model, _)) = self.registry().resolve(&model_id, Some(&provider))
         {
             *self.model.lock().unwrap() = model;
         }
@@ -893,8 +909,9 @@ impl AgentSession {
         {
             return Some(super_ai::ResolvedCredential::api_key(key));
         }
-        let credential_provider = self.registry.credential_provider(provider);
-        super_ai::auth::resolve_credential_async(credential_provider, &self.registry.declared_keys)
+        let registry = self.registry();
+        let credential_provider = registry.credential_provider(provider);
+        super_ai::auth::resolve_credential_async(credential_provider, &registry.declared_keys)
             .await
             .ok()
             .flatten()
@@ -911,8 +928,8 @@ impl AgentSession {
         config.session_id = Some(self.manager.lock().unwrap().session_id().to_string());
         let settings = self.settings();
         config.transport = settings.transport;
-        let registry = self.registry.clone();
-        let declared = self.registry.declared_keys.clone();
+        let registry = self.registry();
+        let declared = registry.declared_keys.clone();
         let api_key_override = self.api_key_override.clone();
         config.get_credential = Some(Arc::new(move |provider| {
             let registry = registry.clone();
@@ -1004,7 +1021,7 @@ impl AgentSession {
 
                 let selected = match super_ai::auth::resolve_api_key_async(
                     "typesafe",
-                    &session.registry.declared_keys,
+                    &session.registry().declared_keys,
                 )
                 .await
                 {
@@ -1153,7 +1170,7 @@ impl AgentSession {
         let sink = self.sink.clone();
         config.stream_fn = crate::account_failover::wrap(
             config.stream_fn,
-            self.registry.clone(),
+            self.registry(),
             Arc::new(move |switch| sink(SessionEvent::AccountSwitched(switch))),
         );
         config
@@ -1283,7 +1300,7 @@ impl AgentSession {
     ) -> anyhow::Result<Arc<Self>> {
         let (model, suggested_thinking) = match model_pattern {
             Some(pattern) => self
-                .registry
+                .registry()
                 .resolve(pattern, None)
                 .with_context(|| format!("no model matches subagent model '{pattern}'"))?,
             None => (self.model(), None),
@@ -1327,7 +1344,7 @@ impl AgentSession {
         let child = Self::new_with_subagents_allowed(
             manager,
             self.base_tools.lock().unwrap().clone(),
-            self.registry.clone(),
+            self.registry(),
             settings,
             system_prompt,
             model,
@@ -1840,7 +1857,7 @@ impl AgentSession {
 
         if settings.compaction.mode == CompactionMode::Jev
             && let Ok(Some(api_key)) =
-                super_ai::auth::resolve_api_key_async("typesafe", &self.registry.declared_keys)
+                super_ai::auth::resolve_api_key_async("typesafe", &self.registry().declared_keys)
                     .await
         {
             let cancel = self.cancel.lock().unwrap().clone();
@@ -2971,7 +2988,7 @@ mod ephemeral_tests {
         let child = parent
             .create_subagent_session("inspect", "/root/inspect", ForkTurns::All, None, None)
             .unwrap();
-        assert!(Arc::ptr_eq(&parent.registry, &child.registry));
+        assert!(Arc::ptr_eq(&parent.registry(), &child.registry()));
         assert!(child.available_tool_names().is_empty());
         let context = child.manager.lock().unwrap().build_session_context();
         assert!(matches!(

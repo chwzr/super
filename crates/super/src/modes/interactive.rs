@@ -983,7 +983,7 @@ impl App {
             VoiceMode::Hold => " · voice hold".to_owned(),
             VoiceMode::Tap => " · voice tap".to_owned(),
         };
-        let accounts = account_indicator(session.registry.credential_provider(&model.provider));
+        let accounts = account_indicator(session.registry().credential_provider(&model.provider));
         let remote = self.remote_label();
         let right = format!(
             "({}) {}{thinking}{accounts}{voice}{remote}",
@@ -3060,7 +3060,7 @@ fn command_argument_items(
         "model" => {
             let copilot_models = super_ai::auth::stored_oauth_model_ids("github-copilot");
             session
-                .registry
+                .registry()
                 .all()
                 .iter()
                 .filter(|model| account_allows_model(model, copilot_models.as_deref()))
@@ -4449,7 +4449,8 @@ fn cycle_model(
     enabled_models: &[super_ai::Model],
     direction: isize,
 ) {
-    let available = session.registry.available_models();
+    let registry = session.registry();
+    let available = registry.available_models();
     let source: Vec<&super_ai::Model> = if enabled_models.is_empty() {
         available.iter().map(|(_, model)| *model).collect()
     } else {
@@ -4853,7 +4854,7 @@ fn open_model_picker(
         });
         return;
     }
-    let mut registry = (*session.registry).clone();
+    let mut registry = (*session.registry()).clone();
     let platform_models = app.platform_models.clone();
     let cancel = CancellationToken::new();
     app.command_cancel = Some(cancel.clone());
@@ -4986,7 +4987,7 @@ fn scoped_models_picker(
 ) -> Picker {
     let copilot_models = super_ai::auth::stored_oauth_model_ids("github-copilot");
     let items = session
-        .registry
+        .registry()
         .available_models()
         .into_iter()
         .filter(|(_, model)| account_allows_model(model, copilot_models.as_deref()))
@@ -5305,7 +5306,8 @@ fn open_settings_picker(
 }
 
 fn typesafe_available(session: &super_coding::AgentSession) -> bool {
-    super_ai::auth::resolve_credential_local("typesafe", &session.registry.declared_keys).is_some()
+    super_ai::auth::resolve_credential_local("typesafe", &session.registry().declared_keys)
+        .is_some()
 }
 
 fn next_compaction_mode(
@@ -7034,7 +7036,7 @@ fn apply_picker_selection(
             }
         }
         PickerKind::ScopedModels => {
-            if let Some(model) = session.registry.all().get(value) {
+            if let Some(model) = session.registry().all().get(value) {
                 let enabled = resources.enabled_models.iter().position(|candidate| {
                     candidate.provider == model.provider && candidate.id == model.id
                 });
@@ -8193,7 +8195,7 @@ fn run_slash_command(
                     (!rest.is_empty()).then_some(rest.as_str()),
                     command_tx,
                 );
-            } else if let Some((model, thinking)) = session.registry.resolve(&rest, None) {
+            } else if let Some((model, thinking)) = session.registry().resolve(&rest, None) {
                 let copilot_models = super_ai::auth::stored_oauth_model_ids("github-copilot");
                 if account_allows_model(&model, copilot_models.as_deref()) {
                     session.set_model(model);
@@ -8207,7 +8209,7 @@ fn run_slash_command(
                     )));
                 }
             } else {
-                open_model_picker_with_filter(app, &session.registry, Some(&rest));
+                open_model_picker_with_filter(app, &session.registry(), Some(&rest));
             }
         }
         "thinking" => {
@@ -9048,7 +9050,7 @@ fn reload_interactive(
     resources.enabled_models = if patterns.is_empty() {
         Vec::new()
     } else {
-        session.registry.match_patterns(&patterns)
+        session.registry().match_patterns(&patterns)
     };
     resources.skills = reloaded.skills;
     resources.prompt_templates = reloaded.prompt_templates;
@@ -10021,7 +10023,7 @@ mod tests {
             "/synthetic",
         )));
         let model = session
-            .registry
+            .registry()
             .all()
             .iter()
             .find(|model| model.supports_fast_mode())
@@ -10233,9 +10235,9 @@ mod tests {
             "/synthetic",
         )));
         let mut resources = test_resources();
-        let first = session.registry.all()[0].clone();
+        let first = session.registry().all()[0].clone();
         let selected = session
-            .registry
+            .registry()
             .all()
             .iter()
             .find(|model| model.provider != first.provider || model.id != first.id)

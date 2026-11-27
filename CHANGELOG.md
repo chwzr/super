@@ -12,6 +12,26 @@
   then failed each of them with `HTTP 400`, also after the budget was raised.
   These messages are no longer sent. The Anthropic, Google and Responses
   adapters already left them out.
+- A model added while a session runs can be chosen without restarting the
+  daemon. A session in the daemon kept the model catalog of the moment it was
+  loaded: `/model` in an attached terminal offered a model the platform had
+  added, and choosing it failed with `model not found`. A session now reads
+  `models.json` again when `set_model` names a model it does not know, and
+  for a `super` model the file lacks it asks the platform. The same holds
+  for a session created with such a model, and for a provider added with
+  `super provider add`.
+- `get_available_models` answers with the catalog as it is now: `models.json`
+  is read again, and a signed-in session asks the platform for the account's
+  models first, at most once a minute and for at most five seconds.
+- `super daemon run` hands the `platform.url` setting to token refreshes and
+  model requests, which used the default platform unless
+  `SUPER_PLATFORM_URL` was set.
+
+### Changed
+
+- Rust SDK: `Session::set_model` is `async`, because it can read the catalog
+  and ask the platform. `AgentSession::registry` is a method that returns the
+  current catalog, and `AgentSession::set_registry` replaces it.
 
 ## 0.0.41 - 2026-11-16
 
