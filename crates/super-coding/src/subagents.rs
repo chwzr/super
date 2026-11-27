@@ -477,6 +477,10 @@ impl AgentTool for SpawnAgentTool {
         "spawn_agent"
     }
 
+    fn advanced_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> String {
         "Start a named child coding agent in the background. Fresh context is the default.".into()
     }
@@ -532,6 +536,10 @@ impl AgentTool for SendMessageTool {
         "send_message"
     }
 
+    fn advanced_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> String {
         "Send steering guidance to a queued or running child agent.".into()
     }
@@ -572,6 +580,10 @@ struct FollowupTaskTool(Arc<SubagentRuntime>);
 impl AgentTool for FollowupTaskTool {
     fn name(&self) -> &str {
         "followup_task"
+    }
+
+    fn advanced_only(&self) -> bool {
+        true
     }
 
     fn description(&self) -> String {
@@ -621,6 +633,10 @@ impl AgentTool for WaitAgentTool {
         "wait_agent"
     }
 
+    fn advanced_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> String {
         "Wait for one requested child agent to finish or for a bounded timeout.".into()
     }
@@ -657,6 +673,10 @@ impl AgentTool for ListAgentsTool {
         "list_agents"
     }
 
+    fn advanced_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> String {
         "List child agents in creation order with their current status.".into()
     }
@@ -687,6 +707,10 @@ struct InterruptAgentTool(Arc<SubagentRuntime>);
 impl AgentTool for InterruptAgentTool {
     fn name(&self) -> &str {
         "interrupt_agent"
+    }
+
+    fn advanced_only(&self) -> bool {
+        true
     }
 
     fn description(&self) -> String {

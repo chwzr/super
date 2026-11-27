@@ -7,7 +7,9 @@ use crate::compaction::{
 };
 use crate::iterative::IterativeRuntime;
 use crate::session::manager::SessionManager;
-use crate::settings::{CacheWarmingMode, CompactionMode, QueueMode, ReasoningEffortMode, Settings};
+use crate::settings::{
+    CacheWarmingMode, CompactionMode, Mode, QueueMode, ReasoningEffortMode, Settings,
+};
 use crate::subagents::{ForkTurns, SUBAGENT_SYSTEM_PROMPT, SubagentRuntime, fork_messages};
 use crate::workflows::{WorkflowApprover, WorkflowRuntime};
 use anyhow::Context as _;
@@ -466,6 +468,13 @@ impl AgentSession {
         self.settings.lock().unwrap().clone()
     }
 
+    /// The mode this session runs in, from the `mode` setting. It follows
+    /// [`AgentSession::update_settings`], and everything that differs between
+    /// the basic and the advanced mode asks here.
+    pub fn mode(&self) -> Mode {
+        self.settings.lock().unwrap().mode
+    }
+
     pub fn update_settings(&self, settings: Settings) {
         *self.context_usage_cache.lock().unwrap() = None;
         let was_enabled = self.subagents_enabled();
@@ -484,6 +493,19 @@ impl AgentSession {
             self.stop_workflows();
         }
         self.rebuild_tools();
+    }
+
+    /// The system prompt the next model request starts from, before the
+    /// parts the session adds itself for the tools it offers.
+    pub fn system_prompt(&self) -> String {
+        self.system_prompt.lock().unwrap().clone()
+    }
+
+    /// Replace the system prompt the next model request starts from, for
+    /// example after the mode changed.
+    pub fn set_system_prompt(&self, system_prompt: String) {
+        *self.context_usage_cache.lock().unwrap() = None;
+        *self.system_prompt.lock().unwrap() = system_prompt;
     }
 
     /// Replace resources used by the next model request.
@@ -556,8 +578,11 @@ impl AgentSession {
         }
     }
 
+    /// The basic mode has no child agents, whatever the switch says.
     fn subagents_enabled(&self) -> bool {
-        self.subagents_allowed && self.settings.lock().unwrap().subagents.enabled
+        self.subagents_allowed
+            && self.mode().is_advanced()
+            && self.settings.lock().unwrap().subagents.enabled
     }
 
     /// Dynamic workflows are built on child agents, so they need subagents on
@@ -612,7 +637,7 @@ impl AgentSession {
         {
             tools.extend(runtime.control_tools());
         }
-        *self.tools.lock().unwrap() = tools;
+        *self.tools.lock().unwrap() = self.offered_in_mode(tools);
     }
 
     fn tools_for(&self, mode: PromptMode) -> Vec<DynTool> {
@@ -622,6 +647,16 @@ impl AgentSession {
             && let Some(runtime) = self.workflows.get()
         {
             tools.push(runtime.tool());
+        }
+        self.offered_in_mode(tools)
+    }
+
+    /// The tools of `tools` this session's mode offers: the basic mode leaves
+    /// out every tool that declares itself advanced-only with
+    /// [`super_agent::AgentTool::advanced_only`].
+    fn offered_in_mode(&self, mut tools: Vec<DynTool>) -> Vec<DynTool> {
+        if !self.mode().is_advanced() {
+            tools.retain(|tool| !tool.advanced_only());
         }
         tools
     }
@@ -2859,6 +2894,140 @@ mod ephemeral_tests {
                 .system_prompt
                 .contains("Subagent coordination")
         );
+    }
+
+    #[test]
+    fn the_basic_mode_ignores_the_subagent_and_workflow_switches() {
+        let mut settings = Settings {
+            mode: Mode::Basic,
+            ..Settings::default()
+        };
+        settings.subagents.enabled = true;
+        settings.workflows.enabled = true;
+        let session = settings_test_session(settings, true);
+        assert_eq!(session.mode(), Mode::Basic);
+        assert!(session.available_tool_names().is_empty());
+        assert!(!session.workflows_enabled());
+        assert_eq!(
+            session.prompt_mode_for("run a dynamic workflow for this task"),
+            PromptMode::Ordinary
+        );
+        assert!(
+            session
+                .available_tool_names_for(PromptMode::Workflow)
+                .is_empty()
+        );
+        let prompt = session
+            .build_context_for(PromptMode::Workflow)
+            .system_prompt;
+        assert!(!prompt.contains("Subagent coordination"));
+        assert!(!prompt.contains("Writing a dynamic workflow"));
+
+        // The same switches count again in the advanced mode.
+        let mut advanced = session.settings();
+        advanced.mode = Mode::Advanced;
+        session.update_settings(advanced.clone());
+        assert_eq!(session.mode(), Mode::Advanced);
+        assert!(
+            session
+                .available_tool_names()
+                .contains(&"spawn_agent".into())
+        );
+        assert!(session.workflows_enabled());
+        assert!(
+            session
+                .available_tool_names_for(PromptMode::Workflow)
+                .contains(&"run_workflow".into())
+        );
+
+        advanced.mode = Mode::Basic;
+        session.update_settings(advanced);
+        assert!(session.available_tool_names().is_empty());
+    }
+
+    struct AdvancedOnlyTool;
+
+    #[async_trait::async_trait]
+    impl super_agent::AgentTool for AdvancedOnlyTool {
+        fn name(&self) -> &str {
+            "AdvancedOnly"
+        }
+
+        fn advanced_only(&self) -> bool {
+            true
+        }
+
+        fn description(&self) -> String {
+            String::new()
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(
+            &self,
+            _tool_call_id: &str,
+            _args: serde_json::Value,
+            _cancel: CancellationToken,
+            _on_update: Option<super_agent::ToolUpdateSink>,
+        ) -> anyhow::Result<super_agent::ToolResult> {
+            Ok(super_agent::ToolResult::text("done"))
+        }
+    }
+
+    #[test]
+    fn an_advanced_only_tool_is_left_out_in_the_basic_mode() {
+        let settings = Settings {
+            mode: Mode::Basic,
+            ..Settings::default()
+        };
+        let registry = Registry::from_builtin();
+        let model = registry.all().first().expect("built-in model").clone();
+        let session = AgentSession::new(
+            SessionManager::in_memory(std::path::Path::new("/test")),
+            vec![
+                Arc::new(super_agent::tools::read::ReadTool {
+                    cwd: "/test".into(),
+                }),
+                Arc::new(AdvancedOnlyTool),
+            ],
+            registry,
+            settings,
+            "root prompt".into(),
+            model,
+            ThinkingLevel::Off,
+            None,
+            Arc::new(|_| {}),
+        );
+        let names = |session: &AgentSession| -> Vec<String> {
+            session
+                .build_context()
+                .tools
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect()
+        };
+        assert_eq!(session.available_tool_names(), ["Read"]);
+        assert_eq!(names(&session), ["Read"]);
+        session.remove_session_tool("AdvancedOnly");
+        session.install_session_tool(Arc::new(AdvancedOnlyTool));
+        assert_eq!(names(&session), ["Read"]);
+
+        let mut advanced = session.settings();
+        advanced.mode = Mode::Advanced;
+        session.update_settings(advanced);
+        assert_eq!(session.available_tool_names(), ["Read", "AdvancedOnly"]);
+        assert_eq!(names(&session), ["Read", "AdvancedOnly"]);
+    }
+
+    #[test]
+    fn the_system_prompt_can_be_replaced_for_the_next_request() {
+        let session = settings_test_session(Settings::default(), false);
+        assert_eq!(session.system_prompt(), "root prompt");
+        session.set_system_prompt("new prompt".into());
+        assert_eq!(session.system_prompt(), "new prompt");
+        assert_eq!(session.build_context().system_prompt, "new prompt");
     }
 
     #[test]

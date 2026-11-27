@@ -65,6 +65,13 @@ pub trait AgentTool: Send + Sync {
     fn prepare_arguments(&self, args: Value) -> Value {
         args
     }
+    /// Whether this tool exists in the advanced mode only. A session in the
+    /// basic mode (the `mode` setting) leaves such a tool out of every request,
+    /// wherever it was added. A tool that is new with the advanced mode returns
+    /// `true`; the core tools keep the default and are there in both modes.
+    fn advanced_only(&self) -> bool {
+        false
+    }
     /// Execute. Return Err on failure. The loop converts it into an error
     /// tool result visible to the model.
     async fn execute(

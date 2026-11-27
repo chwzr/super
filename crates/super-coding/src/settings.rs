@@ -78,6 +78,36 @@ impl Default for RetrySettings {
     }
 }
 
+/// Which tools and which system prompt a session gets: the `mode` setting.
+///
+/// Ask a running session with `AgentSession::mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// The core tools and the simple system prompt. The `subagents` and
+    /// `workflows` switches count as off, whatever they say, and a tool that
+    /// is advanced-only (`AgentTool::advanced_only`) is left out.
+    Basic,
+    /// Every tool, and the system prompt of the advanced mode. The `subagents`
+    /// and `workflows` switches decide about the agent tools and the workflow
+    /// tool.
+    #[default]
+    Advanced,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Basic => "basic",
+            Self::Advanced => "advanced",
+        }
+    }
+
+    pub fn is_advanced(self) -> bool {
+        self == Self::Advanced
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SubagentSettings {
@@ -282,6 +312,8 @@ pub struct Settings {
     pub reasoning_effort: ReasoningEffortSettings,
     pub retry: RetrySettings,
     pub cache_warming: CacheWarmingMode,
+    /// Only the user's own settings file decides the mode.
+    pub mode: Mode,
     pub subagents: SubagentSettings,
     pub workflows: WorkflowSettings,
     pub steering_mode: QueueMode,
@@ -363,9 +395,17 @@ fn merged_settings(mut global: Value, project: Option<Value>) -> Settings {
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
+    let mode = global
+        .get("mode")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
     if let Some(mut project) = project {
         if let Some(object) = project.as_object_mut() {
             object.remove("deviceId");
+            // The mode decides whether the user's subagent and workflow
+            // switches count, so it is the user's choice like they are.
+            object.remove("mode");
         }
         if let Some(entries) = project.get("defaultTools").and_then(Value::as_array)
             && entries.iter().all(|entry| {
@@ -391,6 +431,7 @@ fn merged_settings(mut global: Value, project: Option<Value>) -> Settings {
     settings.workflows.enabled = workflows_enabled;
     settings.cache_warming = cache_warming;
     settings.voice_backend = voice_backend;
+    settings.mode = mode;
     settings
 }
 
@@ -531,6 +572,7 @@ mod tests {
         assert_eq!(s.retry.max_retries, 3);
         assert_eq!(s.retry.max_agent_delay_ms, 60_000);
         assert_eq!(s.cache_warming, CacheWarmingMode::Streaming);
+        assert_eq!(s.mode, Mode::Advanced);
         assert!(!s.subagents.enabled);
         assert_eq!(s.steering_mode, QueueMode::OneAtATime);
         assert!(s.auto_recap_enabled());
@@ -644,6 +686,42 @@ mod tests {
             merged.platform.url.as_deref(),
             Some("http://localhost:8080")
         );
+    }
+
+    #[test]
+    fn the_mode_defaults_to_advanced_on_the_wire() {
+        assert_eq!(Settings::default().mode, Mode::Advanced);
+        let value = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(value["mode"], "advanced");
+
+        let loaded: Settings = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(loaded.mode, Mode::Advanced);
+        let loaded: Settings = serde_json::from_value(json!({"mode": "basic"})).unwrap();
+        assert_eq!(loaded.mode, Mode::Basic);
+        assert_eq!(serde_json::to_value(loaded).unwrap()["mode"], "basic");
+        assert_eq!(Mode::Basic.as_str(), "basic");
+        assert_eq!(Mode::Advanced.as_str(), "advanced");
+    }
+
+    #[test]
+    fn project_settings_cannot_change_the_mode() {
+        let basic = merged_settings(
+            json!({"mode": "basic"}),
+            Some(json!({"mode": "advanced", "theme": "light"})),
+        );
+        assert_eq!(basic.mode, Mode::Basic);
+        assert_eq!(basic.theme.as_deref(), Some("light"));
+
+        let advanced = merged_settings(json!({}), Some(json!({"mode": "basic"})));
+        assert_eq!(advanced.mode, Mode::Advanced);
+
+        // A value the project got wrong does not cost the user's settings.
+        let kept = merged_settings(
+            json!({"mode": "basic", "theme": "dark"}),
+            Some(json!({"mode": "expert"})),
+        );
+        assert_eq!(kept.mode, Mode::Basic);
+        assert_eq!(kept.theme.as_deref(), Some("dark"));
     }
 
     #[test]

@@ -37,6 +37,10 @@ impl AgentTool for RunWorkflowTool {
         "run_workflow"
     }
 
+    fn advanced_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> String {
         "Run a dynamic workflow: a script that starts many child agents, collects their answers, \
          and returns one result. Use this instead of working through a large task turn by turn."
