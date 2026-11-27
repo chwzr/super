@@ -1032,6 +1032,33 @@ project can provide its own selection or adjust yours with `+` and `-` entries.
 For a single run, `--tools` selects the tools, `--exclude-tools` removes tools,
 and `--no-tools` disables them all. These options override your saved selection.
 
+### File tools
+
+`Read`, `Edit`, and `Write` work the same way in both modes. Each takes an
+absolute `file_path`; a relative path is refused.
+
+- `Read` returns numbered lines, 2,000 by default. `offset` and `limit` choose
+  the lines. A read of a whole file is refused above 256 KB, and a read
+  returns at most 25,000 tokens, counted at about four bytes a token: a read
+  of a whole file above that returns its first part and says where to go on;
+  a read with `offset` or `limit` above it is refused. `allow_large` raises
+  both limits to 70% of the free room in the context. Images (PNG, JPEG, GIF,
+  WebP) are sent as images; one larger than 2,000 pixels on a side or 5 MB in
+  base64 is scaled down and, if it is still too heavy, saved again as JPEG.
+  Every other file, notebooks and PDFs among them, is read as text.
+- `Edit` replaces `old_string` with `new_string`, one replacement per call;
+  `replace_all` replaces every occurrence. It keeps a file's byte-order mark
+  and Windows line endings.
+- `Write` writes `content` to a file and creates missing folders.
+
+A session remembers what it read. `Edit` and `Write` refuse a file the
+session has not read, and one that changed on disk since it was read, so the
+agent reads it again first; for `Write` over an existing file only a read of
+the whole file counts. The session's own edits keep this record current. A
+new file needs no read. A subagent keeps its own record, a fork starts with a
+copy of its parent's, and a new or resumed conversation starts with an empty
+one.
+
 ## Experimental context file
 
 For long tasks, let the model decide which conversation details to keep.

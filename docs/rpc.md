@@ -144,7 +144,11 @@ Lifecycle: `agent_start`, `agent_end`, `agent_settled`, `turn_start`, `turn_end`
 `message_start`, `message_update`, `message_end`.
 
 Tools: `tool_execution_start`, `tool_execution_update`, `tool_execution_end`,
-and direct-shell `bash_execution_update`.
+and direct-shell `bash_execution_update`. The `args` of `Read`, `Edit` and
+`Write` name the file in `file_path`, an absolute path; `Edit` has
+`old_string`, `new_string` and `replace_all`. Sessions stored before this
+change carry `path` (and `edits` for `edit`) under the old lower-case tool
+names. An `Edit` result keeps its unified diff in `details.diff`.
 
 Session: `queue_update`, `compaction_start`, `compaction_end`, `retry`,
 `model_changed`, `workflow_progress`, `workflow_outcome`, and `event_lag`.

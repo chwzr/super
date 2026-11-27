@@ -381,6 +381,11 @@ running after the terminal closes. In order:
    nothing written yet has no file; the daemon starts one in the same
    directory with the same model instead.
 
+What the session read stays behind: the daemon's copy starts with an empty
+record of reads, so its `Edit` and `Write` ask for a file to be read again
+([README](../README.md#file-tools)). The same holds whenever the daemon loads
+a session from its file.
+
 On screen that is one line, `♦ session a1b2c3d4 now runs in the SUPER daemon
 (pid 4242) and shows up in the apps; this terminal is attached to it`, and the
 same TUI carries on as the attached TUI described above, with the transcript

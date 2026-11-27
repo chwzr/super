@@ -36,6 +36,19 @@
   `super_coding::task_notification` builds a task's notice.
   `Session::tasks`, `Session::stop_task`, `Session::set_task_controls` and
   `Session::execute_by` with a `CommandSender` cover the same for embedders.
+- A session remembers what it read. `Edit` and `Write` refuse a file the
+  session has not read, and one that changed on disk since; for `Write` over
+  an existing file only a read of the whole file counts. A new file needs no
+  read, and the session's own edits keep the record current. A subagent
+  keeps its own record and a fork starts with a copy of its parent's.
+- `Read` makes an image smaller before it sends it: one larger than 2,000
+  pixels on a side or 5 MB in base64 is scaled down and, if still too heavy,
+  saved again as JPEG.
+- `Read` takes `allow_large`, which lets one read fill up to 70% of the free
+  room in the context.
+- Rust SDK: `AgentSession::file_state` returns the session's record of
+  reads, and `AgentTool::for_session` binds a tool to a session's
+  `ToolSession`.
 
 ### Changed
 
@@ -50,6 +63,18 @@
   each background task, a remote client through the platform among them,
   also stops the session's background tasks; so does `session/cancel` from
   an ACP client.
+- `Read`, `Edit` and `Write` take an absolute `file_path` in place of `path`,
+  and a relative path is refused. `Read` numbers its lines and returns 2,000
+  by default; a read of a whole file is refused above 256 KB, and a read
+  returns at most 25,000 tokens: a read of a whole file above that returns
+  its first part, a read with `offset` or `limit` above it is refused.
+  `Edit` makes one replacement per call with `old_string`, `new_string` and
+  `replace_all`; the `edits` array and the `oldText` and `newText` shapes are
+  gone. An empty `old_string` creates a file that does not exist yet.
+- The descriptions of `Read`, `Edit` and `Write` and of their parameters are
+  placeholders until their text is written.
+- Gemini requests leave `exclusiveMinimum` and `exclusiveMaximum` out of tool
+  schemas, which its API does not accept.
 
 ## 0.0.42 - 2026-11-27
 

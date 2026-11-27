@@ -263,6 +263,18 @@ resource loading is off by default in SDK sessions. Explicitly enable
 Rust callers can implement `super_agent::AgentTool` and pass `custom_tools`.
 A tool that returns `true` from `AgentTool::advanced_only` is left out of a
 session in the basic mode; the others are there in both modes.
+
+`Read`, `Edit` and `Write` take an absolute `file_path`. `Edit` takes
+`old_string`, `new_string` and `replace_all`; the `edits` array and the
+`path`, `oldText` and `newText` names of earlier versions are refused. A
+session keeps a record of what each read returned, and `Edit` and `Write`
+refuse a file that was not read or that changed on disk since
+([README](../README.md#file-tools)). `AgentSession::file_state` returns that
+record (`super_agent::FileStates`). A session hands every tool its own
+`super_agent::ToolSession`, the record and the free room of its context,
+through `AgentTool::for_session`; a custom tool that keeps state per session
+returns a copy of itself bound to it, and the default `None` uses the tool as
+it is. A tool built outside a session gets a `ToolSession` of its own.
 Cross-language custom callback tools are intentionally not supported yet: a
 callback during an agent tool batch needs cancellation, streaming updates, and
 safe runtime re-entry semantics, and pretending a plain synchronous callback
