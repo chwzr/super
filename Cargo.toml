@@ -65,6 +65,7 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 http = "1"
 ignore = "0.4"
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 jsonschema = { version = "0.33", default-features = false }
 super-agent = { path = "crates/super-agent", version = "0.0.42" }
 super-ai = { package = "super-agent-ai", path = "crates/super-ai", version = "0.0.42", default-features = false }

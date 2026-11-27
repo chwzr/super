@@ -1,6 +1,7 @@
 //! Read tool: the numbered lines of a text file within a line, size and
-//! token limit, and images as attachments. Every read is recorded in the
-//! session's file record, which Edit and Write consult.
+//! token limit, and images as attachments, made smaller when they are too
+//! large. Every read is recorded in the session's file record, which Edit
+//! and Write consult.
 //!
 //! Limits:
 //! - a read returns [`DEFAULT_LINES`] lines unless it sets `limit`;
@@ -20,6 +21,7 @@ use crate::tokens::{BYTES_PER_TOKEN, estimate_tokens_text};
 use crate::tool::{AgentTool, DynTool, ToolResult, ToolSession, ToolUpdateSink};
 use crate::tools::arguments;
 use crate::tools::files::{fingerprint, record_of, streaming_fingerprint};
+use crate::tools::image::{ImageFitError, MAX_IMAGE_SIDE, fit_image};
 use crate::tools::mutation_queue::lock_path;
 use crate::tools::path::{absolute, file_key};
 use crate::tools::truncate::format_size;
@@ -427,19 +429,44 @@ impl AgentTool for ReadTool {
             file.read_to_end(&mut bytes)
                 .await
                 .map_err(|error| not_readable(&path, error))?;
+            let print = fingerprint(&bytes);
+            let fitted = tokio::task::spawn_blocking(move || fit_image(bytes, mime_type))
+                .await
+                .map_err(|error| anyhow::anyhow!("Could not read {}: {error}.", path.display()))?
+                .map_err(|error| match error {
+                    ImageFitError::Decode(reason) => anyhow::anyhow!(
+                        "The image {} is larger than {MAX_IMAGE_SIDE} pixels on a side or 5 MB and could not be decoded to make it smaller: {reason}.",
+                        path.display()
+                    ),
+                    ImageFitError::TooLarge { width, height } => anyhow::anyhow!(
+                        "The image {} is still larger than 5 MB after it was scaled to {width}x{height} and saved as JPEG; make it smaller before reading it.",
+                        path.display()
+                    ),
+                })?;
             self.session
                 .files
-                .record(key, record_of(&meta, true, Some(fingerprint(&bytes))));
-            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                .record(key, record_of(&meta, true, Some(print)));
+            let data = base64::engine::general_purpose::STANDARD.encode(&fitted.data);
+            let size = |size: Option<(u32, u32)>| {
+                size.map(|(width, height)| json!({"width": width, "height": height}))
+            };
             return Ok(ToolResult {
                 content: vec![
-                    ContentBlock::text(format!("Read image file [{mime_type}]")),
+                    ContentBlock::text(format!("Read image file [{}]", fitted.mime_type)),
                     ContentBlock::Image {
                         data,
-                        mime_type: mime_type.to_string(),
+                        mime_type: fitted.mime_type.to_string(),
                     },
                 ],
-                details: json!({"wholeFile": true}),
+                details: json!({
+                    "wholeFile": true,
+                    "image": {
+                        "mimeType": fitted.mime_type,
+                        "original": size(fitted.original),
+                        "sent": size(fitted.size),
+                        "resized": fitted.changed,
+                    },
+                }),
                 ..Default::default()
             });
         }
@@ -794,6 +821,34 @@ mod tests {
             matches!(&r.content[1], ContentBlock::Image { mime_type, .. } if mime_type == "image/png")
         );
         assert!(record(&t, &path).await.unwrap().whole);
+    }
+
+    #[tokio::test]
+    async fn a_large_image_is_scaled_before_it_is_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = file(
+            dir.path(),
+            "wide.png",
+            crate::tools::image::tests::png(2400, 600),
+        );
+        let r = read(&tool(dir.path()), json!({"file_path": path}))
+            .await
+            .unwrap();
+        let ContentBlock::Image { data, mime_type } = &r.content[1] else {
+            panic!("an image block");
+        };
+        assert_eq!(mime_type, "image/png");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap();
+        let size = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .unwrap();
+        assert_eq!(size, (2000, 500));
+        assert_eq!(r.details["image"]["resized"], true);
+        assert_eq!(r.details["image"]["original"]["width"], 2400);
     }
 
     #[tokio::test]

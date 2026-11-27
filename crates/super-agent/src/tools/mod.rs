@@ -2,6 +2,7 @@ pub mod arguments;
 pub mod bash;
 pub mod edit;
 pub mod files;
+pub mod image;
 pub mod mutation_queue;
 pub mod path;
 pub mod read;
