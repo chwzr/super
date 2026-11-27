@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- The four core tools are named `Read`, `Write`, `Edit` and `Bash`. The
+  model sees these names, and `defaultTools`, `--tools`, `--exclude-tools`
+  and the SDKs' tool lists take them. The lower-case names `read`, `write`,
+  `edit` and `bash` are no longer recognized, so a saved `defaultTools`
+  entry such as `"-bash"` has to be written as `"-Bash"`. A session saved
+  before this change still opens and shows its tool calls under their old
+  names. `grep`, `find`, `ls`, `mcp` and `webmcp` keep their names.
+
 ## 0.0.42 - 2026-11-27
 
 ### Fixed

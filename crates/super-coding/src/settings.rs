@@ -481,17 +481,17 @@ mod tests {
 
     #[test]
     fn project_tool_modifiers_preserve_user_selection() {
-        let user = json!({"defaultTools":["read", "+grep"]});
+        let user = json!({"defaultTools":["Read", "+grep"]});
         let settings =
-            merged_settings(user.clone(), Some(json!({"defaultTools":["-read", "+ls"]})));
+            merged_settings(user.clone(), Some(json!({"defaultTools":["-Read", "+ls"]})));
         assert_eq!(
             settings.default_tools.unwrap(),
-            ["read", "+grep", "-read", "+ls"]
+            ["Read", "+grep", "-Read", "+ls"]
         );
-        let settings = merged_settings(user.clone(), Some(json!({"defaultTools":["bash"]})));
-        assert_eq!(settings.default_tools.unwrap(), ["bash"]);
+        let settings = merged_settings(user.clone(), Some(json!({"defaultTools":["Bash"]})));
+        assert_eq!(settings.default_tools.unwrap(), ["Bash"]);
         let settings = merged_settings(user, Some(json!({"defaultTools":[]})));
-        assert_eq!(settings.default_tools.unwrap(), ["read", "+grep"]);
+        assert_eq!(settings.default_tools.unwrap(), ["Read", "+grep"]);
         let settings = merged_settings(
             json!({"deviceId":"user-id"}),
             Some(json!({"deviceId":"project-id"})),

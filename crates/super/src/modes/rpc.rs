@@ -186,15 +186,15 @@ mod tests {
             "--mode",
             "rpc",
             "--tools",
-            "read,bash",
+            "Read,Bash",
             "--exclude-tools",
-            "bash",
+            "Bash",
         ]);
         let options = options_from_args(&args).expect("options");
         assert_eq!(
             options.tools.as_deref(),
-            Some(&["read".to_string(), "bash".to_string()][..])
+            Some(&["Read".to_string(), "Bash".to_string()][..])
         );
-        assert_eq!(options.exclude_tools, ["bash"]);
+        assert_eq!(options.exclude_tools, ["Bash"]);
     }
 }

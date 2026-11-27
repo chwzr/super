@@ -473,7 +473,7 @@ mod tests {
         assert!(!directory.path().join(".mcp.json").exists());
         for defaults in [
             vec![],
-            vec!["read".into()],
+            vec!["Read".into()],
             vec!["-mcp".into()],
             vec!["+mcp".into()],
         ] {

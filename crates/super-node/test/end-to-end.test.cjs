@@ -13,7 +13,7 @@ async function fixture(script) {
     model: "mock/mock-1",
     modelsFile: provider.catalogPath,
     thinkingLevel: "off",
-    tools: ["read", "write", "edit", "bash"],
+    tools: ["Read", "Write", "Edit", "Bash"],
     noContextFiles: true,
   })
   return { directory, provider, session }
@@ -25,7 +25,7 @@ test("a prompt streams and writes a real file", async () => {
       {
         toolCall: {
           id: "call_1",
-          name: "write",
+          name: "Write",
           arguments: {
             path: "hello.txt",
             content: "hello from node\n",
@@ -47,7 +47,7 @@ test("a prompt streams and writes a real file", async () => {
   await collector
   assert.equal(await readFile(join(directory, "hello.txt"), "utf8"), "hello from node\n")
   assert.ok(
-    seen.some((event) => event.type === "tool_execution_start" && event.toolName === "write"),
+    seen.some((event) => event.type === "tool_execution_start" && event.toolName === "Write"),
   )
   assert.ok(seen.some((event) => event.type === "tool_execution_end" && event.isError === false))
   const text = seen
@@ -72,9 +72,9 @@ test("state, models, tools, and ping use typed helpers", async () => {
   const state = await session.state()
   assert.equal(state.model.provider, "mock")
   assert.equal(state.thinkingLevel, "off")
-  assert.deepEqual(state.tools, ["read", "write", "edit", "bash"])
+  assert.deepEqual(state.tools, ["Read", "Write", "Edit", "Bash"])
   assert.equal(await session.ping(), true)
-  assert.deepEqual(await session.tools(), ["read", "write", "edit", "bash"])
+  assert.deepEqual(await session.tools(), ["Read", "Write", "Edit", "Bash"])
   assert.deepEqual(
     (await session.availableModels("mock")).map((model) => model.id),
     ["mock-1"],

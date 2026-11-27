@@ -16,10 +16,10 @@ pub struct SystemPromptOptions<'a> {
 
 fn tool_snippet(name: &str) -> Option<&'static str> {
     Some(match name {
-        "read" => "Read file contents (text and images)",
-        "bash" => "Execute shell commands",
-        "edit" => "Make targeted text replacements in files",
-        "write" => "Create or overwrite files",
+        "Read" => "Read file contents (text and images)",
+        "Bash" => "Execute shell commands",
+        "Edit" => "Make targeted text replacements in files",
+        "Write" => "Create or overwrite files",
         "grep" => "Search file contents for patterns (respects .gitignore)",
         "find" => "Find files by glob pattern (respects .gitignore)",
         "ls" => "List directory contents",
@@ -55,7 +55,7 @@ pub fn build_system_prompt(options: &SystemPromptOptions) -> String {
     let file_read_tool = options
         .selected_tools
         .iter()
-        .find(|tool| matches!(tool.as_str(), "read" | "bash"));
+        .find(|tool| matches!(tool.as_str(), "Read" | "Bash"));
     if let Some(tool) = file_read_tool
         && !options.skills.is_empty()
     {
@@ -85,8 +85,8 @@ fn default_prompt(options: &SystemPromptOptions) -> String {
 
     let mut guidelines: Vec<&str> = Vec::new();
     let has = |t: &str| options.selected_tools.iter().any(|x| x == t);
-    if has("bash") && !has("grep") && !has("find") && !has("ls") {
-        guidelines.push("Use bash for file operations like ls, rg, find");
+    if has("Bash") && !has("grep") && !has("find") && !has("ls") {
+        guidelines.push("Use Bash for file operations like ls, rg, find");
     }
     guidelines.push("Be concise in your responses");
     guidelines.push("Show file paths clearly when working with files");
@@ -118,17 +118,17 @@ mod tests {
 
     #[test]
     fn default_prompt_lists_tools_and_cwd() {
-        let tools = vec!["read".to_string(), "bash".to_string()];
+        let tools = vec!["Read".to_string(), "Bash".to_string()];
         let p = build_system_prompt(&base_options(&tools));
-        assert!(p.contains("- read:"));
-        assert!(p.contains("- bash:"));
-        assert!(p.contains("Use bash for file operations"));
+        assert!(p.contains("- Read:"));
+        assert!(p.contains("- Bash:"));
+        assert!(p.contains("Use Bash for file operations"));
         assert!(p.ends_with("Current working directory: /work"));
     }
 
     #[test]
     fn skills_are_available_with_bash_as_the_only_reader() {
-        let tools = vec!["bash".to_string()];
+        let tools = vec!["Bash".to_string()];
         let skill = Skill {
             name: "example".into(),
             description: "Example skill".into(),
@@ -139,16 +139,16 @@ mod tests {
         options.skills = std::slice::from_ref(&skill);
         let prompt = build_system_prompt(&options);
         assert!(prompt.contains("<name>example</name>"));
-        assert!(prompt.contains("Use bash to load a skill's file"));
+        assert!(prompt.contains("Use Bash to load a skill's file"));
 
-        let no_reader = vec!["edit".to_string()];
+        let no_reader = vec!["Edit".to_string()];
         options.selected_tools = &no_reader;
         assert!(!build_system_prompt(&options).contains("<available_skills>"));
     }
 
     #[test]
     fn custom_prompt_keeps_appends() {
-        let tools = vec!["read".to_string()];
+        let tools = vec!["Read".to_string()];
         let mut o = base_options(&tools);
         o.custom_prompt = Some("You are a poet.");
         o.append = Some("Rhyme everything.");
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn context_files_wrapped() {
-        let tools = vec!["read".to_string()];
+        let tools = vec!["Read".to_string()];
         let files = vec![ContextFile {
             path: "/p/AGENTS.md".into(),
             content: "be nice".into(),

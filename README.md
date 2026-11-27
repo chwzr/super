@@ -37,7 +37,7 @@ SUPER is built in Rust and based on incredible work from
 - **Private by design.** The SUPER harness runs locally and collects no
   telemetry.
 
-SUPER uses four focused tools by default: `read`, `write`, `edit`, and `bash`.
+SUPER uses four focused tools by default: `Read`, `Write`, `Edit`, and `Bash`.
 Super Neo Citrus Dark is the default dark theme.
 
 ## Install
@@ -618,7 +618,7 @@ cargo add super-agent-sdk
 ```
 
 ```rust
-let session = super_sdk::Session::builder().tools(["read", "bash"]).build().await?;
+let session = super_sdk::Session::builder().tools(["Read", "Bash"]).build().await?;
 session.prompt("What files are here?").await?;
 ```
 
@@ -656,7 +656,7 @@ bun add @chwzr/super-agent-sdk
 ```typescript
 import { Session } from "@chwzr/super-agent-sdk"
 
-const session = await Session.create({ tools: ["read", "bash"] })
+const session = await Session.create({ tools: ["Read", "Bash"] })
 await session.prompt("What files are here?")
 const stats = await session.sessionStats()
 console.log(stats.tokens.cacheRead, stats.tokens.cacheWrite, stats.tokens.cacheWrite1h)
@@ -992,11 +992,15 @@ used.
 ### Tool selection
 
 Choose which tools are available when a session starts with `defaultTools` in
-your settings. For example, `["read", "bash"]` starts sessions with only those
+your settings. For example, `["Read", "Bash"]` starts sessions with only those
 two tools.
 
+Tool names are case-sensitive. `Read`, `Write`, `Edit`, and `Bash` start with a
+capital letter, and their lower-case names from earlier versions are no longer
+recognized.
+
 To adjust the default selection, use `+` to add a tool and `-` to remove one.
-For example, `["+grep", "-write"]` adds search and removes the write tool. Add
+For example, `["+grep", "-Write"]` adds search and removes the Write tool. Add
 `"+mcp"` to keep access to your configured MCP servers.
 
 Save this selection in your user settings to use it across projects. A trusted

@@ -803,7 +803,7 @@ mod tests {
         let mut tool_message = AssistantMessage::empty("fake", "fake", "fake");
         tool_message.content.push(ContentBlock::ToolCall(ToolCall {
             id: "call".into(),
-            name: "read".into(),
+            name: "Read".into(),
             arguments: json!({}),
             thought_signature: None,
         }));

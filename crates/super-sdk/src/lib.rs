@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! let session = super_sdk::Session::builder()
-//!     .tools(["read", "bash"])
+//!     .tools(["Read", "Bash"])
 //!     .build()
 //!     .await?;
 //!

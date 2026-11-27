@@ -11,10 +11,10 @@ use super_coding::settings::Settings;
 use super_mcp::McpManager;
 
 /// Tools enabled when the caller does not choose.
-pub const DEFAULT_TOOLS: &[&str] = &["read", "write", "edit", "bash"];
+pub const DEFAULT_TOOLS: &[&str] = &["Read", "Write", "Edit", "Bash"];
 
 /// Every built-in tool name the agent recognizes.
-pub const ALL_TOOLS: &[&str] = &["read", "write", "edit", "bash", "grep", "find", "ls", "mcp"];
+pub const ALL_TOOLS: &[&str] = &["Read", "Write", "Edit", "Bash", "grep", "find", "ls", "mcp"];
 
 /// Resolve a requested tool list into concrete tools.
 ///
@@ -29,10 +29,10 @@ pub fn build_tools(
     let mut tools: Vec<DynTool> = Vec::new();
     for name in names {
         let tool: Option<DynTool> = match name.as_str() {
-            "read" => Some(Arc::new(super_agent::tools::read::ReadTool {
+            "Read" => Some(Arc::new(super_agent::tools::read::ReadTool {
                 cwd: cwd.to_path_buf(),
             })),
-            "bash" => {
+            "Bash" => {
                 let mut bash = super_agent::tools::bash::BashTool::new(cwd.to_path_buf());
                 if let Some(path) = settings
                     .shell_path
@@ -44,10 +44,10 @@ pub fn build_tools(
                 bash.command_prefix = settings.shell_command_prefix.clone();
                 Some(Arc::new(bash))
             }
-            "edit" => Some(Arc::new(super_agent::tools::edit::EditTool {
+            "Edit" => Some(Arc::new(super_agent::tools::edit::EditTool {
                 cwd: cwd.to_path_buf(),
             })),
-            "write" => Some(Arc::new(super_agent::tools::write::WriteTool {
+            "Write" => Some(Arc::new(super_agent::tools::write::WriteTool {
                 cwd: cwd.to_path_buf(),
             })),
             "grep" => Some(Arc::new(super_coding::tools::grep::GrepTool {
@@ -124,38 +124,56 @@ mod tests {
 
     #[test]
     fn exclusions_apply_after_the_allowlist() {
-        let allow = ["read".to_string(), "grep".to_string(), "bash".to_string()];
-        let exclude = ["bash".to_string()];
+        let allow = ["Read".to_string(), "grep".to_string(), "Bash".to_string()];
+        let exclude = ["Bash".to_string()];
         assert_eq!(
             select_tool_names(Some(&allow), &exclude, false, None),
-            ["read", "grep"]
+            ["Read", "grep"]
         );
     }
 
     #[test]
     fn unknown_names_are_dropped() {
-        let allow = ["read".to_string(), "teleport".to_string()];
-        assert_eq!(select_tool_names(Some(&allow), &[], false, None), ["read"]);
+        let allow = ["Read".to_string(), "teleport".to_string()];
+        assert_eq!(select_tool_names(Some(&allow), &[], false, None), ["Read"]);
+    }
+
+    #[test]
+    fn the_four_core_tools_have_no_lower_case_names() {
+        let allow = ["read", "write", "edit", "bash"].map(str::to_string);
+        assert!(select_tool_names(Some(&allow), &[], false, None).is_empty());
+        let defaults = ["-bash", "+read"].map(str::to_string);
+        assert_eq!(
+            select_tool_names(None, &[], false, Some(&defaults)),
+            DEFAULT_TOOLS
+        );
+        let exclude = ["bash".to_string()];
+        assert_eq!(
+            select_tool_names(None, &exclude, false, None),
+            DEFAULT_TOOLS
+        );
+        let built = build_tools(&allow, Path::new("/work"), &Settings::default(), None);
+        assert!(built.is_empty());
     }
 
     #[test]
     fn no_tools_wins() {
-        let allow = ["read".to_string()];
+        let allow = ["Read".to_string()];
         assert!(select_tool_names(Some(&allow), &[], true, None).is_empty());
     }
 
     #[test]
     fn configured_defaults_and_cli_selection_have_ordered_precedence() {
-        let defaults = ["-bash", "+grep", "+grep", "+bash", "-write"].map(str::to_string);
+        let defaults = ["-Bash", "+grep", "+grep", "+Bash", "-Write"].map(str::to_string);
         assert_eq!(
             select_tool_names(None, &[], false, Some(&defaults)),
-            ["read", "edit", "grep", "bash"]
+            ["Read", "Edit", "grep", "Bash"]
         );
-        let defaults = ["read", "+grep"].map(str::to_string);
+        let defaults = ["Read", "+grep"].map(str::to_string);
         let exclude = ["grep".to_string()];
         assert_eq!(
             select_tool_names(None, &exclude, false, Some(&defaults)),
-            ["read"]
+            ["Read"]
         );
         let allow = ["ls".to_string()];
         assert_eq!(

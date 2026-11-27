@@ -1,4 +1,4 @@
-//! Per-path async mutex so concurrent edit/write calls against the same
+//! Per-path async mutex so concurrent Edit/Write calls against the same
 //! file serialize instead of interleaving.
 
 use std::collections::HashMap;

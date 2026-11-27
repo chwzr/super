@@ -20,7 +20,7 @@ use super_sdk::Session;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let session = Session::builder().tools(["read", "bash"]).build().await?;
+    let session = Session::builder().tools(["Read", "Bash"]).build().await?;
     let mut events = session.events();
     let printer = tokio::spawn(async move {
         while let Some(event) = events.recv().await {
@@ -94,7 +94,7 @@ bun add @chwzr/super-agent-sdk
 ```ts
 import { Session } from "@chwzr/super-agent-sdk"
 
-const session = await Session.create({ tools: ["read", "bash"] })
+const session = await Session.create({ tools: ["Read", "Bash"] })
 const events = session.events()
 session.promptDetached("What files are here?")
 for await (const event of events) {
@@ -224,7 +224,7 @@ slow subscriber missed.
 
 ## Tools and safety
 
-Defaults are `read`, `write`, `edit`, and `bash`. Optional built-ins are `grep`,
+Defaults are `Read`, `Write`, `Edit`, and `Bash`. Optional built-ins are `grep`,
 `find`, `ls`, and `mcp`. Set a read-only allowlist for untrusted prompts. Project
 resource loading is off by default in SDK sessions. Explicitly enable
 `trust_project_files` only for a trusted directory.

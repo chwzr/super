@@ -193,7 +193,7 @@ async fn a_tool_call_reaches_the_client_and_the_filesystem() {
         turns: vec![
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
-                name: "write".into(),
+                name: "Write".into(),
                 arguments: json!({"path": "note.txt", "content": "written over rpc\n"}),
             }],
             vec![MockTurn::Text("Wrote it.".into())],
@@ -213,7 +213,7 @@ async fn a_tool_call_reaches_the_client_and_the_filesystem() {
         .iter()
         .find(|value| value["type"] == "tool_execution_start")
         .expect("tool_execution_start");
-    assert_eq!(start["toolName"], "write");
+    assert_eq!(start["toolName"], "Write");
     let end = lines
         .iter()
         .find(|value| value["type"] == "tool_execution_end")

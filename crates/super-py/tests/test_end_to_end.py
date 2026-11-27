@@ -18,7 +18,7 @@ async def make_session(
         model='mock/mock-1',
         models_file=provider.catalog_path,
         thinking_level=super_sdk.ThinkingLevel.OFF,
-        tools=['read', 'write', 'edit', 'bash'],
+        tools=['Read', 'Write', 'Edit', 'Bash'],
         no_context_files=True,
     )
     return provider, session
@@ -33,7 +33,7 @@ async def test_prompt_streams_and_writes_a_real_file(tmp_path: Path) -> None:
                 {
                     'toolCall': {
                         'id': 'call_1',
-                        'name': 'write',
+                        'name': 'Write',
                         'arguments': {
                             'path': 'hello.txt',
                             'content': 'hello from python\n',
@@ -59,7 +59,7 @@ async def test_prompt_streams_and_writes_a_real_file(tmp_path: Path) -> None:
 
     assert (tmp_path / 'hello.txt').read_text() == 'hello from python\n'
     assert any(
-        e.type == 'tool_execution_start' and e['toolName'] == 'write' for e in seen
+        e.type == 'tool_execution_start' and e['toolName'] == 'Write' for e in seen
     )
     assert any(e.type == 'tool_execution_end' and e['isError'] is False for e in seen)
     streamed = ''.join(
@@ -85,9 +85,9 @@ async def test_state_models_tools_and_ping_are_typed(tmp_path: Path) -> None:
     assert state.model is not None
     assert state.model['provider'] == 'mock'
     assert state.thinking_level == 'off'
-    assert state.tools == ['read', 'write', 'edit', 'bash']
+    assert state.tools == ['Read', 'Write', 'Edit', 'Bash']
     assert await session.ping() is True
-    assert await session.tools() == ['read', 'write', 'edit', 'bash']
+    assert await session.tools() == ['Read', 'Write', 'Edit', 'Bash']
     models = await session.available_models('mock')
     assert [model['id'] for model in models] == ['mock-1']
     assert await session.available_thinking_levels() == ['off']

@@ -924,53 +924,57 @@ mod tests {
 
     #[test]
     fn the_transcript_shows_tool_calls_with_their_results() {
-        let session = test_session();
-        {
-            let mut manager = session.manager.lock().unwrap();
-            manager
-                .append_message(AgentMessage::user("list it"))
-                .unwrap();
-            let mut assistant = super_ai::AssistantMessage::empty("api", "mock", "mock-1");
-            assistant.content = vec![
-                ContentBlock::text("Looking."),
-                ContentBlock::ToolCall(super_ai::ToolCall {
-                    id: "call_1".into(),
-                    name: "bash".into(),
-                    arguments: serde_json::json!({"command": "ls"}),
-                    thought_signature: None,
-                }),
-            ];
-            manager
-                .append_message(AgentMessage::Assistant(assistant))
-                .unwrap();
-            manager
-                .append_message(AgentMessage::ToolResult(super_ai::ToolResultMessage {
-                    tool_call_id: "call_1".into(),
-                    tool_name: "bash".into(),
-                    content: vec![ContentBlock::text("a.rs")],
-                    details: None,
-                    usage: None,
-                    is_error: false,
-                    timestamp: 0,
-                }))
-                .unwrap();
-        }
-        let cells = transcript_cells(&session);
-        assert!(matches!(&cells[0], Cell::User(text) if text == "list it"));
-        assert!(matches!(&cells[1], Cell::AssistantFinal(text) if text == "Looking."));
-        match &cells[2] {
-            Cell::ToolCall {
-                title,
-                output,
-                done,
-                is_error,
-            } => {
-                assert_eq!(title, "bash ls");
-                assert_eq!(output, "a.rs");
-                assert!(*done && !*is_error);
+        // A session stored before the tools were renamed names the call `bash`;
+        // it still opens and shows.
+        for name in ["Bash", "bash"] {
+            let session = test_session();
+            {
+                let mut manager = session.manager.lock().unwrap();
+                manager
+                    .append_message(AgentMessage::user("list it"))
+                    .unwrap();
+                let mut assistant = super_ai::AssistantMessage::empty("api", "mock", "mock-1");
+                assistant.content = vec![
+                    ContentBlock::text("Looking."),
+                    ContentBlock::ToolCall(super_ai::ToolCall {
+                        id: "call_1".into(),
+                        name: name.into(),
+                        arguments: serde_json::json!({"command": "ls"}),
+                        thought_signature: None,
+                    }),
+                ];
+                manager
+                    .append_message(AgentMessage::Assistant(assistant))
+                    .unwrap();
+                manager
+                    .append_message(AgentMessage::ToolResult(super_ai::ToolResultMessage {
+                        tool_call_id: "call_1".into(),
+                        tool_name: name.into(),
+                        content: vec![ContentBlock::text("a.rs")],
+                        details: None,
+                        usage: None,
+                        is_error: false,
+                        timestamp: 0,
+                    }))
+                    .unwrap();
             }
-            _ => panic!("a tool call"),
+            let cells = transcript_cells(&session);
+            assert!(matches!(&cells[0], Cell::User(text) if text == "list it"));
+            assert!(matches!(&cells[1], Cell::AssistantFinal(text) if text == "Looking."));
+            match &cells[2] {
+                Cell::ToolCall {
+                    title,
+                    output,
+                    done,
+                    is_error,
+                } => {
+                    assert_eq!(title, &format!("{name} ls"));
+                    assert_eq!(output, "a.rs");
+                    assert!(*done && !*is_error);
+                }
+                _ => panic!("a tool call"),
+            }
+            assert_eq!(cells.len(), 3);
         }
-        assert_eq!(cells.len(), 3);
     }
 }

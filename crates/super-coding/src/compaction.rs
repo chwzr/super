@@ -154,8 +154,8 @@ pub fn extract_file_ops(messages: &[AgentMessage]) -> (Vec<String>, Vec<String>)
                 continue;
             };
             match tc.name.as_str() {
-                "read" => read.push(path.to_string()),
-                "edit" | "write" => modified.push(path.to_string()),
+                "Read" => read.push(path.to_string()),
+                "Edit" | "Write" => modified.push(path.to_string()),
                 _ => {}
             }
         }
@@ -375,7 +375,7 @@ mod tests {
     fn tool_result(text: &str) -> AgentMessage {
         AgentMessage::ToolResult(ToolResultMessage {
             tool_call_id: "c".into(),
-            tool_name: "bash".into(),
+            tool_name: "Bash".into(),
             content: vec![ContentBlock::text(text)],
             details: None,
             usage: None,
@@ -450,13 +450,13 @@ mod tests {
         let mut a = AssistantMessage::empty("f", "f", "f");
         a.content.push(ContentBlock::ToolCall(ToolCall {
             id: "1".into(),
-            name: "read".into(),
+            name: "Read".into(),
             arguments: json!({"path": "src/a.rs"}),
             thought_signature: None,
         }));
         a.content.push(ContentBlock::ToolCall(ToolCall {
             id: "2".into(),
-            name: "edit".into(),
+            name: "Edit".into(),
             arguments: json!({"path": "src/b.rs"}),
             thought_signature: None,
         }));
@@ -495,7 +495,7 @@ mod tests {
         message.stop_reason = StopReason::ToolUse;
         message.content.push(ContentBlock::ToolCall(ToolCall {
             id: "call-1".into(),
-            name: "read".into(),
+            name: "Read".into(),
             arguments: json!({"path": "src/lib.rs"}),
             thought_signature: None,
         }));

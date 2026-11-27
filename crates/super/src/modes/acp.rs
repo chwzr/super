@@ -103,7 +103,7 @@ impl SuperAcpAgent {
                     tool_name,
                     args,
                 } = agent_event.as_ref()
-                && matches!(tool_name.as_str(), "edit" | "write")
+                && matches!(tool_name.as_str(), "Edit" | "Write")
                 && let Some(path) = tool_path(args, &snapshot_cwd)
             {
                 let old_text = std::fs::read_to_string(&path).ok();
@@ -1008,10 +1008,10 @@ fn tool_content(result: &ToolResult, diff: Option<Diff>) -> Vec<ToolCallContent>
 
 fn tool_kind(name: &str) -> ToolKind {
     match name {
-        "read" | "ls" => ToolKind::Read,
-        "write" | "edit" => ToolKind::Edit,
+        "Read" | "ls" => ToolKind::Read,
+        "Write" | "Edit" => ToolKind::Edit,
         "grep" | "find" => ToolKind::Search,
-        "bash" => ToolKind::Execute,
+        "Bash" => ToolKind::Execute,
         "mcp" => ToolKind::Fetch,
         _ => ToolKind::Other,
     }
@@ -1019,10 +1019,10 @@ fn tool_kind(name: &str) -> ToolKind {
 
 fn tool_title(name: &str) -> String {
     match name {
-        "read" => "Read file",
-        "write" => "Write file",
-        "edit" => "Edit file",
-        "bash" => "Run command",
+        "Read" => "Read file",
+        "Write" => "Write file",
+        "Edit" => "Edit file",
+        "Bash" => "Run command",
         "grep" => "Search text",
         "find" => "Find files",
         "ls" => "List directory",
@@ -1104,9 +1104,9 @@ mod tests {
         let locations = tool_locations(&json!({"path": "src/main.rs"}), &cwd);
         assert!(locations[0].path.is_absolute());
         assert_eq!(locations[0].path, cwd.join("src/main.rs"));
-        assert_eq!(tool_kind("read"), ToolKind::Read);
-        assert_eq!(tool_kind("edit"), ToolKind::Edit);
-        assert_eq!(tool_kind("bash"), ToolKind::Execute);
+        assert_eq!(tool_kind("Read"), ToolKind::Read);
+        assert_eq!(tool_kind("Edit"), ToolKind::Edit);
+        assert_eq!(tool_kind("Bash"), ToolKind::Execute);
     }
 
     #[test]
@@ -1344,7 +1344,7 @@ mod tests {
                 turns: vec![
                     vec![MockTurn::ToolCall {
                         id: "slow".into(),
-                        name: "bash".into(),
+                        name: "Bash".into(),
                         arguments: json!({"command": "sleep 5"}),
                     }],
                     vec![MockTurn::Text("should not finish".into())],
@@ -1760,7 +1760,7 @@ mod tests {
                 turns: vec![
                     vec![MockTurn::ToolCall {
                         id: "write-1".into(),
-                        name: "write".into(),
+                        name: "Write".into(),
                         arguments: json!({"path": "created.txt", "content": "from ACP\n"}),
                     }],
                     vec![MockTurn::Text("done".into())],

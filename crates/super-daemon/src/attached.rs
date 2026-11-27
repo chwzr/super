@@ -1154,7 +1154,7 @@ mod tests {
         let tool_end = |id: &str| {
             agent(AgentEvent::ToolExecutionEnd {
                 tool_call_id: id.into(),
-                tool_name: "bash".into(),
+                tool_name: "Bash".into(),
                 result: Default::default(),
                 is_error: false,
             })
@@ -1176,7 +1176,7 @@ mod tests {
         assert!(
             turn.missing_starts(&agent(AgentEvent::ToolExecutionStart {
                 tool_call_id: "call_2".into(),
-                tool_name: "bash".into(),
+                tool_name: "Bash".into(),
                 args: Value::Null,
             }))
             .is_empty()

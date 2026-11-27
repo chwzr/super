@@ -304,7 +304,7 @@ pub fn install_workflow_approval_gate(session: &Arc<Session>) {
 /// # async fn example() -> anyhow::Result<()> {
 /// let session = super_sdk::Session::builder()
 ///     .cwd(".")
-///     .tools(["read", "bash"])
+///     .tools(["Read", "Bash"])
 ///     .build()
 ///     .await?;
 /// session.prompt("List the files here").await?;

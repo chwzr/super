@@ -6,7 +6,7 @@ Quick start::
     import super_sdk
 
     async def main() -> None:
-        async with await super_sdk.Session.create(tools=["read", "bash"]) as session:
+        async with await super_sdk.Session.create(tools=["Read", "Bash"]) as session:
             async def show() -> None:
                 async for event in session.events():
                     if event.type == "message_update":

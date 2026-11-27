@@ -522,14 +522,14 @@ mod tests {
             content_index: 1,
             tool_call: super_ai::ToolCall {
                 id: "call_1".into(),
-                name: "write".into(),
+                name: "Write".into(),
                 arguments: json!({}),
                 thought_signature: None,
             },
         });
         assert_eq!(event["type"], "toolcall_start");
         assert_eq!(event["id"], "call_1");
-        assert_eq!(event["toolName"], "write");
+        assert_eq!(event["toolName"], "Write");
     }
 
     /// Encode then decode: the attached terminal must see the event the
@@ -550,7 +550,7 @@ mod tests {
         let assistant = super_ai::AssistantMessage::empty("openai-completions", "mock", "mock-1");
         let tool_call = super_ai::ToolCall {
             id: "call_1".into(),
-            name: "read".into(),
+            name: "Read".into(),
             arguments: json!({"path": "a.rs"}),
             thought_signature: None,
         };
@@ -578,18 +578,18 @@ mod tests {
             }),
             agent(AgentEvent::ToolExecutionStart {
                 tool_call_id: "call_1".into(),
-                tool_name: "read".into(),
+                tool_name: "Read".into(),
                 args: json!({"path": "a.rs"}),
             }),
             agent(AgentEvent::ToolExecutionUpdate {
                 tool_call_id: "call_1".into(),
-                tool_name: "read".into(),
+                tool_name: "Read".into(),
                 args: json!({"path": "a.rs"}),
                 partial: result.clone(),
             }),
             agent(AgentEvent::ToolExecutionEnd {
                 tool_call_id: "call_1".into(),
-                tool_name: "read".into(),
+                tool_name: "Read".into(),
                 result: result.clone(),
                 is_error: true,
             }),

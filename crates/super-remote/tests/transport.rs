@@ -23,7 +23,7 @@ async fn session_with(
         models_file: Some(provider.catalog_path()),
         thinking_level: Some(ThinkingLevel::Off),
         settings: Some(super_coding::Settings::default()),
-        tools: Some(vec!["read".into()]),
+        tools: Some(vec!["Read".into()]),
         trust_project_files: false,
         no_context_files: true,
         ..Default::default()

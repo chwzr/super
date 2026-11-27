@@ -29,7 +29,7 @@ async fn session_with(
         thinking_level: Some(ThinkingLevel::Off),
         settings: Some(super_coding::Settings::default()),
         tools: Some(
-            ["read", "write", "edit", "bash"]
+            ["Read", "Write", "Edit", "Bash"]
                 .map(str::to_string)
                 .to_vec(),
         ),
@@ -91,7 +91,7 @@ async fn a_scripted_model_writes_a_real_file_through_the_write_tool() {
         turns: vec![
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
-                name: "write".into(),
+                name: "Write".into(),
                 arguments: json!({"path": "hello.txt", "content": "hello from super\n"}),
             }],
             vec![MockTurn::Text("Done.".into())],
@@ -107,7 +107,7 @@ async fn a_scripted_model_writes_a_real_file_through_the_write_tool() {
 
     // The tool really ran: the file exists with the requested contents.
     let written = std::fs::read_to_string(directory.path().join("hello.txt"))
-        .expect("the write tool created hello.txt");
+        .expect("the Write tool created hello.txt");
     assert_eq!(written, "hello from super\n");
 
     let events = wait_for(&events, "agent_settled").await;
@@ -124,7 +124,7 @@ async fn a_scripted_model_writes_a_real_file_through_the_write_tool() {
         .iter()
         .find(|event| event["type"] == "tool_execution_start")
         .expect("a tool started");
-    assert_eq!(tool_start["toolName"], "write");
+    assert_eq!(tool_start["toolName"], "Write");
     let tool_end = events
         .iter()
         .find(|event| event["type"] == "tool_execution_end")
@@ -157,7 +157,7 @@ async fn prompting_while_streaming_requires_an_explicit_behavior() {
         turns: vec![
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
-                name: "bash".into(),
+                name: "Bash".into(),
                 arguments: json!({"command": "sleep 1"}),
             }],
             vec![MockTurn::Text("Finished.".into())],

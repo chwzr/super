@@ -902,7 +902,7 @@ mod tests {
             &["-p", "hi"][..],
             &["--mode", "rpc"],
             &["daemon", "status"],
-            &["--tools", "read"],
+            &["--tools", "Read"],
             &["--skill", "x"],
             &["--approve"],
             &["--resume"],
@@ -982,12 +982,12 @@ mod tests {
     #[test]
     fn tools_and_messages_read_short() {
         assert_eq!(
-            tool_summary("bash", &json!({"command": "cargo test\necho done"})),
-            "bash cargo test"
+            tool_summary("Bash", &json!({"command": "cargo test\necho done"})),
+            "Bash cargo test"
         );
         assert_eq!(
-            tool_summary("read", &json!({"path": "src/main.rs"})),
-            "read src/main.rs"
+            tool_summary("Read", &json!({"path": "src/main.rs"})),
+            "Read src/main.rs"
         );
         assert_eq!(tool_summary("todo", &Value::Null), "todo");
         assert_eq!(

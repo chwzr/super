@@ -209,7 +209,7 @@ fn escape_xml(value: &str) -> String {
 }
 
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
-    format_skills_for_prompt_with_tool(skills, "read")
+    format_skills_for_prompt_with_tool(skills, "Read")
 }
 
 pub fn format_skills_for_prompt_with_tool(skills: &[Skill], tool: &str) -> String {

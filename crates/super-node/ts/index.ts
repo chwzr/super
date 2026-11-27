@@ -10,7 +10,7 @@ const binding = require(
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 export type StreamingBehavior = "steer" | "followUp"
 export type QueueMode = "all" | "one-at-a-time"
-export type ToolName = "read" | "write" | "edit" | "bash" | "grep" | "find" | "ls" | "mcp"
+export type ToolName = "Read" | "Write" | "Edit" | "Bash" | "grep" | "find" | "ls" | "mcp"
 
 export interface ImageInput {
   type: "image"

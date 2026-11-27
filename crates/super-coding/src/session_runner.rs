@@ -1240,9 +1240,9 @@ impl AgentSession {
         let tools = self.tools_for(prompt_mode);
         // Cursor also advertises its native Shell tool; it must use the registered shell's syntax.
         if model.provider == "cursor"
-            && let Some(shell) = tools.iter().find(|tool| tool.name() == "bash")
+            && let Some(shell) = tools.iter().find(|tool| tool.name() == "Bash")
         {
-            system_prompt.push_str("\n\nSUPER shell tool (bash): ");
+            system_prompt.push_str("\n\nSUPER shell tool (Bash): ");
             system_prompt.push_str(&shell.description());
         }
         if self.settings().experimental_context_file
@@ -1462,11 +1462,11 @@ impl AgentSession {
             .lock()
             .unwrap()
             .iter()
-            .filter(|tool| tool.name() == "read")
+            .filter(|tool| tool.name() == "Read")
             .cloned()
             .collect();
         self.run_ephemeral(
-            "Answer the side question from the supplied session context. This is a read-only request. Use the read tool only when a file is needed. Do not propose or perform edits. Give no more than 150 words or 600 characters. Use no more than five bullets. Return only the answer.".into(),
+            "Answer the side question from the supplied session context. This is a read-only request. Use the Read tool only when a file is needed. Do not propose or perform edits. Give no more than 150 words or 600 characters. Use no more than five bullets. Return only the answer.".into(),
             prompt,
             read_tools,
             500,
@@ -2505,7 +2505,7 @@ mod ephemeral_tests {
                 let quoted_path = path.replace('\'', "'\\''");
                 message.content.push(super_ai::ContentBlock::ToolCall(super_ai::ToolCall {
                     id: format!("edit_{step}"),
-                    name: "bash".into(),
+                    name: "Bash".into(),
                     arguments: serde_json::json!({"command": format!("printf '%s' '{replacement}' > '{quoted_path}'")}),
                     thought_signature: None,
                 }));
@@ -2799,7 +2799,7 @@ mod ephemeral_tests {
             );
             assert!(context.tools[0].to_def().description.contains(syntax));
         }
-        assert!(session.remove_session_tool("bash"));
+        assert!(session.remove_session_tool("Bash"));
         assert_eq!(session.build_context().system_prompt, "root prompt");
     }
 

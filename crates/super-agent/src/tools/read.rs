@@ -32,7 +32,7 @@ pub fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
 #[async_trait::async_trait]
 impl AgentTool for ReadTool {
     fn name(&self) -> &str {
-        "read"
+        "Read"
     }
 
     fn description(&self) -> String {
@@ -186,7 +186,7 @@ impl AgentTool for ReadTool {
             let size = format_size(first_line_len);
             (
                 format!(
-                    "[Line {start_display} is {size}, exceeds {} limit. Use bash: sed -n '{start_display}p' {path} | head -c {DEFAULT_MAX_BYTES}]",
+                    "[Line {start_display} is {size}, exceeds {} limit. Use Bash: sed -n '{start_display}p' {path} | head -c {DEFAULT_MAX_BYTES}]",
                     format_size(DEFAULT_MAX_BYTES)
                 ),
                 json!({"truncation": truncation}),

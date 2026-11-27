@@ -2133,7 +2133,7 @@ fn handle_session_event(
                     *err_slot = is_error;
                     *done = true;
                 }
-                if matches!(tool_name.as_str(), "write" | "edit" | "bash") {
+                if matches!(tool_name.as_str(), "Write" | "Edit" | "Bash") {
                     reset_file_search(app, file_search);
                     file_search.refresh_all();
                     refresh_git_branch(app, session);
@@ -9495,8 +9495,8 @@ mod tests {
             "mcp"
         );
         assert_eq!(
-            tool_title("read", &serde_json::json!({"path": "file.rs"})),
-            "read file.rs"
+            tool_title("Read", &serde_json::json!({"path": "file.rs"})),
+            "Read file.rs"
         );
     }
 

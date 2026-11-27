@@ -121,7 +121,7 @@ fn parse_edits(args: &Value) -> anyhow::Result<Vec<Edit>> {
 #[async_trait::async_trait]
 impl AgentTool for EditTool {
     fn name(&self) -> &str {
-        "edit"
+        "Edit"
     }
 
     fn description(&self) -> String {

@@ -22,10 +22,10 @@ class StreamingBehavior(StrEnum):
 
 
 class ToolName(StrEnum):
-    READ = 'read'
-    WRITE = 'write'
-    EDIT = 'edit'
-    BASH = 'bash'
+    READ = 'Read'
+    WRITE = 'Write'
+    EDIT = 'Edit'
+    BASH = 'Bash'
     GREP = 'grep'
     FIND = 'find'
     LS = 'ls'
