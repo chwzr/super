@@ -1992,7 +1992,6 @@ fn terminal_host_state(
             .is_some_and(|panel| panel.cancel.is_some())
         || app.recap_loading
         || app.title_generation_pending
-        || session.tasks().iter().any(|task| task.status.is_running())
         || session
             .workflows()
             .is_some_and(|runtime| runtime.active().is_some())
@@ -9381,10 +9380,13 @@ mod tests {
                 "npm test",
             ))
             .unwrap();
-        assert_eq!(terminal_host_state(&app, &session), State::Working);
+        // The session is idle while only its tasks run, as in the daemon,
+        // but it does not move to the daemon from under them.
+        assert_eq!(terminal_host_state(&app, &session), State::Idle);
+        assert!(remote_handover::busy(&app, &session));
         let id = handle.id().to_string();
         drop(handle);
-        assert_eq!(terminal_host_state(&app, &session), State::Idle);
+        assert!(!remote_handover::busy(&app, &session));
 
         let mut task = tasks.find(&id).unwrap();
         task.status = super_coding::TaskStatus::Completed;

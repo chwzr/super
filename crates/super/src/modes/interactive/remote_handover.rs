@@ -240,12 +240,14 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
 }
 
 /// A turn, a queued message, a background request that writes the session,
-/// or a question on screen: the hand-over waits for all of them.
+/// a background task (it would not come along), or a question on screen: the
+/// hand-over waits for all of them.
 pub(super) fn busy(app: &App, session: &AgentSession) -> bool {
     !matches!(
         terminal_host_state(app, session),
         crate::terminal_hosts::State::Idle
-    ) || app.picker.is_some()
+    ) || session.has_background_work()
+        || app.picker.is_some()
         || app.secret_prompt.is_some()
         || app.btw_panel.is_some()
         || app.workflow_view.is_some()
