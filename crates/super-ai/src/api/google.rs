@@ -368,12 +368,21 @@ fn build_request(model: &Model, context: &Context, options: &StreamOptions) -> V
 }
 
 /// Gemini rejects some JSON-schema keywords. Strip the unsupported ones.
+/// Its schema knows `minimum` and `maximum` but not their exclusive forms,
+/// which the file tools' line counts use.
 fn sanitize_schema(schema: &Value) -> Value {
     match schema {
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (k, v) in map {
-                if matches!(k.as_str(), "additionalProperties" | "$schema" | "default") {
+                if matches!(
+                    k.as_str(),
+                    "additionalProperties"
+                        | "$schema"
+                        | "default"
+                        | "exclusiveMinimum"
+                        | "exclusiveMaximum"
+                ) {
                     continue;
                 }
                 out.insert(k.clone(), sanitize_schema(v));
@@ -389,6 +398,32 @@ fn sanitize_schema(schema: &Value) -> Value {
 mod vertex_tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn tool_schemas_lose_the_keywords_gemini_rejects() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "offset": {"type": "integer", "minimum": 0, "maximum": 10},
+                "limit": {"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 9},
+                "replace_all": {"type": "boolean", "default": false},
+            },
+            "required": ["offset"],
+            "additionalProperties": false,
+        });
+        assert_eq!(
+            sanitize_schema(&schema),
+            json!({
+                "type": "object",
+                "properties": {
+                    "offset": {"type": "integer", "minimum": 0, "maximum": 10},
+                    "limit": {"type": "integer"},
+                    "replace_all": {"type": "boolean"},
+                },
+                "required": ["offset"],
+            })
+        );
+    }
 
     #[test]
     fn builds_vertex_stream_url() {
