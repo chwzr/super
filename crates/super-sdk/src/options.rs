@@ -217,6 +217,7 @@ impl SessionOptions {
             (None, None) => None,
         };
         let system_prompt = build_system_prompt(&SystemPromptOptions {
+            mode: settings.mode,
             custom_prompt: custom.as_deref(),
             append: append.as_deref(),
             selected_tools: &tool_names,
@@ -445,6 +446,46 @@ mod tests {
             .resolve_model(&registry, &settings)
             .expect("a model of that provider");
         assert_eq!(model.provider, other.provider);
+    }
+
+    #[test]
+    fn the_mode_setting_picks_the_body_of_the_system_prompt() {
+        let directory = tempfile::tempdir().unwrap();
+        let model = Registry::from_builtin()
+            .all()
+            .first()
+            .cloned()
+            .expect("a builtin model");
+        // A `SYSTEM.md` of the user's replaces the body in both modes.
+        let replaced = context_files::system_prompt_files(directory.path())
+            .replace
+            .is_some();
+        let placeholder = super_agent::placeholder::prompt_todo("SystemPrompt.advanced");
+        for mode in [
+            super_coding::settings::Mode::Basic,
+            super_coding::settings::Mode::Advanced,
+        ] {
+            let settings = Settings {
+                mode,
+                ..Settings::default()
+            };
+            let options = SessionOptions {
+                cwd: directory.path().to_path_buf(),
+                model: Some(format!("{}/{}", model.provider, model.id)),
+                settings: Some(settings),
+                no_context_files: true,
+                ..Default::default()
+            };
+            let built = options.build(Arc::new(|_| {})).unwrap();
+            assert_eq!(built.session.mode(), mode);
+            assert_eq!(built.tool_names, ["Read", "Write", "Edit", "Bash"]);
+            if !replaced {
+                assert_eq!(
+                    built.session.system_prompt().starts_with(&placeholder),
+                    mode.is_advanced()
+                );
+            }
+        }
     }
 
     #[test]

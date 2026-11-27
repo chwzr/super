@@ -124,23 +124,8 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
         super_coding::prompts::discover(cwd, trusted, &template_paths)
     };
 
-    let files = context_files::system_prompt_files(cwd);
     let (tool_names, mcp) = configured_tools(args, cwd, trusted, &settings)?;
-    let custom = args.system_prompt.clone().or(files.replace);
-    let append = match (&args.append_system_prompt, &files.append) {
-        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
-        (Some(value), None) => Some(value.clone()),
-        (None, Some(value)) => Some(value.clone()),
-        (None, None) => None,
-    };
-    let system_prompt = build_system_prompt(&SystemPromptOptions {
-        custom_prompt: custom.as_deref(),
-        append: append.as_deref(),
-        selected_tools: &tool_names,
-        cwd: &cwd.display().to_string(),
-        context_files: &context,
-        skills: &skills,
-    });
+    let system_prompt = system_prompt(args, cwd, &settings, &tool_names, &context, &skills);
     let tools = build_tools(&tool_names, cwd, &settings, mcp.as_ref());
 
     let (theme, themes) = load_themes(args, cwd, trusted, &settings);
@@ -154,6 +139,37 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
         themes,
         tools,
         system_prompt,
+    })
+}
+
+/// The system prompt of a session in `cwd`: `--system-prompt` or the
+/// project's replacement file, else the body of `settings.mode`, followed by
+/// `--append-system-prompt` and the project's append file, the project
+/// context, the skills and the working directory.
+pub fn system_prompt(
+    args: &Args,
+    cwd: &std::path::Path,
+    settings: &Settings,
+    tool_names: &[String],
+    context: &[context_files::ContextFile],
+    skills: &[Skill],
+) -> String {
+    let files = context_files::system_prompt_files(cwd);
+    let custom = args.system_prompt.clone().or(files.replace);
+    let append = match (&args.append_system_prompt, &files.append) {
+        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
+        (Some(value), None) => Some(value.clone()),
+        (None, Some(value)) => Some(value.clone()),
+        (None, None) => None,
+    };
+    build_system_prompt(&SystemPromptOptions {
+        mode: settings.mode,
+        custom_prompt: custom.as_deref(),
+        append: append.as_deref(),
+        selected_tools: tool_names,
+        cwd: &cwd.display().to_string(),
+        context_files: context,
+        skills,
     })
 }
 
@@ -502,23 +518,8 @@ pub async fn build_startup(
     };
 
     // System prompt.
-    let files = context_files::system_prompt_files(&cwd);
     let (tool_names, mcp) = configured_tools(args, &cwd, trusted, &settings)?;
-    let custom = args.system_prompt.clone().or(files.replace);
-    let append = match (&args.append_system_prompt, &files.append) {
-        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
-        (Some(a), None) => Some(a.clone()),
-        (None, Some(b)) => Some(b.clone()),
-        (None, None) => None,
-    };
-    let system_prompt = build_system_prompt(&SystemPromptOptions {
-        custom_prompt: custom.as_deref(),
-        append: append.as_deref(),
-        selected_tools: &tool_names,
-        cwd: &cwd.display().to_string(),
-        context_files: &context,
-        skills: &skills,
-    });
+    let system_prompt = system_prompt(args, &cwd, &settings, &tool_names, &context, &skills);
 
     // Session.
     let dir = session_dir(args, &settings);
