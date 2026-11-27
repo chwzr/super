@@ -44,6 +44,9 @@ async fn run_daemon(args: &Args, socket: Option<PathBuf>) -> Result<i32> {
     let paths = paths(socket)?;
     let home = dirs::home_dir().context("no home directory")?;
     let settings = super_coding::Settings::load(&home, false);
+    // Token refreshes and the model catalog reach the platform the user
+    // signed in to, also when only the `platform.url` setting names it.
+    crate::platform::configure(&settings);
     let session_dir = crate::setup::session_dir(args, &settings);
     let machine = match MachineIdentity::default_path() {
         Some(path) => MachineIdentity::load_or_create(&path)?,

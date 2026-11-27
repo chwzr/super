@@ -146,6 +146,11 @@ impl Default for SessionOptions {
     }
 }
 
+/// [`SessionOptions::model`] names a model the catalog does not have.
+#[derive(Debug, thiserror::Error)]
+#[error("no model matches pattern '{0}'")]
+pub(crate) struct UnknownModel(String);
+
 /// The pieces `SessionOptions::build` produced, before the SDK wraps them.
 pub struct BuiltSession {
     pub session: Arc<AgentSession>,
@@ -316,7 +321,7 @@ impl SessionOptions {
         if let Some(pattern) = &self.model {
             return registry
                 .resolve(pattern, self.provider.as_deref())
-                .with_context(|| format!("no model matches pattern '{pattern}'"));
+                .ok_or_else(|| UnknownModel(pattern.clone()).into());
         }
         if let (Some(provider), Some(model)) = (&settings.default_provider, &settings.default_model)
             && self

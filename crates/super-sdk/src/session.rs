@@ -12,14 +12,16 @@ use crate::events::{
     agent_settled, announced_command, bash_execution_update, command_applied, event_lag,
     session_event_json,
 };
-use crate::options::SessionOptions;
+use crate::options::{SessionOptions, UnknownModel};
 use crate::protocol::{Command, Event, ImageInput, QueueMode, Response, StreamingBehavior};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use super_agent::{AgentMessage, BashExecutionMessage};
-use super_ai::{ContentBlock, Model, ThinkingLevel, UserContent, UserMessage};
+use super_ai::auth::super_platform;
+use super_ai::{ContentBlock, Model, Registry, ThinkingLevel, UserContent, UserMessage};
 use super_coding::session_runner::{AgentSession, SessionEvent};
 use super_coding::settings::QueueMode as SettingsQueueMode;
 use tokio::sync::broadcast;
@@ -165,9 +167,69 @@ pub type SessionObserver = Arc<dyn Fn(SessionNotice) + Send + Sync>;
 /// another process writes.
 pub type SessionFileGuard = Arc<dyn Fn(&std::path::Path) -> Result<(), String> + Send + Sync>;
 
+/// The model catalog file of a session the SDK built.
+///
+/// Such a session lives as long as its host, in the daemon for days, and the
+/// catalog changes under it: the user signs in or adds a provider, the
+/// platform adds a model. The session therefore reads the file again when a
+/// client asks for the models or for one it does not know, where it would
+/// otherwise answer from the catalog of the day it started.
+struct Catalog {
+    /// [`SessionOptions::models_file`]; `None` is the user's own catalog.
+    file: Option<PathBuf>,
+}
+
+impl Catalog {
+    fn load(&self) -> Registry {
+        Registry::load(self.file.as_deref())
+    }
+
+    /// Whether asking the platform changes what the session reads: the user
+    /// is signed in, and the account's models are saved to this file.
+    fn follows_platform(&self) -> bool {
+        let users_own = match &self.file {
+            None => true,
+            Some(file) => super_ai::provider_config::catalog_path().is_ok_and(|path| path == *file),
+        };
+        users_own && super_platform::is_signed_in()
+    }
+}
+
+/// How old the platform's answer may be when a client asks for the models.
+const PLATFORM_MODELS_MAX_AGE: Duration = Duration::from_secs(60);
+/// How long a client waits for the platform. After that it is answered from
+/// the catalog saved last.
+const PLATFORM_MODELS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// When this process last asked the platform for the account's models. Held
+/// while it asks, so sessions asked at the same moment share one request.
+static PLATFORM_MODELS_ASKED: tokio::sync::Mutex<Option<Instant>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// Ask the platform for the account's models and save them to the user's
+/// catalog, unless this process asked within `max_age`. A failure is not
+/// reported: the catalog saved last stays in use, as it does in the terminal.
+async fn sync_platform_models(max_age: Duration) {
+    let mut asked = PLATFORM_MODELS_ASKED.lock().await;
+    if asked.is_some_and(|at| at.elapsed() < max_age) {
+        return;
+    }
+    let config = super_platform::OAuthConfig::default();
+    let _ = tokio::time::timeout(
+        PLATFORM_MODELS_TIMEOUT,
+        super_platform::sync_models(&config, &CancellationToken::new()),
+    )
+    .await;
+    // An attempt counts, so an unreachable platform costs one wait, not one
+    // for every time the list is asked for.
+    *asked = Some(Instant::now());
+}
+
 /// One embeddable conversation with the agent.
 pub struct Session {
     inner: Arc<AgentSession>,
+    /// `None` for a session something else built, which keeps its catalog.
+    catalog: Option<Catalog>,
     events: broadcast::Sender<Event>,
     running: Arc<AtomicBool>,
     /// Serializes prompt runs so `wait_idle` has something to wait on.
@@ -378,8 +440,24 @@ impl Session {
     /// network work, so it is async even though most of the body is not.
     pub async fn create(options: SessionOptions) -> Result<Arc<Session>, SdkError> {
         let (sink, sender) = mirrored_sink(options.event_capacity, None);
-        let built = options.build(sink)?;
-        Ok(Self::attach(built.session, options.cwd.clone(), sender))
+        let catalog = Catalog {
+            file: options.models_file.clone(),
+        };
+        let built = match options.build(sink.clone()) {
+            // The model may be one the platform added after the catalog was
+            // saved on this machine.
+            Err(error) if error.is::<UnknownModel>() && catalog.follows_platform() => {
+                sync_platform_models(Duration::ZERO).await;
+                options.build(sink)?
+            }
+            built => built?,
+        };
+        Ok(Self::wrap(
+            built.session,
+            options.cwd.clone(),
+            sender,
+            Some(catalog),
+        ))
     }
 
     /// Wrap a harness session that something else built and drives, such as
@@ -392,8 +470,18 @@ impl Session {
         cwd: PathBuf,
         events: broadcast::Sender<Event>,
     ) -> Arc<Session> {
+        Self::wrap(inner, cwd, events, None)
+    }
+
+    fn wrap(
+        inner: Arc<AgentSession>,
+        cwd: PathBuf,
+        events: broadcast::Sender<Event>,
+        catalog: Option<Catalog>,
+    ) -> Arc<Session> {
         Arc::new(Session {
             inner,
+            catalog,
             events,
             running: Arc::new(AtomicBool::new(false)),
             run_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -626,14 +714,48 @@ impl Session {
     }
 
     /// Choose a model by provider and identifier.
-    pub fn set_model(&self, provider: &str, model_id: &str) -> Result<Model, SdkError> {
+    ///
+    /// A model this session does not know is looked for in the catalog as it
+    /// is now, and a SUPER model after that on the platform. A model added
+    /// while the session runs can so be chosen without restarting its host.
+    pub async fn set_model(&self, provider: &str, model_id: &str) -> Result<Model, SdkError> {
+        if !self.knows_model(provider, model_id) {
+            self.refresh_catalog(None).await;
+            if provider == super_platform::PROVIDER && !self.knows_model(provider, model_id) {
+                self.refresh_catalog(Some(Duration::ZERO)).await;
+            }
+        }
         let (model, _) = self
             .inner
-            .registry
+            .registry()
             .resolve(model_id, Some(provider))
             .ok_or_else(|| SdkError::Command(format!("model not found: {provider}/{model_id}")))?;
         self.inner.set_model(model.clone());
         Ok(model)
+    }
+
+    /// Whether the catalog has exactly this model. `resolve` also accepts a
+    /// part of a name, which in an old catalog can be another model's.
+    fn knows_model(&self, provider: &str, model_id: &str) -> bool {
+        self.inner
+            .registry()
+            .all()
+            .iter()
+            .any(|model| model.provider == provider && model.id == model_id)
+    }
+
+    /// Read the catalog file again. With `platform_max_age`, the platform is
+    /// asked for the account's models first, when its last answer is older.
+    async fn refresh_catalog(&self, platform_max_age: Option<Duration>) {
+        let Some(catalog) = &self.catalog else {
+            return;
+        };
+        if let Some(max_age) = platform_max_age
+            && catalog.follows_platform()
+        {
+            sync_platform_models(max_age).await;
+        }
+        self.inner.set_registry(catalog.load());
     }
 
     /// Choose a reasoning effort. Levels the model does not support are
@@ -981,17 +1103,18 @@ impl Session {
                 Ok(None)
             }
             Command::SetModel { provider, model_id } => {
-                let model = self.set_model(&provider, &model_id)?;
+                let model = self.set_model(&provider, &model_id).await?;
                 Ok(Some(serde_json::to_value(model).unwrap_or(Value::Null)))
             }
             Command::GetAvailableModels { search } => {
                 // The models a user can switch to: those of providers that are
                 // configured in models.json or have a credential, the same set
-                // the TUI's /model picker and `--list-models` offer.
+                // the TUI's /model picker and `--list-models` offer, as they
+                // are now and not as they were when the session started.
+                self.refresh_catalog(Some(PLATFORM_MODELS_MAX_AGE)).await;
                 let needle = search.unwrap_or_default().to_lowercase();
-                let models: Vec<&Model> = self
-                    .inner
-                    .registry
+                let registry = self.inner.registry();
+                let models: Vec<&Model> = registry
                     .available_models()
                     .into_iter()
                     .map(|(_, model)| model)

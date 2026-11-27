@@ -323,7 +323,7 @@ impl SuperAcpAgent {
                 let current = session.agent.model();
                 let model = session
                     .agent
-                    .registry
+                    .registry()
                     .available_models()
                     .into_iter()
                     .map(|(_, model)| model)
@@ -704,7 +704,7 @@ fn session_config_options(session: &AgentSession) -> Vec<SessionConfigOption> {
     let current_model = session.model();
     let current_value = model_value(&current_model);
     let mut model_options = session
-        .registry
+        .registry()
         .available_models()
         .into_iter()
         .map(|(_, model)| SessionConfigSelectOption::new(model_value(model), model.display_name()))
