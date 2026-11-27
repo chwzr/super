@@ -84,6 +84,12 @@ fn configured_tools(
     Ok((names, manager))
 }
 
+/// The `--skill` paths, made absolute against `cwd`, so the skills list in
+/// the system prompt names files `Read` takes as they are.
+fn skill_paths(args: &Args, cwd: &std::path::Path) -> Vec<PathBuf> {
+    args.skills.iter().map(|path| cwd.join(path)).collect()
+}
+
 /// Reload the file-backed inputs used by an existing interactive session.
 pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRuntime> {
     let cli_trust = if args.approve {
@@ -104,7 +110,7 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
     } else {
         context_files::discover(cwd)
     };
-    let skill_paths: Vec<PathBuf> = args.skills.iter().map(PathBuf::from).collect();
+    let skill_paths = skill_paths(args, cwd);
     let skills = if args.no_skills {
         super_coding::skills::discover(cwd, false, &skill_paths)
             .into_iter()
@@ -497,7 +503,7 @@ pub async fn build_startup(
     } else {
         context_files::discover(&cwd)
     };
-    let skill_paths: Vec<PathBuf> = args.skills.iter().map(PathBuf::from).collect();
+    let skill_paths = skill_paths(args, &cwd);
     let skills = if args.no_skills {
         super_coding::skills::discover(&cwd, false, &skill_paths)
             .into_iter()
@@ -640,6 +646,23 @@ mod tests {
             "the file this process holds itself"
         );
         assert!(refuse_held_file(None, &theirs).is_err());
+    }
+
+    #[test]
+    fn skill_paths_from_the_command_line_are_absolute() {
+        let cwd = std::env::temp_dir().join("project");
+        let elsewhere = std::env::temp_dir().join("shared-skills");
+        let args = Args::parse_from([
+            "super",
+            "--skill",
+            "skills/review",
+            "--skill",
+            elsewhere.to_str().unwrap(),
+        ]);
+        assert_eq!(
+            skill_paths(&args, &cwd),
+            [cwd.join("skills/review"), elsewhere]
+        );
     }
 
     #[test]

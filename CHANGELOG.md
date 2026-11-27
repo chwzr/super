@@ -70,7 +70,9 @@
   its first part, a read with `offset` or `limit` above it is refused.
   `Edit` makes one replacement per call with `old_string`, `new_string` and
   `replace_all`; the `edits` array and the `oldText` and `newText` shapes are
-  gone. An empty `old_string` creates a file that does not exist yet.
+  gone. An empty `old_string` creates a file that does not exist yet. A
+  skill named with a relative `--skill` path is listed with its absolute
+  path, which `Read` takes.
 - The descriptions of `Read`, `Edit` and `Write` and of their parameters are
   placeholders until their text is written.
 - Gemini requests leave `exclusiveMinimum` and `exclusiveMaximum` out of tool
