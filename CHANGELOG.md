@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.42 - 2026-11-27
+
 ### Fixed
 
 - A session answers again after a request that failed before the model said
