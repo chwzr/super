@@ -35,7 +35,7 @@ async def test_prompt_streams_and_writes_a_real_file(tmp_path: Path) -> None:
                         'id': 'call_1',
                         'name': 'Write',
                         'arguments': {
-                            'path': 'hello.txt',
+                            'file_path': str(tmp_path / 'hello.txt'),
                             'content': 'hello from python\n',
                         },
                     }

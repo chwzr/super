@@ -189,18 +189,20 @@ async fn a_prompt_streams_events_and_ends_with_agent_settled() {
 
 #[tokio::test]
 async fn a_tool_call_reaches_the_client_and_the_filesystem() {
+    // The file tools take absolute paths, anywhere on the machine.
+    let target = tempfile::tempdir().expect("temp dir");
+    let path = target.path().join("note.txt");
     let script = MockScript {
         turns: vec![
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
                 name: "Write".into(),
-                arguments: json!({"path": "note.txt", "content": "written over rpc\n"}),
+                arguments: json!({"file_path": path, "content": "written over rpc\n"}),
             }],
             vec![MockTurn::Text("Wrote it.".into())],
         ],
     };
     let mut harness = Harness::start(script).await;
-    let path = harness._directory.path().join("note.txt");
 
     harness
         .send(json!({"type": "prompt", "message": "write a note"}))

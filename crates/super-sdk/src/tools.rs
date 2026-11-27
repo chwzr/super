@@ -6,7 +6,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use super_agent::DynTool;
+use super_agent::{DynTool, ToolSession};
 use super_coding::settings::Settings;
 use super_mcp::McpManager;
 
@@ -27,10 +27,14 @@ pub fn build_tools(
     mcp: Option<&McpManager>,
 ) -> Vec<DynTool> {
     let mut tools: Vec<DynTool> = Vec::new();
+    // Read, Edit and Write share one record of what was read, so they work
+    // together even outside a session; a session binds them to its own.
+    let session = ToolSession::new();
     for name in names {
         let tool: Option<DynTool> = match name.as_str() {
             "Read" => Some(Arc::new(super_agent::tools::read::ReadTool {
                 cwd: cwd.to_path_buf(),
+                session: session.clone(),
             })),
             "Bash" => {
                 let mut bash = super_agent::tools::bash::BashTool::new(cwd.to_path_buf());
@@ -46,9 +50,11 @@ pub fn build_tools(
             }
             "Edit" => Some(Arc::new(super_agent::tools::edit::EditTool {
                 cwd: cwd.to_path_buf(),
+                session: session.clone(),
             })),
             "Write" => Some(Arc::new(super_agent::tools::write::WriteTool {
                 cwd: cwd.to_path_buf(),
+                session: session.clone(),
             })),
             "grep" => Some(Arc::new(super_coding::tools::grep::GrepTool {
                 cwd: cwd.to_path_buf(),

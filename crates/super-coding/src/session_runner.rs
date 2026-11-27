@@ -3216,9 +3216,9 @@ mod ephemeral_tests {
     fn benchmark_tools() -> Vec<DynTool> {
         let cwd = std::path::PathBuf::from("/synthetic");
         vec![
-            Arc::new(super_agent::tools::read::ReadTool { cwd: cwd.clone() }),
-            Arc::new(super_agent::tools::write::WriteTool { cwd: cwd.clone() }),
-            Arc::new(super_agent::tools::edit::EditTool { cwd: cwd.clone() }),
+            Arc::new(super_agent::tools::read::ReadTool::new(cwd.clone())),
+            Arc::new(super_agent::tools::write::WriteTool::new(cwd.clone())),
+            Arc::new(super_agent::tools::edit::EditTool::new(cwd.clone())),
             Arc::new(super_agent::tools::bash::BashTool::new(cwd)),
         ]
     }
@@ -3362,9 +3362,7 @@ mod ephemeral_tests {
         let session = AgentSession::new(
             SessionManager::in_memory(std::path::Path::new("/test")),
             vec![
-                Arc::new(super_agent::tools::read::ReadTool {
-                    cwd: "/test".into(),
-                }),
+                Arc::new(super_agent::tools::read::ReadTool::new("/test".into())),
                 Arc::new(AdvancedOnlyTool),
             ],
             registry,

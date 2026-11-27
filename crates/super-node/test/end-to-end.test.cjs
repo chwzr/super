@@ -27,7 +27,7 @@ test("a prompt streams and writes a real file", async () => {
           id: "call_1",
           name: "Write",
           arguments: {
-            path: "hello.txt",
+            file_path: join(directory, "hello.txt"),
             content: "hello from node\n",
           },
         },

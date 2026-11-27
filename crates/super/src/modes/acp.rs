@@ -1039,9 +1039,13 @@ fn tool_title(name: &str) -> String {
     .to_string()
 }
 
+/// The file a tool call works on: `file_path` for the file tools, `path`
+/// for the search tools and for sessions stored before the file tools took
+/// `file_path`.
 fn tool_path(args: &Value, cwd: &Path) -> Option<PathBuf> {
     let path = args
-        .get("path")
+        .get("file_path")
+        .or_else(|| args.get("path"))
         .or_else(|| args.get("filePath"))
         .and_then(Value::as_str)?;
     let path = PathBuf::from(path);
@@ -1111,6 +1115,9 @@ mod tests {
         let locations = tool_locations(&json!({"path": "src/main.rs"}), &cwd);
         assert!(locations[0].path.is_absolute());
         assert_eq!(locations[0].path, cwd.join("src/main.rs"));
+        let file = cwd.join("src/lib.rs");
+        let locations = tool_locations(&json!({"file_path": file}), &cwd);
+        assert_eq!(locations[0].path, file);
         assert_eq!(tool_kind("Read"), ToolKind::Read);
         assert_eq!(tool_kind("Edit"), ToolKind::Edit);
         assert_eq!(tool_kind("Bash"), ToolKind::Execute);
@@ -1768,7 +1775,10 @@ mod tests {
                     vec![MockTurn::ToolCall {
                         id: "write-1".into(),
                         name: "Write".into(),
-                        arguments: json!({"path": "created.txt", "content": "from ACP\n"}),
+                        arguments: json!({
+                            "file_path": directory.path().join("created.txt"),
+                            "content": "from ACP\n",
+                        }),
                     }],
                     vec![MockTurn::Text("done".into())],
                 ],

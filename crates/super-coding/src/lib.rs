@@ -9,6 +9,8 @@ mod child_turn;
 pub mod compaction;
 mod context_file;
 pub mod context_files;
+#[cfg(test)]
+mod file_state_tests;
 pub mod iterative;
 mod jev;
 pub mod notifications;

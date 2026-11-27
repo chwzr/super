@@ -24,6 +24,7 @@ native-tools = [
   "dep:jsonschema",
   "dep:similar",
   "dep:tempfile",
+  "dep:xxhash-rust",
   "tokio/rt",
   "tokio/process",
   "tokio/io-util",
@@ -49,6 +50,7 @@ dirs = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 similar = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+xxhash-rust = { workspace = true, optional = true }
 
 [dev-dependencies]
 super-bench.workspace = true

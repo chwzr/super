@@ -4198,6 +4198,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "xxhash-rust",
 ]
 
 [[package]]

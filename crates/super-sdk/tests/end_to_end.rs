@@ -92,7 +92,10 @@ async fn a_scripted_model_writes_a_real_file_through_the_write_tool() {
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
                 name: "Write".into(),
-                arguments: json!({"path": "hello.txt", "content": "hello from super\n"}),
+                arguments: json!({
+                    "file_path": directory.path().join("hello.txt"),
+                    "content": "hello from super\n",
+                }),
             }],
             vec![MockTurn::Text("Done.".into())],
         ],
