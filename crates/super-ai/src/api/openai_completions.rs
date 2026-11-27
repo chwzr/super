@@ -456,6 +456,13 @@ fn build_request(
                         })
                     })
                     .collect();
+                // A turn that failed or was interrupted before it said anything
+                // stays in the history as a message with nothing in it. Providers
+                // refuse a request that holds one, which would fail every request
+                // of the session after it.
+                if text.is_empty() && tool_calls.is_empty() {
+                    continue;
+                }
                 let mut m = json!({"role": "assistant"});
                 m["content"] = if text.is_empty() {
                     Value::Null
@@ -733,6 +740,75 @@ mod tests {
     }
 
     #[test]
+    fn an_assistant_message_that_says_nothing_is_left_out() {
+        let model = model_with_compat(OpenAICompat::default());
+        let user = |text: &str| {
+            Message::User(crate::UserMessage {
+                content: UserContent::Text(text.into()),
+                timestamp: 0,
+            })
+        };
+        // A request the platform refused for the budget: no content, an error.
+        let mut failed = crate::AssistantMessage::empty(&model.api, &model.provider, &model.id);
+        failed.stop_reason = crate::StopReason::Error;
+        failed.error_message = Some("HTTP 402 Payment Required".into());
+        // An answer interrupted while the model was still thinking.
+        let mut interrupted = failed.clone();
+        interrupted.stop_reason = crate::StopReason::Aborted;
+        interrupted.content = vec![ContentBlock::Thinking {
+            thinking: "Think".into(),
+            thinking_signature: Some("reasoning_content".into()),
+            redacted: false,
+        }];
+        let mut answer = failed.clone();
+        answer.stop_reason = crate::StopReason::Stop;
+        answer.content = vec![ContentBlock::text("Answer")];
+        let mut call = failed.clone();
+        call.stop_reason = crate::StopReason::ToolUse;
+        call.content = vec![ContentBlock::ToolCall(crate::ToolCall {
+            id: "c1".into(),
+            name: "read".into(),
+            arguments: json!({}),
+            thought_signature: None,
+        })];
+        let context = Context {
+            messages: vec![
+                user("one"),
+                Message::Assistant(call),
+                Message::Assistant(failed),
+                user("go on"),
+                Message::Assistant(interrupted),
+                user("go on"),
+                Message::Assistant(answer),
+            ],
+            ..Default::default()
+        };
+        let body = build_request(
+            &model,
+            &context,
+            &StreamOptions::default(),
+            &detect_compat(&model),
+        );
+        let sent: Vec<(&str, bool)> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["role"].as_str().unwrap(), m.get("tool_calls").is_some()))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                ("user", false),
+                ("assistant", true),
+                ("user", false),
+                ("user", false),
+                ("assistant", false),
+            ]
+        );
+        assert_eq!(body["messages"][4]["content"], "Answer");
+    }
+
+    #[test]
     fn reasoning_fields_replay_separately_from_text() {
         for field in ["reasoning", "reasoning_content", "reasoning_text"] {
             let model = model_with_compat(OpenAICompat::default());
@@ -804,6 +880,9 @@ mod tests {
         assert_eq!(details[1]["summary"], "Short summary");
         assert_eq!(details[2]["data"], "opaque");
 
+        // Reasoning is replayed with what the model went on to say; a message
+        // with nothing but reasoning is not sent.
+        builder.message.content.push(ContentBlock::text("Answer"));
         let context = Context {
             system_prompt: None,
             openai_responses_input: None,
