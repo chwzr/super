@@ -138,8 +138,12 @@ current task, or `Alt+Enter` to queue the instruction for later.
 
 `Esc` or `Ctrl+C` cancels the current turn. Work the agent started in the
 background keeps running and reports back when it ends, which starts a new
-turn if the agent is idle. `/tasks` lists the running background tasks;
-select one and press `x` to stop it. A run with `-p` waits for its
+turn if the agent is idle. While background tasks run, the line under the
+input says how many and which key stops them all: `Ctrl+X`, which copies the
+last response while none runs. Bind `stopBackgroundTasks` in
+`~/.super/agent/keybindings.json` to give it a key of its own. `/tasks`
+lists the running background tasks; select one and press `x` to stop it.
+A run with `-p` waits for its
 background tasks and for a pending wake-up before it prints the answer, and
 stops them on `Ctrl+C`.
 

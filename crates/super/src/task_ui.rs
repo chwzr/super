@@ -1,9 +1,10 @@
-//! `/tasks`: the background tasks that are running, and a key to stop one.
+//! `/tasks`: the background tasks that are running, and a key to stop one;
+//! the footer line while they run, and the key that stops them all.
 //!
-//! Background tasks keep running when a turn is interrupted, so this view is
-//! how the terminal stops one. It reads the session's tasks each time it
-//! draws: the registry of an in-process session, or what the daemon reported
-//! for an attached one.
+//! Background tasks keep running when a turn is interrupted, so this view
+//! and that key are how the terminal stops them. Both read the session's
+//! tasks each time: the registry of an in-process session, or what the
+//! daemon reported for an attached one.
 
 use crate::workflow_ui::format_elapsed;
 use std::time::Duration;
@@ -96,20 +97,47 @@ impl TaskView {
     }
 }
 
-/// The footer line while background tasks run, or `None`.
-pub(crate) fn progress_line(session: &AgentSession, theme: &Theme, width: usize) -> Option<String> {
+/// The footer line while background tasks run, or `None`: how many run,
+/// and `stop_key`, the key that stops them, when one is bound.
+pub(crate) fn progress_line(
+    session: &AgentSession,
+    theme: &Theme,
+    width: usize,
+    stop_key: Option<&KeyEvent>,
+) -> Option<String> {
     let count = running(session).len();
     if count == 0 {
         return None;
     }
     let noun = if count == 1 { "task" } else { "tasks" };
-    Some(theme.fg(
-        "accent",
-        &text::truncate_to_width(
-            &format!("● {count} background {noun} running · /tasks opens the task view"),
-            width,
-        ),
-    ))
+    let mut line = format!("● {count} background {noun} running");
+    if let Some(key) = stop_key {
+        line.push_str(&format!(" · {} to stop", key.label()));
+    }
+    Some(theme.fg("accent", &text::truncate_to_width(&line, width)))
+}
+
+/// Stop every running background task of the session: commands, monitors,
+/// agents and workflows. An attached session asks the daemon for each.
+/// Returns how many were stopped; `None` when none was running, so that the
+/// key does what it does otherwise.
+pub(crate) fn stop_all(session: &AgentSession) -> Option<usize> {
+    let tasks = running(session);
+    if tasks.is_empty() {
+        return None;
+    }
+    Some(
+        tasks
+            .iter()
+            .filter(|task| session.stop_task(&task.id).is_ok())
+            .count(),
+    )
+}
+
+/// The transcript line after the key stopped `count` background tasks.
+pub(crate) fn stopped_line(count: usize) -> String {
+    let noun = if count == 1 { "task" } else { "tasks" };
+    format!("stopped {count} background {noun}")
 }
 
 /// The transcript line for a task's notice: which task ended and how.
@@ -293,7 +321,7 @@ mod tests {
         assert!(
             plain(&view.render(80, &theme, &session)).contains("No background tasks are running.")
         );
-        assert!(progress_line(&session, &theme, 80).is_none());
+        assert!(progress_line(&session, &theme, 80, None).is_none());
 
         let tasks = session.background_tasks();
         let first = tasks
@@ -307,7 +335,7 @@ mod tests {
         assert!(shown.contains("reviewer"), "{shown}");
         assert!(shown.contains("review the diff"), "{shown}");
         assert!(
-            text::strip_ansi(&progress_line(&session, &theme, 80).unwrap())
+            text::strip_ansi(&progress_line(&session, &theme, 80, None).unwrap())
                 .contains("2 background tasks running")
         );
 
@@ -329,6 +357,60 @@ mod tests {
             notice_line(&stopped),
             "task reviewer stopped · review the diff"
         );
+    }
+
+    #[test]
+    fn the_footer_names_the_key_that_stops_every_background_task() {
+        let session = session();
+        let theme = Theme::dark();
+        let ctrl_x = KeyEvent::parse("ctrl+x").unwrap();
+        let line = |key: Option<&KeyEvent>| {
+            progress_line(&session, &theme, 80, key).map(|line| text::strip_ansi(&line))
+        };
+        assert_eq!(line(Some(&ctrl_x)), None);
+        assert_eq!(stop_all(&session), None, "nothing runs, nothing to stop");
+
+        let tasks = session.background_tasks();
+        let command = tasks
+            .register(TaskSpec::new(TaskKind::Shell, "npm test"))
+            .unwrap();
+        assert_eq!(
+            line(Some(&ctrl_x)).unwrap(),
+            "● 1 background task running · Ctrl+X to stop"
+        );
+        let monitor = tasks
+            .register(TaskSpec::new(TaskKind::Monitor, "watch the log"))
+            .unwrap();
+        let agent = tasks
+            .register(TaskSpec::new(TaskKind::Agent, "review the diff"))
+            .unwrap();
+        let workflow = tasks
+            .register(TaskSpec::new(TaskKind::Workflow, "audit"))
+            .unwrap();
+        let ended = tasks
+            .register(TaskSpec::new(TaskKind::Shell, "ls"))
+            .unwrap();
+        session.stop_task(ended.id()).unwrap();
+        assert_eq!(
+            line(Some(&ctrl_x)).unwrap(),
+            "● 4 background tasks running · Ctrl+X to stop"
+        );
+        // A key the user bound instead is the one the line names.
+        let ctrl_b = KeyEvent::parse("ctrl+b").unwrap();
+        assert_eq!(
+            line(Some(&ctrl_b)).unwrap(),
+            "● 4 background tasks running · Ctrl+B to stop"
+        );
+        assert_eq!(line(None).unwrap(), "● 4 background tasks running");
+
+        assert_eq!(stop_all(&session), Some(4));
+        for handle in [&command, &monitor, &agent, &workflow] {
+            assert!(handle.is_stopped());
+        }
+        assert_eq!(stopped_line(4), "stopped 4 background tasks");
+        assert_eq!(stopped_line(1), "stopped 1 background task");
+        assert_eq!(line(Some(&ctrl_x)), None);
+        assert_eq!(stop_all(&session), None);
     }
 
     #[test]

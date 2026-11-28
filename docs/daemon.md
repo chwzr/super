@@ -320,7 +320,10 @@ session becomes a view of the daemon's:
   `/name` go to the daemon over the socket, in the order they were made.
   Esc and ctrl+c cancel the turn only: the session's background tasks keep
   running in the daemon. `/tasks` lists the running ones, as the daemon
-  reports them, and `x` there stops one (`stop_task`).
+  reports them, and `x` there stops one (`stop_task`). The footer line
+  counts them and names the key that stops them all (`Ctrl+X` unless
+  `stopBackgroundTasks` is bound to another key), which sends `stop_task`
+  for each.
   The session's events come back and are rendered by the same code that
   renders an in-process run, so the footer, the context meter and the cost
   follow what the daemon records.

@@ -837,7 +837,12 @@ impl App {
         {
             lines.push(job_ui::progress_line(&runtime, &self.theme, width));
         }
-        if let Some(line) = task_ui::progress_line(session, &self.theme, width) {
+        if let Some(line) = task_ui::progress_line(
+            session,
+            &self.theme,
+            width,
+            self.keybindings.key_for(Action::StopBackgroundTasks),
+        ) {
             lines.push(line);
         }
         if let Some(recap) = &self.recap {
@@ -3996,7 +4001,22 @@ fn handle_input(
         }
         app.escape_armed = false;
 
-        match app.keybindings.action_for(key) {
+        let actions = app.keybindings.actions_for(key);
+        if actions.contains(&Action::StopBackgroundTasks) {
+            if let Some(count) = task_ui::stop_all(session) {
+                app.cells.push(Cell::Notice(task_ui::stopped_line(count)));
+                return Flow::Continue;
+            }
+            if actions.len() == 1 {
+                // The key of its own does nothing while no task runs.
+                return Flow::Continue;
+            }
+        }
+        let action = actions
+            .iter()
+            .copied()
+            .find(|action| !action.is_conditional());
+        match action {
             Some(Action::Newline) => {
                 app.editor.newline();
                 app.command_menu = None;
@@ -5017,6 +5037,18 @@ fn open_model_picker(
         };
         let _ = tx.send(CommandEvent::ModelCatalog { result, pattern });
     });
+}
+
+/// The `/hotkeys` text. The key that stops the background tasks is the one
+/// bound to it, since its line in the footer names that key too.
+fn hotkeys_text(keybindings: &Keybindings) -> String {
+    let stop = keybindings
+        .key_for(Action::StopBackgroundTasks)
+        .map(|key| format!(" · {} stop background tasks while they run", key.label()))
+        .unwrap_or_default();
+    format!(
+        "Input\n  Enter send · Shift+Enter or Alt+Enter newline · Ctrl+W delete previous word · / commands and skills · $ skills · @ files · ! shell · !! shell outside context\nModels and effort\n  Shift+Tab effort · Ctrl+L select model · Ctrl+P next model · Ctrl+Shift+P previous model\nSession\n  Ctrl+D exit · Esc cancel · Ctrl+C interrupt or clear · double Esc tree{stop}\nDisplay and queues\n  Ctrl+O tools · Ctrl+T thinking · Ctrl+X copy · Ctrl+Enter follow-up · Alt+Up dequeue\nWorkflows\n  /workflow <prompt> runs one task as a workflow · /workflows browses runs\n  arrows select · Enter open · Esc back · j/k scroll · f filter · p pause · x stop · r restart · s save"
+    )
 }
 
 fn save_default_hint(keybindings: &Keybindings) -> String {
@@ -8436,9 +8468,7 @@ fn run_slash_command(
     match name {
         "quit" | "exit" => return Flow::Quit,
         "help" | "hotkeys" => {
-            app.cells.push(Cell::Notice(
-                "Input\n  Enter send · Shift+Enter or Alt+Enter newline · Ctrl+W delete previous word · / commands and skills · $ skills · @ files · ! shell · !! shell outside context\nModels and effort\n  Shift+Tab effort · Ctrl+L select model · Ctrl+P next model · Ctrl+Shift+P previous model\nSession\n  Ctrl+D exit · Esc cancel · Ctrl+C interrupt or clear · double Esc tree\nDisplay and queues\n  Ctrl+O tools · Ctrl+T thinking · Ctrl+X copy · Ctrl+Enter follow-up · Alt+Up dequeue\nWorkflows\n  /workflow <prompt> runs one task as a workflow · /workflows browses runs\n  arrows select · Enter open · Esc back · j/k scroll · f filter · p pause · x stop · r restart · s save".into(),
-            ));
+            app.cells.push(Cell::Notice(hotkeys_text(&app.keybindings)));
         }
         "model" => {
             if rest.is_empty()
@@ -9836,6 +9866,104 @@ mod tests {
         assert!(matches!(flow, Flow::Continue));
         assert_eq!(app.editor.text(), "one ");
         assert!(app.workflow_view.is_none());
+    }
+
+    #[test]
+    fn the_stop_key_stops_every_background_task_and_copies_while_none_runs() {
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        let args = Args::parse_from(["super"]);
+        let mut resources = test_resources();
+        let mut running_task = None;
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
+        let mut file_search = FileSearchService::new(file_tx);
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let mut press = |app: &mut App, key: KeyEvent| {
+            handle_input(
+                app,
+                &session,
+                &InputEvent::Key(key),
+                &args,
+                &mut resources,
+                &mut running_task,
+                &mut file_search,
+                &command_tx,
+            )
+        };
+        let last_notice = |app: &App| match app.cells.last() {
+            Some(Cell::Notice(text)) => text.clone(),
+            _ => panic!("the last cell is no notice"),
+        };
+
+        // Nothing runs: Ctrl+X copies the last response, as before.
+        assert!(matches!(
+            press(&mut app, KeyEvent::ctrl('x')),
+            Flow::Continue
+        ));
+        assert_eq!(last_notice(&app), "nothing to copy");
+
+        let tasks = session.background_tasks();
+        let command = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Shell,
+                "npm test",
+            ))
+            .unwrap();
+        let agent = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Agent,
+                "review the diff",
+            ))
+            .unwrap();
+        let footer = |app: &App| {
+            task_ui::progress_line(
+                &session,
+                &app.theme,
+                80,
+                app.keybindings.key_for(Action::StopBackgroundTasks),
+            )
+            .map(|line| super_tui::text::strip_ansi(&line))
+        };
+        assert_eq!(
+            footer(&app).unwrap(),
+            "● 2 background tasks running · Ctrl+X to stop"
+        );
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+X stop background tasks"));
+
+        // One press stops them all and says how many.
+        press(&mut app, KeyEvent::ctrl('x'));
+        assert!(command.is_stopped() && agent.is_stopped());
+        assert_eq!(last_notice(&app), "stopped 2 background tasks");
+        assert_eq!(footer(&app), None);
+
+        // A key of its own: the footer and the help name it, it does
+        // nothing while no task runs, and Ctrl+X only copies.
+        app.keybindings
+            .bind(KeyEvent::ctrl('b'), Action::StopBackgroundTasks);
+        app.editor.set_text("draft");
+        let cells = app.cells.len();
+        press(&mut app, KeyEvent::ctrl('b'));
+        assert_eq!(app.cells.len(), cells);
+        assert_eq!(app.editor.text(), "draft");
+        let monitor = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Monitor,
+                "watch the log",
+            ))
+            .unwrap();
+        assert_eq!(
+            footer(&app).unwrap(),
+            "● 1 background task running · Ctrl+B to stop"
+        );
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+B stop background tasks"));
+        press(&mut app, KeyEvent::ctrl('x'));
+        assert!(!monitor.is_stopped());
+        assert_eq!(last_notice(&app), "nothing to copy");
+        press(&mut app, KeyEvent::ctrl('b'));
+        assert!(monitor.is_stopped());
+        assert_eq!(last_notice(&app), "stopped 1 background task");
     }
 
     /// A repository with one commit, for a session that enters a worktree.

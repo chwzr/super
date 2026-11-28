@@ -202,6 +202,14 @@
   unloaded while idle.
 - `/remote` no longer waits for a pending wake-up: the daemon takes it over
   from the session's file. Rust SDK: `Wakeups::park` and `unpark`.
+- While background tasks run, the terminal's footer says how many and which
+  key stops them all, `● 2 background tasks running · Ctrl+X to stop`, also
+  when it is attached to the daemon. One press stops every command,
+  monitor, agent and workflow of the session and says how many it stopped;
+  while none runs, `Ctrl+X` copies the last response as before. The key is
+  the action `stopBackgroundTasks` in `~/.super/agent/keybindings.json`;
+  given a key of its own, it does nothing while no task runs, and the footer
+  and `/hotkeys` name that key.
 - A workflow run's journal is written call by call as the run goes
   (`<run id>.journal.jsonl`), so a run cut off by the end of its process can
   be resumed with `resumeFromRunId` after a restart. Such a run is announced

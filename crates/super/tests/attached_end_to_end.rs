@@ -582,3 +582,82 @@ async fn the_mode_and_the_agent_switches_of_an_attached_terminal_reach_the_daemo
     assert!(tools(&after).contains(&"Monitor".to_string()));
     daemon.kill().await.ok();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attached_terminal_sees_the_daemons_background_tasks_and_stops_them_all() {
+    let sandbox = Sandbox::new();
+    let background = |id: &str, command: &str| MockTurn::ToolCall {
+        id: id.into(),
+        name: "Bash".into(),
+        arguments: json!({"command": command, "run_in_background": true}),
+    };
+    let script = MockScript {
+        turns: vec![
+            vec![
+                background("call_a", "sleep 30; echo first"),
+                background("call_b", "sleep 30; echo second"),
+            ],
+            vec![MockTurn::Text("Both run.".into())],
+        ],
+    };
+    let provider = MockProvider::start(sandbox.path("mock"), script)
+        .await
+        .expect("mock provider");
+    let mut daemon = sandbox.start_daemon(&provider).await;
+    let mut first = terminal(&sandbox, &provider, "Terminal A", None).await;
+    let session_id = first.remote.session_id();
+    first
+        .view
+        .prompt_with_mode(
+            vec![AgentMessage::user("run two commands")],
+            PromptMode::Ordinary,
+        )
+        .await;
+    events_until(&mut first.events, agent_end).await;
+
+    // The view counts what the daemon runs, as its footer line does.
+    let running = |view: &AgentSession| {
+        view.tasks()
+            .into_iter()
+            .filter(|task| task.status.is_running())
+            .map(|task| task.id)
+            .collect::<Vec<_>>()
+    };
+    eventually("the view lists the two commands", || {
+        running(&first.view).len() == 2
+    })
+    .await;
+
+    // What the stop key does: stop each running task through the view.
+    for id in running(&first.view) {
+        first.view.stop_task(&id).expect("a running task");
+    }
+    let reader = DaemonClient::connect_to(&sandbox.socket(), &info("Reader"))
+        .await
+        .expect("connect");
+    reader.attach(&session_id).await.expect("attach");
+    let mut stopped = 0;
+    for _ in 0..500 {
+        let tasks = reader
+            .execute_ok(super_sdk::Command::GetTasks {})
+            .await
+            .expect("get_tasks")
+            .expect("tasks");
+        stopped = tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|task| task["status"] == "stopped")
+            .count();
+        if stopped == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(stopped, 2, "the daemon stopped both commands");
+    eventually("the view hears that both ended", || {
+        running(&first.view).is_empty()
+    })
+    .await;
+    daemon.kill().await.ok();
+}
