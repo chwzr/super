@@ -420,6 +420,10 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- The terminal shows a `Skill` call's result as the skill's text, live, in
+  an attached terminal and from the history; it showed the text the model
+  gets, with its placeholder line and `<skill>`, `<name>` and `<content>`
+  tags.
 - The line front end of `super attach` (piped `super` with the daemon)
   names the tool names of `--tools`, `--exclude-tools`, `defaultTools` and
   the agent types that no tool has, on standard error, as every other way

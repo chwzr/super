@@ -5058,8 +5058,8 @@ fn open_model_picker(
 /// What the transcript shows under a tool call of `tool_name` whose result
 /// is `content` with `details`: the text the model gets, except where that
 /// is made for the model. A waited `Agent` shows the child's report without
-/// the block of its id and usage, and `ListAgents` one line per agent in
-/// place of its JSON.
+/// the block of its id and usage, `ListAgents` one line per agent in place
+/// of its JSON, and `Skill` the skill's text without the lines around it.
 pub(crate) fn shown_output(
     tool_name: &str,
     content: &[super_ai::ContentBlock],
@@ -5096,6 +5096,15 @@ pub(crate) fn shown_output(
                 .join("\n"),
             None => texts.join("\n"),
         },
+        "Skill" => {
+            let text = texts.join("\n");
+            match (text.find("<content>\n"), text.rfind("\n</content>")) {
+                (Some(start), Some(end)) if start + "<content>\n".len() <= end => {
+                    text[start + "<content>\n".len()..end].to_string()
+                }
+                _ => text,
+            }
+        }
         _ => texts.join("\n"),
     }
 }
@@ -9741,6 +9750,26 @@ mod tests {
 
     /// A waited agent's line shows its report, and `ListAgents` a line per
     /// agent, not the text made for the model.
+    #[test]
+    fn a_loaded_skill_reads_as_its_text() {
+        let loaded = super_coding::skills::skill_text(
+            "Skill.loaded",
+            "workflow-authoring",
+            None,
+            "# Writing a dynamic workflow\nStep one.",
+            None,
+        );
+        assert_eq!(
+            shown_output("Skill", &[super_ai::ContentBlock::text(loaded)], None),
+            "# Writing a dynamic workflow\nStep one."
+        );
+        // A skill that ran in an agent shows the agent's report.
+        assert_eq!(
+            shown_output("Skill", &[super_ai::ContentBlock::text("REPORT")], None),
+            "REPORT"
+        );
+    }
+
     #[test]
     fn agent_results_read_as_a_report_and_a_list() {
         let report = [
