@@ -513,6 +513,10 @@
   each call's output and result under that call, also in a terminal attached
   to the daemon. They went to the latest unfinished call in the order they
   ended, so a background command's task id could stand under another call.
+- A terminal that attaches to the daemon while a tool call runs shows the
+  call once, from the history, with its output and result under it as they
+  come. It showed the call twice, the second time without a file name when
+  its start came before the attach.
 - In ACP, a notice, a monitor event or a message from an agent that comes
   while no prompt runs starts a turn, whose updates reach the client as
   `session/update` notifications, as in every other mode. It waited for the

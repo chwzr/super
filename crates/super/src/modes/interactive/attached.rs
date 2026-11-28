@@ -247,8 +247,25 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
             _ => None,
         })
         .collect();
+    // The calls of the last answer of a turn in flight that have no result
+    // yet are still running: their output and end stream in, under them.
+    let in_flight = session
+        .is_running()
+        .then(|| {
+            entries.iter().rposition(|entry| {
+                matches!(
+                    entry,
+                    super_coding::SessionEntry::Message {
+                        message: AgentMessage::Assistant(_),
+                        ..
+                    }
+                )
+            })
+        })
+        .flatten();
     let mut cells = Vec::new();
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        let entry = *entry;
         if let Some(line) = crate::task_ui::state_line(entry, manager.cwd()) {
             cells.push(Cell::Notice(line));
         }
@@ -302,7 +319,7 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
                                     })
                                     .unwrap_or_default(),
                                 is_error: result.is_some_and(|result| result.is_error),
-                                done: true,
+                                done: result.is_some() || in_flight != Some(index),
                             });
                         }
                     }

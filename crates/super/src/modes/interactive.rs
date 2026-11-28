@@ -2218,6 +2218,13 @@ fn handle_session_event(
                 tool_name,
                 args,
             } => {
+                // A terminal that attached during the call shows it from the
+                // history already; what follows goes under that line.
+                if !tool_call_id.is_empty()
+                    && running_tool_call(&mut app.cells, &tool_call_id).is_some()
+                {
+                    return;
+                }
                 let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
                 app.cells.push(Cell::ToolCall {
                     id: tool_call_id,
@@ -9684,6 +9691,60 @@ mod tests {
             session_cells(&session).as_slice(),
             [Cell::Notice(shown)] if *shown == line
         ));
+    }
+
+    /// A terminal that attached during a call shows it from the history
+    /// as running; the start the view makes up for it, without arguments,
+    /// adds no second line, and its end goes under the line it has.
+    #[test]
+    fn a_call_shown_from_the_history_gets_no_second_line() {
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        app.cells.push(Cell::ToolCall {
+            id: "call_r".into(),
+            title: "Read r.txt".into(),
+            output: String::new(),
+            is_error: false,
+            done: false,
+        });
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut search = FileSearchService::new(tx);
+        for event in [
+            AgentEvent::ToolExecutionStart {
+                tool_call_id: "call_r".into(),
+                tool_name: "Read".into(),
+                args: serde_json::Value::Null,
+            },
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id: "call_r".into(),
+                tool_name: "Read".into(),
+                result: super_agent::ToolResult::text("1\tREAD-ME"),
+                is_error: false,
+            },
+        ] {
+            handle_session_event(
+                &mut app,
+                SessionEvent::Agent(Box::new(event)),
+                &mut search,
+                &session,
+            );
+        }
+        let calls: Vec<(&str, &str, bool)> = app
+            .cells
+            .iter()
+            .filter_map(|cell| match cell {
+                Cell::ToolCall {
+                    title,
+                    output,
+                    done,
+                    ..
+                } => Some((title.as_str(), output.as_str(), *done)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, [("Read r.txt", "1\tREAD-ME", true)]);
     }
 
     #[test]
