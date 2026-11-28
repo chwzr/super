@@ -119,13 +119,15 @@ struct RunState {
 }
 
 impl AgentRecord {
-    /// A record of a running agent, as [`AgentRegistry::insert`] takes it.
+    /// A record of an agent whose run `stop` ends, as
+    /// [`AgentRegistry::insert`] takes it.
     pub(crate) fn new(
         id: String,
         name: String,
         agent_type: String,
         session: Arc<AgentSession>,
         background: bool,
+        stop: CancellationToken,
     ) -> Self {
         AgentRecord {
             id,
@@ -135,7 +137,7 @@ impl AgentRecord {
             state: Mutex::new(RunState {
                 status: TaskStatus::Running,
                 background,
-                stop: None,
+                stop: Some(stop),
             }),
         }
     }
@@ -283,7 +285,7 @@ impl AgentRegistry {
         let agent_type = find_type(&types, request.agent_type.as_deref())?;
         let (model, thinking) = choose_model(&owner, agent_type, &request)?;
 
-        let record = {
+        let (record, handle, stop) = {
             let _starting = self.starting.lock().unwrap();
             self.check_room()?;
             let id = owner.background_tasks().new_id(TaskKind::Agent);
@@ -299,25 +301,32 @@ impl AgentRegistry {
                 depth: self.depth + 1,
                 tool_use_id,
             })?;
+            // A background run is stopped through its task, a waited one
+            // with the caller's turn.
+            let (handle, stop) = if request.background {
+                let handle = register_run(&owner, &id, description, &child, tool_use_id)?;
+                let stop = handle.stop_signal();
+                (Some(handle), stop)
+            } else {
+                (None, cancel.child_token())
+            };
             let record = Arc::new(AgentRecord::new(
                 id,
                 description.to_string(),
                 agent_type.name.clone(),
                 child,
                 request.background,
+                stop.clone(),
             ));
             self.insert(record.clone());
-            record
+            (record, handle, stop)
         };
         let prompt = first_message(agent_type, &request.prompt);
 
-        if request.background {
-            let handle = self.register_run(&owner, &record, tool_use_id)?;
+        if let Some(handle) = handle {
             self.spawn_run(record.clone(), handle, prompt);
             return Ok(Started::Background(record.info(Some(&owner))));
         }
-        let stop = cancel.child_token();
-        record.begin_run(false, stop.clone());
         let outcome =
             child_turn::run_child_turn(&self.owner, &record.session, prompt, Some(stop), None)
                 .await;
@@ -356,7 +365,14 @@ impl AgentRegistry {
             return Ok(Delivery::Queued(record.info(Some(&owner))));
         }
         self.check_room()?;
-        let handle = self.register_run(&owner, &record, tool_use_id)?;
+        let handle = register_run(
+            &owner,
+            &record.id,
+            &record.name,
+            &record.session,
+            tool_use_id,
+        )?;
+        record.begin_run(true, handle.stop_signal());
         self.spawn_run(record.clone(), handle, note);
         Ok(Delivery::Resumed(record.info(Some(&owner))))
     }
@@ -365,6 +381,8 @@ impl AgentRegistry {
     /// registry, so it ends without a notice, a foreground one by ending
     /// its run.
     pub(crate) fn stop_all(&self) {
+        // No run starts or resumes while the others are stopped.
+        let _starting = self.starting.lock().unwrap();
         let owner = self.owner.upgrade();
         let records = self.records.lock().unwrap().clone();
         for record in records {
@@ -434,29 +452,6 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// Register the background run of `record` as a task with the agent's
-    /// id, its transcript as the output file.
-    fn register_run(
-        &self,
-        owner: &AgentSession,
-        record: &Arc<AgentRecord>,
-        tool_use_id: &str,
-    ) -> anyhow::Result<TaskHandle> {
-        let mut spec = TaskSpec::new(TaskKind::Agent, record.name.clone()).with_id(&record.id);
-        if !tool_use_id.is_empty() {
-            spec = spec.with_tool_use_id(tool_use_id);
-        }
-        if let Some(file) = record.session.manager.lock().unwrap().session_file() {
-            spec = spec.with_output_file(file);
-        }
-        let handle = owner
-            .background_tasks()
-            .register(spec)
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        record.begin_run(true, handle.stop_signal());
-        Ok(handle)
-    }
-
     fn spawn_run(
         self: &Arc<Self>,
         record: Arc<AgentRecord>,
@@ -477,6 +472,28 @@ impl AgentRegistry {
             handle.finish(task_outcome(&record.name, &outcome));
         });
     }
+}
+
+/// Register a background run of the agent `id` as a task of `owner` with
+/// that id, the agent's transcript as its output file.
+fn register_run(
+    owner: &AgentSession,
+    id: &str,
+    name: &str,
+    session: &AgentSession,
+    tool_use_id: &str,
+) -> anyhow::Result<TaskHandle> {
+    let mut spec = TaskSpec::new(TaskKind::Agent, name).with_id(id);
+    if !tool_use_id.is_empty() {
+        spec = spec.with_tool_use_id(tool_use_id);
+    }
+    if let Some(file) = session.manager.lock().unwrap().session_file() {
+        spec = spec.with_output_file(file);
+    }
+    owner
+        .background_tasks()
+        .register(spec)
+        .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
 /// The type named `name`, or `general-purpose`; a name in another case is
