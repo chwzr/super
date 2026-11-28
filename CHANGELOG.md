@@ -420,6 +420,10 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- Two `ScheduleWakeup` calls in one answer take effect in its order: a
+  `stop` after a wake-up cancels it, and the second of two wake-ups is the
+  one that waits. They ran at the same time, so the stop often came first
+  and left the wake-up pending, and `-p` waited for it.
 - `TaskStop` of an agent answers once the agent's run has stopped, so a
   `SendMessage` to it after the `TaskStop` in the same answer resumes it.
   The message was refused every time with "Agent … is stopping; send the

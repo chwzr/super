@@ -1240,7 +1240,9 @@ When one answer makes several calls, `Edit`, `Write` and `Bash` each run
 alone, in their place: the calls before one have ended when it starts, and
 the calls after it start when it has ended. So do `SendMessage`,
 `ListAgents`, `TaskStop` and `Workflow`, so that they find an agent or a task
-a call before them started, and two messages reach an agent in their order.
+a call before them started, and two messages reach an agent in their order,
+and so does `ScheduleWakeup`, so that a stop after a wake-up cancels it and
+the second of two wake-ups replaces the first.
 Calls of other tools next to each other, such as several reads or several
 `Agent` calls, run at the same time.
 

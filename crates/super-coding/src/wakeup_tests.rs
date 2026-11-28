@@ -540,3 +540,46 @@ async fn a_round_lasts_while_its_background_work_runs_and_its_notice_can_continu
     assert_eq!(job.snapshot().iteration, 2);
     assert_eq!(fixture.seen.count(&lane), 4);
 }
+
+/// Two `ScheduleWakeup` calls of one answer take effect in its order, every
+/// time: a stop after a wake-up leaves none pending, and the second of two
+/// wake-ups is the one that waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_wake_up_calls_of_one_answer_take_effect_in_its_order() {
+    let answer = |second: Value| {
+        let mut answer = tool_call(
+            "w1",
+            "ScheduleWakeup",
+            json!({"delaySeconds": 60, "prompt": "WAKE-ONE"}),
+        );
+        answer
+            .content
+            .push(super_ai::ContentBlock::ToolCall(super_ai::ToolCall {
+                id: "w2".into(),
+                name: "ScheduleWakeup".into(),
+                arguments: second,
+                thought_signature: None,
+            }));
+        answer
+    };
+    for _ in 0..10 {
+        let fixture = fixture(vec![(
+            "go",
+            vec![
+                Some(answer(json!({"stop": true}))),
+                Some(text("stopped")),
+                Some(answer(json!({"delaySeconds": 120, "prompt": "WAKE-TWO"}))),
+                Some(text("replaced")),
+            ],
+        )]);
+        let session = &fixture.session;
+        session.prompt(vec![AgentMessage::user("go")]).await;
+        assert!(session.wakeups().pending().is_none(), "the stop came second");
+        session.prompt(vec![AgentMessage::user("go")]).await;
+        assert_eq!(
+            session.wakeups().pending().unwrap().prompt.as_deref(),
+            Some("WAKE-TWO")
+        );
+        session.wakeups().stop();
+    }
+}

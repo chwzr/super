@@ -8,7 +8,7 @@ use anyhow::Context as _;
 use serde_json::{Value, json};
 use std::sync::Weak;
 use super_agent::placeholder;
-use super_agent::{AgentTool, ToolResult, ToolUpdateSink};
+use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
 use tokio_util::sync::CancellationToken;
 
 pub struct ScheduleWakeupTool {
@@ -29,6 +29,12 @@ impl AgentTool for ScheduleWakeupTool {
 
     fn advanced_only(&self) -> bool {
         true
+    }
+
+    /// Two calls of one answer take effect in its order: a stop after a
+    /// wake-up cancels it, and the second wake-up replaces the first.
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     fn description(&self) -> String {
