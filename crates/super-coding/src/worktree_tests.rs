@@ -187,6 +187,44 @@ async fn a_new_worktree_starts_from_head_when_the_setting_says_so() {
     assert_eq!(entered.details["start"], Value::Null);
 }
 
+/// A session that works in a linked worktree of the user's makes its
+/// worktree in the main working tree's folder of worktrees, as an agent's
+/// worktree is, not inside the linked one, starting from the linked
+/// worktree's `HEAD`.
+#[tokio::test]
+async fn a_worktree_made_from_a_linked_worktree_goes_to_the_main_tree() {
+    let repository = repository(false);
+    let root = &repository.root;
+    let linked = root.parent().unwrap().join("linked");
+    run(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "user-branch",
+            &linked.display().to_string(),
+        ],
+    );
+    let linked = linked.canonicalize().unwrap();
+    std::fs::write(linked.join("linked.txt"), "on the user's branch\n").unwrap();
+    run(&linked, &["add", "linked.txt"]);
+    run(&linked, &["commit", "--quiet", "-m", "linked"]);
+    let session = session_in(&linked, settings(WorktreeBaseRef::Head), None);
+    let entered = enter(&session, json!({"name": "mine"})).await.unwrap();
+    assert!(result_text(&entered).ends_with("The branch starts from HEAD."));
+    let made = &session.worktree().unwrap().worktree;
+    assert_eq!(made.path, root.join(".super/worktrees/mine"));
+    assert!(!linked.join(".super/worktrees/mine").exists());
+    assert!(made.path.join("linked.txt").exists());
+    assert_eq!(made.base, run(&linked, &["rev-parse", "HEAD"]));
+    // Leaving it takes the session back to the linked worktree.
+    exit(&session, json!({"action": "remove"})).await.unwrap();
+    assert_eq!(session.working_folder(), linked);
+    assert!(!made.path.exists());
+}
+
 #[tokio::test]
 async fn a_worktree_without_a_name_gets_one_and_fresh_falls_back_to_head_without_a_remote() {
     let repository = repository(false);

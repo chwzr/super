@@ -1331,8 +1331,10 @@ or `Bash`. A subagent has none of them.
   starts before they exit; `Ctrl+C` ends the wait, and the wake-up stays
   with the session.
 - `EnterWorktree` moves the session into a git worktree. With `name`, or with
-  neither `name` nor `path`, it makes one, `.super/worktrees/<name>` in the
-  project, on the new branch `worktree-<name>`; without a name it gets eight
+  neither `name` nor `path`, it makes one, `.super/worktrees/<name>` at the
+  top of the project (the main working tree, also when the session works in
+  a linked worktree of yours, where `HEAD` is that worktree's), on the new
+  branch `worktree-<name>`; without a name it gets eight
   random letters and digits. With `path` it enters a worktree of the same
   repository that exists. From then on `Bash`, the file tools and the
   working directory in the system prompt use the worktree, and so do the

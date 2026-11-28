@@ -252,13 +252,26 @@ impl AgentTool for EnterWorktreeTool {
                 (worktree, false, None)
             }
             None => {
+                // Worktrees go to the main working tree, as an agent's do,
+                // also from a linked worktree; `HEAD` is the commit the
+                // session's folder is at.
+                let (project, head) = {
+                    let folder = folder.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let project =
+                            worktree::main_tree(&folder).unwrap_or_else(|_| folder.clone());
+                        (project, worktree::head_commit(&folder).ok())
+                    })
+                    .await
+                    .context("The worktree could not be made.")?
+                };
                 let start =
-                    worktree::start_point(&folder, session.settings().worktree.base_ref).await;
+                    worktree::start_point(&project, session.settings().worktree.base_ref).await;
                 let made = {
-                    let start = start.clone();
+                    let start = start.clone().or(head);
                     tokio::task::spawn_blocking(move || {
                         let name = name.unwrap_or_else(|| generated_name(&folder));
-                        worktree::create(&folder, &name, start.as_deref())
+                        worktree::create(&project, &name, start.as_deref())
                     })
                 };
                 let worktree = made

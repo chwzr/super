@@ -420,6 +420,10 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- `EnterWorktree` in a session that works in a linked worktree makes its
+  worktree in the main working tree's `.super/worktrees/`, as an agent's
+  worktree is, starting from the linked worktree's `HEAD` with
+  `worktree.baseRef` `head`. It was made inside the linked worktree.
 - A workflow run stopped while its last agent call runs (Ctrl+X, `/tasks`,
   `stop_task`, `TaskStop`, `abort`, turning the switches off) ends as
   stopped: its `workflow_outcome`, its stored `workflow_run` entry and
