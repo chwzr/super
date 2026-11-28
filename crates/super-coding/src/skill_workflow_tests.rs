@@ -1334,7 +1334,12 @@ async fn a_workflow_needs_a_script_a_path_or_a_name() {
     let missing = last_tool_result(&main[2].context);
     assert!(missing.is_error);
     // On Windows a path without a drive is on the session folder's drive.
-    let script = fixture.folder().join("/no/such/script.js");
+    let given = Path::new("/no/such/script.js");
+    let script = if given.is_absolute() {
+        given.to_path_buf()
+    } else {
+        fixture.folder().join(given)
+    };
     assert!(
         texts(&missing)[0].starts_with(&format!(
             "Could not read the workflow script {}: ",
