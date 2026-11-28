@@ -29,6 +29,7 @@ pub mod tasks;
 pub mod tools;
 pub mod trust;
 pub mod workflows;
+pub mod worktree;
 
 pub use agents::{AgentInfo, AgentRegistry, AgentResources, AgentType, AgentTypeSummary};
 pub use notifications::{Priority, agent_message, monitor_event, task_notification};
