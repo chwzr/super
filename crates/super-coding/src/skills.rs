@@ -142,10 +142,12 @@ pub fn frontmatter_value(frontmatter: &str) -> Option<serde_yaml::Value> {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
             let value = value.trim();
-            // As in YAML, a `#` after a space starts a comment.
+            // As in YAML, a `#` after a space starts a comment, unless it
+            // comes right after a colon, as in `Tags: #one`, which YAML
+            // cannot read either: then it is part of the text.
             let (text, comment) = match value.find(" #") {
-                Some(at) => (value[..at].trim_end(), &value[at..]),
-                None => (value, ""),
+                Some(at) if !value[..at].ends_with(':') => (value[..at].trim_end(), &value[at..]),
+                _ => (value, ""),
             };
             let structured = text.starts_with(['"', '\'', '[', '{', '|', '>', '&', '*', '!']);
             if plain_key && text.contains(": ") && !structured {
@@ -502,6 +504,15 @@ mod tests {
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(out[0].disable_model_invocation);
         assert_eq!(out[0].description, "Deploys: production");
+        // A `#` right after a colon is text.
+        std::fs::write(
+            root.join("mine.md"),
+            "---\nname: mine\ndescription: Tags: #one\n---\nGo",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        scan_dir(root, true, &mut out);
+        assert_eq!(out[0].description, "Tags: #one");
         let loaded = parse_loaded(
             "---\ncontext: fork # its own agent\nbackground: true # do not wait\ndescription: a: b\n---\nBody",
         );
