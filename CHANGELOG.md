@@ -424,7 +424,7 @@
 - While `/remote` waits, its line says what for: "once the turn is over",
   "once its background tasks have ended" or "once its work here is done".
   It said "once the turn is over" also when no turn ran and it waited for a
-  background command.
+  background command, a workflow run or a self-paced `/loop`.
 - The terminal shows a `Skill` call's result as the skill's text, live, in
   an attached terminal and from the history; it showed the text the model
   gets, with its placeholder line and `<skill>`, `<name>` and `<content>`

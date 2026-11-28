@@ -9793,11 +9793,18 @@ mod tests {
     /// says it waits for them, not for a turn.
     #[test]
     fn the_remote_line_says_what_the_move_waits_for() {
-        let app = test_app();
+        let mut app = test_app();
         let session = test_session(super_coding::SessionManager::in_memory(Path::new(
             "/synthetic",
         )));
         assert!(remote_handover::ready_line(&app, &session).contains("once its work here is done"));
+        // A request that writes the session is no turn.
+        app.title_generation_pending = true;
+        assert!(remote_handover::ready_line(&app, &session).contains("once its work here is done"));
+        app.title_generation_pending = false;
+        app.working = true;
+        assert!(remote_handover::ready_line(&app, &session).contains("once the turn is over"));
+        app.working = false;
         let _task = session
             .background_tasks()
             .register(super_coding::TaskSpec::new(

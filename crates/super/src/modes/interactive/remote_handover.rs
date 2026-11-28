@@ -242,10 +242,11 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
 /// work ([`busy`]).
 #[cfg_attr(not(unix), allow(dead_code))]
 pub(super) fn ready_line(app: &App, session: &AgentSession) -> String {
-    let until = if !matches!(
-        terminal_host_state(app, session),
-        crate::terminal_hosts::State::Idle
-    ) {
+    // Only a turn is a turn: a workflow run is a background task, and a
+    // self-paced loop that waits or a request that writes the session is
+    // the rest of its work.
+    let turn = app.working || app.compacting || session.is_running();
+    let until = if turn {
         "once the turn is over"
     } else if session.background_tasks().has_running() {
         "once its background tasks have ended"
