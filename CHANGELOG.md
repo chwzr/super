@@ -630,6 +630,14 @@
 - The terminal's last lines when it quits ("session saved: …", "resume with:
   super -c") start on clean lines: the rest of the last frame below the
   editor is erased first, where pieces of its footer stayed beside them.
+- A turn that is aborted while its tools run sends the model no further
+  request. On Linux and Windows the request for the next step could go out
+  before the provider saw the abort, so a switch of conversation or an
+  interrupt cost one more request, whose answer was thrown away.
+- On Windows a session whose folder is written as a canonical path
+  (`\\?\C:\…`, as `EnterWorktree` with `path` writes it) is stored, and
+  `Bash` and `Monitor` with Git Bash run in that folder. The session could
+  not be written, and Git Bash could not enter the folder.
 
 ## 0.0.42 - 2026-11-27
 
