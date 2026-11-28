@@ -99,7 +99,8 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
   left of it is written into the conversation it belongs to, as `abort`
   without task controls does for the turn; the conversation's workflow runs
   are stopped, and each run's end is stored in the conversation it started
-  in. A `steer` or `follow_up` still queued is dropped, as `clear_queue`
+  in, with no `workflow_outcome` after the move. A `steer` or `follow_up`
+  still queued is dropped, as `clear_queue`
   drops it. A notice, a monitor's events or an agent's message that waited
   for the turn is written into the conversation that is left, where the
   model reads it with that conversation's next prompt, and a wake-up that
