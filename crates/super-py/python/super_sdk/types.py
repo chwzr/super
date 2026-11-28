@@ -30,6 +30,36 @@ class ToolName(StrEnum):
     FIND = 'find'
     LS = 'ls'
     MCP = 'mcp'
+    # The tools a session adds itself in the advanced mode.
+    MONITOR = 'Monitor'
+    TASK_STOP = 'TaskStop'
+    AGENT = 'Agent'
+    SEND_MESSAGE = 'SendMessage'
+    LIST_AGENTS = 'ListAgents'
+    WORKFLOW = 'Workflow'
+    SKILL = 'Skill'
+    SCHEDULE_WAKEUP = 'ScheduleWakeup'
+    ENTER_WORKTREE = 'EnterWorktree'
+    EXIT_WORKTREE = 'ExitWorktree'
+
+
+class Mode(StrEnum):
+    BASIC = 'basic'
+    ADVANCED = 'advanced'
+
+
+class TaskKind(StrEnum):
+    SHELL = 'shell'
+    MONITOR = 'monitor'
+    AGENT = 'agent'
+    WORKFLOW = 'workflow'
+
+
+class TaskStatus(StrEnum):
+    RUNNING = 'running'
+    COMPLETED = 'completed'
+    FAILED = 'failed'
+    STOPPED = 'stopped'
 
 
 class QueueMode(StrEnum):
@@ -119,6 +149,10 @@ class CommandData(TypedDict, total=False):
     sessionPath: str
     entryId: str
     outputPath: str | None
+    taskId: str
+    agent: str | None
+    subagents: bool | None
+    workflows: bool | None
 
 
 class ResponseData(TypedDict, total=False):
@@ -143,6 +177,73 @@ class SessionStateData(TypedDict, total=False):
     followUpMode: QueueMode
     autoCompactionEnabled: bool
     autoRetryEnabled: bool
+    cwd: str
+    worktree: WorktreeData | None
+    mode: Mode
+    subagents: bool
+    workflows: bool
+
+
+class WorktreeData(TypedDict):
+    """The worktree a session works in, as ``get_state`` reports it."""
+
+    path: str
+    branch: str
+    created: bool
+    original: str
+
+
+class ModeData(TypedDict):
+    """The mode and the two agent switches, as ``set_mode`` answers."""
+
+    mode: Mode
+    subagents: bool
+    workflows: bool
+
+
+class TaskInfoData(TypedDict, total=False):
+    """A background task: a command, a monitor, an agent or a workflow."""
+
+    id: Required[str]
+    name: str
+    kind: Required[TaskKind]
+    description: Required[str]
+    status: Required[TaskStatus]
+    toolUseId: str
+    outputFile: str
+    progress: str
+    summary: str
+    startedAt: Required[int]
+    endedAt: int
+
+
+class AgentOriginData(TypedDict, total=False):
+    """Where an agent comes from: ``kind`` is ``agent``, ``workflow`` (with
+    ``runId``) or ``job`` (with ``jobId`` and ``jobKind``)."""
+
+    kind: Required[str]
+    runId: str
+    jobId: int
+    jobKind: str
+
+
+class AgentInfoData(TypedDict, total=False):
+    id: Required[str]
+    path: Required[str]
+    name: Required[str]
+    type: Required[str]
+    status: Required[TaskStatus]
+    background: Required[bool]
+    sessionFile: str
+    worktree: dict[str, str]
+    origin: Required[AgentOriginData]
+
+
+class AgentEntriesData(TypedDict):
+    entries: list[dict[str, Any]]
+    leafId: str | None
+    sessionId: str
+    sessionFile: str | None
 
 
 class BashResultData(TypedDict, total=False):

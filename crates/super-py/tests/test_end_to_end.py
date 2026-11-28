@@ -145,3 +145,59 @@ async def test_raw_execute_uses_the_same_protocol_and_failures_raise(
     with pytest.raises(ValueError, match='invalid command'):
         await session.execute({'type': 'teleport'})
     await session.aclose()
+
+
+@pytest.mark.asyncio
+async def test_background_tasks_agents_and_the_mode_are_typed(tmp_path: Path) -> None:
+    _provider, session = await make_session(
+        tmp_path,
+        [
+            [
+                {
+                    'toolCall': {
+                        'id': 'call_bg',
+                        'name': 'Bash',
+                        'arguments': {
+                            'command': 'sleep 30; echo late',
+                            'run_in_background': True,
+                            'description': 'Wait',
+                        },
+                    }
+                }
+            ],
+            [{'text': 'It runs.'}],
+        ],
+    )
+    await session.prompt('start a command')
+    [task] = await session.tasks()
+    assert task['kind'] == super_sdk.TaskKind.SHELL
+    assert task['status'] == super_sdk.TaskStatus.RUNNING
+    assert task['description'] == 'Wait'
+    assert task['toolUseId'] == 'call_bg'
+    stopped = await session.stop_task(task['id'])
+    assert stopped['id'] == task['id']
+    assert (await session.tasks())[0]['status'] == 'stopped'
+    with pytest.raises(super_sdk.SuperError, match="No background task has the id or name 'nope'"):
+        await session.stop_task('nope')
+
+    assert await session.agents() == []
+    with pytest.raises(super_sdk.SuperError):
+        await session.agent_entries('a12345678')
+
+    read = await session.set_mode()
+    assert read['mode'] == super_sdk.Mode.ADVANCED
+    assert isinstance(read['subagents'], bool)
+    assert await session.set_mode(super_sdk.Mode.BASIC) == {**read, 'mode': 'basic'}
+    assert await session.tools() == ['Read', 'Write', 'Edit', 'Bash']
+    state = await session.state()
+    assert state.mode == super_sdk.Mode.BASIC
+    assert state.subagents == read['subagents']
+    assert Path(state.cwd).name == tmp_path.name
+    assert state.worktree is None
+    with pytest.raises(super_sdk.SuperError, match="mode 'expert' is not basic or advanced"):
+        await session.set_mode('expert')
+    assert {tool.value for tool in super_sdk.ToolName} >= {
+        'Monitor', 'TaskStop', 'Agent', 'SendMessage', 'ListAgents', 'Workflow',
+        'Skill', 'ScheduleWakeup', 'EnterWorktree', 'ExitWorktree',
+    }
+    await session.aclose()

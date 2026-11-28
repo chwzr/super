@@ -87,8 +87,14 @@ asyncio.run(main())
 ```
 
 The package uses Python 3.11 `StrEnum` values (`ThinkingLevel`, `ToolName`,
-`StreamingBehavior`, `QueueMode`) and exports `TypedDict` declarations for
-commands, responses, models, messages, events, and statistics. Event JSON is
+`StreamingBehavior`, `QueueMode`, `Mode`, `TaskKind`, `TaskStatus`) and
+exports `TypedDict` declarations for commands, responses, models, messages,
+events, statistics, background tasks (`TaskInfoData`), agents
+(`AgentInfoData`, `AgentEntriesData`) and the mode (`ModeData`). `ToolName`
+names every tool, the ten a session adds itself in the advanced mode
+(`Monitor`, `TaskStop`, `Agent`, `SendMessage`, `ListAgents`, `Workflow`,
+`Skill`, `ScheduleWakeup`, `EnterWorktree`, `ExitWorktree`) among them, as
+does the TypeScript `ToolName` type. Event JSON is
 converted directly into Python dict/list objects in Rust, without a per-token
 `json.loads`.
 
@@ -204,7 +210,9 @@ as development-only even on loopback until handshake authentication lands.
 | steer              | `steer`                     | `steer`                     | `steer`                     | `steer`                      |
 | follow up          | `follow_up`                 | `follow_up`                 | `followUp`                  | `follow_up`                  |
 | abort / wait       | `abort` / `wait_idle`       | `abort` / `wait_idle`       | `abort` / `waitIdle`        | `abort`                      |
-| background tasks   | `tasks` / `stop_task`       | `execute`                   | `execute`                   | `get_tasks` / `stop_task`    |
+| background tasks   | `tasks` / `stop_task`       | `tasks` / `stop_task`       | `tasks` / `stopTask`        | `get_tasks` / `stop_task`    |
+| agents             | `execute`                   | `agents` / `agent_entries`  | `agents` / `agentEntries`   | `get_agents` / `get_agent_entries` |
+| mode               | `execute`                   | `set_mode`                  | `setMode`                   | `set_mode`                   |
 | state/messages     | `state` / `messages`        | `state` / `messages`        | `state` / `messages`        | `get_state` / `get_messages` |
 | model              | `set_model`                 | `set_model`                 | `setModel`                  | `set_model`                  |
 | thinking           | `set_thinking_level`        | `set_thinking_level`        | `setThinkingLevel`          | `set_thinking_level`         |

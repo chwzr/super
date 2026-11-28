@@ -16,21 +16,27 @@ from typing import Any, Self, cast
 from ._super import SuperError
 from ._super import Session as _NativeSession
 from .types import (
+    AgentEntriesData,
+    AgentInfoData,
     BashResultData,
     CommandData,
     EntriesData,
     EventData,
     ImageInput,
     MessageData,
+    Mode,
+    ModeData,
     ModelData,
     QueueMode,
     ResponseData,
     SessionStateData,
     SessionStatsData,
     StreamingBehavior,
+    TaskInfoData,
     ThinkingLevel,
     ToolName,
     TreeData,
+    WorktreeData,
 )
 
 SessionSource = str
@@ -112,6 +118,11 @@ class SessionState:
     follow_up_mode: QueueMode
     auto_compaction_enabled: bool
     auto_retry_enabled: bool
+    cwd: str = ''
+    worktree: WorktreeData | None = None
+    mode: Mode = Mode.ADVANCED
+    subagents: bool = False
+    workflows: bool = False
 
     @classmethod
     def _from_json(cls, data: SessionStateData) -> SessionState:
@@ -128,6 +139,11 @@ class SessionState:
             follow_up_mode=QueueMode(data.get('followUpMode', QueueMode.ONE_AT_A_TIME)),
             auto_compaction_enabled=data.get('autoCompactionEnabled', True),
             auto_retry_enabled=data.get('autoRetryEnabled', True),
+            cwd=data.get('cwd', ''),
+            worktree=data.get('worktree'),
+            mode=Mode(data.get('mode', Mode.ADVANCED)),
+            subagents=data.get('subagents', False),
+            workflows=data.get('workflows', False),
         )
 
 
@@ -391,6 +407,57 @@ class Session:
 
     async def ping(self) -> bool:
         return bool((await self._require({'type': 'ping'}))['pong'])
+
+    # -- background tasks and agents ----------------------------------
+
+    async def tasks(self) -> list[TaskInfoData]:
+        """Every background task the session remembers, oldest first."""
+        return list((await self._require({'type': 'get_tasks'}))['tasks'])
+
+    async def stop_task(self, task_id: str) -> TaskInfoData:
+        """Stop one running background task by its id or name."""
+        data = await self._require({'type': 'stop_task', 'taskId': task_id})
+        return cast(TaskInfoData, data['task'])
+
+    async def agents(self, agent: str | None = None) -> list[AgentInfoData]:
+        """The session's agents, or with ``agent`` (a path) that agent's."""
+        return list(
+            (await self._require({'type': 'get_agents', 'agent': agent}))['agents']
+        )
+
+    async def agent_entries(
+        self, agent: str, since: str | None = None
+    ) -> AgentEntriesData:
+        """An agent's transcript, after the entry ``since`` when given."""
+        return cast(
+            AgentEntriesData,
+            await self._require(
+                {'type': 'get_agent_entries', 'agent': agent, 'since': since}
+            ),
+        )
+
+    # -- mode ---------------------------------------------------------
+
+    async def set_mode(
+        self,
+        mode: Mode | str | None = None,
+        *,
+        subagents: bool | None = None,
+        workflows: bool | None = None,
+    ) -> ModeData:
+        """Set the mode and the agent switches given, for this session only,
+        and return all three; with nothing given, only read them."""
+        return cast(
+            ModeData,
+            await self._require(
+                {
+                    'type': 'set_mode',
+                    'mode': mode,
+                    'subagents': subagents,
+                    'workflows': workflows,
+                }
+            ),
+        )
 
     # -- lifecycle ----------------------------------------------------
 

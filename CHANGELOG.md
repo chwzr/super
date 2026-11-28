@@ -202,6 +202,14 @@
   unloaded while idle.
 - `/remote` no longer waits for a pending wake-up: the daemon takes it over
   from the session's file. Rust SDK: `Wakeups::park` and `unpark`.
+- Python and TypeScript: `ToolName` names the ten tools a session adds
+  itself in the advanced mode. `tasks` and `stop_task` (`stopTask`),
+  `agents` and `agent_entries` (`agentEntries`) and `set_mode` (`setMode`)
+  wrap `get_tasks`, `stop_task`, `get_agents`, `get_agent_entries` and
+  `set_mode`, with types for what they return (`TaskInfo`, `AgentInfo`,
+  `AgentEntries`, `ModeSettings`; `TaskInfoData`, `AgentInfoData`,
+  `AgentEntriesData`, `ModeData` in Python), and the session state has
+  `cwd`, `worktree`, `mode`, `subagents` and `workflows`.
 - `super` with piped input or output, the line-based front end on the
   daemon, names tool calls as the full-screen terminal does (a file tool by
   its file, an `Agent` call by its description, `ScheduleWakeup` by its

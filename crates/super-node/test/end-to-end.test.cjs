@@ -2,12 +2,15 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 const { mkdtemp, readFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
-const { join } = require("node:path")
+const { basename, join } = require("node:path")
 const { MockProvider, Session } = require("../dist/index.js")
 
+// `script` is the mock provider's script, or a function of the session's
+// folder that returns it.
 async function fixture(script) {
   const directory = await mkdtemp(join(tmpdir(), "super-node-"))
-  const provider = await MockProvider.start(directory, script)
+  const turns = typeof script === "function" ? script(directory) : script
+  const provider = await MockProvider.start(directory, turns)
   const session = await Session.create({
     cwd: directory,
     model: "mock/mock-1",
@@ -33,14 +36,14 @@ async function fixture(script) {
 }
 
 test("a prompt streams and writes a real file", async () => {
-  const { directory, provider, session } = await fixture([
+  const { directory, provider, session } = await fixture((folder) => [
     [
       {
         toolCall: {
           id: "call_1",
           name: "Write",
           arguments: {
-            file_path: join(directory, "hello.txt"),
+            file_path: join(folder, "hello.txt"),
             content: "hello from node\n",
           },
         },
@@ -130,5 +133,47 @@ test("raw execute and clean failures share the RPC response shape", async () => 
   })
   await assert.rejects(session.setModel("nope", "nope"), /nope\/nope/)
   await assert.rejects(session.execute({ type: "teleport" }), /unknown variant|invalid/i)
+  session.close()
+})
+
+test("background tasks, agents, and the mode use typed helpers", async () => {
+  const { directory, session } = await fixture([
+    [
+      {
+        toolCall: {
+          id: "call_bg",
+          name: "Bash",
+          arguments: { command: "sleep 30; echo late", run_in_background: true, description: "Wait" },
+        },
+      },
+    ],
+    [{ text: "It runs." }],
+  ])
+  await session.prompt("start a command")
+  const [task, ...others] = await session.tasks()
+  assert.deepEqual(others, [])
+  assert.equal(task.kind, "shell")
+  assert.equal(task.status, "running")
+  assert.equal(task.description, "Wait")
+  assert.equal(task.toolUseId, "call_bg")
+  const stopped = await session.stopTask(task.id)
+  assert.equal(stopped.id, task.id)
+  assert.equal((await session.tasks())[0].status, "stopped")
+  await assert.rejects(session.stopTask("nope"), /No background task has the id or name 'nope'/)
+
+  assert.deepEqual(await session.agents(), [])
+  await assert.rejects(session.agentEntries("a12345678"))
+
+  const read = await session.setMode()
+  assert.equal(read.mode, "advanced")
+  assert.equal(typeof read.subagents, "boolean")
+  assert.deepEqual(await session.setMode({ mode: "basic" }), { ...read, mode: "basic" })
+  assert.deepEqual(await session.tools(), ["Read", "Write", "Edit", "Bash"])
+  const state = await session.state()
+  assert.equal(state.mode, "basic")
+  assert.equal(state.subagents, read.subagents)
+  assert.equal(basename(state.cwd), basename(directory))
+  assert.equal(state.worktree, null)
+  await assert.rejects(session.setMode({ mode: "expert" }), /mode 'expert' is not basic or advanced/)
   session.close()
 })
