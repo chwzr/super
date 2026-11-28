@@ -1206,9 +1206,11 @@ PowerShell or cmd, and works the same way in both modes.
   at most. A command that does nothing but `sleep` is refused; it can wait in
   the background instead.
 - In the main session a `cd` carries over to the next command while it stays
-  inside the session folder. A command that ends outside it puts the shell
-  back in the session folder. A subagent's commands always start in the
-  session folder, and so does a new or resumed conversation.
+  inside the session folder, with a POSIX shell or fish on macOS and Linux.
+  A command that ends outside it puts the shell back in the session folder.
+  A subagent's commands always start in the session folder, and so does a
+  new or resumed conversation. PowerShell, cmd and Bash on Windows start
+  every command in the session folder.
 - Up to 30,000 characters of output come back to the agent. Longer output is
   saved to a file, and the agent gets its path and the first 2,000 bytes.
 - An exit code other than 0 is an error that starts with `Exit code N`. For

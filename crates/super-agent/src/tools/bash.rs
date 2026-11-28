@@ -144,9 +144,14 @@ impl BashTool {
         cancel: CancellationToken,
         on_update: Option<ToolUpdateSink>,
     ) -> anyhow::Result<ToolResult> {
-        // Only a shell whose `cd` carries over reports where it ended.
+        // Only a shell whose `cd` carries over reports where it ended: a
+        // POSIX shell or fish, on Unix.
+        let carries_over = matches!(
+            shell::kind(&self.shell()),
+            ShellKind::Posix | ShellKind::Fish
+        );
         let report = match &self.session.shell {
-            Some(_) if cfg!(unix) && shell::kind(&self.shell()) == ShellKind::Posix => Some(
+            Some(_) if cfg!(unix) && carries_over => Some(
                 tempfile::Builder::new()
                     .prefix("super-cwd-")
                     .tempfile()

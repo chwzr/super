@@ -41,12 +41,19 @@ pub fn posix_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
+/// `text` in single quotes for fish, where a backslash and a single quote
+/// are escaped with a backslash inside them.
+pub fn fish_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\\', r"\\").replace('\'', r"\'"))
+}
+
 /// How `Bash` and `Monitor` start a command: in `directory`, and for a POSIX
 /// shell or fish as a login shell, so the shell starts from the user's
-/// profile. A POSIX shell changes to `directory` again after the profile ran,
-/// in case the profile changed folder, and with `report_directory` writes the
-/// folder the command ends in to that file when it exits. PowerShell and cmd
-/// start as [`command`] starts them.
+/// profile. Both change to `directory` again after the profile ran, in case
+/// the profile changed folder, and with `report_directory` write the folder
+/// the command ends in to that file when the shell exits: a POSIX shell with
+/// an `EXIT` trap, fish with a handler of its `fish_exit` event. PowerShell
+/// and cmd start as [`command`] starts them.
 pub fn script(
     shell_path: Option<&str>,
     source: &str,
@@ -75,11 +82,23 @@ pub fn script(
             command
         }
         ShellKind::Fish => {
+            let mut text = format!(
+                "builtin cd {}; or exit 1\n",
+                fish_quote(&directory.to_string_lossy())
+            );
+            if let Some(file) = report_directory {
+                text.push_str(&format!(
+                    "function __super_report_folder --on-event fish_exit\n    builtin pwd -P > {}\nend\n",
+                    fish_quote(&file.to_string_lossy())
+                ));
+            }
+            if let Some(prefix) = prefix {
+                text.push_str(prefix);
+                text.push('\n');
+            }
+            text.push_str(source);
             let mut command = Command::new(shell);
-            command.args(["-l", "-c"]).arg(match prefix {
-                Some(prefix) => format!("{prefix}\n{source}"),
-                None => source.to_string(),
-            });
+            command.args(["-l", "-c"]).arg(text);
             command
         }
         _ => self::command(shell_path, source, prefix),
@@ -241,6 +260,65 @@ pub fn command(shell_path: Option<&str>, source: &str, prefix: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The arguments `command` runs its shell with.
+    fn arguments(command: &Command) -> Vec<String> {
+        command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn fish_enters_the_folder_and_reports_where_it_ended_like_a_posix_shell() {
+        let directory = Path::new("/work/it's here");
+        let report = Path::new("/tmp/super-cwd-1");
+        let fish = script(
+            Some("/usr/local/bin/fish"),
+            "cd sub\necho done",
+            Some("set -x A 1"),
+            directory,
+            Some(report),
+        );
+        let expected = concat!(
+            r"builtin cd '/work/it\'s here'; or exit 1",
+            "\n",
+            "function __super_report_folder --on-event fish_exit\n",
+            "    builtin pwd -P > '/tmp/super-cwd-1'\n",
+            "end\n",
+            "set -x A 1\n",
+            "cd sub\necho done",
+        );
+        assert_eq!(arguments(&fish), ["-l", "-c", expected]);
+        assert_eq!(fish.as_std().get_current_dir(), Some(directory));
+        // Without a report file the command only starts in the folder.
+        let quiet = script(Some("fish"), "ls", None, directory, None);
+        assert_eq!(
+            arguments(&quiet),
+            [
+                "-l",
+                "-c",
+                concat!(r"builtin cd '/work/it\'s here'; or exit 1", "\nls")
+            ]
+        );
+        assert_eq!(fish_quote(r"a\b'c"), r"'a\\b\'c'");
+        // A POSIX shell does the same with a trap.
+        let posix = script(Some("/bin/bash"), "ls", None, directory, Some(report));
+        assert_eq!(
+            arguments(&posix),
+            [
+                "-l",
+                "-c",
+                concat!(
+                    r"cd -- '/work/it'\''s here' || exit 1",
+                    "\n",
+                    r"trap 'pwd -P >| '\''/tmp/super-cwd-1'\''' EXIT",
+                    "\nls"
+                ),
+            ]
+        );
+    }
 
     #[test]
     fn windows_shell_selection() {

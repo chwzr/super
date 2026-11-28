@@ -313,6 +313,9 @@
   placeholders until their text is written.
 - Gemini requests leave `exclusiveMinimum` and `exclusiveMaximum` out of tool
   schemas, which its API does not accept.
+- With fish as `shellPath`, a `cd` in the main session carries over to the
+  next command too, as it does for POSIX shells, and each command starts
+  in the session's folder again after `config.fish` ran.
 - `Edit` finds `old_string` when it differs from the file only in its quotes:
   when it is not in the file as given, curly single and double quotes count
   as their straight forms, in the file and in `old_string`. The text that is

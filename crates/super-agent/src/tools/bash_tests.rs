@@ -221,6 +221,41 @@ async fn a_cd_carries_over_in_the_main_session_while_it_stays_inside() {
     assert_eq!(pwd(&bash).await, root.join("other").display().to_string());
 }
 
+/// fish on the `PATH`, if it is installed.
+#[cfg(unix)]
+fn installed_fish() -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|directory| directory.join("fish"))
+        .find(|path| path.is_file())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cd_carries_over_in_fish_too() {
+    let Some(fish) = installed_fish() else {
+        eprintln!("fish is not installed; its cd carry-over is checked by its script only");
+        return;
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let root = canonical(directory.path());
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let mut bash = main_session_tool(directory.path());
+    bash.shell_path = Some(fish.display().to_string());
+    run(&bash, json!({"command": "cd sub"})).await.unwrap();
+    assert_eq!(pwd(&bash).await, root.join("sub").display().to_string());
+    let result = run(&bash, json!({"command": "cd /; and echo left"}))
+        .await
+        .unwrap();
+    assert!(
+        result
+            .output_text()
+            .starts_with("left\nThe shell is back in"),
+        "{}",
+        result.output_text()
+    );
+    assert_eq!(pwd(&bash).await, root.display().to_string());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_cd_does_not_carry_over_outside_the_main_session() {
