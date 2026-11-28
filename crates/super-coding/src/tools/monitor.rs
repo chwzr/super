@@ -260,6 +260,7 @@ impl AgentTool for MonitorTool {
                     &directory,
                     None,
                     Some(&output),
+                    false,
                 );
                 let errors = file
                     .try_clone()
@@ -370,8 +371,12 @@ async fn watch_command(
                     open = false;
                     let held = profile.finish();
                     events.record(&held);
-                    events.push_all(lines.feed(&held));
-                    events.push_all(lines.rest());
+                    // Without the mark the shell ended in its profile, and
+                    // what it printed is no event of the command's.
+                    if !profile.missed_mark() {
+                        events.push_all(lines.feed(&held));
+                        events.push_all(lines.rest());
+                    }
                 }
                 Ok(n) => {
                     let bytes = profile.feed(&buffer[..n]);
@@ -385,6 +390,14 @@ async fn watch_command(
                     return;
                 }
                 let code = status.ok().and_then(|status| status.code());
+                if profile.missed_mark() {
+                    handle.finish(TaskOutcome::failed(format!(
+                        "{} ({})",
+                        events.description,
+                        shell::NEVER_RAN_SUMMARY
+                    )));
+                    return;
+                }
                 let summary = match code {
                     Some(code) => format!("{} (exit code {code})", events.description),
                     None => format!("{} (no exit code)", events.description),

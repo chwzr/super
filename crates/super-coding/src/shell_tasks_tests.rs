@@ -562,3 +562,52 @@ async fn task_stop_stops_a_task_by_id_or_by_name() {
     assert!(notices_of(&collect(&session, &seen)).is_empty());
     eventually("nothing runs", || !session.background_tasks().has_running()).await;
 }
+
+/// A monitor whose shell ends in its profile delivers no event of what the
+/// profile printed, and its notice says that the command did not run.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_monitor_whose_shell_ends_in_its_profile_says_its_command_did_not_run() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join(".bash_profile"), "echo switching; exit 0\n").unwrap();
+    let shell = directory.path().join("bin/bash");
+    std::fs::create_dir_all(shell.parent().unwrap()).unwrap();
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nHOME='{}' exec /bin/bash \"$@\"\n",
+            home.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let settings = Settings {
+        shell_path: Some(shell.display().to_string()),
+        ..test_settings()
+    };
+    let session = session_in(directory.path(), settings);
+    session.set_turn_starter(Some(Arc::new(|_turn| {})));
+    let seen = Mutex::new(Vec::new());
+    let tool = monitor(&session, quick_limits());
+    let result = call(
+        &tool,
+        "call_mon",
+        json!({"description": "m", "timeout_ms": 10_000, "command": "echo EVENT"}),
+    )
+    .await
+    .unwrap();
+    let id = result.details["taskId"].as_str().unwrap().to_string();
+    let notice = notice_of(&session, &seen, &id).await;
+    let messages = collect(&session, &seen);
+    assert!(events_of(&messages).is_empty(), "{messages:?}");
+    assert_eq!(notified_task(&notice).unwrap().status, TaskStatus::Failed);
+    assert_eq!(
+        summary_of(&notice),
+        "m (the shell ended while it ran the profile, so the command did not run)"
+    );
+    let output = std::fs::read_to_string(result.details["outputFile"].as_str().unwrap()).unwrap();
+    assert_eq!(output, "switching\n");
+}

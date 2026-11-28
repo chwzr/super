@@ -420,6 +420,27 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- A `cd`, `pwd` or `printf` function from the profile, or a zsh `chpwd`
+  hook, no longer runs for the folder change and the folder report SUPER
+  adds to a `Bash` command or a monitor: its output started every result,
+  background file and monitor event, and a `pwd` function lost every `cd`.
+- A command that ends with `exit` no longer gets the output of
+  `~/.bash_logout`, and an `EXIT` trap the profile sets no longer prints
+  into a background command's file or a monitor's events: the command runs
+  in a subshell, after the profile's trap is cleared.
+- `Bash` and `Monitor` commands find the programs of the `PATH` SUPER runs
+  with first again: the folders of that `PATH` come before the ones the
+  profile adds. A login shell on macOS put `/usr/bin` and the other system
+  folders in front (`path_helper`), so a command ran Apple's `git` and
+  `python3` instead of Homebrew's or an activated virtual environment's.
+- A profile that ends the shell (`exit`, `exec` of another shell, `set -e`
+  and a failing line) is reported: "The command did not run, because the
+  shell ended while it ran the profile (exit code N).", with what the
+  profile printed, and a background command or a monitor ends failed with
+  that reason. The command never ran, and it was reported as a success with
+  the profile's output.
+- A `Bash` command's output and errors come back in the order the command
+  wrote them; lines that came at about the same time came in either order.
 - A read of the whole file and a read of a part of it in one answer leave
   the whole read in the record, whichever ends last, so a `Write` after them
   no longer succeeds in one run and is refused in the next. So do a whole

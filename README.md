@@ -1244,10 +1244,21 @@ PowerShell or cmd, and works the same way in both modes.
   and fish start as login shells. What the profile prints is left out of the
   command's output, a background command's output file and a monitor's
   events (on macOS and Linux), and a job the profile starts with its output
-  sent elsewhere, such as an agent, does not hold up the command. A POSIX
-  shell runs the command with `eval`, so a syntax error in it comes back
-  with the shell's message and the command's own line numbers. PowerShell
-  and cmd start as before.
+  sent elsewhere, such as an agent, does not hold up the command. A `cd`,
+  `pwd` or `printf` function the profile defines, or a zsh `chpwd` hook,
+  does not run for SUPER's own change of folder, and an `EXIT` trap the
+  profile sets and `~/.bash_logout` print nothing, also for a command that
+  ends with `exit`. The folders of the `PATH` SUPER runs with come first,
+  in their order, and the profile's other folders after them, so that a
+  system profile such as macOS's `path_helper` does not put `/usr/bin` in
+  front of Homebrew or an activated virtual environment. A profile that
+  ends the shell, such as one that runs `exit` or `exec` of another shell,
+  leaves the command unrun, and the result, a background command's end and
+  a monitor's end say that it did not run. A POSIX shell runs the command
+  with `eval`, in a subshell, so a syntax error in it comes back with the
+  shell's message and the command's own line numbers. Its output and errors
+  come back together in the order it wrote them. PowerShell and cmd start
+  as before.
 - `timeout` is in milliseconds, 120,000 (two minutes) by default and 600,000
   at most. A command that does nothing but `sleep` is refused; it can wait in
   the background instead.

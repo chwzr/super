@@ -651,3 +651,113 @@ async fn a_background_command_needs_a_session() {
     .unwrap_err();
     assert!(format!("{error:#}").contains("run_in_background needs a session"));
 }
+
+/// A Bash shell that starts with its profile in `home`: a script named
+/// `bash` in `directory` that runs `/bin/bash` with that `HOME`.
+#[cfg(unix)]
+fn bash_with_home(directory: &Path, home: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+    let shell = directory.join("bin/bash");
+    std::fs::create_dir_all(shell.parent().unwrap()).unwrap();
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nHOME={} exec /bin/bash \"$@\"\n",
+            shell::posix_quote(&home.display().to_string())
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    shell.display().to_string()
+}
+
+/// A profile that ends the shell leaves the command unrun, and that is
+/// what the result and a background command's end say, with what the
+/// profile printed, whatever exit code the shell ended with.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_profile_that_ends_the_shell_is_reported_as_a_command_that_did_not_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    let work = directory.path().join("work");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    let host = FakeHost::new(&work);
+    let mut bash = background_tool(&work, &host);
+    bash.shell_path = Some(bash_with_home(directory.path(), &home));
+    for (profile, code, printed) in [
+        ("echo bye-profile; exit 0\n", 0, "\nbye-profile"),
+        ("echo bye3 >&2; exit 3\n", 3, "\nbye3"),
+        ("set -e\nfalse\n", 1, ""),
+    ] {
+        std::fs::write(home.join(".bash_profile"), profile).unwrap();
+        let result = run(&bash, json!({"command": "echo RAN; touch ran-marker"}))
+            .await
+            .unwrap();
+        assert!(result.is_error, "{profile}");
+        assert_eq!(
+            result.output_text(),
+            format!(
+                "The command did not run, because the shell ended while it ran the profile (exit code {code}).{printed}"
+            ),
+            "{profile}"
+        );
+        assert!(!work.join("ran-marker").exists(), "{profile}");
+    }
+
+    std::fs::write(home.join(".bash_profile"), "echo bye-profile; exit 0\n").unwrap();
+    run(
+        &bash,
+        json!({"command": "echo BGRAN; touch bg-marker", "run_in_background": true, "description": "bg"}),
+    )
+    .await
+    .unwrap();
+    let end = host.end_of("b0").await;
+    assert_eq!(end.status, TaskEndStatus::Failed);
+    assert_eq!(
+        end.summary,
+        "bg (the shell ended while it ran the profile, so the command did not run)"
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.join("b0.output")).unwrap(),
+        "bye-profile\n"
+    );
+    assert!(!work.join("bg-marker").exists());
+
+    // A profile that lets the command run leaves only the command's output.
+    std::fs::write(home.join(".bash_profile"), "echo PROFILE\n").unwrap();
+    run(
+        &bash,
+        json!({"command": "echo BGRAN", "run_in_background": true, "description": "bg"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(host.end_of("b1").await.status, TaskEndStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(work.join("b1.output")).unwrap(),
+        "BGRAN\n"
+    );
+}
+
+/// What a command writes to its output and to its errors comes back in the
+/// order it wrote it, every time.
+#[cfg(unix)]
+#[tokio::test]
+async fn output_and_errors_come_back_in_the_order_they_were_written() {
+    let directory = tempfile::tempdir().unwrap();
+    let bash = BashTool::new(directory.path().to_path_buf());
+    for _ in 0..10 {
+        let result = run(
+            &bash,
+            json!({"command": "echo 1; echo 2 >&2; echo 3; ls /nonexistent-super-test; echo 5"}),
+        )
+        .await
+        .unwrap();
+        let text = result.output_text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 5, "{text}");
+        assert_eq!(lines[..3], ["1", "2", "3"], "{text}");
+        assert!(lines[3].contains("nonexistent-super-test"), "{text}");
+        assert_eq!(lines[4], "5", "{text}");
+    }
+}

@@ -167,6 +167,7 @@ impl BashTool {
             directory,
             report.as_ref().map(|file| file.path()),
             None,
+            true,
         );
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut process = ShellProcess::start(cmd)?;
@@ -241,6 +242,21 @@ impl BashTool {
 
         let saved = capture.finish();
         let mut output = saved.text;
+        if !cancelled && !timed_out && stdout_profile.missed_mark() {
+            // The shell ended in its profile: what it printed is the
+            // profile's, and the command never ran.
+            let mut text = shell::never_ran(exit_code);
+            if !output.is_empty() {
+                text.push('\n');
+                text.push_str(&output);
+            }
+            return Ok(ToolResult {
+                content: vec![ContentBlock::text(text)],
+                details: json!({"exitCode": exit_code}),
+                is_error: true,
+                ..Default::default()
+            });
+        }
         if went_back {
             if !output.is_empty() {
                 output.push('\n');
@@ -319,11 +335,19 @@ impl BashTool {
             .map_err(|e| anyhow::anyhow!(e))?;
         let id = task.id().to_string();
         let output = task.output_file().to_path_buf();
-        let file = std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&output)
             .map_err(|e| anyhow::anyhow!("Could not open {}: {e}.", output.display()))?;
+        // The script empties the file once the profile ran, so a file that
+        // still starts with the mark at the end is one whose command never
+        // started.
+        let marked = shell::marks_output(self.shell_path.as_deref());
+        if marked {
+            file.write_all(shell::OUTPUT_MARK)
+                .map_err(|e| anyhow::anyhow!("Could not write {}: {e}.", output.display()))?;
+        }
         let errors = file
             .try_clone()
             .map_err(|e| anyhow::anyhow!("Could not open {}: {e}.", output.display()))?;
@@ -334,6 +358,7 @@ impl BashTool {
             directory,
             None,
             Some(&output),
+            false,
         );
         cmd.stdout(Stdio::from(file)).stderr(Stdio::from(errors));
         let process = ShellProcess::start(cmd)?;
@@ -343,6 +368,7 @@ impl BashTool {
             timeout_ms,
             command.to_string(),
             label,
+            marked.then_some(output.clone()),
         ));
         let mut text = format!(
             "The command runs in the background as task {id}. Its output is written to {}.",
@@ -407,20 +433,44 @@ fn exit_code(status: std::process::ExitStatus) -> Option<i32> {
     status.code()
 }
 
+/// Whether the output file of a background command, which started with
+/// [`shell::OUTPUT_MARK`], still does: the script empties it once the
+/// profile ran, so its command never started. The mark is then taken out,
+/// leaving what the profile printed.
+fn never_started(output: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(output) else {
+        return false;
+    };
+    let Some(rest) = bytes.strip_prefix(shell::OUTPUT_MARK) else {
+        return false;
+    };
+    let _ = std::fs::write(output, rest);
+    true
+}
+
 /// Wait for a command in the background and end its task: with a notice
 /// when it exits or reaches its time limit, without one when the task was
-/// stopped from outside.
+/// stopped from outside. `marked` is the output file when it starts with
+/// [`shell::OUTPUT_MARK`] until the script empties it.
 async fn watch_background(
     mut process: ShellProcess,
     task: Box<dyn HostedTask>,
     timeout_ms: u64,
     command: String,
     label: String,
+    marked: Option<PathBuf>,
 ) {
     let stop = task.stop_signal();
     tokio::select! {
         status = process.child.wait() => {
             let code = status.ok().and_then(exit_code);
+            if marked.as_deref().is_some_and(never_started) {
+                task.finish(TaskEnd {
+                    status: TaskEndStatus::Failed,
+                    summary: format!("{label} ({})", shell::NEVER_RAN_SUMMARY),
+                });
+                return;
+            }
             let end = match code {
                 Some(code) => TaskEnd {
                     status: if command_rules::is_error_exit(&command, code) {
@@ -440,10 +490,16 @@ async fn watch_background(
         _ = stop.cancelled() => {
             process.kill();
             let _ = process.child.wait().await;
+            if let Some(output) = &marked {
+                never_started(output);
+            }
         }
         _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
             process.kill();
             let _ = process.child.wait().await;
+            if let Some(output) = &marked {
+                never_started(output);
+            }
             task.finish(TaskEnd {
                 status: TaskEndStatus::Stopped,
                 summary: format!("{label} (stopped at its time limit of {timeout_ms} ms)"),

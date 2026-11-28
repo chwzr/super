@@ -46,7 +46,9 @@ older daemon.
 The daemon is started by launchd or systemd with a bare environment, so it
 reads the login shell's PATH once at start and uses it for every session's
 tools. `Bash` and `Monitor` also start their shell as a login shell, so a
-command reads the user's profile as it would in a terminal.
+command reads the user's profile as it would in a terminal; the folders of
+the daemon's PATH come first again after the profile, and the profile's
+other folders follow them.
 
 ## On Linux: a systemd user service
 

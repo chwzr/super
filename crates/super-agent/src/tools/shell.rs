@@ -19,14 +19,19 @@ pub enum ShellKind {
     Other,
 }
 
-/// The family of the shell at `shell`, judged by its file name.
-pub fn kind(shell: &Path) -> ShellKind {
-    let name = shell
+/// The file name of the shell at `shell` without its extension, in lower
+/// case.
+fn stem(shell: &Path) -> String {
+    shell
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
-        .to_ascii_lowercase();
-    match name.as_str() {
+        .to_ascii_lowercase()
+}
+
+/// The family of the shell at `shell`, judged by its file name.
+pub fn kind(shell: &Path) -> ShellKind {
+    match stem(shell).as_str() {
         "bash" | "sh" | "zsh" | "ksh" | "mksh" | "dash" | "ash" | "yash" => ShellKind::Posix,
         "fish" => ShellKind::Fish,
         "pwsh" => ShellKind::Pwsh,
@@ -55,7 +60,12 @@ pub fn fish_quote(text: &str) -> String {
 /// and with an `EXIT` trap for a command that exits, fish with a handler of
 /// its `fish_exit` event. A POSIX shell runs the command with `eval`, so
 /// that a syntax error in it is reported when it runs, with the command's
-/// own line numbers. PowerShell and cmd start as [`command`] starts them.
+/// own line numbers, and in a subshell, so that an `exit` in it ends only
+/// that: bash reads `~/.bash_logout` when a login shell runs `exit` itself.
+/// An `EXIT` trap the profile set is cleared, and the script calls `cd`,
+/// `pwd` and `printf` so that a function of that name or a zsh `chpwd`
+/// hook the profile defined does not run for them. PowerShell and cmd
+/// start as [`command`] starts them.
 ///
 /// On Unix what the profile writes is left out: the script first writes
 /// [`OUTPUT_MARK`] to the output and to the errors, and [`ProfileOutput`]
@@ -63,7 +73,11 @@ pub fn fish_quote(text: &str) -> String {
 /// writes both to, is emptied after the mark instead. The shell keeps its
 /// real output and errors while the profile runs, so a job the profile
 /// starts with its own output sent elsewhere holds nothing of the command's
-/// open.
+/// open. With `errors_to_output` the errors go to the output after the mark,
+/// so that the two come in the order the command wrote them. The entries of
+/// the `PATH` SUPER runs with come first again after the profile, each once,
+/// before those the profile added: a system profile, such as macOS's
+/// `path_helper`, puts its own folders in front.
 pub fn script(
     shell_path: Option<&str>,
     source: &str,
@@ -71,30 +85,43 @@ pub fn script(
     directory: &Path,
     report_directory: Option<&Path>,
     output_file: Option<&Path>,
+    errors_to_output: bool,
 ) -> Command {
     let shell = resolve(shell_path);
     let marks = cfg!(unix);
     let mut command = match kind(&shell) {
         ShellKind::Posix => {
+            // zsh's `builtin` skips a function, and `cd -q` its `chpwd`
+            // hooks; POSIX `command` skips a function in the others.
+            let zsh = stem(&shell) == "zsh";
+            let builtin = if zsh { "builtin" } else { "command" };
             // Everything before the command is on its first line, so that
             // bash, which counts the lines of an `eval` from the line it is
             // on, counts the command's own.
             let mut text = String::new();
             if marks {
                 text.push_str(&format!(
-                    "printf '{MARK_FORMAT}'; printf '{MARK_FORMAT}' >&2; "
+                    "{builtin} printf '{MARK_FORMAT}'; {builtin} printf '{MARK_FORMAT}' >&2; "
                 ));
                 if let Some(file) = output_file {
                     text.push_str(&format!(": >| {}; ", posix_quote(&file.to_string_lossy())));
                 }
+                if errors_to_output {
+                    text.push_str("exec 2>&1; ");
+                }
+                if let Some(path) = std::env::var("PATH").ok().filter(|path| !path.is_empty()) {
+                    text.push_str(&path_first(&path));
+                }
             }
+            text.push_str("trap - EXIT; (");
             text.push_str(&format!(
-                "cd -- {} || exit 1; ",
+                "{} -- {} || exit 1; ",
+                if zsh { "builtin cd -q" } else { "command cd" },
                 posix_quote(&directory.to_string_lossy())
             ));
             let report = report_directory.map(|file| {
                 format!(
-                    "pwd -P 2>/dev/null >| {} || :",
+                    "{builtin} pwd -P 2>/dev/null >| {} || :",
                     posix_quote(&file.to_string_lossy())
                 )
             });
@@ -108,8 +135,9 @@ pub fn script(
             if let Some(report) = &report {
                 // The command may have replaced the trap: report here too,
                 // and end with the command's status.
-                text.push_str(&format!("\nset -- \"$?\"\n{report}\n(exit \"$1\")"));
+                text.push_str(&format!("\nset -- \"$?\"\n{report}\nexit \"$1\""));
             }
+            text.push(')');
             login_shell(&shell, text)
         }
         ShellKind::Fish => {
@@ -145,6 +173,43 @@ pub fn script(
     command
 }
 
+/// The result of a command whose shell ended in its profile, before it ran
+/// anything of the command, with the shell's exit code.
+pub fn never_ran(exit_code: Option<i32>) -> String {
+    match exit_code {
+        Some(code) => format!(
+            "The command did not run, because the shell ended while it ran the profile (exit code {code})."
+        ),
+        None => {
+            "The command did not run, because the shell ended while it ran the profile.".to_string()
+        }
+    }
+}
+
+/// How the end of a background command or a monitor whose shell ended in
+/// its profile is summed up, after its description.
+pub const NEVER_RAN_SUMMARY: &str =
+    "the shell ended while it ran the profile, so the command did not run";
+
+/// POSIX shell text that puts the entries of `inherited` in front of the
+/// `PATH` the profile left, keeping each entry once and leaving out empty
+/// ones, without splitting a word or matching a pattern of the entries.
+fn path_first(inherited: &str) -> String {
+    format!(
+        concat!(
+            "__super_rest={}:$PATH; __super_path=; while :; do ",
+            "__super_entry=${{__super_rest%%:*}}; ",
+            "case $__super_entry in '') ;; *) case :$__super_path: in ",
+            "*:\"$__super_entry\":*) ;; ",
+            "*) __super_path=$__super_path${{__super_path:+:}}$__super_entry ;; ",
+            "esac ;; esac; ",
+            "case $__super_rest in *:*) __super_rest=${{__super_rest#*:}} ;; *) break ;; esac; ",
+            "done; PATH=$__super_path; export PATH; unset __super_rest __super_path __super_entry; "
+        ),
+        posix_quote(inherited)
+    )
+}
+
 /// What a shell started by [`script`] writes on Unix, to its output and to
 /// its errors, before it runs anything of the command: what comes before it
 /// is the profile's.
@@ -171,6 +236,8 @@ pub fn marks_output(shell_path: Option<&str>) -> bool {
 pub struct ProfileOutput {
     /// What came before the mark, while it has not come.
     held: Option<Vec<u8>>,
+    /// Whether the stream ended without the mark.
+    missed: bool,
 }
 
 impl ProfileOutput {
@@ -179,7 +246,15 @@ impl ProfileOutput {
     pub fn new(marked: bool) -> Self {
         ProfileOutput {
             held: marked.then(Vec::new),
+            missed: false,
         }
+    }
+
+    /// Whether the stream ended, at [`finish`](Self::finish), without the
+    /// mark: the shell ended before it ran anything of the command, such
+    /// as in a profile that ends the shell.
+    pub fn missed_mark(&self) -> bool {
+        self.missed
     }
 
     /// The part of `bytes` that is the command's.
@@ -206,7 +281,13 @@ impl ProfileOutput {
     /// came, which is what the shell wrote before it could run the script,
     /// such as an error about its profile.
     pub fn finish(&mut self) -> Vec<u8> {
-        self.held.take().unwrap_or_default()
+        match self.held.take() {
+            Some(held) => {
+                self.missed = true;
+                held
+            }
+            None => Vec::new(),
+        }
     }
 }
 
@@ -434,6 +515,7 @@ mod tests {
             directory,
             Some(report),
             None,
+            false,
         );
         let expected = concat!(
             r"builtin cd '/work/it\'s here'; or exit 1",
@@ -455,6 +537,7 @@ mod tests {
             directory,
             None,
             Some(Path::new("/tmp/b1.output")),
+            false,
         );
         assert_eq!(
             login(&quiet, "/usr/bin/fish"),
@@ -474,27 +557,52 @@ mod tests {
         assert_eq!(fish_quote(r"a\b'c"), r"'a\\b\'c'");
         // A POSIX shell runs the command with eval and reports its folder
         // after it, and with a trap for a command that exits.
-        let posix = script(
-            Some("/bin/bash"),
-            "echo 'hi'",
-            Some("set -u"),
-            directory,
-            Some(report),
-            None,
-        );
-        let report = r"pwd -P 2>/dev/null >| '/tmp/super-cwd-1' || :";
-        assert_eq!(
-            login(&posix, "/bin/bash"),
-            marked(
-                &format!(
-                    "{}; trap {} EXIT; eval 'set -u'; eval {}\nset -- \"$?\"\n{report}\n(exit \"$1\")",
-                    r"cd -- '/work/it'\''s here' || exit 1",
-                    posix_quote(report),
+        // A POSIX shell runs the command with eval in a subshell, after the
+        // profile's EXIT trap is cleared, and reports its folder after it,
+        // and with a trap for a command that exits. It calls `cd`, `pwd`
+        // and `printf` past any function of that name, and zsh's `cd` runs
+        // no `chpwd` hook. After the mark the errors may go to the output,
+        // and the PATH SUPER runs with comes first again.
+        let start = |builtin: &str, errors: &str| {
+            if cfg!(unix) {
+                let path = std::env::var("PATH")
+                    .ok()
+                    .filter(|path| !path.is_empty())
+                    .map(|path| path_first(&path))
+                    .unwrap_or_default();
+                format!(
+                    "{builtin} printf '{MARK_FORMAT}'; {builtin} printf '{MARK_FORMAT}' >&2; {errors}{path}"
+                )
+            } else {
+                String::new()
+            }
+        };
+        for (shell, builtin, cd, errors) in [
+            ("/bin/bash", "command", "command cd", false),
+            ("/bin/zsh", "builtin", "builtin cd -q", true),
+        ] {
+            let posix = script(
+                Some(shell),
+                "echo 'hi'",
+                Some("set -u"),
+                directory,
+                Some(report),
+                None,
+                errors,
+            );
+            let report = format!("{builtin} pwd -P 2>/dev/null >| '/tmp/super-cwd-1' || :");
+            assert_eq!(
+                login(&posix, shell),
+                format!(
+                    "{}trap - EXIT; ({cd} -- {} || exit 1; trap {} EXIT; eval 'set -u'; eval {}\nset -- \"$?\"\n{report}\nexit \"$1\")",
+                    start(builtin, if errors { "exec 2>&1; " } else { "" }),
+                    r"'/work/it'\''s here'",
+                    posix_quote(&report),
                     posix_quote("echo 'hi'"),
                 ),
-                "; "
-            )
-        );
+                "{shell}"
+            );
+        }
     }
 
     /// The script a login shell `shell` gets from `command`, checking how it
@@ -540,9 +648,17 @@ mod tests {
     #[tokio::test]
     async fn a_shell_that_cannot_start_names_the_missing_folder_or_shell() {
         let gone = tempfile::tempdir().unwrap().path().join("gone");
-        let error = ShellProcess::start(script(Some("/bin/bash"), "pwd", None, &gone, None, None))
-            .err()
-            .expect("no folder to start in");
+        let error = ShellProcess::start(script(
+            Some("/bin/bash"),
+            "pwd",
+            None,
+            &gone,
+            None,
+            None,
+            false,
+        ))
+        .err()
+        .expect("no folder to start in");
         assert_eq!(
             error.to_string(),
             format!(
@@ -552,10 +668,17 @@ mod tests {
         );
         let here = tempfile::tempdir().unwrap();
         let missing = "/no/such/shell/bash";
-        let error =
-            ShellProcess::start(script(Some(missing), "pwd", None, here.path(), None, None))
-                .err()
-                .expect("no shell to start");
+        let error = ShellProcess::start(script(
+            Some(missing),
+            "pwd",
+            None,
+            here.path(),
+            None,
+            None,
+            false,
+        ))
+        .err()
+        .expect("no shell to start");
         assert!(
             error
                 .to_string()
@@ -582,10 +705,17 @@ mod tests {
             std::fs::write(shell, text).unwrap();
             std::fs::set_permissions(shell, std::fs::Permissions::from_mode(mode)).unwrap();
             let shell = shell.display().to_string();
-            let error =
-                ShellProcess::start(script(Some(&shell), "pwd", None, here.path(), None, None))
-                    .err()
-                    .expect("the shell cannot run");
+            let error = ShellProcess::start(script(
+                Some(&shell),
+                "pwd",
+                None,
+                here.path(),
+                None,
+                None,
+                false,
+            ))
+            .err()
+            .expect("the shell cannot run");
             assert!(
                 error
                     .to_string()
@@ -616,6 +746,7 @@ mod tests {
             &folder,
             None,
             None,
+            false,
         );
         command
             .env("HOME", home.path())
@@ -643,6 +774,7 @@ mod tests {
             &folder,
             None,
             Some(&file),
+            false,
         );
         command
             .env("HOME", home.path())
@@ -650,6 +782,223 @@ mod tests {
             .stderr(Stdio::from(written));
         assert!(command.status().await.unwrap().success());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "out\nerr\n");
+    }
+
+    /// A command `script` starts with `shell`, its profile in `home`, its
+    /// output and errors piped.
+    #[cfg(unix)]
+    fn piped(
+        shell: &str,
+        home: &Path,
+        source: &str,
+        folder: &Path,
+        report: Option<&Path>,
+        errors_to_output: bool,
+    ) -> Command {
+        let mut command = script(
+            Some(shell),
+            source,
+            None,
+            folder,
+            report,
+            None,
+            errors_to_output,
+        );
+        command
+            .env("HOME", home)
+            .env_remove("ZDOTDIR")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
+    /// A `cd`, `pwd` or `printf` function from the profile, or a zsh
+    /// `chpwd` hook, does not run for the script's own folder change, mark
+    /// and report: the command's output is its own, and the folder it ended
+    /// in is reported.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_profiles_functions_and_hooks_do_not_run_for_the_scripts_own_calls() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let folder = folder.path().canonicalize().unwrap();
+        std::fs::create_dir(folder.join("sub")).unwrap();
+        let functions = concat!(
+            "cd() { builtin cd \"$@\" && echo \"CD-HOOK $PWD\"; }\n",
+            "pwd() { echo PWD-FUNC; }\n",
+            "printf() { echo PRINTF-FUNC; }\n",
+        );
+        std::fs::write(home.path().join(".bash_profile"), functions).unwrap();
+        std::fs::write(
+            home.path().join(".zprofile"),
+            format!("{functions}chpwd() {{ echo \"CHPWD-HOOK $PWD\"; }}\n"),
+        )
+        .unwrap();
+        let mut shells = vec!["/bin/bash"];
+        if Path::new("/bin/zsh").is_file() {
+            shells.push("/bin/zsh");
+        }
+        for shell in shells {
+            let report = tempfile::NamedTempFile::new().unwrap();
+            let output = piped(
+                shell,
+                home.path(),
+                "echo hi; builtin cd sub",
+                &folder,
+                Some(report.path()),
+                false,
+            )
+            .output()
+            .await
+            .unwrap();
+            assert!(output.status.success(), "{shell}: {output:?}");
+            let expected = if shell.ends_with("zsh") {
+                // The command's own cd runs the hook, as it would anywhere.
+                format!("hi\nCHPWD-HOOK {}/sub\n", folder.display())
+            } else {
+                "hi\n".to_string()
+            };
+            assert_eq!(read_as_the_tools_do(&output.stdout), expected, "{shell}");
+            assert_eq!(read_as_the_tools_do(&output.stderr), "", "{shell}");
+            assert_eq!(
+                std::fs::read_to_string(report.path()).unwrap().trim_end(),
+                folder.join("sub").display().to_string(),
+                "{shell}"
+            );
+        }
+    }
+
+    /// A command that ends with `exit` gets nothing of `~/.bash_logout`, and
+    /// an `EXIT` trap the profile set does not print when the shell ends, in
+    /// the foreground, for a monitor and in a background command's file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_commands_exit_reads_no_logout_file_and_the_profiles_exit_trap_is_cleared() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let folder = folder.path().canonicalize().unwrap();
+        std::fs::write(
+            home.path().join(".bash_logout"),
+            "echo LOGOUT-RAN\necho LOGOUT-ERR >&2\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.path().join(".bash_profile"),
+            "trap 'echo PROFILE-TRAP' EXIT\n",
+        )
+        .unwrap();
+        for (source, code, out) in [
+            ("echo a", 0, "a\n"),
+            ("echo b; exit 0", 0, "b\n"),
+            ("echo c; exit 3", 3, "c\n"),
+        ] {
+            let report = tempfile::NamedTempFile::new().unwrap();
+            for report in [Some(report.path()), None] {
+                let output = piped("/bin/bash", home.path(), source, &folder, report, false)
+                    .output()
+                    .await
+                    .unwrap();
+                assert_eq!(output.status.code(), Some(code), "{source}");
+                assert_eq!(read_as_the_tools_do(&output.stdout), out, "{source}");
+                assert_eq!(read_as_the_tools_do(&output.stderr), "", "{source}");
+            }
+        }
+        let file = folder.join("b1.output");
+        for source in ["echo d", "echo e; exit 0"] {
+            let _ = std::fs::remove_file(&file);
+            let written = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+                .unwrap();
+            let mut command = script(
+                Some("/bin/bash"),
+                source,
+                None,
+                &folder,
+                None,
+                Some(&file),
+                false,
+            );
+            command
+                .env("HOME", home.path())
+                .stdout(Stdio::from(written.try_clone().unwrap()))
+                .stderr(Stdio::from(written));
+            assert!(command.status().await.unwrap().success());
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                format!("{}\n", &source[5..6]),
+                "{source}"
+            );
+        }
+    }
+
+    /// The folders of the `PATH` SUPER runs with come first again after a
+    /// profile that put others in front, as macOS's `path_helper` does, and
+    /// those the profile added follow them, each folder once.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_path_super_runs_with_comes_before_the_folders_the_profile_put_first() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let theirs = "/profile-first:/usr/bin:/bin::/usr/bin";
+        let profile = format!("PATH={theirs}; export PATH\n");
+        std::fs::write(home.path().join(".bash_profile"), &profile).unwrap();
+        std::fs::write(home.path().join(".zprofile"), &profile).unwrap();
+        std::fs::write(home.path().join(".profile"), &profile).unwrap();
+        let ours = std::env::var("PATH").unwrap();
+        let mut expected: Vec<&str> = Vec::new();
+        for entry in ours.split(':').chain(theirs.split(':')) {
+            if !entry.is_empty() && !expected.contains(&entry) {
+                expected.push(entry);
+            }
+        }
+        let mut shells = vec!["/bin/bash", "/bin/sh"];
+        if Path::new("/bin/zsh").is_file() {
+            shells.push("/bin/zsh");
+        }
+        for shell in shells {
+            let output = piped(
+                shell,
+                home.path(),
+                "printf '%s' \"$PATH\"",
+                folder.path(),
+                None,
+                false,
+            )
+            .output()
+            .await
+            .unwrap();
+            assert!(output.status.success(), "{shell}: {output:?}");
+            assert_eq!(
+                read_as_the_tools_do(&output.stdout),
+                expected.join(":"),
+                "{shell}"
+            );
+        }
+    }
+
+    /// With `errors_to_output`, what the command writes to its errors comes
+    /// on its output, in the order the command wrote it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_errors_come_with_the_output_in_the_order_they_were_written() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join(".bash_profile"), "echo PROFILE-ERR >&2\n").unwrap();
+        let output = piped(
+            "/bin/bash",
+            home.path(),
+            "echo 1; echo 2 >&2; echo 3; echo 4 >&2; echo 5",
+            folder.path(),
+            None,
+            true,
+        )
+        .output()
+        .await
+        .unwrap();
+        assert_eq!(read_as_the_tools_do(&output.stdout), "1\n2\n3\n4\n5\n");
+        assert_eq!(read_as_the_tools_do(&output.stderr), "");
     }
 
     /// A job the profile starts with its output sent elsewhere, the usual
@@ -672,6 +1021,7 @@ mod tests {
             folder.path(),
             None,
             None,
+            false,
         );
         command
             .env("HOME", home.path())
@@ -692,7 +1042,7 @@ mod tests {
     async fn a_syntax_error_in_the_command_is_reported_with_its_own_line() {
         let folder = tempfile::tempdir().unwrap();
         let errors = |shell: &'static str, source: &'static str| {
-            let mut command = script(Some(shell), source, None, folder.path(), None, None);
+            let mut command = script(Some(shell), source, None, folder.path(), None, None, false);
             command
                 .env("HOME", folder.path())
                 .stdout(Stdio::piped())
