@@ -762,10 +762,16 @@ async fn a_workflow_the_user_stops_is_announced_with_how_to_resume_it() {
         .find_map(notice_text)
         .expect("a notice");
     assert!(notice.contains("<status>stopped</status>"));
-    assert!(notice.contains("<summary>greet (stopped)</summary>"));
+    // The task id is the run id resumeFromRunId takes; the summary says how
+    // far the run came; the fixed text is a placeholder.
+    assert!(notice.contains(&format!("<task-id>{}</task-id>", run.run_id)));
+    assert!(
+        notice.contains("<summary>greet (stopped after "),
+        "{notice}"
+    );
     assert!(notice.contains(&format!(
-        "Its finished agent calls are kept: a Workflow call with resumeFromRunId {} replays them, up to the first one whose prompt changed.",
-        run.run_id
+        "<result>{}</result>",
+        prompt_todo("Workflow.notice.stopped")
     )));
 }
 

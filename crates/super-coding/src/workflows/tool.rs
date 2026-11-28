@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use super_agent::placeholder::{tool_description, tool_parameter};
+use super_agent::placeholder::{prompt_todo, tool_description, tool_parameter};
 use super_agent::tools::arguments::drop_nulls;
 use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
 use super_workflow::{Journal, Script};
@@ -321,12 +321,10 @@ fn spawn_run(
         let (status, ended) = match outcome {
             Ok(Value::Null) if snapshot.status == super_workflow::RunStatus::Stopped => (
                 WorkflowTurnStatus::Stopped,
-                TaskOutcome::stopped(format!("{workflow_name} (stopped)")).with_result(format!(
-                    "The user stopped this workflow after {summary}. Its finished agent calls are \
-                     kept: a Workflow call with resumeFromRunId {} replays them, up to the first \
-                     one whose prompt changed.",
-                    record.run_id
-                )),
+                // The notice's task id is the run id, which resumeFromRunId
+                // takes; the fixed text is the prompt team's.
+                TaskOutcome::stopped(format!("{workflow_name} (stopped after {summary})"))
+                    .with_result(prompt_todo("Workflow.notice.stopped")),
             ),
             Ok(value) => {
                 let report = match value {

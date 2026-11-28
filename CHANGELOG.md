@@ -168,8 +168,10 @@
   and the fixed text around a loaded skill and the list of skills, are
   placeholders until their text is written.
 - The note on a stopped workflow no longer promises that relaunching the
-  same script reuses its results: it names the run's id for
-  `resumeFromRunId`, which does.
+  same script reuses its results. A workflow stopped from `/workflows` is
+  announced with a notice whose task id is the run's id for
+  `resumeFromRunId` and whose summary says how far the run came; its fixed
+  text is a placeholder until it is written.
 - In the advanced mode the system prompt no longer lists the skills with
   their files; the list comes with the `Skill` tool. An agent's system prompt
   repeats no list of skills either.
