@@ -180,16 +180,7 @@ impl SessionOptions {
         std::fs::create_dir_all(&cwd)
             .with_context(|| format!("create working directory {}", cwd.display()))?;
 
-        let trusted = self.trust_project_files
-            || trust::resolve_non_interactive(
-                &cwd,
-                None,
-                Settings::load(&cwd, false).default_project_trust,
-            );
-        let settings = match &self.settings {
-            Some(settings) => settings.clone(),
-            None => Settings::load(&cwd, trusted),
-        };
+        let (settings, trusted) = self.settings_and_trust();
 
         let registry = Registry::load(self.models_file.as_deref());
         let (model, pattern_thinking) = self.resolve_model(&registry, &settings)?;
@@ -337,6 +328,41 @@ impl SessionOptions {
         })
     }
 
+    /// The settings the session is built with, and whether the project's
+    /// files are trusted.
+    fn settings_and_trust(&self) -> (Settings, bool) {
+        let trusted = self.trust_project_files
+            || trust::resolve_non_interactive(
+                &self.cwd,
+                None,
+                Settings::load(&self.cwd, false).default_project_trust,
+            );
+        let settings = match &self.settings {
+            Some(settings) => settings.clone(),
+            None => Settings::load(&self.cwd, trusted),
+        };
+        (settings, trusted)
+    }
+
+    /// What a host tells the user when it starts this session, one line
+    /// each: the names of no tool in [`tools`](Self::tools),
+    /// [`exclude_tools`](Self::exclude_tools), the settings' `defaultTools`
+    /// and the `tools` of the agent types of the session's folders
+    /// ([`crate::tools::tool_name_warnings`]). The session leaves such names
+    /// out without a word.
+    pub fn tool_name_warnings(&self) -> Vec<String> {
+        if self.no_tools {
+            return Vec::new();
+        }
+        let (settings, trusted) = self.settings_and_trust();
+        crate::tools::tool_name_warnings(
+            self.tools.as_deref(),
+            &self.exclude_tools,
+            settings.default_tools.as_deref(),
+            &super_coding::agents::discover(&self.cwd, trusted),
+        )
+    }
+
     fn load_mcp(
         &self,
         cwd: &Path,
@@ -442,6 +468,48 @@ impl SessionOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host that builds sessions from options, `--mode rpc` and the
+    /// daemon, gets the same warnings as the terminal: names of no tool in
+    /// the selection and in the project's agent types.
+    #[test]
+    fn the_warnings_name_the_tools_a_session_and_its_agent_types_leave_out() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".super/agents")).unwrap();
+        std::fs::write(
+            dir.path().join(".super/agents/checker.md"),
+            "---\nname: checker\ntools: read, bash\n---\nCheck.\n",
+        )
+        .unwrap();
+        let options = SessionOptions {
+            cwd: dir.path().to_path_buf(),
+            exclude_tools: vec!["write".into()],
+            settings: Some(Settings {
+                default_tools: Some(vec!["read".into(), "Bash".into()]),
+                ..Default::default()
+            }),
+            trust_project_files: true,
+            ..Default::default()
+        };
+        let warnings = options.tool_name_warnings();
+        assert!(
+            warnings
+                .contains(&"unknown tool names ignored: write (use Write), read (use Read)".into()),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.contains(
+                &"unknown tool names in agent type checker ignored: read (use Read), bash (use Bash)"
+                    .into()
+            ),
+            "{warnings:?}"
+        );
+        let options = SessionOptions {
+            no_tools: true,
+            ..options
+        };
+        assert!(options.tool_name_warnings().is_empty());
+    }
 
     #[test]
     fn the_default_session_writes_nothing_to_disk() {

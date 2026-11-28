@@ -221,6 +221,7 @@ impl SessionHost {
             no_context_files: self.config.no_context_files,
             ..Default::default()
         };
+        let warnings = options.tool_name_warnings();
         let session = Session::create(options)
             .await
             .map_err(|error| HostError::Startup(anyhow::Error::new(error)))?;
@@ -248,6 +249,7 @@ impl SessionHost {
         }
         let hosted = self.install(session, request.cwd, file, lock);
         log::info("host", format!("created session {session_id}"));
+        log_warnings(&session_id, &warnings);
         self.announce(DaemonEvent::SessionCreated {
             session: self.summary(&hosted),
         });
@@ -291,10 +293,12 @@ impl SessionHost {
             no_context_files: self.config.no_context_files,
             ..Default::default()
         };
+        let warnings = options.tool_name_warnings();
         let session = Session::create(options)
             .await
             .map_err(|error| HostError::Startup(anyhow::Error::new(error)))?;
         let opened_id = session.state().session_id;
+        log_warnings(&opened_id, &warnings);
         if !opened_id.starts_with(session_id) {
             return Err(HostError::Invalid(format!(
                 "session {session_id} resolved to {opened_id}"
@@ -682,6 +686,13 @@ async fn track_state(
     }
 }
 
+/// The warnings of [`SessionOptions::tool_name_warnings`] for a session the
+/// daemon starts, in its log: the daemon has no terminal to print them on.
+fn log_warnings(session_id: &str, warnings: &[String]) {
+    for warning in warnings {
+        log::warn("host", format!("session {session_id}: {warning}"));
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

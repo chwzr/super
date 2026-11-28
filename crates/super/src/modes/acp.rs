@@ -187,6 +187,9 @@ impl SuperAcpAgent {
         options.cwd = cwd.clone();
         options.session = source;
         options.mcp_servers = acp_mcp_servers(mcp_servers)?;
+        for warning in options.tool_name_warnings() {
+            eprintln!("warning: {warning}");
+        }
         let built = options.build(sink).map_err(internal_error)?;
         // Until the client has the session, it starts no turn of its own;
         // then `start_idle_turns` lets it (the new, load and resume

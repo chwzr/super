@@ -1513,6 +1513,7 @@ async fn run_with_hosts(
         needs_login,
         theme,
         themes,
+        warnings,
     } = startup;
     // One writer per session file: a SUPER daemon must not host this one.
     // `/remote` lets go of it when it hands the session to the daemon.
@@ -1688,6 +1689,7 @@ async fn run_with_hosts(
             "No credentials yet. Type /login to sign in.".into(),
         ));
     }
+    show_warnings(&mut app, warnings);
     update_thinking_border(&mut app, session.thinking_level());
     refresh_git_branch(&mut app, &session);
 
@@ -5043,6 +5045,15 @@ fn open_model_picker(
         };
         let _ = tx.send(CommandEvent::ModelCatalog { result, pattern });
     });
+}
+
+/// The startup warnings about tool names ([`crate::setup::tool_name_warnings`])
+/// as lines of the transcript: the other modes print them on standard
+/// error, which the full-screen terminal would draw over.
+fn show_warnings(app: &mut App, warnings: Vec<String>) {
+    for warning in warnings {
+        app.cells.push(Cell::Notice(format!("warning: {warning}")));
+    }
 }
 
 /// The `/hotkeys` text. The key that stops the background tasks is the one
@@ -9975,6 +9986,21 @@ mod tests {
         assert!(matches!(flow, Flow::Continue));
         assert_eq!(app.editor.text(), "one ");
         assert!(app.workflow_view.is_none());
+    }
+
+    /// The warnings about tool names reach the transcript, where the
+    /// full-screen terminal would draw over standard error.
+    #[test]
+    fn startup_warnings_are_lines_of_the_transcript() {
+        let mut app = test_app();
+        show_warnings(
+            &mut app,
+            vec!["unknown tool names ignored: read (use Read)".into()],
+        );
+        assert!(matches!(
+            app.cells.last(),
+            Some(Cell::Notice(text)) if text == "warning: unknown tool names ignored: read (use Read)"
+        ));
     }
 
     #[test]

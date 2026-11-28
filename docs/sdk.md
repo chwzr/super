@@ -439,7 +439,12 @@ that the announcements reach its client; `rpc::serve_streams` and
 `serve_websocket` call it after they subscribe, and `--mode rpc` over stdio
 defers. `SessionOptions::file_guard` is asked about the session's file
 before the session is built from it, so a host can refuse a file another
-process holds (`--mode rpc` does).
+process holds (`--mode rpc` does). `SessionOptions::tool_name_warnings()`
+returns one line for each list of names that are no tool's, in `tools`,
+`exclude_tools`, the settings' `defaultTools` and the `tools` of the agent
+types the session finds, such as "unknown tool names ignored: read (use
+Read)"; the session leaves those names out without a word, so a host shows
+the lines (`--mode rpc` and ACP on standard error, the daemon in its log).
 
 A session that ends in a worktree it made asks whether to keep or remove it:
 `Session::settle_worktree(wait)` opens the question

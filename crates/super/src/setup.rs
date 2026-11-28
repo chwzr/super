@@ -29,6 +29,10 @@ pub struct Startup {
     pub enabled_models: Vec<Model>,
     pub initial_message: Option<String>,
     pub needs_login: bool,
+    /// Lines about tool names that are no tool's ([`tool_name_warnings`]),
+    /// which the terminal shows in its transcript; the other modes have
+    /// printed them on standard error.
+    pub warnings: Vec<String>,
 }
 
 pub struct ReloadedRuntime {
@@ -87,26 +91,24 @@ fn configured_tools(
     Ok((names, manager))
 }
 
-/// A line about the names in `--tools`, `--exclude-tools` and `defaultTools`
-/// that are no tool's, which would otherwise be left out without a word.
-fn unknown_tools_note(args: &Args, settings: &Settings) -> Option<String> {
+/// Lines about the names in `--tools`, `--exclude-tools`, `defaultTools`
+/// and the `tools` of the agent types in `types` that are no tool's, which
+/// would otherwise be left out without a word.
+pub fn tool_name_warnings(
+    args: &Args,
+    settings: &Settings,
+    types: &[super_coding::agents::AgentType],
+) -> Vec<String> {
+    if args.no_tools {
+        return Vec::new();
+    }
     let allow = args.tools.as_ref().map(|_| Args::split_csv(&args.tools));
-    let unknown = super_sdk::tools::unknown_tool_names(
+    super_sdk::tools::tool_name_warnings(
         allow.as_deref(),
         &Args::split_csv(&args.exclude_tools),
         settings.default_tools.as_deref(),
-    );
-    if unknown.is_empty() {
-        return None;
-    }
-    let names: Vec<String> = unknown
-        .into_iter()
-        .map(|(name, like)| match like {
-            Some(like) => format!("{name} (use {like})"),
-            None => name,
-        })
-        .collect();
-    Some(format!("unknown tool names ignored: {}", names.join(", ")))
+        types,
+    )
 }
 
 /// Which of the tools a session adds itself `--tools`, `--exclude-tools` and
@@ -628,9 +630,6 @@ pub async fn build_startup(
     };
 
     // System prompt.
-    if let Some(note) = unknown_tools_note(args, &settings) {
-        eprintln!("warning: {note}");
-    }
     let (tool_names, mcp) = configured_tools(args, &cwd, trusted, &settings)?;
     let system_prompt = system_prompt(args, &cwd, &settings, &tool_names, &context, &skills);
     let agent_resources = agent_resources(
@@ -642,6 +641,12 @@ pub async fn build_startup(
         &context,
         &skills,
     );
+    let warnings = tool_name_warnings(args, &settings, &agent_resources.definitions);
+    if !interactive {
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+    }
 
     // Session.
     let dir = session_dir(args, &settings);
@@ -726,6 +731,7 @@ pub async fn build_startup(
         enabled_models,
         initial_message,
         needs_login,
+        warnings,
     })
 }
 
@@ -774,12 +780,12 @@ mod tests {
         };
         let args = Args::parse_from(["super", "--tools", "Read,edit"]);
         assert_eq!(
-            unknown_tools_note(&args, &settings).as_deref(),
-            Some("unknown tool names ignored: edit (use Edit), read (use Read), bash (use Bash)")
+            tool_name_warnings(&args, &settings, &[]),
+            ["unknown tool names ignored: edit (use Edit), read (use Read), bash (use Bash)"]
         );
         settings.default_tools = Some(vec!["Read".into(), "-Monitor".into()]);
         let args = Args::parse_from(["super", "--exclude-tools", "Bash"]);
-        assert_eq!(unknown_tools_note(&args, &settings), None);
+        assert!(tool_name_warnings(&args, &settings, &[]).is_empty());
     }
 
     #[test]

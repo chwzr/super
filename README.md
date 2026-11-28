@@ -1151,13 +1151,18 @@ settings cannot change it.
 ### Tool selection
 
 Choose which tools are available when a session starts with `defaultTools` in
-your settings. For example, `["Read", "Bash"]` starts sessions with only those
-two tools.
+your settings. For example, `["Read", "Bash"]` starts sessions with `Read` and
+`Bash` of the four core tools, and without `grep`, `find`, `ls` and `mcp`; the
+tools of the advanced mode that come with them are added as the next
+paragraph says.
 
 Tool names are case-sensitive. `Read`, `Write`, `Edit`, and `Bash` start with a
 capital letter, and their lower-case names from earlier versions are no longer
-recognized: SUPER leaves out a name no tool has and says so on standard error
-when it starts, with the tool's name in its new case. The other tools of the
+recognized: SUPER leaves out a name no tool has and says so when a session
+starts, with the tool's name in its new case: on standard error, in the
+transcript of the full-screen terminal, and in the daemon's log for a session
+the daemon starts. A name in the `tools` of an agent type that no tool has is
+named the same way. The other tools of the
 advanced mode are not added here: `Monitor` and `TaskStop` come with `Bash`
 (see [Shell tools](#shell-tools)), or when `--tools` names them, `Skill`,
 `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` with `Read` or `Bash`

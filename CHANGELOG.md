@@ -415,6 +415,13 @@
   start sessions without file tools.
 - Rust SDK: `super_sdk::tools::unknown_tool_names` finds those names and
   `SESSION_TOOLS` lists the tools a session adds itself.
+- The warning about names of no tool also comes from `--mode rpc` and ACP on
+  standard error, from the daemon in its log for each session it starts, and
+  in the full-screen terminal as a line of the transcript, where standard
+  error was drawn over. It also names those in the `tools` of an agent type,
+  such as `read` in `tools: read, bash`, whose agents got no tool for them.
+  Rust SDK: `super_sdk::tools::tool_name_warnings` and
+  `SessionOptions::tool_name_warnings`.
 - An agent whose folder is gone, such as a worktree the session worked in and
   removed, goes on in the session's folder when a message resumes it in the
   same process too, not only after the session was opened again; its

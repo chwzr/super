@@ -195,9 +195,90 @@ pub fn unknown_tool_names(
     out
 }
 
+/// One line for `names` of no tool ([`unknown_tool_names`]), each with the
+/// name it meant: `read (use Read), nothing`.
+fn named(names: Vec<(String, Option<&'static str>)>) -> String {
+    names
+        .into_iter()
+        .map(|(name, like)| match like {
+            Some(like) => format!("{name} (use {like})"),
+            None => name,
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The warnings a host shows when a session starts, one line each, about
+/// names that are no tool's: in the allowlist, the exclusions and
+/// `defaults` ([`unknown_tool_names`]), and in the `tools` of the agent
+/// types in `types`. Such a name is left out without a word otherwise, so a
+/// selection or a type written for an earlier version would give a session
+/// or an agent fewer tools than it names.
+pub fn tool_name_warnings(
+    allow: Option<&[String]>,
+    exclude: &[String],
+    defaults: Option<&[String]>,
+    types: &[super_coding::agents::AgentType],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let unknown = unknown_tool_names(allow, exclude, defaults);
+    if !unknown.is_empty() {
+        warnings.push(format!("unknown tool names ignored: {}", named(unknown)));
+    }
+    for agent_type in types {
+        let names = match &agent_type.tools {
+            super_coding::agents::ToolChoice::Only(names)
+            | super_coding::agents::ToolChoice::AllExcept(names) => names,
+            super_coding::agents::ToolChoice::All => continue,
+        };
+        let unknown = unknown_tool_names(Some(names), &[], None);
+        if !unknown.is_empty() {
+            warnings.push(format!(
+                "unknown tool names in agent type {} ignored: {}",
+                agent_type.name,
+                named(unknown)
+            ));
+        }
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_of_no_tool_are_named_in_a_warning_for_the_session_and_for_agent_types() {
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let of_type = |name: &str, tools| super_coding::agents::AgentType {
+            name: name.into(),
+            description: String::new(),
+            instructions: String::new(),
+            model: None,
+            effort: None,
+            tools,
+            source: super_coding::agents::AgentTypeSource::BuiltIn,
+        };
+        let types = [
+            of_type(
+                "checker",
+                super_coding::agents::ToolChoice::Only(names(&["Read", "bash", "teleport"])),
+            ),
+            of_type(
+                "fine",
+                super_coding::agents::ToolChoice::Only(names(&["Read", "Monitor"])),
+            ),
+            of_type("all", super_coding::agents::ToolChoice::All),
+        ];
+        assert_eq!(
+            tool_name_warnings(None, &[], Some(&names(&["read", "Edit"])), &types),
+            [
+                "unknown tool names ignored: read (use Read)",
+                "unknown tool names in agent type checker ignored: bash (use Bash), teleport",
+            ]
+        );
+        assert!(tool_name_warnings(None, &[], None, &types[1..]).is_empty());
+    }
 
     #[test]
     fn names_of_no_tool_are_found_with_the_name_they_meant() {

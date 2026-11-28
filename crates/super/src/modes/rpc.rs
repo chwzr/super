@@ -62,7 +62,11 @@ pub fn options_from_args(args: &Args) -> Result<SessionOptions> {
 }
 
 pub async fn run(args: &Args) -> Result<i32> {
-    let session = super_sdk::Session::create(options_from_args(args)?).await?;
+    let options = options_from_args(args)?;
+    for warning in options.tool_name_warnings() {
+        eprintln!("warning: {warning}");
+    }
+    let session = super_sdk::Session::create(options).await?;
     let _session_lock = crate::setup::keep_session_lock(session.agent_session())?;
     session.set_session_file_guard(Some(crate::setup::session_file_guard(
         session.agent_session(),
