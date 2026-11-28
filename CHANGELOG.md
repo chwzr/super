@@ -424,6 +424,11 @@
   those tools without `Bash` too, and `--tools` that names them offers them
   without `Bash`; they were left out without a word. `ListAgents` still comes
   only with `Agent`, as the README now says. Rust SDK: `ToolSelection::names`.
+- An agent with `isolation: "worktree"` started while the session works in a
+  worktree gets its own worktree at the top of the project, starting at the
+  commit the session's worktree is at. It was made inside the session's
+  worktree, so `ExitWorktree` with `remove` deleted it, with the agent's
+  uncommitted work, without asking for `discard_changes`.
 
 ## 0.0.42 - 2026-11-27
 

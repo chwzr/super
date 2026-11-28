@@ -665,6 +665,72 @@ async fn an_agent_with_a_worktree_works_in_it_and_keeps_it_only_when_it_changed_
 
 #[cfg(unix)]
 #[tokio::test]
+async fn an_agents_worktree_is_made_at_the_top_of_the_project_while_the_session_is_in_a_worktree() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    crate::worktree::tests::init_repository(directory.path());
+    let root = directory.path().canonicalize().unwrap();
+    let (stream, _) = lanes(vec![(
+        "edit task",
+        vec![
+            Some(tool_call(
+                "b1",
+                "Bash",
+                json!({"command": "echo work > agent.txt"}),
+            )),
+            Some(text("wrote it")),
+        ],
+    )]);
+    let mut settings = settings();
+    settings.worktree.base_ref = crate::settings::WorktreeBaseRef::Head;
+    let session = main_session(
+        stored_manager(&root, store.path()),
+        stream,
+        core_tools(&root),
+    );
+    session.update_settings(settings);
+    // The session works in a worktree of its own, with a commit the main
+    // folder does not have.
+    let outer = crate::worktree::create(&root, "outer", None).unwrap();
+    std::fs::write(outer.path.join("outer.txt"), "outer\n").unwrap();
+    crate::worktree::tests::run(&outer.path, &["add", "outer.txt"]);
+    crate::worktree::tests::run(&outer.path, &["commit", "--quiet", "-m", "outer"]);
+    session.enter_worktree(crate::worktree::EnteredWorktree {
+        worktree: outer.clone(),
+        created: true,
+        original: root.clone(),
+        entered_at: 0,
+    });
+
+    let result = tool(&session, "Agent")
+        .execute(
+            "call_1",
+            json!({"description": "Edit", "prompt": "edit task", "run_in_background": false, "isolation": "worktree"}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!result.is_error, "{}", result.output_text());
+    let id = result.details["agent"]["id"].as_str().unwrap().to_string();
+    // Its worktree is at the top of the project, not inside the session's,
+    // and starts from the commit the session's worktree is at.
+    let path = root.join(".super/worktrees").join(format!("agent-{id}"));
+    assert_eq!(
+        result.details["agent"]["worktree"]["path"],
+        json!(path.display().to_string())
+    );
+    assert!(path.join("agent.txt").exists());
+    assert!(path.join("outer.txt").exists());
+    assert!(!outer.path.join(".super").exists());
+    // So removing the session's worktree leaves the agent's work alone.
+    session.leave_worktree();
+    crate::worktree::remove(&outer).unwrap();
+    assert!(path.join("agent.txt").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn an_agent_whose_folder_is_gone_is_loaded_and_resumed_in_its_parents_folder() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();

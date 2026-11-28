@@ -329,9 +329,11 @@ the advanced mode; see [Mode](#mode).
 - `Esc` and `Ctrl+C` stop the turn and the child the main agent waits for.
   Children in the background keep running; `/tasks` and `TaskStop` stop them.
 - With `isolation` set to `worktree`, a child works in a git worktree of its
-  own, `.super/worktrees/agent-<id>` in the project, on the new branch
-  `worktree-agent-<id>`, which starts where `worktree.baseRef` says (see
-  [Wake-ups and worktrees](#wake-ups-and-worktrees)). When it ends with
+  own, `.super/worktrees/agent-<id>` at the top of the project, also while
+  the session works in a worktree, on the new branch `worktree-agent-<id>`,
+  which starts where `worktree.baseRef` says (see
+  [Wake-ups and worktrees](#wake-ups-and-worktrees)), else at the commit the
+  session's folder is at. When it ends with
   nothing changed, the worktree and the branch are removed; otherwise they
   stay, and its report names them. `remote` is not available.
 

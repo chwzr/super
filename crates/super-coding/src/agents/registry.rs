@@ -1207,16 +1207,29 @@ fn task_outcome(name: &str, outcome: &ChildTurnOutcome) -> TaskOutcome {
 }
 
 /// The git worktree an agent with `isolation: "worktree"` works in:
-/// `.super/worktrees/agent-<id>` in the project of `owner`'s folder, on the
-/// new branch `worktree-agent-<id>` from where the `worktree.baseRef`
-/// setting says ([`worktree::start_point`]).
+/// `.super/worktrees/agent-<id>` at the top of the project of `owner`'s
+/// folder, on the new branch `worktree-agent-<id>` from where the
+/// `worktree.baseRef` setting says ([`worktree::start_point`]), else from
+/// the commit `owner`'s folder is at. The project is the repository's main
+/// working tree, also while `owner` works in a worktree, so that the
+/// agent's worktree is not made inside the one `owner` works in.
 pub(crate) async fn agent_worktree(
     owner: &AgentSession,
     agent_id: &str,
 ) -> anyhow::Result<Worktree> {
-    let project = owner.working_folder();
+    let folder = owner.working_folder();
     let name = format!("agent-{agent_id}");
-    let start = worktree::start_point(&project, owner.settings().worktree.base_ref).await;
+    let base_ref = owner.settings().worktree.base_ref;
+    let (project, head) = {
+        let folder = folder.clone();
+        tokio::task::spawn_blocking(move || {
+            let project = worktree::main_tree(&folder).unwrap_or_else(|_| folder.clone());
+            (project, worktree::head_commit(&folder).ok())
+        })
+        .await
+        .context("the worktree could not be made")?
+    };
+    let start = worktree::start_point(&project, base_ref).await.or(head);
     tokio::task::spawn_blocking(move || worktree::create(&project, &name, start.as_deref()))
         .await
         .context("the worktree could not be made")?

@@ -404,7 +404,8 @@ reach them, since they run as their workflow or job says:
   session; the model writes to it with `SendMessage`.
 
 An agent started with `isolation: "worktree"` works in a git worktree of its
-own, `.super/worktrees/agent-<id>` at the top of the project, on the new
+own, `.super/worktrees/agent-<id>` at the top of the project (its main
+working tree, also while the session works in a worktree), on the new
 branch `worktree-agent-<id>`. When a run ends with nothing changed in it, the
 worktree and its branch are removed; otherwise both stay, and the agent's
 `worktree` names them. A resumed agent gets its worktree back first.

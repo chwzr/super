@@ -276,6 +276,25 @@ pub fn list(folder: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+/// The main working tree of the repository `folder` is in, also when
+/// `folder` is in a linked worktree: where new worktrees go, so that one is
+/// never made inside another.
+pub fn main_tree(folder: &Path) -> Result<PathBuf> {
+    list(folder)?
+        .into_iter()
+        .next()
+        .with_context(|| format!("{} is not in a git repository", folder.display()))
+}
+
+/// The commit `HEAD` is at in `folder`.
+pub fn head_commit(folder: &Path) -> Result<String> {
+    git(
+        folder,
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    )
+    .with_context(|| format!("{} has no commit", folder.display()))
+}
+
 /// The worktree at `path` as it is now, for a session that enters a
 /// worktree it did not make: its branch (`HEAD` when it is detached), its
 /// current commit as the one it started from, and `project` as the working
