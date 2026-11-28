@@ -361,7 +361,16 @@ impl BashTool {
             false,
         );
         cmd.stdout(Stdio::from(file)).stderr(Stdio::from(errors));
-        let process = ShellProcess::start(cmd)?;
+        let process = match ShellProcess::start(cmd) {
+            Ok(process) => process,
+            Err(error) => {
+                // No shell runs to empty the file of the mark.
+                if marked {
+                    let _ = std::fs::write(&output, b"");
+                }
+                return Err(error);
+            }
+        };
         tokio::spawn(watch_background(
             process,
             task,

@@ -160,6 +160,31 @@ async fn the_shell_starts_from_the_profile() {
     assert_eq!(result.output_text(), "login shell");
 }
 
+/// A background command whose shell cannot start leaves its output file
+/// empty.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_background_command_whose_shell_cannot_start_leaves_an_empty_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let work = directory.path().canonicalize().unwrap();
+    let not_a_program = work.join("bash");
+    std::fs::write(&not_a_program, "not a program\n").unwrap();
+    let host = FakeHost::new(&work);
+    let mut bash = background_tool(&work, &host);
+    bash.shell_path = Some(not_a_program.display().to_string());
+    let error = run(
+        &bash,
+        json!({"command": "echo bg", "run_in_background": true}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Could not start shell"),
+        "{error:#}"
+    );
+    assert_eq!(std::fs::read(work.join("b0.output")).unwrap(), b"");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_cd_carries_over_in_the_main_session_while_it_stays_inside() {
