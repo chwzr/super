@@ -262,8 +262,8 @@ async fn the_dispatcher_answers_state_and_model_questions() {
     let tools = state["tools"].as_array().unwrap();
     assert_eq!(
         tools,
-        &["Read", "Write", "Edit", "Bash", "Monitor"],
-        "the four default tools, and Monitor, which comes with Bash in the advanced mode"
+        &["Read", "Write", "Edit", "Bash", "Monitor", "TaskStop"],
+        "the four default tools, and the two that come with Bash in the advanced mode"
     );
 
     let models = session

@@ -254,8 +254,8 @@ pub struct AgentSession {
     /// What this session's tools keep per session (what was read of each
     /// file); set once at construction, and every tool is bound to it.
     tool_session: OnceLock<ToolSession>,
-    /// `Monitor`, which works on this session's background tasks; offered
-    /// alongside `Bash`.
+    /// `Monitor` and `TaskStop`, which work on this session's background
+    /// tasks; offered alongside `Bash`.
     task_tools: OnceLock<Vec<DynTool>>,
     /// What the session's process last reported about its tasks, while the
     /// engine runs elsewhere.
@@ -452,8 +452,10 @@ impl AgentSession {
         };
         assert!(session.tool_session.set(tool_session).is_ok());
         let this = Arc::downgrade(&session);
-        let task_tools: Vec<DynTool> =
-            vec![Arc::new(crate::tools::monitor::MonitorTool::new(this))];
+        let task_tools: Vec<DynTool> = vec![
+            Arc::new(crate::tools::monitor::MonitorTool::new(this.clone())),
+            Arc::new(crate::tools::task_stop::TaskStopTool::new(this)),
+        ];
         assert!(session.task_tools.set(task_tools).is_ok());
         if subagents_allowed {
             let runtime = SubagentRuntime::new(Arc::downgrade(&session));
@@ -743,7 +745,8 @@ impl AgentSession {
         {
             tools.extend(runtime.control_tools());
         }
-        // Monitor runs commands as Bash does, so it comes with Bash.
+        // Monitor runs commands as Bash does, and TaskStop stops what they
+        // leave running: both come with Bash.
         if tools.iter().any(|tool| tool.name() == "Bash")
             && let Some(task_tools) = self.task_tools.get()
         {

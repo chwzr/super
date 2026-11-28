@@ -1,0 +1,86 @@
+//! TaskStop tool: stop a background task of the session by id or by name: a
+//! shell command, a monitor, an agent or a workflow run. Jobs of `/loop` and
+//! `/autoresearch` are not background tasks, and the user manages them.
+
+use crate::session_runner::AgentSession;
+use anyhow::Context as _;
+use serde_json::{Value, json};
+use std::sync::Weak;
+use super_agent::placeholder;
+use super_agent::{AgentTool, ToolResult, ToolUpdateSink};
+use tokio_util::sync::CancellationToken;
+
+pub struct TaskStopTool {
+    session: Weak<AgentSession>,
+}
+
+impl TaskStopTool {
+    pub(crate) fn new(session: Weak<AgentSession>) -> Self {
+        TaskStopTool { session }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentTool for TaskStopTool {
+    fn name(&self) -> &str {
+        "TaskStop"
+    }
+
+    fn advanced_only(&self) -> bool {
+        true
+    }
+
+    fn description(&self) -> String {
+        placeholder::tool_description("TaskStop")
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": placeholder::tool_parameter("TaskStop", "task_id"),
+                },
+                "shell_id": {
+                    "type": "string",
+                    "description": placeholder::tool_parameter("TaskStop", "shell_id"),
+                },
+            },
+            "additionalProperties": false,
+        })
+    }
+
+    async fn execute(
+        &self,
+        _tool_call_id: &str,
+        args: Value,
+        _cancel: CancellationToken,
+        _on_update: Option<ToolUpdateSink>,
+    ) -> anyhow::Result<ToolResult> {
+        // `shell_id` is the old name of `task_id`.
+        let target = ["task_id", "shell_id"]
+            .iter()
+            .filter_map(|name| args[*name].as_str())
+            .map(str::trim)
+            .find(|target| !target.is_empty())
+            .context("Give the task_id of the background task to stop.")?;
+        let session = self
+            .session
+            .upgrade()
+            .context("The session has ended, so it has no background tasks to stop.")?;
+        let task = session
+            .stop_task(target)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(ToolResult {
+            content: vec![super_ai::ContentBlock::text(format!(
+                "Stopped the {} task {} ({}).",
+                task.kind.as_str(),
+                task.id,
+                task.description
+            ))],
+            details: json!({"task": task}),
+            ..Default::default()
+        })
+    }
+}

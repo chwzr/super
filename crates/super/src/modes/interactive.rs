@@ -1215,6 +1215,8 @@ fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
         .or_else(|| args["pattern"].as_str())
         .or_else(|| args["command"].as_str())
         .or_else(|| args["ws"]["url"].as_str())
+        .or_else(|| args["task_id"].as_str())
+        .or_else(|| args["shell_id"].as_str())
         .unwrap_or("");
     let detail = detail.replace('\n', " ");
     let detail: String = detail.chars().take(80).collect();
@@ -9707,7 +9709,7 @@ mod tests {
     }
 
     #[test]
-    fn monitor_titles_name_their_source() {
+    fn monitor_and_task_stop_titles_name_their_source_and_task() {
         let cwd = Path::new("/work");
         assert_eq!(
             tool_title(
@@ -9724,6 +9726,22 @@ mod tests {
                 cwd
             ),
             "Monitor ws://localhost:8080"
+        );
+        assert_eq!(
+            tool_title(
+                "TaskStop",
+                &serde_json::json!({"task_id": "b12345678"}),
+                cwd
+            ),
+            "TaskStop b12345678"
+        );
+        assert_eq!(
+            tool_title(
+                "TaskStop",
+                &serde_json::json!({"shell_id": "b12345678"}),
+                cwd
+            ),
+            "TaskStop b12345678"
         );
     }
 

@@ -1,14 +1,15 @@
-//! Bash in the background and Monitor, driven through sessions
+//! Bash in the background, Monitor and TaskStop, driven through sessions
 //! with the session's own queue and task registry.
 
-use crate::background_tests::{model, scripted, text, tool_call, user_text};
+use crate::background_tests::{eventually, model, scripted, text, tool_call, user_text};
 use crate::notifications::{MONITOR_EVENT, TASK_NOTIFICATION, monitored_event, notified_task};
 use crate::session::manager::SessionManager;
 use crate::session_runner::AgentSession;
 use crate::settings::{Mode, Settings};
 use crate::subagents::ForkTurns;
-use crate::tasks::{TaskKind, TaskStatus};
+use crate::tasks::{TaskKind, TaskSpec, TaskStatus};
 use crate::tools::monitor::{Limits, MonitorTool};
+use crate::tools::task_stop::TaskStopTool;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -115,10 +116,13 @@ async fn notice_of(
 }
 
 #[tokio::test]
-async fn monitor_comes_with_bash_in_the_advanced_mode() {
+async fn monitor_and_task_stop_come_with_bash_in_the_advanced_mode() {
     let directory = tempfile::tempdir().unwrap();
     let session = session_in(directory.path(), test_settings());
-    assert_eq!(session.available_tool_names(), ["Bash", "Monitor"]);
+    assert_eq!(
+        session.available_tool_names(),
+        ["Bash", "Monitor", "TaskStop"]
+    );
 
     let mut basic = session.settings();
     basic.mode = Mode::Basic;
@@ -461,4 +465,89 @@ async fn a_websocket_source_turns_frames_into_events_until_it_closes() {
     .unwrap_err();
     assert!(format!("{error:#}").contains("Could not open the WebSocket"));
     assert_eq!(session.tasks().len(), before);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn task_stop_stops_a_task_by_id_or_by_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let session = quiet_session(directory.path());
+    let seen = Mutex::new(Vec::new());
+    let stop = TaskStopTool::new(Arc::downgrade(&session));
+    assert_eq!(
+        stop.parameters()["properties"].as_object().unwrap().len(),
+        2
+    );
+    let bash = BashTool::new(directory.path().to_path_buf())
+        .for_session(session.tool_session())
+        .unwrap();
+
+    // A shell command, by its id.
+    let marker = directory.path().join("went-on");
+    let started = call(
+        bash.as_ref(),
+        "call_bg",
+        json!({"command": format!("sleep 1; touch {}", marker.display()), "run_in_background": true, "description": "Touch later"}),
+    )
+    .await
+    .unwrap();
+    let id = started.details["backgroundTaskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let result = call(&stop, "call_stop", json!({"task_id": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        result.output_text(),
+        format!("Stopped the shell task {id} (Touch later).")
+    );
+    assert_eq!(result.details["task"]["status"], "stopped");
+
+    // A monitor, by its id under the old name shell_id.
+    let watched = call(
+        &monitor(&session, quick_limits()),
+        "call_mon",
+        json!({"description": "Watch", "timeout_ms": 30_000, "command": "sleep 30"}),
+    )
+    .await
+    .unwrap();
+    let monitor_id = watched.details["taskId"].as_str().unwrap().to_string();
+    call(&stop, "call_stop", json!({"shell_id": monitor_id}))
+        .await
+        .unwrap();
+
+    // Any task, an agent here, by its name.
+    let handle = session
+        .background_tasks()
+        .register(TaskSpec::new(TaskKind::Agent, "review the diff").with_name("reviewer"))
+        .unwrap();
+    let result = call(&stop, "call_stop", json!({"task_id": "reviewer"}))
+        .await
+        .unwrap();
+    assert_eq!(result.details["task"]["id"], handle.id());
+    assert!(handle.is_stopped());
+
+    let statuses: Vec<TaskStatus> = session.tasks().iter().map(|task| task.status).collect();
+    assert_eq!(statuses, [TaskStatus::Stopped; 3]);
+
+    // What cannot be stopped is a plain error.
+    let error = call(&stop, "call_stop", json!({"task_id": id}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        format!("Background task {id} is not running: it stopped already.")
+    );
+    let error = call(&stop, "call_stop", json!({"task_id": "nope"}))
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("No background task has the id or name 'nope'"));
+    assert!(call(&stop, "call_stop", json!({})).await.is_err());
+
+    // A stopped task ends without a notice, and its process with it.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!marker.exists(), "the stopped command went on");
+    assert!(notices_of(&collect(&session, &seen)).is_empty());
+    eventually("nothing runs", || !session.background_tasks().has_running()).await;
 }
