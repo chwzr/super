@@ -434,6 +434,11 @@
   announced it before the client listened. Rust SDK:
   `SessionOptions::defer_stored_work` and `Session::resume_stored_work` let a
   host listen first; the RPC servers start the stored work once they do.
+- `--mode rpc` asks its client before a workflow runs while
+  `workflows.confirm` is on, with an `approval_request` of kind `workflow`,
+  as the daemon and the terminal do. A plain RPC session started every run
+  without asking, which mattered once `Workflow` was offered with every
+  request.
 
 ## 0.0.42 - 2026-11-27
 

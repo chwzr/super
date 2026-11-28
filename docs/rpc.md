@@ -203,7 +203,10 @@ and `by` (`local` for the terminal, `rpc` for a direct client, otherwise the
 remote device name). A `worktree` question comes when a session that works
 in a worktree it made with `EnterWorktree` ends: its `detail` is the
 worktree's folder and its choices are `keep` and `remove`; see
-[Wake-ups, loops and worktrees](#wake-ups-loops-and-worktrees).
+[Wake-ups, loops and worktrees](#wake-ups-loops-and-worktrees). A `workflow`
+question comes before every run while `workflows.confirm` is on, in
+`--mode rpc` too; its choices are `approve` and `cancel`, and the run waits
+for the answer.
 
 Commands from another surface: `command_applied` with `origin` (the name
 that surface gave itself: a daemon client's `hello.name`, the device a

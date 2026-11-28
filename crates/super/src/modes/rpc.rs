@@ -68,13 +68,12 @@ pub async fn run(args: &Args) -> Result<i32> {
         session.agent_session(),
     )));
 
+    ask_before_workflows(&session);
+
     // A signed-in headless session is mirrored like a terminal one, so a
-    // desktop app can drive it locally while phones follow along. Only then
-    // do workflow approvals wait for an answer: a plain RPC client keeps the
-    // auto-approve behaviour it always had.
+    // desktop app can drive it locally while phones follow along.
     let settings = session.agent_session().settings();
     let remote = if crate::remote::wanted(args, &settings) {
-        super_sdk::install_workflow_approval_gate(&session);
         let (events, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -172,6 +171,14 @@ pub async fn run(args: &Args) -> Result<i32> {
     Ok(0)
 }
 
+/// Ask the clients before a workflow runs, as the daemon and the terminal
+/// ask (`workflows.confirm`): an `approval_request` of kind `workflow`,
+/// answered with `answer_approval`. The `Workflow` tool is offered with every
+/// request, so a run must not start unasked.
+fn ask_before_workflows(session: &std::sync::Arc<super_sdk::Session>) {
+    super_sdk::install_workflow_approval_gate(session);
+}
+
 /// A publisher that outlives the borrow of the control.
 fn control_publisher(
     control: &crate::remote::RemoteControl,
@@ -184,6 +191,55 @@ fn control_publisher(
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[tokio::test]
+    async fn a_plain_rpc_session_asks_its_client_before_a_workflow_runs() {
+        let directory = tempfile::tempdir().unwrap();
+        let model = super_ai::Registry::from_builtin()
+            .all()
+            .first()
+            .cloned()
+            .expect("a builtin model");
+        let mut settings = super_coding::settings::Settings::default();
+        settings.subagents.enabled = true;
+        settings.workflows.enabled = true;
+        settings.workflows.confirm = true;
+        let session = super_sdk::Session::create(super_sdk::SessionOptions {
+            cwd: directory.path().into(),
+            model: Some(format!("{}/{}", model.provider, model.id)),
+            settings: Some(settings),
+            no_context_files: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        ask_before_workflows(&session);
+        let mut events = session.events();
+        let runtime = session.agent_session().workflows().expect("workflows");
+        let script = super_coding::workflows::Script::parse(
+            "export const meta = { name: 'probe', description: 'Probe' }\nreturn 1\n",
+        )
+        .unwrap();
+        let plan = super_coding::workflows::WorkflowPlan::from_script(&script);
+        let asking = tokio::spawn(async move { runtime.approve(plan).await });
+        let request = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .expect("the client is asked")
+                .expect("an event");
+            if event.0["type"] == "approval_request" {
+                break event.0;
+            }
+        };
+        assert_eq!(request["kind"], "workflow");
+        session
+            .answer_approval(request["approvalId"].as_str().unwrap(), "cancel", "local")
+            .unwrap();
+        assert_eq!(
+            asking.await.unwrap(),
+            super_coding::workflows::ApprovalDecision::Cancel
+        );
+    }
 
     #[test]
     fn no_session_means_nothing_is_written_to_disk() {
