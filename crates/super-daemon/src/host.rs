@@ -784,6 +784,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sessions_agents_are_not_listed_and_a_loaded_session_knows_them() {
+        let fixture = fixture(Duration::ZERO).await;
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        hosted.session.prompt("start").await.expect("prompt");
+        let id = hosted.session_id.clone();
+        let file = hosted.file.clone();
+        drop(hosted);
+        fixture
+            .host
+            .stop(&id, EndReason::Stopped)
+            .await
+            .expect("stop");
+        // An agent of the session, stored as the session stores its agents.
+        let parent = SessionManager::open(&file).unwrap();
+        let mut agent = parent
+            .create_child_named(Some("a1b2c3d4e"), &fixture.dir.path().join("work"))
+            .unwrap();
+        agent
+            .append_message(super_sdk::AgentMessage::user("check the tests"))
+            .unwrap();
+        agent
+            .append_custom(
+                super_coding::session::manager::SUBAGENT_ENTRY,
+                Some(json!({"agentId": "a1b2c3d4e", "taskName": "Check", "agentType": "Explore"})),
+            )
+            .unwrap();
+        agent
+            .append_custom(
+                super_coding::agents::AGENT_RUN_ENTRY,
+                Some(json!({"status": "completed", "background": true})),
+            )
+            .unwrap();
+        drop((parent, agent));
+
+        let listed = fixture.host.list(None).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, id);
+        assert!(matches!(
+            fixture.host.load("a1b2c3d4e").await,
+            Err(HostError::Unknown(_))
+        ));
+        let loaded = fixture.host.load(&id).await.expect("load");
+        let agents = loaded
+            .session
+            .execute(super_sdk::protocol::Command::GetAgents { agent: None })
+            .await;
+        assert!(agents.success, "{:?}", agents.error);
+        let agents = agents.data.unwrap()["agents"].clone();
+        assert_eq!(agents[0]["id"], "a1b2c3d4e");
+        assert_eq!(agents[0]["name"], "Check");
+        assert_eq!(agents[0]["type"], "Explore");
+        assert_eq!(agents[0]["status"], "completed");
+        assert_eq!(fixture.host.list(None).await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn the_sweep_unloads_idle_sessions_nobody_watches() {
         let fixture = fixture(Duration::from_millis(10)).await;
         let hosted = fixture
