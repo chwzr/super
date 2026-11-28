@@ -33,12 +33,21 @@ fn tool_snippet(name: &str) -> Option<&'static str> {
 }
 
 pub fn build_system_prompt(options: &SystemPromptOptions) -> String {
-    let cwd = options.cwd.replace('\\', "/");
     let mut prompt = match (options.custom_prompt, options.mode) {
         (Some(custom), _) => custom.to_string(),
         (None, Mode::Basic) => default_prompt(options),
         (None, Mode::Advanced) => advanced_prompt(),
     };
+    prompt.push_str(&prompt_context(options));
+    prompt
+}
+
+/// What the system prompt adds after its body: the appended text, the
+/// project context, the skills and the working directory. A child agent's
+/// prompt repeats it after the instructions of its type.
+pub fn prompt_context(options: &SystemPromptOptions) -> String {
+    let cwd = options.cwd.replace('\\', "/");
+    let mut prompt = String::new();
 
     if let Some(append) = options.append {
         prompt.push_str("\n\n");
@@ -208,6 +217,31 @@ mod tests {
         assert!(advanced_prompt.contains("<project_instructions path=\"/p/AGENTS.md\">"));
         assert!(advanced_prompt.contains("<name>example</name>"));
         assert!(advanced_prompt.ends_with("Current working directory: /work"));
+    }
+
+    #[test]
+    fn the_context_is_what_follows_the_body() {
+        let tools = vec!["Read".to_string()];
+        let files = vec![ContextFile {
+            path: "/p/AGENTS.md".into(),
+            content: "be nice".into(),
+        }];
+        let mut options = base_options(&tools);
+        options.mode = Mode::Advanced;
+        options.append = Some("Rhyme everything.");
+        options.context_files = &files;
+        let context = prompt_context(&options);
+        assert!(context.starts_with("\n\nRhyme everything."));
+        assert!(context.ends_with("Current working directory: /work"));
+        assert_eq!(
+            build_system_prompt(&options),
+            format!("{}{context}", advanced_prompt())
+        );
+        options.custom_prompt = Some("You are a poet.");
+        assert_eq!(
+            build_system_prompt(&options),
+            format!("You are a poet.{context}")
+        );
     }
 
     #[test]
