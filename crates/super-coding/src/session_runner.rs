@@ -1062,6 +1062,12 @@ impl AgentSession {
             .collect()
     }
 
+    /// The tools the session offers the model now, in order.
+    #[cfg(test)]
+    pub(crate) fn offered_tools(&self) -> Vec<DynTool> {
+        self.tools.lock().unwrap().clone()
+    }
+
     /// Switch the active session without appending synthetic history.
     pub fn replace_manager(&self, manager: SessionManager) {
         self.cache_warm_cancel.lock().unwrap().cancel();

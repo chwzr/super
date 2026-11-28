@@ -30,6 +30,8 @@ mod skill_workflow_tests;
 pub mod skills;
 pub mod system_prompt;
 pub mod tasks;
+#[cfg(test)]
+mod tool_interface_tests;
 pub mod tools;
 pub mod trust;
 pub mod wakeup;
