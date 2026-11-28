@@ -54,6 +54,12 @@ pub fn fish_quote(text: &str) -> String {
 /// the command ends in to that file when the shell exits: a POSIX shell with
 /// an `EXIT` trap, fish with a handler of its `fish_exit` event. PowerShell
 /// and cmd start as [`command`] starts them.
+///
+/// On Unix what the profile writes is thrown away: `/bin/sh` starts the
+/// login shell with its output and errors going nowhere and the real ones
+/// kept as descriptors 3 and 4, and the command's script puts them back
+/// before it runs anything ([`PROFILE_QUIET`]), so only the command's own
+/// output reaches the result, the output file or a monitor's events.
 pub fn script(
     shell_path: Option<&str>,
     source: &str,
@@ -65,7 +71,8 @@ pub fn script(
     let mut command = match kind(&shell) {
         ShellKind::Posix => {
             let mut text = format!(
-                "cd -- {} || exit 1\n",
+                "{}cd -- {} || exit 1\n",
+                if cfg!(unix) { "exec 1>&3 2>&4 3>&- 4>&-\n" } else { "" },
                 posix_quote(&directory.to_string_lossy())
             );
             if let Some(file) = report_directory {
@@ -77,9 +84,7 @@ pub fn script(
                 text.push('\n');
             }
             text.push_str(source);
-            let mut command = Command::new(shell);
-            command.args(["-l", "-c"]).arg(text);
-            command
+            login_shell(&shell, text)
         }
         ShellKind::Fish => {
             let mut text = format!(
@@ -97,14 +102,36 @@ pub fn script(
                 text.push('\n');
             }
             text.push_str(source);
-            let mut command = Command::new(shell);
-            command.args(["-l", "-c"]).arg(text);
-            command
+            if cfg!(unix) {
+                // fish cannot move its own descriptors for good: the whole
+                // script runs in a block that writes to the real ones.
+                text = format!("begin\n{text}\nend 1>&3 2>&4");
+            }
+            login_shell(&shell, text)
         }
         _ => self::command(shell_path, source, prefix),
     };
     command.current_dir(directory);
     command
+}
+
+/// The script `/bin/sh` runs to start a login shell without its profile's
+/// output: `$0` is the shell, `$1` the shell's script, which writes to
+/// descriptors 3 and 4.
+pub const PROFILE_QUIET: &str = r#"exec 3>&1 4>&2 >/dev/null 2>&1; exec "$0" -l -c "$1""#;
+
+/// `shell` as a login shell running `text`; on Unix through `/bin/sh` with
+/// [`PROFILE_QUIET`].
+fn login_shell(shell: &Path, text: String) -> Command {
+    if cfg!(unix) {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", PROFILE_QUIET]).arg(shell).arg(text);
+        command
+    } else {
+        let mut command = Command::new(shell);
+        command.args(["-l", "-c"]).arg(text);
+        command
+    }
 }
 
 /// A shell process started in a process group of its own, so that stopping
@@ -290,34 +317,91 @@ mod tests {
             "set -x A 1\n",
             "cd sub\necho done",
         );
-        assert_eq!(arguments(&fish), ["-l", "-c", expected]);
+        assert_eq!(login(&fish, "/usr/local/bin/fish"), fish_block(expected));
         assert_eq!(fish.as_std().get_current_dir(), Some(directory));
         // Without a report file the command only starts in the folder.
         let quiet = script(Some("fish"), "ls", None, directory, None);
         assert_eq!(
-            arguments(&quiet),
-            [
-                "-l",
-                "-c",
-                concat!(r"builtin cd '/work/it\'s here'; or exit 1", "\nls")
-            ]
+            login(&quiet, "fish"),
+            fish_block(concat!(r"builtin cd '/work/it\'s here'; or exit 1", "\nls"))
         );
         assert_eq!(fish_quote(r"a\b'c"), r"'a\\b\'c'");
         // A POSIX shell does the same with a trap.
         let posix = script(Some("/bin/bash"), "ls", None, directory, Some(report));
         assert_eq!(
-            arguments(&posix),
-            [
-                "-l",
-                "-c",
+            login(&posix, "/bin/bash"),
+            format!(
+                "{}{}",
+                if cfg!(unix) {
+                    "exec 1>&3 2>&4 3>&- 4>&-\n"
+                } else {
+                    ""
+                },
                 concat!(
                     r"cd -- '/work/it'\''s here' || exit 1",
                     "\n",
                     r"trap 'pwd -P >| '\''/tmp/super-cwd-1'\''' EXIT",
                     "\nls"
-                ),
-            ]
+                )
+            )
         );
+    }
+
+    /// The script a login shell `shell` gets from `command`, checking how it
+    /// is started.
+    fn login(command: &Command, shell: &str) -> String {
+        let arguments = arguments(command);
+        if cfg!(unix) {
+            assert_eq!(command.as_std().get_program(), "/bin/sh");
+            assert_eq!(arguments[..3], ["-c", PROFILE_QUIET, shell]);
+            arguments[3].clone()
+        } else {
+            assert_eq!(command.as_std().get_program(), shell);
+            assert_eq!(arguments[..2], ["-l", "-c"]);
+            arguments[2].clone()
+        }
+    }
+
+    fn fish_block(script: &str) -> String {
+        if cfg!(unix) {
+            format!("begin\n{script}\nend 1>&3 2>&4")
+        } else {
+            script.to_string()
+        }
+    }
+
+    /// What the profile writes stays out of the command's output and errors;
+    /// its environment and its `cd` reach the command, and the command still
+    /// starts in its folder.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_login_shell_keeps_its_profiles_output_out_of_the_commands() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let folder = folder.path().canonicalize().unwrap();
+        std::fs::write(
+            home.path().join(".bash_profile"),
+            "echo PROFILE-OUT\necho PROFILE-ERR >&2\nexport FROM_PROFILE=yes\ncd /\n",
+        )
+        .unwrap();
+        let mut command = script(
+            Some("/bin/bash"),
+            "echo out; echo err >&2; echo \"$FROM_PROFILE\"; pwd",
+            None,
+            &folder,
+            None,
+        );
+        command
+            .env("HOME", home.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("out\nyes\n{}\n", folder.display())
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "err\n");
     }
 
     #[test]

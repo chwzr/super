@@ -387,6 +387,10 @@
   SUPER found the session's skills in, with the same trust: a project trusted
   for one run with `--approve`, and a session that works in a worktree, no
   longer miss them.
+- What a login profile prints is no longer part of a `Bash` result, a
+  background command's output file or a monitor's events: the profile's
+  output and errors are thrown away on macOS and Linux, and its environment
+  and folder change still reach the command.
 
 ## 0.0.42 - 2026-11-27
 

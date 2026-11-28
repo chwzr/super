@@ -1210,7 +1210,9 @@ other, such as several reads, run at the same time.
 PowerShell or cmd, and works the same way in both modes.
 
 - The shell starts from your profile: Bash, zsh and the other POSIX shells
-  and fish start as login shells. PowerShell and cmd start as before.
+  and fish start as login shells. What the profile prints is left out of the
+  command's output, a background command's output file and a monitor's
+  events (on macOS and Linux). PowerShell and cmd start as before.
 - `timeout` is in milliseconds, 120,000 (two minutes) by default and 600,000
   at most. A command that does nothing but `sleep` is refused; it can wait in
   the background instead.
