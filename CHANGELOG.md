@@ -513,6 +513,9 @@
   each call's output and result under that call, also in a terminal attached
   to the daemon. They went to the latest unfinished call in the order they
   ended, so a background command's task id could stand under another call.
+- The full-screen terminal shows a waited `Agent` call's report without the
+  block of its id and usage that the model gets, and `ListAgents` as one line
+  per agent (name, id, type, status) in place of its JSON.
 - A terminal that attaches to the daemon while a tool call runs shows the
   call once, from the history, with its output and result under it as they
   come. It showed the call twice, the second time without a file name when

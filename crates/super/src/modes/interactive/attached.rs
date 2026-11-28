@@ -305,17 +305,11 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
                                 title: tool_title(&call.name, &call.arguments, manager.cwd()),
                                 output: result
                                     .map(|result| {
-                                        result
-                                            .content
-                                            .iter()
-                                            .filter_map(|block| match block {
-                                                ContentBlock::Text { text, .. } => {
-                                                    Some(text.as_str())
-                                                }
-                                                _ => None,
-                                            })
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
+                                        super::shown_output(
+                                            &call.name,
+                                            &result.content,
+                                            result.details.as_ref(),
+                                        )
                                     })
                                     .unwrap_or_default(),
                                 is_error: result.is_some_and(|result| result.is_error),

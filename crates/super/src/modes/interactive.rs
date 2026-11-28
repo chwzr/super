@@ -2258,7 +2258,7 @@ fn handle_session_event(
                     ..
                 }) = running_tool_call(&mut app.cells, &tool_call_id)
                 {
-                    *output = result.output_text();
+                    *output = shown_output(&tool_name, &result.content, Some(&result.details));
                     *err_slot = is_error;
                     *done = true;
                 }
@@ -5052,6 +5052,51 @@ fn open_model_picker(
         };
         let _ = tx.send(CommandEvent::ModelCatalog { result, pattern });
     });
+}
+
+/// What the transcript shows under a tool call of `tool_name` whose result
+/// is `content` with `details`: the text the model gets, except where that
+/// is made for the model. A waited `Agent` shows the child's report without
+/// the block of its id and usage, and `ListAgents` one line per agent in
+/// place of its JSON.
+pub(crate) fn shown_output(
+    tool_name: &str,
+    content: &[super_ai::ContentBlock],
+    details: Option<&serde_json::Value>,
+) -> String {
+    let texts: Vec<&str> = content
+        .iter()
+        .filter_map(|block| match block {
+            super_ai::ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    match tool_name {
+        "Agent" if texts.len() == 2 && texts[1].starts_with("<agent-result>") => {
+            texts[0].to_string()
+        }
+        "ListAgents" => match details
+            .and_then(|details| details.get("agents"))
+            .and_then(serde_json::Value::as_array)
+        {
+            Some(agents) => agents
+                .iter()
+                .map(|agent| {
+                    let field = |name: &str| agent[name].as_str().unwrap_or_default().to_string();
+                    format!(
+                        "{} · {} · {} · {}",
+                        field("name"),
+                        field("id"),
+                        field("type"),
+                        field("status")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            None => texts.join("\n"),
+        },
+        _ => texts.join("\n"),
+    }
 }
 
 /// The startup warnings about tool names ([`crate::setup::tool_name_warnings`])
@@ -9691,6 +9736,34 @@ mod tests {
             session_cells(&session).as_slice(),
             [Cell::Notice(shown)] if *shown == line
         ));
+    }
+
+    /// A waited agent's line shows its report, and `ListAgents` a line per
+    /// agent, not the text made for the model.
+    #[test]
+    fn agent_results_read_as_a_report_and_a_list() {
+        let report = [
+            super_ai::ContentBlock::text("CHILD-REPORT"),
+            super_ai::ContentBlock::text(
+                "<agent-result>\n<agent-id>az8ppyms5</agent-id>\n<usage></usage>\n</agent-result>",
+            ),
+        ];
+        assert_eq!(shown_output("Agent", &report, None), "CHILD-REPORT");
+        let listing = serde_json::json!({"agents": [
+            {"name": "Helper X", "id": "a1b2c3d4e", "type": "general-purpose", "status": "running"},
+            {"name": "Checker", "id": "a5f6g7h8i", "type": "checker", "status": "completed"},
+        ]});
+        let content = [super_ai::ContentBlock::text(listing.to_string())];
+        assert_eq!(
+            shown_output("ListAgents", &content, Some(&listing)),
+            "Helper X · a1b2c3d4e · general-purpose · running\nChecker · a5f6g7h8i · checker · completed"
+        );
+        // Every other tool shows what the model gets.
+        let plain = [
+            super_ai::ContentBlock::text("one"),
+            super_ai::ContentBlock::text("two"),
+        ];
+        assert_eq!(shown_output("Bash", &plain, None), "one\ntwo");
     }
 
     /// A terminal that attached during a call shows it from the history
