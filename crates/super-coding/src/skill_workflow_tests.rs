@@ -727,6 +727,50 @@ async fn task_stop_stops_a_workflow_without_a_notice() {
 }
 
 #[tokio::test]
+async fn a_workflow_is_stopped_by_the_name_its_call_gave_it() {
+    let fixture = fixture(vec![
+        (
+            "main",
+            vec![
+                Some(tool_call(
+                    "w1",
+                    "Workflow",
+                    json!({"script": GREET, "name": "my-label", "args": {"who": "Ada"}}),
+                )),
+                Some(text("started it")),
+            ],
+        ),
+        (
+            "first agent",
+            vec![Some(tool_call("g1", "Gate", json!({}))), None],
+        ),
+    ])
+    .quiet();
+    let session = fixture.session.clone();
+    session.prompt(vec![AgentMessage::user("main")]).await;
+    let run = fixture.latest_run();
+    let task = session.background_tasks().find(&run.run_id).unwrap();
+    assert_eq!(task.name.as_deref(), Some("my-label"));
+
+    let stop = TaskStopTool::new(Arc::downgrade(&session));
+    let stopped = stop
+        .execute(
+            "t1",
+            json!({"task_id": "my-label"}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result_text(&stopped),
+        format!("Stopped the workflow task {} (Greet twice).", run.run_id)
+    );
+    eventually("the run ends", || run.snapshot().status.is_finished()).await;
+    assert_eq!(run.snapshot().status, RunStatus::Stopped);
+}
+
+#[tokio::test]
 async fn a_workflow_the_user_stops_is_announced_with_how_to_resume_it() {
     let fixture = fixture(vec![
         (
@@ -816,6 +860,42 @@ async fn a_saved_workflow_runs_by_its_name_with_its_args() {
     assert_eq!(fixture.seen.count("say hi to Ada"), 1);
     assert!(notice.contains("<summary>hello (completed)</summary>"));
     assert!(notice.contains("<result>hi Ada\n\n[workflow:"), "{notice}");
+}
+
+#[tokio::test]
+async fn a_saved_workflow_comes_from_the_project_the_host_found_and_trusts() {
+    // The session works elsewhere (a worktree), and the default trust would
+    // not let it read a project's files: the host's project and trust count.
+    let mut main = vec![];
+    main.extend(workflow_calls("w1", json!({"name": "proj-wf"})));
+    let fixture = fixture(vec![
+        ("main", main),
+        ("project agent", vec![Some(text("from the project"))]),
+    ]);
+    let project = fixture.folder().join("project");
+    let saved = crate::workflows::SaveLocation::Project
+        .directory(&project)
+        .unwrap();
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::write(
+        saved.join("proj-wf.js"),
+        "export const meta = { name: 'proj-wf', description: 'From the project' }\n\
+         return await agent('project agent')\n",
+    )
+    .unwrap();
+    let mut resources = fixture.session.agent_resources();
+    resources.project = Some(crate::agents::ProjectFolder {
+        folder: project,
+        trusted: true,
+    });
+    fixture.session.set_agent_resources(resources);
+
+    let notice = fixture.workflow_turn("main").await;
+    assert_eq!(fixture.seen.count("project agent"), 1);
+    assert!(
+        notice.contains("<summary>proj-wf (completed)</summary>"),
+        "{notice}"
+    );
 }
 
 const STEPS: &str = "export const meta = { name: 'steps', description: 'Two steps' }\n\

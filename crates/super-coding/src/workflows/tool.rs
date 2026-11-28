@@ -142,12 +142,21 @@ impl AgentTool for WorkflowTool {
         } else if let Some(path) = non_empty(args.script_path.as_deref()) {
             read_script(&absolute(&cwd, path))?
         } else if let Some(name) = label {
-            let trusted = crate::trust::resolve_non_interactive(
-                &cwd,
-                None,
-                session.settings().default_project_trust,
-            );
-            let saved = super::discover(&cwd, trusted);
+            // The project's saved workflows come from where the host found
+            // its skills, with the host's trust, also while the session
+            // works in a worktree.
+            let (folder, trusted) = match session.agent_resources().project {
+                Some(project) => (project.folder, project.trusted),
+                None => {
+                    let trusted = crate::trust::resolve_non_interactive(
+                        &cwd,
+                        None,
+                        session.settings().default_project_trust,
+                    );
+                    (cwd.clone(), trusted)
+                }
+            };
+            let saved = super::discover(&folder, trusted);
             let found = saved
                 .iter()
                 .find(|workflow| workflow.name == name)
@@ -185,7 +194,7 @@ impl AgentTool for WorkflowTool {
         }
 
         let record = runtime.prepare(script, args.args.unwrap_or(Value::Null), journal)?;
-        let handle = match register(&session, &record, tool_call_id) {
+        let handle = match register(&session, &record, &workflow_name, tool_call_id) {
             Ok(handle) => handle,
             Err(error) => {
                 // Settle the prepared run so that nothing waits for it.
@@ -262,14 +271,16 @@ fn unknown_saved(name: &str, saved: &[super::SavedWorkflow]) -> anyhow::Error {
 }
 
 /// Register the run as the session's background task with the run's id,
-/// named after the workflow while no other running task has that name.
+/// named `name` while no other running task has that name: the call's
+/// `name` when it gave one, else the script's.
 fn register(
     session: &crate::AgentSession,
     record: &RunRecord,
+    name: &str,
     tool_use_id: &str,
 ) -> anyhow::Result<TaskHandle> {
     let description = if record.description.trim().is_empty() {
-        record.name.clone()
+        name.to_string()
     } else {
         record.description.clone()
     };
@@ -278,8 +289,8 @@ fn register(
         spec = spec.with_tool_use_id(tool_use_id);
     }
     let tasks = session.background_tasks();
-    if !record.name.trim().is_empty()
-        && let Ok(handle) = tasks.register(spec.clone().with_name(&record.name))
+    if !name.trim().is_empty()
+        && let Ok(handle) = tasks.register(spec.clone().with_name(name))
     {
         return Ok(handle);
     }

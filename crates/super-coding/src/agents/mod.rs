@@ -44,6 +44,19 @@ pub struct AgentResources {
     /// The skills of the session's folder and of the user, as the host
     /// discovered them; the advanced mode's `Skill` tool loads them.
     pub skills: Vec<crate::skills::Skill>,
+    /// The folder the host found the project's files in (skills, agent
+    /// types, saved workflows) and whether it trusts that project. A
+    /// worktree the session moves into does not change it. `None` when the
+    /// host did not say: the session's folder and the default trust are used.
+    pub project: Option<ProjectFolder>,
+}
+
+/// The project a host built a session for: its folder, and whether the host
+/// trusts the project's own files (`.super/` in it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectFolder {
+    pub folder: std::path::PathBuf,
+    pub trusted: bool,
 }
 
 /// Hears of the agent sessions of one session, so that the host of that

@@ -262,6 +262,10 @@ impl SessionOptions {
                 ..prompt_options
             })),
             skills: skills.clone(),
+            project: Some(super_coding::agents::ProjectFolder {
+                folder: cwd.clone(),
+                trusted,
+            }),
         };
 
         let mut tools = build_tools(&tool_names, &cwd, &settings, mcp.as_ref());

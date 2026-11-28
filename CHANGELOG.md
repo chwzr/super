@@ -378,6 +378,15 @@
   that ended during a long command was told one tool round later, and three
   that ended while the agent was idle cost three model requests. The steering
   and follow-up modes pace only the messages the user queued.
+- `TaskStop` and `stop_task` stop a background agent, a background skill
+  among them, by its name as well as by its id: the agent's task now has the
+  agent's name while no other running task has it. A workflow run that a
+  `Workflow` call named with `name` is stopped by that name; its task was
+  named after the script.
+- `Workflow` with `name` finds the project's saved workflows in the project
+  SUPER found the session's skills in, with the same trust: a project trusted
+  for one run with `--approve`, and a session that works in a worktree, no
+  longer miss them.
 
 ## 0.0.42 - 2026-11-27
 

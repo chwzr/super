@@ -357,12 +357,16 @@ script is the built-in skill `workflow-authoring`, which the agent loads with
 
 - A run starts in the background and the call returns at once with the run's
   id, `wf_` and eight letters or digits. The run is a background task with
-  that id: `/tasks` and `TaskStop` stop it, and when it ends its answer
+  that id, named by the call's `name` or else by the script, while no other
+  running task has that name: `/tasks` and `TaskStop` stop it by either,
+  and when it ends its answer
   reaches the agent in a notice, which starts a new turn if the agent is
   idle. `Esc` stops the turn, not the run.
 - The script comes from `script`, from a file with `scriptPath`, or, with
   `name` alone, from a saved workflow in `.super/workflows/` of a trusted
-  project or in `~/.super/agent/workflows/`. Along with `script`, `name` only
+  project or in `~/.super/agent/workflows/`. The project is the one SUPER
+  found the session's skills in, trusted as they are (`--approve` counts),
+  also while the session works in a worktree. Along with `script`, `name` only
   names the run. `args` reaches the script as `args`. `description` and
   `title` are accepted and not used.
 - Every run saves its script in the session's folder, as

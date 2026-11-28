@@ -257,8 +257,8 @@ or by the model gets no notice: it ends with `task_ended` and
 `status: "stopped"`.
 
 A `Workflow` call starts its run as a task of kind `workflow` whose id is the
-run's id (`wf_` and eight letters or digits) and whose `name` is the
-workflow's while no other running task has it; its notice's `result` is the
+run's id (`wf_` and eight letters or digits) and whose `name` is the call's
+`name`, else the script's, while no other running task has it; its notice's `result` is the
 workflow's answer. The call's result has `details.runId`, `details.name`,
 `details.scriptPath` (where the run's script was saved, or `null`) and
 `details.resumedFrom` (the run whose finished agent calls it replays, or
@@ -285,8 +285,9 @@ A message between agents (`SendMessage`) is a `custom` message with
 `summary` (or `null`) and `message`. The main session gets one when one of
 its agents writes to `main`. Show it as a notice too.
 
-An agent in the background (`kind: "agent"`) is a task with the agent's id;
-its notice's `result` is the agent's report and `outputFile` its stored
+An agent in the background (`kind: "agent"`) is a task with the agent's id
+and, while no other running task has it, the agent's name as its `name`, so
+`stop_task` takes either; its notice's `result` is the agent's report and `outputFile` its stored
 transcript. A message that resumes an agent that had ended starts a new run
 of the same task id. An `Agent` call's `details` carry the `agent` (`id`,
 `name`, `type`, `status`, `background`, `sessionFile`, and `worktree` while

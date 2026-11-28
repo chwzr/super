@@ -1053,7 +1053,9 @@ pub(crate) fn read_stored_agent(file: &Path) -> Option<StoredAgent> {
 }
 
 /// Register a background run of the agent `id` as a task of `owner` with
-/// that id, the agent's transcript as its output file.
+/// that id, the agent's transcript as its output file, and the agent's name
+/// while no other running task has it, so that `TaskStop` and `stop_task`
+/// find the agent by its name too.
 fn register_run(
     owner: &AgentSession,
     id: &str,
@@ -1068,8 +1070,13 @@ fn register_run(
     if let Some(file) = session.manager.lock().unwrap().session_file() {
         spec = spec.with_output_file(file);
     }
-    owner
-        .background_tasks()
+    let tasks = owner.background_tasks();
+    if !name.trim().is_empty()
+        && let Ok(handle) = tasks.register(spec.clone().with_name(name))
+    {
+        return Ok(handle);
+    }
+    tasks
         .register(spec)
         .map_err(|error| anyhow::anyhow!("{error}"))
 }

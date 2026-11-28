@@ -1392,6 +1392,67 @@ async fn an_interrupt_stops_the_agent_the_turn_waits_for_and_spares_background_o
     assert!(!session.has_queued_entries());
 }
 
+#[tokio::test]
+async fn a_background_agent_is_stopped_by_its_name() {
+    let fixture = fixture(vec![
+        ("first", vec![None]),
+        ("second", vec![None]),
+        ("third", vec![None]),
+    ]);
+    let session = fixture.session.clone();
+    let registry = fixture.registry();
+    let mut ids = Vec::new();
+    for (name, prompt) in [
+        ("Sleeper", "first"),
+        ("Sleeper", "second"),
+        ("Third", "third"),
+    ] {
+        let started = registry
+            .start(
+                request(name, prompt, true),
+                "call",
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let crate::agents::registry::Started::Background(agent) = started else {
+            panic!("a background agent");
+        };
+        ids.push(agent.id);
+    }
+    // The task has the agent's name while no other running task has it.
+    let names: Vec<Option<String>> = ids
+        .iter()
+        .map(|id| session.background_tasks().find(id).unwrap().name)
+        .collect();
+    assert_eq!(
+        names,
+        [Some("Sleeper".to_string()), None, Some("Third".to_string())]
+    );
+
+    let stop = TaskStopTool::new(Arc::downgrade(&session));
+    let stopped = stop
+        .execute(
+            "call",
+            json!({"task_id": "Sleeper"}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stopped.output_text(),
+        format!("Stopped the agent task {} (Sleeper).", ids[0])
+    );
+    let stopped = session.stop_task("Third").unwrap();
+    assert_eq!(stopped.id, ids[2]);
+    let status = |id: &str| session.background_tasks().find(id).unwrap().status;
+    assert_eq!(status(&ids[0]), TaskStatus::Stopped);
+    assert_eq!(status(&ids[1]), TaskStatus::Running);
+    assert_eq!(status(&ids[2]), TaskStatus::Stopped);
+    session.stop_background_tasks();
+}
+
 #[test]
 fn the_agent_tools_have_the_interface_schemas_and_placeholder_descriptions() {
     let tools = agent_tools(std::sync::Weak::new());

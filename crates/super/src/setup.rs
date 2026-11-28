@@ -228,6 +228,10 @@ pub fn agent_resources(
             skills: &[],
         })),
         skills: skills.to_vec(),
+        project: Some(super_coding::agents::ProjectFolder {
+            folder: cwd.to_path_buf(),
+            trusted,
+        }),
     }
 }
 
