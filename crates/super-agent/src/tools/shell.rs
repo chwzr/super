@@ -72,7 +72,11 @@ pub fn script(
         ShellKind::Posix => {
             let mut text = format!(
                 "{}cd -- {} || exit 1\n",
-                if cfg!(unix) { "exec 1>&3 2>&4 3>&- 4>&-\n" } else { "" },
+                if cfg!(unix) {
+                    "exec 1>&3 2>&4 3>&- 4>&-\n"
+                } else {
+                    ""
+                },
                 posix_quote(&directory.to_string_lossy())
             );
             if let Some(file) = report_directory {
