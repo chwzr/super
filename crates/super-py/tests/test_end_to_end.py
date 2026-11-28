@@ -85,9 +85,11 @@ async def test_state_models_tools_and_ping_are_typed(tmp_path: Path) -> None:
     assert state.model is not None
     assert state.model['provider'] == 'mock'
     assert state.thinking_level == 'off'
-    assert state.tools == ['Read', 'Write', 'Edit', 'Bash']
+    # In the advanced mode, the default, Monitor and TaskStop come with Bash.
+    tools = ['Read', 'Write', 'Edit', 'Bash', 'Monitor', 'TaskStop']
+    assert state.tools == tools
     assert await session.ping() is True
-    assert await session.tools() == ['Read', 'Write', 'Edit', 'Bash']
+    assert await session.tools() == tools
     models = await session.available_models('mock')
     assert [model['id'] for model in models] == ['mock-1']
     assert await session.available_thinking_levels() == ['off']
