@@ -361,7 +361,9 @@ While `Subagents` and `Dynamic workflows` are on in the advanced mode, the
 main agent has the `Workflow` tool on every request. The guide to writing a
 script is the built-in skill `workflow-authoring`, which the agent loads with
 `Skill`; see [Skills](#skills). SUPER still asks before a run starts while
-`workflows.confirm` is on.
+`workflows.confirm` is on: the terminal, `--mode rpc`, the daemon's clients
+and an ACP client are asked. `super -p` and `--mode json` have nobody to ask
+and start the run; turn `Dynamic workflows` off there to keep runs out.
 
 - A run starts in the background and the call returns at once with the run's
   id, `wf_` and eight letters or digits. The run is a background task with
@@ -735,7 +737,9 @@ Tools run in the working directory that the client supplies. Cancellation
 stops active and queued work. When background work ends, or a monitor sees
 an event, while no prompt runs, the session answers it in a turn of its own,
 and its updates reach the client as `session/update` notifications without a
-prompt.
+prompt. While `workflows.confirm` is on, the client is asked with
+`session/request_permission` before a workflow run starts, and the run waits
+for the answer.
 
 Client-provided stdio and streamable-HTTP MCP servers apply only to the ACP
 session and are not saved. Draft ACP v2, audio, legacy MCP SSE, and client

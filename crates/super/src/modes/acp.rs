@@ -7,13 +7,15 @@ use agent_client_protocol::schema::v1::{
     ContentChunk, DeleteSessionRequest, DeleteSessionResponse, Diff, EmbeddedResourceResource,
     Implementation, InitializeRequest, InitializeResponse, ListSessionsRequest,
     ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
-    NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
-    ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities, SessionCloseCapabilities,
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
-    SessionDeleteCapabilities, SessionId, SessionInfo, SessionListCapabilities,
-    SessionNotification, SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, StopReason, TextContent, ToolCall, ToolCallContent,
-    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities,
+    SessionCloseCapabilities, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionDeleteCapabilities, SessionId, SessionInfo,
+    SessionListCapabilities, SessionNotification, SessionResumeCapabilities, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason, TextContent,
+    ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Responder, Stdio};
 use anyhow::Result;
@@ -59,6 +61,7 @@ impl ActiveSession {
     /// the prompts, and reaches the client as `session/update` notifications
     /// of the session `id`, like a prompt's.
     fn start_idle_turns(self: &Arc<Self>, id: SessionId, connection: ConnectionTo<Client>) {
+        self.ask_before_workflows(id.clone(), connection.clone());
         let session = Arc::downgrade(self);
         self.agent.set_turn_starter(Some(Arc::new(move |turn| {
             let Some(session) = session.upgrade() else {
@@ -112,6 +115,58 @@ impl ActiveSession {
             });
         })));
     }
+}
+
+impl ActiveSession {
+    /// Ask the client before a workflow runs while `workflows.confirm` is
+    /// on, with `session/request_permission`, as the other hosts ask theirs:
+    /// the run waits for the answer, and anything but the allow option, an
+    /// error included, cancels it.
+    fn ask_before_workflows(&self, id: SessionId, connection: ConnectionTo<Client>) {
+        let asked = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        self.agent.set_workflow_approver(Arc::new(move |plan| {
+            let connection = connection.clone();
+            let id = id.clone();
+            let number = asked.fetch_add(1, Ordering::Relaxed) + 1;
+            Box::pin(async move {
+                let request = workflow_permission(id, number, &plan);
+                match connection.send_request(request).block_task().await {
+                    Ok(response) => match response.outcome {
+                        RequestPermissionOutcome::Selected(selected)
+                            if &*selected.option_id.0 == "approve" =>
+                        {
+                            super_coding::workflows::ApprovalDecision::Approve
+                        }
+                        _ => super_coding::workflows::ApprovalDecision::Cancel,
+                    },
+                    Err(_) => super_coding::workflows::ApprovalDecision::Cancel,
+                }
+            })
+        }));
+    }
+}
+
+/// The `session/request_permission` request before the workflow run `plan`
+/// of the session `id`: the same question and choices as `--mode rpc` and
+/// the daemon put to their clients, under a tool call id of its own.
+fn workflow_permission(
+    id: SessionId,
+    number: u64,
+    plan: &super_coding::workflows::WorkflowPlan,
+) -> RequestPermissionRequest {
+    let fields = ToolCallUpdateFields::new()
+        .title(format!("Run workflow {}?", plan.name))
+        .kind(ToolKind::Execute)
+        .status(ToolCallStatus::Pending)
+        .raw_input(serde_json::json!({"name": plan.name, "agents": plan.agent_estimate()}));
+    RequestPermissionRequest::new(
+        id,
+        ToolCallUpdate::new(format!("workflow-question-{number}"), fields),
+        vec![
+            PermissionOption::new("approve", "Run it", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("cancel", "Cancel", PermissionOptionKind::RejectOnce),
+        ],
+    )
 }
 
 impl Drop for ActiveSession {
@@ -1922,6 +1977,103 @@ mod tests {
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    /// With `workflows.confirm` on the client is asked before a run starts,
+    /// and a run it does not allow never starts.
+    #[tokio::test]
+    async fn the_client_is_asked_before_a_workflow_runs() {
+        let directory = tempfile::tempdir().unwrap();
+        let provider = MockProvider::start(
+            directory.path(),
+            MockScript {
+                turns: vec![
+                    vec![MockTurn::ToolCall {
+                        id: "wf-1".into(),
+                        name: "Workflow".into(),
+                        arguments: json!({
+                            "script": "export const meta = { name: 'asked', description: 'Asked' }\nreturn 1\n",
+                        }),
+                    }],
+                    vec![MockTurn::Text("done".into())],
+                ],
+            },
+        )
+        .await
+        .unwrap();
+        let mut settings = super_coding::Settings::default();
+        settings.subagents.enabled = true;
+        settings.workflows.enabled = true;
+        settings.workflows.confirm = true;
+        let agent = SuperAcpAgent::new(SessionOptions {
+            model: Some("mock/mock-1".into()),
+            models_file: Some(provider.catalog_path()),
+            settings: Some(settings),
+            session: SessionSource::InMemory,
+            no_context_files: true,
+            ..Default::default()
+        });
+        let sessions = agent.sessions.clone();
+        let cwd = directory.path().to_path_buf();
+        let asked: Arc<Mutex<Vec<RequestPermissionRequest>>> = Default::default();
+        let record = asked.clone();
+
+        Client
+            .builder()
+            .on_receive_request(
+                async move |request: RequestPermissionRequest, responder, _connection| {
+                    record.lock().unwrap().push(request);
+                    responder.respond(
+                        agent_client_protocol::schema::v1::RequestPermissionResponse::new(
+                            RequestPermissionOutcome::Selected(
+                                agent_client_protocol::schema::v1::SelectedPermissionOutcome::new(
+                                    "cancel",
+                                ),
+                            ),
+                        ),
+                    )
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let created = connection
+                    .send_request(NewSessionRequest::new(&cwd))
+                    .block_task()
+                    .await?;
+                connection
+                    .send_request(PromptRequest::new(
+                        created.session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new("run a workflow"))],
+                    ))
+                    .block_task()
+                    .await?;
+                let asked = asked.lock().unwrap();
+                assert_eq!(asked.len(), 1);
+                assert_eq!(
+                    asked[0].tool_call.fields.title.as_deref(),
+                    Some("Run workflow asked?")
+                );
+                let options: Vec<&str> = asked[0]
+                    .options
+                    .iter()
+                    .map(|option| &*option.option_id.0)
+                    .collect();
+                assert_eq!(options, ["approve", "cancel"]);
+                let server = sessions
+                    .lock()
+                    .unwrap()
+                    .get(&created.session_id)
+                    .cloned()
+                    .unwrap();
+                assert!(server.agent.tasks().is_empty(), "no run started");
                 Ok(())
             })
             .await

@@ -484,6 +484,11 @@
   as the daemon and the terminal do. A plain RPC session started every run
   without asking, which mattered once `Workflow` was offered with every
   request.
+- In ACP the client is asked with `session/request_permission` before a
+  workflow run starts while `workflows.confirm` is on ("Run workflow …?",
+  with `Run it` and `Cancel`), and the run waits for the answer; it started
+  without asking. `super -p` and `--mode json`, which have nobody to ask,
+  still start it, as the README now says.
 - The question before a workflow run is withdrawn when its turn is stopped
   (`abort`, Esc) while it waits, or when the session's runs are (Dynamic
   workflows or Subagents turned off, the mode set to `basic`): clients get
