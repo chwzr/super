@@ -461,6 +461,9 @@ pub struct AgentSession {
     /// What the session's process last reported about its tasks, while the
     /// engine runs elsewhere.
     remote_tasks: Mutex<Vec<TaskInfo>>,
+    /// The worktree the session's process reported it works in, while the
+    /// engine runs elsewhere: [`AgentSession::working_folder`] there.
+    remote_folder: Mutex<Option<std::path::PathBuf>>,
     turn_starter: Mutex<Option<TurnStarter>>,
     /// Bumped when a run ends, an entry is queued or a task ends, so
     /// [`AgentSession::wait_for_background_work`] looks again.
@@ -677,6 +680,7 @@ impl AgentSession {
             task_tools: OnceLock::new(),
             skill_tool: OnceLock::new(),
             remote_tasks: Mutex::new(Vec::new()),
+            remote_folder: Mutex::new(None),
             turn_starter: Mutex::new(None),
             activity: tokio::sync::watch::channel(0).0,
             worktree: Mutex::new(None),
@@ -1156,7 +1160,15 @@ impl AgentSession {
     /// `EnterWorktree`, else its session folder.
     pub fn working_folder(&self) -> std::path::PathBuf {
         self.worktree_folder()
+            .or_else(|| self.remote_folder.lock().unwrap().clone())
             .unwrap_or_else(|| self.manager.lock().unwrap().cwd().to_path_buf())
+    }
+
+    /// Follow the worktree the process running this session's engine works
+    /// in (`None` while it works in the session's own folder), so that the
+    /// working folder of a session shown here is the one its tools use.
+    pub fn adopt_remote_folder(&self, worktree: Option<std::path::PathBuf>) {
+        *self.remote_folder.lock().unwrap() = worktree;
     }
 
     /// The worktree this session works in, while it is in one.
@@ -1442,6 +1454,7 @@ impl AgentSession {
         *self.stored_work.lock().unwrap() = StoredWork::default();
         self.background_tasks().reset();
         self.remote_tasks.lock().unwrap().clear();
+        *self.remote_folder.lock().unwrap() = None;
         for queue in [&self.steering, &self.follow_up] {
             queue.lock().unwrap().retain(|prompt| !prompt.starts_turn);
         }

@@ -1338,7 +1338,8 @@ or `Bash`. A subagent has none of them.
   random letters and digits. With `path` it enters a worktree of the same
   repository that exists. From then on `Bash`, the file tools and the
   working directory in the system prompt use the worktree, and so do the
-  subagents the session starts. A session in a worktree cannot enter another
+  subagents the session starts, your `!command` and a client's `bash`
+  command. A session in a worktree cannot enter another
   one. The session remembers its worktree: opened again (`super -c`,
   `--session`, the daemon), it works there again, or in its own folder with a
   line that says so when the worktree's folder is gone.

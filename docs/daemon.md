@@ -332,10 +332,13 @@ session becomes a view of the daemon's:
   for each.
   The session's events come back and are rendered by the same code that
   renders an in-process run, so the footer, the context meter and the cost
-  follow what the daemon records.
-- `!command` runs in the daemon, in the session's directory with the
-  daemon's environment, which records it for the next model request;
-  `!!command` stays out of the context and runs in the terminal.
+  follow what the daemon records. After `EnterWorktree` the footer names the
+  worktree's branch, as it does in-process (`worktree_changed`, and
+  `get_state` for a terminal that attaches later).
+- `!command` runs in the daemon, in the session's directory, or in its
+  worktree while it works in one, with the daemon's environment, which
+  records it for the next model request; `!!command` stays out of the
+  context and runs in the terminal, in the same folder.
 - `/session` names the daemon's session file and `/remote` reports the
   attachment: the daemon, not the terminal, keeps the session visible in the
   apps.

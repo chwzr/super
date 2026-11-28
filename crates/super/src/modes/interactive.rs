@@ -4780,7 +4780,8 @@ fn start_shell_passthrough(
     if !exclude && attached::shell(app, &command, command_tx) {
         return;
     }
-    let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
+    // In a worktree the command runs there, as the session's Bash does.
+    let cwd = session.working_folder();
     let settings = session.settings();
     let shell = settings
         .shell_path
@@ -10152,6 +10153,39 @@ mod tests {
             app.cells.last(),
             Some(Cell::Notice(text)) if text == "warning: unknown tool names ignored: read (use Read)"
         ));
+    }
+
+    /// A user's `!command` runs where the session's `Bash` runs: in the
+    /// worktree the session entered.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_bang_command_runs_in_the_worktree_the_session_works_in() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().canonicalize().unwrap();
+        let worktree = root.join(".super/worktrees/bangwt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let session = test_session(super_coding::SessionManager::in_memory(&root));
+        session.enter_worktree(super_coding::EnteredWorktree {
+            worktree: super_coding::worktree::Worktree {
+                path: worktree.clone(),
+                branch: "worktree-bangwt".into(),
+                base: String::new(),
+                project: root.clone(),
+            },
+            created: true,
+            original: root.clone(),
+            entered_at: 0,
+        });
+        let mut app = test_app();
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        start_shell_passthrough(&mut app, &session, "pwd -P".into(), &command_tx);
+        let result = loop {
+            match command_rx.recv().await.expect("the command ends") {
+                CommandEvent::ShellFinished(result) => break result.expect("it ran"),
+                _ => continue,
+            }
+        };
+        assert_eq!(result.output.trim_end(), worktree.display().to_string());
     }
 
     #[test]

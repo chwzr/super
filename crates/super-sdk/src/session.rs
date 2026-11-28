@@ -1190,7 +1190,7 @@ impl Session {
         });
         let result = crate::shell::run(
             command,
-            &self.cwd,
+            &self.inner.working_folder(),
             settings.shell_path.as_deref(),
             settings.shell_command_prefix.as_deref(),
             cancel.clone(),

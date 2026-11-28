@@ -219,6 +219,55 @@ async fn prompting_while_streaming_requires_an_explicit_behavior() {
     session.wait_idle().await;
 }
 
+/// After `EnterWorktree` a client's `bash` command runs in the worktree, on
+/// its branch, as the session's own `Bash` does.
+#[tokio::test]
+async fn a_direct_bash_command_runs_in_the_worktree_the_session_works_in() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = directory.path().canonicalize().unwrap();
+    let git = |arguments: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?}");
+    };
+    git(&["init", "--quiet", "-b", "main"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("README"), "hello\n").unwrap();
+    git(&["add", "README"]);
+    git(&["commit", "--quiet", "-m", "first"]);
+    let script = MockScript {
+        turns: vec![
+            vec![MockTurn::ToolCall {
+                id: "call_1".into(),
+                name: "EnterWorktree".into(),
+                arguments: json!({"name": "bangwt"}),
+            }],
+            vec![MockTurn::Text("in it".into())],
+        ],
+    };
+    let (_provider, session) = session_with(&root, script).await;
+    session.prompt("enter").await.unwrap();
+    let response = session
+        .execute(Command::Bash {
+            command: "pwd -P; git branch --show-current".into(),
+        })
+        .await;
+    assert!(response.success, "{response:?}");
+    assert_eq!(
+        response.data.unwrap()["output"],
+        format!(
+            "{}\nworktree-bangwt\n",
+            root.join(".super/worktrees/bangwt").display()
+        )
+    );
+}
+
 #[tokio::test]
 async fn a_direct_bash_command_returns_its_exit_code_and_joins_the_history() {
     let directory = tempfile::tempdir().expect("temp dir");

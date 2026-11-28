@@ -420,6 +420,14 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- After `EnterWorktree`, your `!command` and `!!command`, and a client's
+  `bash` command over RPC or the daemon, run in the worktree, as the
+  session's `Bash` does. They ran in the session's first folder, on its
+  branch, and the model was sent that output.
+- A terminal attached to the daemon follows the worktree the session moved
+  into: its footer names the worktree's branch, as an in-process terminal's
+  does, and it shows the line about a worktree that was gone. It kept
+  naming the first folder's branch.
 - `switch_session` and `new_session` over RPC abort a turn that runs and
   answer once it has ended. The rest of the turn, its tool results and its
   last answer, was written into the conversation the session moved to, so

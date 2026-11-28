@@ -661,3 +661,82 @@ async fn an_attached_terminal_sees_the_daemons_background_tasks_and_stops_them_a
     .await;
     daemon.kill().await.ok();
 }
+
+/// After the daemon's session enters a worktree, a view of it works in that
+/// worktree, as the session's tools do: the footer's branch and the user's
+/// own commands follow it, in a terminal that saw the move and in one that
+/// attaches after it.
+#[tokio::test]
+async fn an_attached_terminal_follows_the_worktree_the_daemons_session_entered() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.path("work");
+    for arguments in [
+        vec!["init", "--quiet", "-b", "main"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "commit.gpgsign", "false"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(&arguments)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::write(work.join("README"), "hello\n").unwrap();
+    for arguments in [
+        vec!["add", "README"],
+        vec!["commit", "--quiet", "-m", "first"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(&arguments)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let script = MockScript {
+        turns: vec![
+            vec![MockTurn::ToolCall {
+                id: "call_w".into(),
+                name: "EnterWorktree".into(),
+                arguments: json!({"name": "bangwt"}),
+            }],
+            vec![MockTurn::Text("In it.".into())],
+        ],
+    };
+    let provider = MockProvider::start(sandbox.path("mock"), script)
+        .await
+        .expect("mock provider");
+    let mut daemon = sandbox.start_daemon(&provider).await;
+    let mut first = terminal(&sandbox, &provider, "Terminal A", None).await;
+    let session_id = first.remote.session_id();
+    first
+        .view
+        .prompt_with_mode(vec![AgentMessage::user("enter")], PromptMode::Ordinary)
+        .await;
+    events_until(&mut first.events, agent_end).await;
+    let worktree = work.canonicalize().unwrap().join(".super/worktrees/bangwt");
+    let in_worktree = |view: &AgentSession| {
+        view.working_folder()
+            .canonicalize()
+            .is_ok_and(|folder| folder == worktree)
+    };
+    eventually("the view works in the worktree", || {
+        in_worktree(&first.view)
+    })
+    .await;
+    let second = terminal(&sandbox, &provider, "Terminal B", Some(&session_id)).await;
+    assert!(
+        in_worktree(&second.view),
+        "{:?}",
+        second.view.working_folder()
+    );
+    daemon.kill().await.ok();
+}

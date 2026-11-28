@@ -424,6 +424,13 @@ pub fn decode_session_event(value: &Value) -> Option<SessionEvent> {
         "task_started" => Some(SessionEvent::TaskStarted(field(value, "task")?)),
         "task_updated" => Some(SessionEvent::TaskUpdated(field(value, "task")?)),
         "task_ended" => Some(SessionEvent::TaskEnded(field(value, "task")?)),
+        // The wire carries part of the worktree only; the folder is what a
+        // view follows.
+        "worktree_changed" => Some(SessionEvent::WorktreeChanged {
+            folder: value["folder"].as_str()?.into(),
+            worktree: None,
+            missing: value["missing"].as_str().map(Into::into),
+        }),
         _ => None,
     }
 }
@@ -502,6 +509,29 @@ pub fn event_lag(skipped: u64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A view of a session that runs elsewhere learns the folder its
+    /// engine moved to, and a worktree that was gone.
+    #[test]
+    fn a_worktree_change_comes_back_with_its_folder() {
+        let decoded = decode_session_event(&json!({
+            "type": "worktree_changed",
+            "folder": "/p/.super/worktrees/w",
+            "worktree": {"path": "/p/.super/worktrees/w", "branch": "worktree-w"},
+            "missing": "/p/.super/worktrees/old",
+        }));
+        let Some(SessionEvent::WorktreeChanged {
+            folder, missing, ..
+        }) = decoded
+        else {
+            panic!("{decoded:?}");
+        };
+        assert_eq!(folder, std::path::Path::new("/p/.super/worktrees/w"));
+        assert_eq!(
+            missing.as_deref(),
+            Some(std::path::Path::new("/p/.super/worktrees/old"))
+        );
+    }
 
     #[test]
     fn workflow_outcomes_have_a_controller_owned_json_event() {

@@ -467,6 +467,7 @@ impl RemoteSession {
             .and_then(ThinkingLevel::parse);
         if let Some(view) = self.view() {
             view.adopt_remote_state(model, thinking);
+            view.adopt_remote_folder(state["worktree"]["path"].as_str().map(PathBuf::from));
         }
         self.running.store(
             state["isStreaming"].as_bool().unwrap_or(false),
@@ -714,6 +715,11 @@ impl RemoteSession {
                     serde_json::from_value::<super_coding::TaskInfo>(event["task"].clone()),
                 ) {
                     view.absorb_task(task);
+                }
+            }
+            "worktree_changed" => {
+                if let Some(view) = self.view() {
+                    view.adopt_remote_folder(event["worktree"]["path"].as_str().map(PathBuf::from));
                 }
             }
             "bash_execution_update" if self.shell_running.load(Ordering::SeqCst) => {
