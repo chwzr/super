@@ -475,7 +475,8 @@ mod tests {
         assert_eq!(out[0].name, "mine");
         assert_eq!(out[0].description, "Deploys: only by hand");
         assert!(out[0].disable_model_invocation);
-        let loaded = parse_loaded("---\ncontext: fork\nagent: Explore\ndescription: a: b\n---\nBody");
+        let loaded =
+            parse_loaded("---\ncontext: fork\nagent: Explore\ndescription: a: b\n---\nBody");
         assert_eq!(loaded.run.unwrap().agent.as_deref(), Some("Explore"));
     }
 
