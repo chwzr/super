@@ -392,7 +392,8 @@ full-screen terminal names it (a file tool by its file, relative to the
 session's folder inside it, an `Agent` call by its description), a task's
 notice, a monitor's event, an agent's message, a wake-up and a loop's round
 are one line each (live and in the recent history it shows on attaching),
-an approval is asked as numbered choices and each line is sent as a prompt,
+an approval is asked as numbered choices (also one that was waiting when it
+attached) and each line is sent as a prompt,
 or as a steer while the session works. It exits once the session settles after the last
 line; Ctrl+C aborts the turn, and while no turn runs it stops the session's
 background tasks ("stopped N background tasks"), as this front end has no

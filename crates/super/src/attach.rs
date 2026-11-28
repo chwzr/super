@@ -396,6 +396,7 @@ async fn show_session(
     session: &SessionSummary,
     screen: &mut Screen,
     help: bool,
+    approval: &mut Option<OpenApproval>,
 ) -> bool {
     let mut header = format!(
         "attached to session {} in {} · {}",
@@ -419,7 +420,29 @@ async fn show_session(
     {
         print_recent(screen, messages, 6);
     }
+    // A question asked before this terminal came is asked here too.
+    if let Ok(Some(data)) = link.execute_ok(Command::GetApprovals {}).await {
+        for open in data["approvals"].as_array().into_iter().flatten() {
+            show_open_approval(screen, open, Path::new(&session.cwd), approval);
+        }
+    }
     working
+}
+
+/// Show an approval that waited before this terminal attached (an entry of
+/// `get_approvals`) as its `approval_request` event shows, so that a number
+/// answers it.
+fn show_open_approval(
+    screen: &mut Screen,
+    open: &Value,
+    cwd: &Path,
+    approval: &mut Option<OpenApproval>,
+) {
+    let mut event = open.clone();
+    if let Value::Object(map) = &mut event {
+        map.insert("type".into(), Value::from("approval_request"));
+    }
+    render(screen, &event, cwd, &mut VecDeque::new(), approval);
 }
 
 async fn run(
@@ -435,10 +458,10 @@ async fn run(
         mid_line: false,
         at_prompt: false,
     };
-    let mut working = show_session(&link, &session, &mut screen, true).await;
+    let mut approval: Option<OpenApproval> = None;
+    let mut working = show_session(&link, &session, &mut screen, true, &mut approval).await;
 
     let mut own_prompts: VecDeque<String> = VecDeque::new();
-    let mut approval: Option<OpenApproval> = None;
     if let Some((shown, message)) = initial {
         screen.line(&format!("› {shown}"));
         send_prompt(&link, &mut screen, &mut own_prompts, message, working).await;
@@ -517,7 +540,14 @@ async fn run(
                                 session = next;
                                 approval = None;
                                 own_prompts.clear();
-                                working = show_session(&link, &session, &mut screen, false).await;
+                                working = show_session(
+                                    &link,
+                                    &session,
+                                    &mut screen,
+                                    false,
+                                    &mut approval,
+                                )
+                                .await;
                             }
                             Ok(None) => {}
                             Err(error) => screen.meta(&format!("/sessions: {error}")),
@@ -1005,6 +1035,32 @@ mod tests {
         assert_eq!(terminal_name(Some("/dev/ttys003")), "Terminal (ttys003)");
         assert_eq!(terminal_name(Some("/dev/pts/4")), "Terminal (pts/4)");
         assert_eq!(terminal_name(None), "Terminal");
+    }
+
+    /// A question that waited before the front end attached, as
+    /// `get_approvals` lists it, is shown and answered by its number.
+    #[test]
+    fn a_question_that_waited_before_attaching_is_open_to_a_numbered_answer() {
+        let mut screen = Screen {
+            color: false,
+            interactive: false,
+            mid_line: false,
+            at_prompt: false,
+        };
+        let mut approval = None;
+        show_open_approval(
+            &mut screen,
+            &serde_json::json!({
+                "approvalId": "a7",
+                "title": "Run workflow askflow?",
+                "choices": [{"id": "approve", "label": "Run it"}, {"id": "cancel", "label": "Cancel"}],
+            }),
+            Path::new("/work"),
+            &mut approval,
+        );
+        let open = approval.expect("the question is open");
+        assert_eq!(open.id, "a7");
+        assert_eq!(pick_choice(&open.choices, "1").as_deref(), Some("approve"));
     }
 
     #[test]

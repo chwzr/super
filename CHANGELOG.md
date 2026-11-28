@@ -420,6 +420,9 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- The line front end of `super attach` shows a question that was waiting
+  when it attached, with its numbered choices, so a number answers it. It
+  showed nothing, and the number went to the session as a queued steer.
 - After `EnterWorktree`, your `!command` and `!!command`, and a client's
   `bash` command over RPC or the daemon, run in the worktree, as the
   session's `Bash` does. They ran in the session's first folder, on its
