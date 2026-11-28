@@ -15,10 +15,10 @@ use crate::events::{
 use crate::options::{SessionOptions, UnknownModel};
 use crate::protocol::{Command, Event, ImageInput, QueueMode, Response, StreamingBehavior};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 use super_agent::{AgentMessage, BashExecutionMessage};
 use super_ai::auth::super_platform;
@@ -244,6 +244,97 @@ pub struct Session {
     /// What `initialize` said about stop controls, per origin; `None` is a
     /// direct client.
     task_controls: Mutex<HashMap<Option<String>, bool>>,
+    /// The loaded sessions of this session's agents, by agent id, and who
+    /// hears of changes to them.
+    agents: Mutex<AgentViewList>,
+    /// This is the view of an agent's session, which answers reading
+    /// commands only.
+    agent_view: bool,
+}
+
+#[derive(Default)]
+struct AgentViewList {
+    views: BTreeMap<String, Arc<Session>>,
+    subscribers: Vec<tokio::sync::mpsc::UnboundedSender<AgentChange>>,
+}
+
+impl AgentViewList {
+    fn tell(&mut self, change: impl Fn() -> AgentChange) {
+        self.subscribers
+            .retain(|subscriber| subscriber.send(change()).is_ok());
+    }
+}
+
+/// A change to the agent sessions of a [`Session`], as
+/// [`Session::subscribe_agents`] reports it.
+pub enum AgentChange {
+    /// The session of the agent `id` was loaded: when the agent started, or
+    /// when its stored session was loaded to resume it or to be read.
+    /// `events` is subscribed from that moment, before the agent's run
+    /// starts, so it misses nothing of the run.
+    Loaded {
+        id: String,
+        session: Arc<Session>,
+        events: EventStream,
+    },
+    /// The session moved to another conversation and forgot its agents.
+    Reset,
+}
+
+/// How many events a subscriber to an agent's session may fall behind.
+const AGENT_EVENT_CAPACITY: usize = 1024;
+
+/// Why an agent's session refused a command.
+pub const AGENT_VIEW_REFUSAL: &str = "An agent's session takes reading commands only; send this command to the session that started the agent.";
+
+/// Wraps each agent session of one [`Session`] as a [`Session`] of its own,
+/// so that clients and mirrors reach it the way they reach the session.
+struct AgentViews {
+    session: Weak<Session>,
+}
+
+impl super_coding::agents::AgentObserver for AgentViews {
+    fn agent_session(&self, agent_id: &str, child: &Arc<AgentSession>) {
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let mut list = session.agents.lock().unwrap();
+        if list
+            .views
+            .get(agent_id)
+            .is_some_and(|view| Arc::ptr_eq(&view.inner, child))
+        {
+            return;
+        }
+        let (sink, events) = mirrored_sink(AGENT_EVENT_CAPACITY, None);
+        child.forward_events(Some(sink));
+        let cwd = child.manager.lock().unwrap().cwd().to_path_buf();
+        let view = Session::wrap_agent(child.clone(), cwd, events);
+        list.views.insert(agent_id.to_string(), view.clone());
+        list.tell(|| AgentChange::Loaded {
+            id: agent_id.to_string(),
+            session: view.clone(),
+            events: view.events(),
+        });
+    }
+
+    fn agent_settled(&self, agent_id: &str) {
+        let view = self
+            .session
+            .upgrade()
+            .and_then(|session| session.agents.lock().unwrap().views.get(agent_id).cloned());
+        if let Some(view) = view {
+            view.emit(agent_settled());
+        }
+    }
+
+    fn agents_reset(&self) {
+        if let Some(session) = self.session.upgrade() {
+            let mut list = session.agents.lock().unwrap();
+            list.views.clear();
+            list.tell(|| AgentChange::Reset);
+        }
+    }
 }
 
 /// Who sent a command, as far as the session needs to know.
@@ -496,6 +587,29 @@ impl Session {
         events: broadcast::Sender<Event>,
         catalog: Option<Catalog>,
     ) -> Arc<Session> {
+        let session = Self::build(inner, cwd, events, catalog, false);
+        session.install_turn_starter();
+        session
+    }
+
+    /// The view of an agent's session: its events and entries reach clients
+    /// as a session's do, its own agents are views in turn, and it answers
+    /// reading commands only, because the agent runs as its parent says.
+    fn wrap_agent(
+        inner: Arc<AgentSession>,
+        cwd: PathBuf,
+        events: broadcast::Sender<Event>,
+    ) -> Arc<Session> {
+        Self::build(inner, cwd, events, None, true)
+    }
+
+    fn build(
+        inner: Arc<AgentSession>,
+        cwd: PathBuf,
+        events: broadcast::Sender<Event>,
+        catalog: Option<Catalog>,
+        agent_view: bool,
+    ) -> Arc<Session> {
         let session = Arc::new(Session {
             inner,
             catalog,
@@ -509,9 +623,60 @@ impl Session {
             observer: Mutex::new(None),
             file_guard: Mutex::new(None),
             task_controls: Mutex::new(HashMap::new()),
+            agents: Mutex::new(AgentViewList::default()),
+            agent_view,
         });
-        session.install_turn_starter();
+        session.inner.set_agent_observer(Some(Arc::new(AgentViews {
+            session: Arc::downgrade(&session),
+        })));
         session
+    }
+
+    /// The loaded sessions of this session's agents, by agent id, oldest
+    /// first: an agent's session is loaded when the agent starts, and a
+    /// stored one when it is resumed or read. Each is a view that answers
+    /// reading commands only ([`Session::is_agent_view`]); its events are
+    /// the agent's, and its own agents are listed the same way.
+    pub fn agent_sessions(&self) -> Vec<(String, Arc<Session>)> {
+        let views = self.agents.lock().unwrap().views.clone();
+        self.in_agent_order(views)
+    }
+
+    /// The loaded agent sessions as [`Session::agent_sessions`] lists them,
+    /// and a receiver of every change after that: a session that is loaded
+    /// (with its events from that moment) and the agents being forgotten.
+    /// Nothing falls between the list and the first change.
+    pub fn subscribe_agents(
+        &self,
+    ) -> (
+        Vec<(String, Arc<Session>)>,
+        tokio::sync::mpsc::UnboundedReceiver<AgentChange>,
+    ) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let views = {
+            let mut list = self.agents.lock().unwrap();
+            list.subscribers.push(sender);
+            list.views.clone()
+        };
+        (self.in_agent_order(views), receiver)
+    }
+
+    /// `views` in the order the agents were started.
+    fn in_agent_order(&self, views: BTreeMap<String, Arc<Session>>) -> Vec<(String, Arc<Session>)> {
+        let mut sessions: Vec<(String, Arc<Session>)> = views.into_iter().collect();
+        let order: Vec<String> = self
+            .inner
+            .agent_registry()
+            .map(|registry| registry.list().into_iter().map(|agent| agent.id).collect())
+            .unwrap_or_default();
+        sessions.sort_by_key(|(id, _)| order.iter().position(|known| known == id));
+        sessions
+    }
+
+    /// Whether this is the view of an agent's session, which answers
+    /// reading commands only.
+    pub fn is_agent_view(&self) -> bool {
+        self.agent_view
     }
 
     /// Run the turns the harness session starts on its own (a background
@@ -988,6 +1153,9 @@ impl Session {
         } = sender;
         let task_controls = task_controls || self.has_task_controls(origin.as_deref());
         let name = command.name();
+        if self.agent_view && !command.only_reads() {
+            return Response::err(name, AGENT_VIEW_REFUSAL).with_id(id);
+        }
         if let Some(origin) = &origin {
             let input = match &command {
                 Command::Prompt { message, .. } => Some(("prompt", message.clone())),
@@ -1182,23 +1350,41 @@ impl Session {
             Command::GetMessages {} => Ok(Some(json!({"messages": self.messages()}))),
             Command::GetEntries { since } => {
                 let manager = self.inner.manager.lock().unwrap();
-                let entries = manager.entries();
-                let selected: Vec<&super_coding::SessionEntry> = match &since {
-                    None => entries.iter().collect(),
-                    Some(cursor) => {
-                        let position = entries
-                            .iter()
-                            .position(|entry| entry.id() == cursor)
-                            .ok_or_else(|| {
-                                SdkErrorText(format!("no entry matches cursor '{cursor}'"))
-                            })?;
-                        entries[position + 1..].iter().collect()
-                    }
+                entries_since(&manager, since.as_deref()).map(Some)
+            }
+            Command::GetAgents { agent } => {
+                let (owner, prefix) = match &agent {
+                    Some(path) => (
+                        self.inner
+                            .agent_at(path)
+                            .map_err(|error| SdkErrorText(format!("{error:#}")))?,
+                        format!("{}/", path.trim_matches('/')),
+                    ),
+                    None => (self.inner.clone(), String::new()),
                 };
-                Ok(Some(json!({
-                    "entries": selected,
-                    "leafId": manager.leaf_id(),
-                })))
+                let agents: Vec<Value> = owner
+                    .agent_registry()
+                    .map(|registry| registry.list())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|info| {
+                        let mut value = serde_json::to_value(&info).unwrap_or(Value::Null);
+                        value["path"] = Value::String(format!("{prefix}{}", info.id));
+                        value
+                    })
+                    .collect();
+                Ok(Some(json!({"agents": agents})))
+            }
+            Command::GetAgentEntries { agent, since } => {
+                let child = self
+                    .inner
+                    .agent_at(&agent)
+                    .map_err(|error| SdkErrorText(format!("{error:#}")))?;
+                let manager = child.manager.lock().unwrap();
+                let mut data = entries_since(&manager, since.as_deref())?;
+                data["sessionId"] = Value::String(manager.session_id().to_string());
+                data["sessionFile"] = json!(manager.session_file());
+                Ok(Some(data))
             }
             Command::GetTree {} => {
                 let manager = self.inner.manager.lock().unwrap();
@@ -1490,6 +1676,29 @@ impl Session {
             },
         })
     }
+}
+
+/// The entries of `manager` after the entry `since` (all without it), and
+/// the leaf, as `get_entries` answers.
+fn entries_since(
+    manager: &super_coding::SessionManager,
+    since: Option<&str>,
+) -> Result<Value, SdkErrorText> {
+    let entries = manager.entries();
+    let selected: Vec<&super_coding::SessionEntry> = match since {
+        None => entries.iter().collect(),
+        Some(cursor) => {
+            let position = entries
+                .iter()
+                .position(|entry| entry.id() == cursor)
+                .ok_or_else(|| SdkErrorText(format!("no entry matches cursor '{cursor}'")))?;
+            entries[position + 1..].iter().collect()
+        }
+    };
+    Ok(json!({
+        "entries": selected,
+        "leafId": manager.leaf_id(),
+    }))
 }
 
 /// A plain error message. `execute_inner` uses it so every failure path becomes

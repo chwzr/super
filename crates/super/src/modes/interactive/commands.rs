@@ -77,6 +77,8 @@ pub(super) fn typed(command: &Command) -> Typed {
         | Command::GetAvailableThinkingLevels {}
         | Command::GetTools {}
         | Command::GetTasks {}
+        | Command::GetAgents { .. }
+        | Command::GetAgentEntries { .. }
         // The task's end shows through its event, as for a task stopped here.
         | Command::StopTask { .. }
         | Command::GetForkMessages {}

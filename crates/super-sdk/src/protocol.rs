@@ -168,6 +168,25 @@ pub enum Command {
         task_id: String,
     },
 
+    // --- agents ---
+    /// The agents the session started with the `Agent` tool, oldest first,
+    /// those of an earlier run of the session included. With `agent`, the
+    /// agents that agent started: an agent id, or ids separated by `/` for
+    /// an agent of an agent.
+    #[serde(rename_all = "camelCase")]
+    GetAgents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
+    /// The entries of an agent's session, its transcript, like `get_entries`
+    /// answers for the session. `agent` is as for `get_agents`.
+    #[serde(rename_all = "camelCase")]
+    GetAgentEntries {
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<String>,
+    },
+
     // --- session files ---
     #[serde(rename_all = "camelCase")]
     ExportHtml {
@@ -243,6 +262,8 @@ impl Command {
             Command::GetTools {} => "get_tools",
             Command::GetTasks {} => "get_tasks",
             Command::StopTask { .. } => "stop_task",
+            Command::GetAgents { .. } => "get_agents",
+            Command::GetAgentEntries { .. } => "get_agent_entries",
             Command::ExportHtml { .. } => "export_html",
             Command::SwitchSession { .. } => "switch_session",
             Command::Fork { .. } => "fork",
@@ -252,6 +273,15 @@ impl Command {
             Command::Ping {} => "ping",
             Command::Initialize { .. } => "initialize",
         }
+    }
+}
+
+impl Command {
+    /// Whether the command only reads: every `get_` command and `ping`. An
+    /// agent's session, which runs only as its parent says, answers these
+    /// and refuses the others.
+    pub fn only_reads(&self) -> bool {
+        self.name().starts_with("get_") || matches!(self, Command::Ping {})
     }
 }
 
@@ -443,6 +473,24 @@ mod tests {
                 streaming_behavior: Some(StreamingBehavior::Steer),
             }
         );
+    }
+
+    #[test]
+    fn the_agent_commands_name_an_agent_by_its_path() {
+        let request =
+            decode_request(r#"{"type":"get_agent_entries","agent":"a1/a2","since":"e1"}"#).unwrap();
+        assert_eq!(
+            request.command,
+            Command::GetAgentEntries {
+                agent: "a1/a2".into(),
+                since: Some("e1".into()),
+            }
+        );
+        assert!(request.command.only_reads());
+        let request = decode_request(r#"{"type":"get_agents"}"#).unwrap();
+        assert_eq!(request.command, Command::GetAgents { agent: None });
+        assert!(Command::Ping {}.only_reads());
+        assert!(!Command::Abort {}.only_reads());
     }
 
     #[test]

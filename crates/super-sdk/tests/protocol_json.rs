@@ -107,6 +107,14 @@ fn every_command_serializes_with_a_snake_case_type() {
             },
             "stop_task",
         ),
+        (Command::GetAgents { agent: None }, "get_agents"),
+        (
+            Command::GetAgentEntries {
+                agent: "a12345678".into(),
+                since: None,
+            },
+            "get_agent_entries",
+        ),
         (Command::ExportHtml { output_path: None }, "export_html"),
         (
             Command::SwitchSession {
@@ -138,7 +146,7 @@ fn every_command_serializes_with_a_snake_case_type() {
         ),
     ];
 
-    assert_eq!(cases.len(), 35, "keep this list exhaustive");
+    assert_eq!(cases.len(), 37, "keep this list exhaustive");
     for (command, expected) in cases {
         assert_eq!(command.name(), expected);
         let value = serde_json::to_value(&command).unwrap();
