@@ -400,7 +400,10 @@ and they are gone too, unless the agent tools are offered, which bring
 apply to these tools too, and to the agent tools, `Workflow`, `Skill`,
 `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`: an allowlist of `Read`
 alone offers `Read` alone (`super_coding::ToolSelection`,
-`AgentSession::set_tool_selection`). Set a read-only allowlist for untrusted
+`AgentSession::set_tool_selection`). An agent's session starts from its
+parent's selection, narrowed by its type (`ToolSelection::narrowed`): a type
+that names its tools offers only those of them the parent's selection
+admits. Set a read-only allowlist for untrusted
 prompts. Project
 resource loading is off by default in SDK sessions. Explicitly enable
 `trust_project_files` only for a trusted directory.

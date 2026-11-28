@@ -623,23 +623,44 @@ async fn each_agent_type_gets_its_tools() {
         )
         .unwrap()
     };
+    // A type whose file names its tools gets those and nothing else, also
+    // of the tools a session adds itself.
     let reader = definition("---\nname: reader\ntools: Read\n---\nRead.");
     assert_eq!(
         child_of(&session, &reader, 1).available_tool_names(),
-        ["Read", "SendMessage", "Skill"]
+        ["Read"]
+    );
+    let shell = definition("---\nname: shell\ntools: Read, Bash\n---\nRun.");
+    assert_eq!(
+        child_of(&session, &shell, 1).available_tool_names(),
+        ["Read", "Bash"]
+    );
+    let watcher = definition("---\nname: watcher\ntools: [Bash, Monitor, TaskStop]\n---\nWatch.");
+    assert_eq!(
+        child_of(&session, &watcher, 1).available_tool_names(),
+        ["Bash", "Monitor", "TaskStop"]
     );
     let delegator = definition("---\nname: delegator\ntools: [Read, Agent]\n---\nDelegate.");
     assert_eq!(
         child_of(&session, &delegator, 1).available_tool_names(),
-        [
-            "Read",
-            "Agent",
-            "SendMessage",
-            "ListAgents",
-            "TaskStop",
-            "Skill"
-        ]
+        ["Read", "Agent"]
     );
+    let writer = definition("---\nname: writer\ntools: [Read, SendMessage, Skill]\n---\nTell.");
+    assert_eq!(
+        child_of(&session, &writer, 1).available_tool_names(),
+        ["Read", "SendMessage", "Skill"]
+    );
+    // A host's allowlist still holds for them: a type cannot name a tool
+    // the session may not offer.
+    session.set_tool_selection(crate::session_runner::ToolSelection {
+        allow: None,
+        exclude: vec!["Monitor".into()],
+    });
+    assert_eq!(
+        child_of(&session, &watcher, 1).available_tool_names(),
+        ["Bash", "TaskStop"]
+    );
+    session.set_tool_selection(crate::session_runner::ToolSelection::default());
 
     // The instructions of a type start its agent's system prompt; a fork
     // keeps the parent's.
@@ -823,7 +844,8 @@ async fn definition_files_add_types_with_their_instructions_model_and_effort() {
         .iter()
         .map(|tool| tool.name.as_str())
         .collect();
-    assert_eq!(tools, ["Probe", "SendMessage"]);
+    // `tools: Probe` gets `Probe` and nothing else.
+    assert_eq!(tools, ["Probe"]);
     let agent = fixture.registry().list().pop().unwrap();
     assert_eq!(agent.agent_type, "reviewer");
     let child = fixture.registry().session_of(&agent.id).unwrap();

@@ -293,7 +293,10 @@ the advanced mode; see [Mode](#mode).
   project and in `~/.super/agent/agents/`. The frontmatter gives `name`,
   `description`, `model`, `effort` and `tools`, and the text below it is the
   type's instructions. A project's file wins over yours of the same name, and
-  a file can replace a built-in type except `fork`.
+  a file can replace a built-in type except `fork`. A type whose `tools`
+  names its tools gets those and no other: `tools: Read, Bash` gives a child
+  `Read` and `Bash`, without `SendMessage`, `Skill`, `Monitor` or `TaskStop`.
+  Without `tools`, or with `*`, a child gets every tool its parent has.
 - `model` takes any model SUPER knows, and `effort` a thinking level that the
   model accepts; a call with one it does not accept fails and names the
   levels it does.

@@ -187,6 +187,10 @@
 - A child agent's run, and a workflow agent's or a loop's, lasts until the
   child's own background commands and the turns their notices start are
   done.
+- An agent type whose definition file lists its `tools` gives its children
+  those tools and no other: the tools a session adds itself, such as
+  `SendMessage`, `Skill`, `Monitor` and `TaskStop`, come only when the list
+  names them. The built-in types keep their tools.
 - A child session, a subagent's, a workflow agent's or a loop's, is stored
   in a folder named after its parent's session file instead of next to it,
   and the session lists leave it out. Child sessions stored next to their

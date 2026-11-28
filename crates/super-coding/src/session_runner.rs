@@ -317,6 +317,28 @@ impl ToolSelection {
             .is_none_or(|allow| allow.iter().any(|allowed| allowed == name))
             && !self.exclude.iter().any(|excluded| excluded == name)
     }
+
+    /// This selection for an agent of a type that gets `choice` of the
+    /// tools: a type that names its tools gets those and nothing else, one
+    /// that leaves tools out goes without them.
+    pub fn narrowed(&self, choice: &crate::agents::ToolChoice) -> ToolSelection {
+        use crate::agents::ToolChoice;
+        let mut narrowed = self.clone();
+        match choice {
+            ToolChoice::All => {}
+            ToolChoice::AllExcept(names) => narrowed.exclude.extend(names.iter().cloned()),
+            ToolChoice::Only(names) => {
+                narrowed.allow = Some(
+                    names
+                        .iter()
+                        .filter(|name| self.admits(name))
+                        .cloned()
+                        .collect(),
+                );
+            }
+        }
+        narrowed
+    }
 }
 
 pub struct AgentSession {
@@ -2257,6 +2279,10 @@ impl AgentSession {
                 settings,
             },
         );
+        // The type's list of tools holds for the tools the session adds
+        // itself as it does for the base tools.
+        *session.tool_selection.lock().unwrap() =
+            self.tool_selection().narrowed(&setup.agent_type.tools);
         let link = AgentLink {
             parent: Arc::downgrade(self),
             id: setup.id.to_string(),
