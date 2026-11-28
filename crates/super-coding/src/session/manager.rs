@@ -39,6 +39,13 @@ pub fn agents_dir(session_file: &Path) -> PathBuf {
     session_file.with_extension("").join("agents")
 }
 
+/// The folder that holds the scripts and run journals of the workflows the
+/// session stored in `session_file` ran: `<file without .jsonl>/workflows`,
+/// beside its folder of agents.
+pub fn workflows_dir(session_file: &Path) -> PathBuf {
+    session_file.with_extension("").join("workflows")
+}
+
 /// `customType` of the entry that makes a session a child of another: what
 /// the child is for, and who started it.
 pub const SUBAGENT_ENTRY: &str = "subagent";

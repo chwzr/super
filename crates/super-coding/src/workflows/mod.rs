@@ -6,7 +6,15 @@
 //! lives: with `Agent` the model decides what to start next on every turn,
 //! and every result lands in its context. With a workflow the plan is a
 //! script, and only the final answer comes back.
+//!
+//! Every run has an id (`wf_` and eight letters or digits). Its script is
+//! saved in the session's folder of workflows
+//! ([`workflows_dir`](crate::session::manager::workflows_dir)) as
+//! `<run id>.js`, and when it ends its journal of finished agent calls as
+//! `<run id>.journal.json`, so that a later run can start from the file
+//! (`scriptPath`) and replay the calls that still match (`resumeFromRunId`).
 
+mod journal;
 mod prompt;
 mod runner;
 mod store;
@@ -23,7 +31,9 @@ pub use super_workflow::{
 };
 
 use crate::session_runner::{AgentSession, WorkflowTurnStatus};
+use anyhow::Context as _;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -40,10 +50,20 @@ const MAX_RETAINED_RUNS: usize = 20;
 /// One run, with the script that produced it.
 pub struct RunRecord {
     pub id: RunId,
+    /// The id the model and the task registry know the run by: `wf_` and
+    /// eight letters or digits. A run the `Workflow` tool starts is the
+    /// background task with this id.
+    pub run_id: String,
     pub name: String,
     pub description: String,
     /// The script text, kept so the user can read it and save it afterward.
     pub source: Arc<str>,
+    /// Where the script was saved, for a later `scriptPath`; `None` when it
+    /// could not be written.
+    pub script_path: Option<PathBuf>,
+    /// The session's folder of workflows when the run started: its journal
+    /// goes there when it ends.
+    directory: Option<PathBuf>,
     workflow: Arc<Workflow>,
 }
 
@@ -169,6 +189,78 @@ impl WorkflowRuntime {
         Arc::new(tool::RunWorkflowTool::new(self.clone()))
     }
 
+    /// The folder that keeps the session's workflow scripts and journals:
+    /// the folder of workflows of its session file, or for a session in
+    /// memory `<temp>/super-workflows/<session id>`.
+    pub fn directory(&self) -> Option<PathBuf> {
+        let parent = self.parent.upgrade()?;
+        let manager = parent.manager.lock().ok()?;
+        Some(match manager.session_file() {
+            Some(file) => crate::session::manager::workflows_dir(file),
+            None => std::env::temp_dir()
+                .join("super-workflows")
+                .join(manager.session_id()),
+        })
+    }
+
+    /// A run id that no run of this session and no saved script has.
+    fn new_run_id(&self, directory: Option<&Path>) -> String {
+        const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        use rand::Rng as _;
+        let mut rng = rand::rng();
+        loop {
+            let mut id = String::from("wf_");
+            for _ in 0..8 {
+                id.push(ALPHABET[rng.random_range(0..ALPHABET.len())] as char);
+            }
+            let known = self.find(&id).is_some()
+                || directory.is_some_and(|directory| directory.join(format!("{id}.js")).exists());
+            if !known {
+                return id;
+            }
+        }
+    }
+
+    /// The run with the id `run_id`, while the session remembers it.
+    pub fn find(&self, run_id: &str) -> Option<Arc<RunRecord>> {
+        self.runs
+            .lock()
+            .ok()?
+            .iter()
+            .find(|run| run.run_id == run_id)
+            .cloned()
+    }
+
+    /// The finished agent calls of the run `run_id`, for a run that resumes
+    /// it: from the run itself while the session remembers it, else from its
+    /// journal in the session's folder of workflows. A run that still works
+    /// cannot be resumed yet.
+    pub fn journal_for(&self, run_id: &str) -> anyhow::Result<Journal> {
+        if let Some(record) = self.find(run_id) {
+            if !record.snapshot().status.is_finished() {
+                anyhow::bail!(
+                    "Workflow run {run_id} is still running; wait for its notice, or stop it with TaskStop, before you resume it."
+                );
+            }
+            return Ok(record.journal());
+        }
+        let path = self
+            .directory()
+            .map(|directory| journal::path_in(&directory, run_id))
+            .filter(|path| path.is_file())
+            .with_context(|| {
+                format!(
+                    "No workflow run of this session has the id '{run_id}'; give the id a Workflow call returned."
+                )
+            })?;
+        journal::load(&path).with_context(|| {
+            format!(
+                "Could not read the journal of workflow run {run_id} at {}",
+                path.display()
+            )
+        })
+    }
+
     pub(crate) fn emit_outcome(
         &self,
         run: Option<RunId>,
@@ -202,7 +294,9 @@ impl WorkflowRuntime {
         }
     }
 
-    /// Prepare a run and add it to the list, without starting it.
+    /// Prepare a run and add it to the list, without starting it. The run
+    /// gets its id, and its script is saved in the session's folder of
+    /// workflows as `<run id>.js`.
     ///
     /// Registering before running is what lets the progress view find the run
     /// as soon as it is approved, rather than after its first agent answers.
@@ -228,17 +322,31 @@ impl WorkflowRuntime {
             .unwrap_or_default();
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let directory = self.directory();
+        let run_id = self.new_run_id(directory.as_deref());
         let name = script.meta().name.clone();
         let description = script.meta().description.clone();
         let source: Arc<str> = Arc::from(script.source());
+        // A script that cannot be saved still runs; it just cannot be named
+        // by its path later.
+        let script_path = directory.as_deref().and_then(|directory| {
+            let path = directory.join(format!("{run_id}.js"));
+            std::fs::create_dir_all(directory)
+                .and_then(|()| std::fs::write(&path, source.as_bytes()))
+                .ok()
+                .map(|()| path)
+        });
         let workflow = Arc::new(Workflow::with_journal(
             script, args, cwd, runner, limits, journal,
         ));
         let record = Arc::new(RunRecord {
             id,
+            run_id,
             name,
             description,
             source,
+            script_path,
+            directory,
             workflow,
         });
 
@@ -279,13 +387,21 @@ impl WorkflowRuntime {
         Ok(record)
     }
 
-    /// Run a prepared workflow to completion.
+    /// Run a prepared workflow to completion, and save its journal of
+    /// finished agent calls beside its script for a run that resumes it.
     pub async fn run(&self, record: &Arc<RunRecord>) -> Result<Value, String> {
-        record
+        let result = record
             .workflow
             .run()
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+        // Without the file a resume still finds the run while the session
+        // remembers it.
+        if let Some(directory) = &record.directory {
+            let path = journal::path_in(directory, &record.run_id);
+            let _ = journal::save(&path, &record.run_id, &record.journal());
+        }
+        result
     }
 
     pub fn get(&self, id: RunId) -> Option<Arc<RunRecord>> {
@@ -338,15 +454,23 @@ impl WorkflowRuntime {
     }
 
     /// Stop every run still working. Called when the session closes or when the
-    /// setting is turned off.
+    /// setting is turned off. A run the `Workflow` tool started is stopped
+    /// through its background task, so no notice announces it.
     pub(crate) fn stop_all(&self) {
-        let Ok(runs) = self.runs.lock() else {
-            return;
+        let working: Vec<Arc<RunRecord>> = match self.runs.lock() {
+            Ok(runs) => runs
+                .iter()
+                .filter(|run| !run.snapshot().status.is_finished())
+                .cloned()
+                .collect(),
+            Err(_) => return,
         };
-        for run in runs.iter() {
-            if !run.snapshot().status.is_finished() {
-                run.stop();
+        let parent = self.parent.upgrade();
+        for run in working {
+            if let Some(parent) = &parent {
+                let _ = parent.background_tasks().stop(&run.run_id);
             }
+            run.stop();
         }
     }
 }
