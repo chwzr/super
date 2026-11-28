@@ -1336,7 +1336,9 @@ or `Bash`. A subagent has none of them.
 - `EnterWorktree` moves the session into a git worktree. With `name`, or with
   neither `name` nor `path`, it makes one, `.super/worktrees/<name>` at the
   top of the project (the main working tree, also when the session works in
-  a linked worktree of yours, where `HEAD` is that worktree's), on the new
+  a linked worktree of yours, where `HEAD` is that worktree's; that linked
+  worktree itself when the repository is bare and has no main working
+  tree), on the new
   branch `worktree-<name>`; without a name it gets eight
   random letters and digits. With `path` it enters a worktree of the same
   repository that exists. From then on `Bash`, the file tools and the

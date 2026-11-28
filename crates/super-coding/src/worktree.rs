@@ -292,12 +292,20 @@ pub fn list(folder: &Path) -> Result<Vec<PathBuf>> {
 
 /// The main working tree of the repository `folder` is in, also when
 /// `folder` is in a linked worktree: where new worktrees go, so that one is
-/// never made inside another.
+/// never made inside another. A bare repository has no main working tree:
+/// then it is the working tree `folder` is in.
 pub fn main_tree(folder: &Path) -> Result<PathBuf> {
-    list(folder)?
-        .into_iter()
-        .next()
-        .with_context(|| format!("{} is not in a git repository", folder.display()))
+    let listing = git(folder, &["worktree", "list", "--porcelain"])
+        .with_context(|| format!("{} is not in a git repository", folder.display()))?;
+    let first = listing.split("\n\n").next().unwrap_or_default();
+    let bare = first.lines().any(|line| line == "bare");
+    match first
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+    {
+        Some(path) if !bare => Ok(PathBuf::from(path)),
+        _ => top(folder),
+    }
 }
 
 /// The commit `HEAD` is at in `folder`.

@@ -225,6 +225,49 @@ async fn a_worktree_made_from_a_linked_worktree_goes_to_the_main_tree() {
     assert!(!made.path.exists());
 }
 
+/// A linked worktree of a bare repository has no main working tree to make
+/// a worktree in: the worktree goes into the linked worktree's own folder
+/// of worktrees, for the session and for an isolated agent.
+#[tokio::test]
+async fn a_worktree_made_from_a_linked_worktree_of_a_bare_repository_goes_there() {
+    let repository = repository(false);
+    let root = &repository.root;
+    let bare = root.parent().unwrap().join("repo.git");
+    run(
+        root.parent().unwrap(),
+        &[
+            "clone",
+            "--quiet",
+            "--bare",
+            &root.display().to_string(),
+            &bare.display().to_string(),
+        ],
+    );
+    let linked = root.parent().unwrap().join("wt-main");
+    run(
+        &bare,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            &linked.display().to_string(),
+            "main",
+        ],
+    );
+    let linked = linked.canonicalize().unwrap();
+    assert_eq!(
+        crate::worktree::main_tree(&linked).unwrap(),
+        crate::worktree::top(&linked).unwrap()
+    );
+    let session = session_in(&linked, settings(WorktreeBaseRef::Head), None);
+    enter(&session, json!({"name": "lb"})).await.unwrap();
+    let made = &session.worktree().unwrap().worktree;
+    assert_eq!(made.path, linked.join(".super/worktrees/lb"));
+    assert!(made.path.is_dir());
+    exit(&session, json!({"action": "remove"})).await.unwrap();
+    assert_eq!(session.working_folder(), linked);
+}
+
 #[tokio::test]
 async fn a_worktree_without_a_name_gets_one_and_fresh_falls_back_to_head_without_a_remote() {
     let repository = repository(false);

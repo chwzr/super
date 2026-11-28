@@ -468,7 +468,10 @@
 - `EnterWorktree` in a session that works in a linked worktree makes its
   worktree in the main working tree's `.super/worktrees/`, as an agent's
   worktree is, starting from the linked worktree's `HEAD` with
-  `worktree.baseRef` `head`. It was made inside the linked worktree.
+  `worktree.baseRef` `head`. It was made inside the linked worktree. In a
+  linked worktree of a bare repository, which has no main working tree,
+  `EnterWorktree` and an agent's `isolation: "worktree"` make it in the
+  linked worktree.
 - A workflow run stopped while its last agent call runs (Ctrl+B, `/tasks`,
   `stop_task`, `TaskStop`, `abort`, turning the switches off) ends as
   stopped: its `workflow_outcome`, its stored `workflow_run` entry and
