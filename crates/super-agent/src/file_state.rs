@@ -196,14 +196,15 @@ mod tests {
     fn a_read_written_into_a_transcript_reads_back_the_same() {
         let read = FileRead {
             at: SystemTime::UNIX_EPOCH + Duration::from_millis(1_764_000_000_123),
-            modified: Some(SystemTime::UNIX_EPOCH + Duration::new(1_764_000_000, 987_654_321)),
+            // Windows keeps a time to 100 nanoseconds.
+            modified: Some(SystemTime::UNIX_EPOCH + Duration::new(1_764_000_000, 987_654_300)),
             len: 42,
             whole: true,
             fingerprint: Some(0x00ab_cdef_0123_4567),
         };
         let key = Path::new("/work/src/main.rs");
         let written = read.to_json(key);
-        assert_eq!(written["modified"], "1764000000987654321");
+        assert_eq!(written["modified"], "1764000000987654300");
         assert_eq!(written["fingerprint"], "00abcdef01234567");
         assert_eq!(
             FileRead::from_json(&written),

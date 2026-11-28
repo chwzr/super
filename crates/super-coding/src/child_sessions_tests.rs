@@ -229,7 +229,8 @@ async fn a_session_loaded_again_rebuilds_its_agents_and_resumes_one_from_its_tra
         system.starts_with(&format!(
             "{}\nCurrent working directory: {}",
             prompt_todo("AgentType.general-purpose.instructions"),
-            directory.path().display()
+            // The prompt names a folder with forward slashes.
+            directory.path().display().to_string().replace('\\', "/")
         )),
         "{system}"
     );
@@ -837,11 +838,13 @@ async fn an_agent_whose_folder_is_gone_is_loaded_and_resumed_in_its_parents_fold
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let sessions = root.join("sessions");
+    // Git Bash's `pwd -W` names the folder as Windows does.
+    let pwd = if cfg!(windows) { "pwd -W" } else { "pwd" };
     let (stream, seen) = lanes(vec![(
         "child task",
         vec![
             Some(text("first report")),
-            Some(tool_call("b1", "Bash", json!({"command": "pwd"}))),
+            Some(tool_call("b1", "Bash", json!({"command": pwd}))),
             Some(text("second report")),
         ],
     )]);
@@ -910,10 +913,16 @@ async fn an_agent_whose_folder_is_gone_is_loaded_and_resumed_in_its_parents_fold
     let resumed = seen.of("child task");
     let pwd = last_tool_result(&resumed[2].context);
     assert!(!pwd.is_error, "{:?}", texts(&pwd));
-    assert_eq!(texts(&pwd)[0], root.display().to_string());
+    assert_eq!(
+        std::fs::canonicalize(texts(&pwd)[0].trim_end()).unwrap(),
+        root
+    );
     let system = resumed[1].context.system_prompt.clone().unwrap();
     assert!(
-        system.contains(&format!("Current working directory: {}", root.display())),
+        system.contains(&format!(
+            "Current working directory: {}",
+            root.display().to_string().replace('\\', "/")
+        )),
         "{system}"
     );
 }
@@ -923,11 +932,13 @@ async fn an_agent_whose_folder_is_gone_resumes_in_its_parents_folder_in_the_same
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let sessions = root.join("sessions");
+    // Git Bash's `pwd -W` names the folder as Windows does.
+    let pwd = if cfg!(windows) { "pwd -W" } else { "pwd" };
     let (stream, seen) = lanes(vec![(
         "child task",
         vec![
             Some(text("first report")),
-            Some(tool_call("b1", "Bash", json!({"command": "pwd"}))),
+            Some(tool_call("b1", "Bash", json!({"command": pwd}))),
             Some(text("second report")),
         ],
     )]);
@@ -977,10 +988,16 @@ async fn an_agent_whose_folder_is_gone_resumes_in_its_parents_folder_in_the_same
     let resumed = seen.of("child task");
     let pwd = last_tool_result(&resumed[2].context);
     assert!(!pwd.is_error, "{:?}", texts(&pwd));
-    assert_eq!(texts(&pwd)[0], root.display().to_string());
+    assert_eq!(
+        std::fs::canonicalize(texts(&pwd)[0].trim_end()).unwrap(),
+        root
+    );
     let system = resumed[1].context.system_prompt.clone().unwrap();
     assert!(
-        system.contains(&format!("Current working directory: {}", root.display())),
+        system.contains(&format!(
+            "Current working directory: {}",
+            root.display().to_string().replace('\\', "/")
+        )),
         "{system}"
     );
     assert_eq!(

@@ -558,6 +558,8 @@ pub(crate) mod tests {
     /// `origin/main` exists and `origin/HEAD` points at it. Then `root` gets
     /// a commit of its own that the remote does not have.
     pub(crate) fn with_remote(root: &Path) -> PathBuf {
+        // git cannot make a folder at a path that starts with `\\?\`.
+        let root = &super_agent::tools::path::without_verbatim_prefix(root);
         let remote = root.parent().unwrap().join(format!(
             "{}-remote.git",
             root.file_name().unwrap().to_string_lossy()
@@ -697,9 +699,14 @@ pub(crate) mod tests {
         let repository = repository();
         let root = repository.path().canonicalize().unwrap();
         let worktree = create(&root, "agent-a1", None).unwrap();
-        assert_eq!(worktree.path, root.join(".super/worktrees/agent-a1"));
+        // On Windows git names the folders with forward slashes.
+        let canonical = |path: &Path| path.canonicalize().unwrap();
+        assert_eq!(
+            canonical(&worktree.path),
+            canonical(&root.join(".super/worktrees/agent-a1"))
+        );
         assert_eq!(worktree.branch, "worktree-agent-a1");
-        assert_eq!(worktree.project, root);
+        assert_eq!(canonical(&worktree.project), root);
         assert!(worktree.path.join("README").exists());
         assert!(branches(&root).contains("worktree-agent-a1"));
         // The project's own status does not list the worktrees.

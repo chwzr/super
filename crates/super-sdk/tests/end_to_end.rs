@@ -253,19 +253,24 @@ async fn a_direct_bash_command_runs_in_the_worktree_the_session_works_in() {
     };
     let (_provider, session) = session_with(&root, script).await;
     session.prompt("enter").await.unwrap();
+    // Git Bash's `pwd -W` names the folder as Windows does.
+    let pwd = if cfg!(windows) { "pwd -W" } else { "pwd -P" };
     let response = session
         .execute(Command::Bash {
-            command: "pwd -P; git branch --show-current".into(),
+            command: format!("{pwd}; git branch --show-current"),
         })
         .await;
     assert!(response.success, "{response:?}");
+    let output = response.data.unwrap()["output"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (folder, branch) = output.split_once('\n').unwrap();
     assert_eq!(
-        response.data.unwrap()["output"],
-        format!(
-            "{}\nworktree-bangwt\n",
-            root.join(".super/worktrees/bangwt").display()
-        )
+        std::fs::canonicalize(folder).unwrap(),
+        root.join(".super/worktrees/bangwt").canonicalize().unwrap()
     );
+    assert_eq!(branch, "worktree-bangwt\n");
 }
 
 #[tokio::test]

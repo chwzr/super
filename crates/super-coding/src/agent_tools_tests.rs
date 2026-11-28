@@ -397,7 +397,13 @@ async fn a_background_agent_is_announced_with_its_report_and_wakes_the_idle_pare
         system.starts_with(&format!(
             "{}\nCurrent working directory: {}\n\n{}\n\n{}",
             prompt_todo("AgentType.general-purpose.instructions"),
-            fixture.directory.path().display(),
+            // The prompt names a folder with forward slashes.
+            fixture
+                .directory
+                .path()
+                .display()
+                .to_string()
+                .replace('\\', "/"),
             prompt_todo("Agent.system_section"),
             prompt_todo("Agent.type_list"),
         )),
