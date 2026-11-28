@@ -420,6 +420,11 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- A `/loop` job with an interval, an `/autoresearch` job or any other agent
+  started before anything was said in a new session saves that session, and
+  `super -c`, `/resume` and `--session` open it again with the job's
+  session among its agents. The job's session was stored under a session
+  file that was never written, so it could not be reached.
 - A `cd`, `pwd` or `printf` function from the profile, or a zsh `chpwd`
   hook, no longer runs for the folder change and the folder report SUPER
   adds to a `Bash` command or a monitor: its output started every result,

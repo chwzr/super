@@ -2682,7 +2682,10 @@ impl AgentSession {
     /// A new child's session manager, stored in this session's folder of
     /// agents as `<name>.jsonl` (its own id when `name` is `None`) and
     /// working in `folder` (this session's when `None`): `history` first,
-    /// then the `subagent` entry that names the parent.
+    /// then the `subagent` entry that names the parent. A stored session
+    /// that has not written its file yet, such as one whose first act is a
+    /// `/loop` job, writes it now, so that the child's parent can be opened
+    /// again.
     fn child_manager(
         &self,
         name: Option<&str>,
@@ -2691,7 +2694,8 @@ impl AgentSession {
         entry: serde_json::Value,
     ) -> anyhow::Result<SessionManager> {
         let (mut manager, parent_id) = {
-            let parent = self.manager.lock().unwrap();
+            let mut parent = self.manager.lock().unwrap();
+            parent.persist_header()?;
             let folder = folder.unwrap_or_else(|| parent.cwd()).to_path_buf();
             (
                 parent.create_child_named(name, &folder)?,

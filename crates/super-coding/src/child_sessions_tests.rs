@@ -1128,3 +1128,56 @@ async fn a_jobs_child_is_an_agent_of_the_session_for_storage_and_clients() {
             .any(|message| matches!(message, AgentMessage::Assistant(_)))
     );
 }
+
+/// A job started before anything was said in a stored session writes the
+/// session's file, which is listed and opened again with the job's child.
+#[tokio::test]
+async fn a_job_started_first_in_a_new_session_leaves_a_session_that_opens_again_with_it() {
+    use crate::iterative::JobKind;
+    let directory = tempfile::tempdir().unwrap();
+    let sessions = directory.path().join("sessions");
+    let stream: StreamFn = Arc::new(|_, _, _| {
+        let mut message = super_ai::AssistantMessage::empty("fake", "fake", "fake");
+        message
+            .content
+            .push(super_ai::ContentBlock::text("progress\n[continue]"));
+        message.stop_reason = super_ai::StopReason::Stop;
+        let (sink, stream) = super_ai::EventStream::channel();
+        sink.send(super_ai::AssistantEvent::Start {
+            partial: message.clone(),
+        });
+        sink.done(message);
+        stream
+    });
+    let session = main_session(
+        SessionManager::create(directory.path(), Some(sessions.clone())).unwrap(),
+        stream.clone(),
+        Vec::new(),
+    );
+    let job = session
+        .iterative_jobs()
+        .unwrap()
+        .start(JobKind::Loop, "LOOP-GOAL", Some(1), None)
+        .unwrap();
+    let mut updates = job.subscribe();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !job.snapshot().status.is_finished() {
+            updates.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    let file = session_file(&session);
+    assert!(file.is_file(), "the session's own file is written");
+    let listed = SessionManager::list(directory.path(), &sessions).unwrap();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].path, file);
+    drop(session);
+
+    let opened = SessionManager::continue_recent(directory.path(), Some(sessions)).unwrap();
+    assert_eq!(opened.session_file(), Some(file.as_path()));
+    let again = main_session(opened, stream, Vec::new());
+    let agents = registry(&again).list();
+    assert_eq!(agents.len(), 1, "{agents:?}");
+    assert_eq!(agents[0].name, format!("loop_{}", job.snapshot().id));
+}

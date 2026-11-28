@@ -39,6 +39,16 @@ pub fn agents_dir(session_file: &Path) -> PathBuf {
     session_file.with_extension("").join("agents")
 }
 
+/// Whether the session stored in `session_file` has a stored child in its
+/// folder of agents.
+fn has_stored_children(session_file: &Path) -> bool {
+    std::fs::read_dir(agents_dir(session_file)).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
+    })
+}
+
 /// The folder that holds the scripts and run journals of the workflows the
 /// session stored in `session_file` ran: `<file without .jsonl>/workflows`,
 /// beside its folder of agents.
@@ -465,7 +475,9 @@ impl SessionManager {
                 first_message = text.map(|t| t.chars().take(120).collect());
             }
         }
-        if entry_count == 0 {
+        // A session without entries is listed only when it started agents,
+        // such as a `/loop` job before anything was said in it.
+        if entry_count == 0 && !has_stored_children(path) {
             return None;
         }
         let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;

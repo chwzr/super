@@ -268,7 +268,9 @@ Each job with an interval, every job in the basic mode and every autoresearch
 job branches from the current conversation into a persistent SUPER session.
 That session is saved and sent like a subagent's (see
 [Subagents](#subagents)): it is no session of its own in `/resume`, and the
-apps list it among the session's agents. A self-paced loop runs in the
+apps list it among the session's agents. A job that is the first thing in a
+new session saves that session too, so `super -c` and `/resume` open it
+again with its job's session. A self-paced loop runs in the
 session itself, one at a time. Run `/jobs`, `/loop`
 without a goal, or `/autoresearch` without a goal to manage jobs; stopping a
 self-paced loop there cancels its pending wake-up.
