@@ -2,6 +2,10 @@
 //! loaded again: the worktree it works in, its wake-up and self-paced loop,
 //! the workflow runs that were cut off and what it had read.
 
+// Most of these tests need a POSIX shell or git paths and run on Unix
+// only; elsewhere their helpers and imports stay unused.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 use crate::agent_tools_tests::{core_tools, lanes, last_tool_result, texts};
 use crate::background_tests::{model, text, tool_call};
 use crate::session::manager::SessionManager;

@@ -1,5 +1,7 @@
 use super::*;
+#[cfg(unix)]
 use crate::background::{ShellDirectory, TaskHost};
+#[cfg(unix)]
 use std::sync::Mutex;
 
 fn tool() -> BashTool {
@@ -7,6 +9,7 @@ fn tool() -> BashTool {
 }
 
 /// A Bash tool for `directory` in a session whose `cd` carries over.
+#[cfg(unix)]
 fn main_session_tool(directory: &Path) -> BashTool {
     let mut tool = BashTool::new(directory.to_path_buf());
     tool.session.shell = Some(Arc::new(ShellDirectory::new()));
@@ -18,11 +21,13 @@ async fn run(tool: &BashTool, args: Value) -> anyhow::Result<ToolResult> {
         .await
 }
 
+#[cfg(unix)]
 fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap()
 }
 
 /// The folder the next command of `bash` starts in.
+#[cfg(unix)]
 async fn pwd(bash: &BashTool) -> String {
     run(bash, json!({"command": "pwd -P"}))
         .await
@@ -106,19 +111,21 @@ fn timeouts_are_milliseconds_with_a_default_and_a_most() {
 
 #[tokio::test]
 async fn a_timeout_is_counted_in_milliseconds() {
+    // The limit leaves a login shell time to read its profile: on a CI
+    // runner with bash completion in /etc/profile.d, 300 ms were too few.
     let start = std::time::Instant::now();
     let error = run(
         &tool(),
-        json!({"command": "echo started; sleep 5; echo never", "timeout": 300}),
+        json!({"command": "echo started; sleep 10; echo never", "timeout": 2000}),
     )
     .await
     .unwrap_err();
-    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(start.elapsed() < Duration::from_secs(10));
     let text = format!("{error:#}");
-    // A login shell on Windows may still read its profile after 300 ms.
+    // A login shell on Windows may still read its profile after 2 seconds.
     #[cfg(unix)]
     assert!(text.contains("started"), "{text}");
-    assert!(text.contains("timed out after 300 ms"), "{text}");
+    assert!(text.contains("timed out after 2000 ms"), "{text}");
     assert!(!text.contains("never"), "{text}");
 }
 
@@ -375,12 +382,14 @@ async fn cancel_aborts() {
 }
 
 /// A registry double: records how each task ended.
+#[cfg(unix)]
 struct FakeHost {
     directory: PathBuf,
     started: Mutex<Vec<(String, String, CancellationToken)>>,
     ends: Arc<Mutex<Vec<(String, TaskEnd)>>>,
 }
 
+#[cfg(unix)]
 impl FakeHost {
     fn new(directory: &Path) -> Arc<Self> {
         Arc::new(FakeHost {
@@ -407,6 +416,7 @@ impl FakeHost {
     }
 }
 
+#[cfg(unix)]
 struct FakeTask {
     id: String,
     output: PathBuf,
@@ -414,6 +424,7 @@ struct FakeTask {
     ends: Arc<Mutex<Vec<(String, TaskEnd)>>>,
 }
 
+#[cfg(unix)]
 impl TaskHost for FakeHost {
     fn start_shell(
         &self,
@@ -437,6 +448,7 @@ impl TaskHost for FakeHost {
     }
 }
 
+#[cfg(unix)]
 impl HostedTask for FakeTask {
     fn id(&self) -> &str {
         &self.id
@@ -455,6 +467,7 @@ impl HostedTask for FakeTask {
     }
 }
 
+#[cfg(unix)]
 fn background_tool(directory: &Path, host: &Arc<FakeHost>) -> BashTool {
     let mut bash = BashTool::new(directory.to_path_buf());
     bash.session.tasks = Some(host.clone());

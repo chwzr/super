@@ -217,6 +217,7 @@ pub(crate) fn background_line(message: &super_agent::AgentMessage) -> Option<Str
 /// folder; `None` for any other entry. A terminal attached to the daemon
 /// shows it from the transcript, since the daemon said it when it loaded
 /// the session; the terminal that runs the session shows it as it happens.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn state_line(
     entry: &super_coding::SessionEntry,
     folder: &std::path::Path,

@@ -1,6 +1,10 @@
 //! Bash in the background, Monitor and TaskStop, driven through sessions
 //! with the session's own queue and task registry.
 
+// Most of these tests need a POSIX shell or git paths and run on Unix
+// only; elsewhere their helpers and imports stay unused.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 use crate::background_tests::{eventually, model, scripted, text, tool_call, user_text};
 use crate::child_turn::ForkTurns;
 use crate::notifications::{MONITOR_EVENT, TASK_NOTIFICATION, monitored_event, notified_task};
