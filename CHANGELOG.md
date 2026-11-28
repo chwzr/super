@@ -650,6 +650,8 @@
   (`\\?\C:\…`, as `EnterWorktree` with `path` writes it) is stored, and
   `Bash` and `Monitor` with Git Bash run in that folder. The session could
   not be written, and Git Bash could not enter the folder.
+- `super -r` (`--resume`) opens the session browser of the full-screen
+  terminal, as `/resume` does. It started a new session.
 
 ## 0.0.42 - 2026-11-27
 

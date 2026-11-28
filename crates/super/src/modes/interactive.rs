@@ -1725,6 +1725,8 @@ async fn run_with_hosts(
         start_remote(&mut app, &session, &resources.settings, &command_tx);
     }
 
+    open_at_start(&mut app, &session, args);
+
     // Kick off initial message if provided.
     if let Some(message) = initial_message {
         maybe_generate_session_title(&mut app, &session, &message, &command_tx);
@@ -5290,6 +5292,14 @@ fn reopen_scoped_models_picker(
 fn account_allows_model(model: &super_ai::Model, copilot_models: Option<&[String]>) -> bool {
     model.provider != "github-copilot"
         || copilot_models.is_none_or(|ids| ids.iter().any(|id| id == &model.id))
+}
+
+/// What the terminal opens before its first frame: `--resume` opens the
+/// session browser, as `/resume` does.
+fn open_at_start(app: &mut App, session: &Arc<super_coding::AgentSession>, args: &Args) {
+    if args.resume {
+        open_session_picker(app, session, false);
+    }
 }
 
 fn open_session_picker(app: &mut App, session: &Arc<super_coding::AgentSession>, global: bool) {
@@ -9619,6 +9629,31 @@ mod tests {
             None,
             Arc::new(|_| {}),
         )
+    }
+
+    /// `super -r` opens the session browser at the start, as `/resume`
+    /// does; without it nothing opens.
+    #[test]
+    fn the_resume_option_opens_the_session_browser_at_the_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let sessions = directory.path().join("sessions");
+        for text in ["FIRST-SESSION", "SECOND-SESSION"] {
+            let mut stored =
+                super_coding::SessionManager::create(directory.path(), Some(sessions.clone()))
+                    .unwrap();
+            stored.append_message(AgentMessage::user(text)).unwrap();
+        }
+        let session = test_session(
+            super_coding::SessionManager::create(directory.path(), Some(sessions)).unwrap(),
+        );
+        let mut app = test_app();
+        open_at_start(&mut app, &session, &Args::parse_from(["super"]));
+        assert!(app.picker.is_none());
+        open_at_start(&mut app, &session, &Args::parse_from(["super", "-r"]));
+        match app.picker.as_ref().map(|picker| &picker.kind) {
+            Some(PickerKind::Session(listings, false)) => assert!(listings.len() >= 2),
+            _ => panic!("no session browser"),
+        }
     }
 
     pub(super) fn test_resources() -> InteractiveResources {
