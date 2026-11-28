@@ -15,7 +15,9 @@
   basic mode leaves out. `AgentSession::mode`, `AgentSession::system_prompt`
   and `AgentSession::set_system_prompt` read the mode and read or replace the
   system prompt. `super_agent::placeholder` writes the stand-in for prompt
-  text that is not written yet.
+  text that is not written yet; `super_agent::placeholder::SLOTS` lists every
+  slot of prompt text with its text, so one search for `SUPER_PROMPT_TODO(`
+  finds all of them.
 - Background tasks: work a tool starts that keeps running after its call,
   such as a shell command, a monitor, an agent or a workflow. When one ends,
   the agent is told with a notice that starts a new turn if it is idle and
