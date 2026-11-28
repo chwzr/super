@@ -1199,6 +1199,62 @@ async fn a_job_started_first_in_a_new_session_leaves_a_session_that_opens_again_
     assert_eq!(agents[0].name, format!("loop_{}", job.snapshot().id));
 }
 
+/// A stored agent of a built-in type is not resumed as the type a file of
+/// that name defines later, and the refusal says where the type is defined
+/// now.
+#[tokio::test]
+async fn a_stored_agent_of_a_built_in_type_that_a_file_replaced_later_names_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let sessions = directory.path().join("sessions");
+    let types = directory.path().join("types");
+    std::fs::create_dir_all(&types).unwrap();
+    let (stream, seen) = lanes(vec![("look", vec![Some(text("looked"))])]);
+    let first = main_session(
+        stored_manager(directory.path(), &sessions),
+        stream.clone(),
+        Vec::new(),
+    );
+    let mut look = request("Ex", "look", false);
+    look.agent_type = Some("Explore".into());
+    registry(&first)
+        .start(look, "call_1", CancellationToken::new())
+        .await
+        .unwrap();
+    let ex = registry(&first).list()[0].clone();
+    let main_file = session_file(&first);
+    drop(first);
+
+    let file = types.join("Explore.md");
+    std::fs::write(&file, "---\nname: Explore\ntools: Read\n---\nMY-EXPLORE\n").unwrap();
+    let again = main_session(
+        SessionManager::open(&main_file).unwrap(),
+        stream,
+        Vec::new(),
+    );
+    again.set_agent_resources(crate::agents::AgentResources {
+        definitions: crate::agents::types::discover_in(Some(&types), None),
+        ..Default::default()
+    });
+    let error = tool(&again, "SendMessage")
+        .execute(
+            "call_2",
+            json!({"to": ex.id, "message": "again"}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect_err("refused");
+    assert_eq!(
+        format!("{error:#}"),
+        format!(
+            "Agent {} ran as the built-in agent type Explore, which {} now defines, so it cannot be resumed; start a new agent.",
+            ex.id,
+            file.display()
+        )
+    );
+    assert_eq!(seen.count("look"), 1, "no run started");
+}
+
 /// A stored agent of a user type that replaced a built-in type is not
 /// resumed as the built-in type once the file is gone: it would go on with
 /// other instructions and tools. With the file there, it resumes.
@@ -1258,8 +1314,9 @@ async fn a_stored_agent_of_a_type_file_that_replaced_a_built_in_type_needs_that_
     assert_eq!(
         format!("{:#}", send(&without_file).await.expect_err("refused")),
         format!(
-            "Agent {} ran as the agent type Explore, which is not defined any more, so it cannot be resumed; start a new agent.",
-            ex.id
+            "Agent {} ran as the agent type Explore of {}, which is now the built-in type, so it cannot be resumed; start a new agent.",
+            ex.id,
+            types.join("Explore.md").display()
         )
     );
     assert_eq!(seen.count("look"), 1, "no run started");

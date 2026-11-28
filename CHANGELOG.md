@@ -546,7 +546,8 @@
   conversation it had under its own type. So is one whose type file had
   replaced a built-in type of the same name: the agent's stored session
   names where its type came from (`agentTypeSource`), and the built-in type
-  no longer resumes it.
+  no longer resumes it, nor does a file added later resume an agent of the
+  built-in type. The refusal says where the type is defined now.
 - RPC and the daemon answer a command whose fields do not fit, such as
   `get_agent_entries` without `agent`, with the command's `id` and its own
   `command`, so a client that waits for that id gets its answer; it came

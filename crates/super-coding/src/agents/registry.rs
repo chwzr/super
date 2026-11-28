@@ -1096,20 +1096,34 @@ pub(crate) fn read_stored_agent(file: &Path) -> Option<StoredAgent> {
 /// of its conversation. A type of that name from somewhere else, such as the
 /// built-in type a removed file had replaced, is not the type it ran as.
 fn resumable(owner: &AgentSession, stored: &StoredAgent) -> anyhow::Result<()> {
-    if stored.origin.is_agent_call()
-        && !owner.agent_types().iter().any(|known| {
-            known.name == stored.agent_type
-                && stored
-                    .agent_type_source
-                    .as_ref()
-                    .is_none_or(|source| *source == known.source.label())
-        })
-    {
-        anyhow::bail!(
-            "Agent {} ran as the agent type {}, which is not defined any more, so it cannot be resumed; start a new agent.",
-            stored.id,
-            stored.agent_type
-        );
+    if stored.origin.is_agent_call() {
+        let types = owner.agent_types();
+        let named = types.iter().find(|known| known.name == stored.agent_type);
+        match (named, &stored.agent_type_source) {
+            (None, _) => anyhow::bail!(
+                "Agent {} ran as the agent type {}, which is not defined any more, so it cannot be resumed; start a new agent.",
+                stored.id,
+                stored.agent_type
+            ),
+            (Some(known), Some(source)) if *source != known.source.label() => {
+                let ran_as = if source == "built-in" {
+                    format!("the built-in agent type {}", stored.agent_type)
+                } else {
+                    format!("the agent type {} of {source}", stored.agent_type)
+                };
+                let now = match &known.source {
+                    super::types::AgentTypeSource::BuiltIn => {
+                        "is now the built-in type".to_string()
+                    }
+                    other => format!("{} now defines", other.label()),
+                };
+                anyhow::bail!(
+                    "Agent {} ran as {ran_as}, which {now}, so it cannot be resumed; start a new agent.",
+                    stored.id
+                );
+            }
+            _ => {}
+        }
     }
     let current = owner.model();
     if let Some((provider, id)) = &stored.model

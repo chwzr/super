@@ -332,7 +332,9 @@ the advanced mode; see [Mode](#mode).
   would go on with other instructions, tools or model. A type counts as the
   one the child ran as only when it comes from the same place: when your
   file that replaced a built-in type is gone, the built-in type of that
-  name does not resume the child.
+  name does not resume the child, nor does a file added later resume a
+  child of the built-in type, and the refusal says where the type is
+  defined now.
 - A child's own background commands and monitors belong to its run: their
   notices and events reach the child, and so does a message sent to it in
   the meantime. Its report comes when it has answered the last of them and
