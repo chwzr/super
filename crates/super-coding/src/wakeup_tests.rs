@@ -574,7 +574,10 @@ async fn two_wake_up_calls_of_one_answer_take_effect_in_its_order() {
         )]);
         let session = &fixture.session;
         session.prompt(vec![AgentMessage::user("go")]).await;
-        assert!(session.wakeups().pending().is_none(), "the stop came second");
+        assert!(
+            session.wakeups().pending().is_none(),
+            "the stop came second"
+        );
         session.prompt(vec![AgentMessage::user("go")]).await;
         assert_eq!(
             session.wakeups().pending().unwrap().prompt.as_deref(),
