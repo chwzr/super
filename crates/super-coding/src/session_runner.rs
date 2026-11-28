@@ -898,6 +898,12 @@ impl AgentSession {
                 self.set_system_prompt(builder(after.0));
             }
         }
+        if before != after {
+            // A run that goes on takes the new prompt and tools at its next
+            // request, as it does after the session moved.
+            self.context_stale
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if cache_warming == CacheWarmingMode::Off
             || (cache_warming == CacheWarmingMode::Streaming && !self.is_running())
         {

@@ -484,6 +484,16 @@
   as the daemon and the terminal do. A plain RPC session started every run
   without asking, which mattered once `Workflow` was offered with every
   request.
+- The question before a workflow run is withdrawn when its turn is stopped
+  (`abort`, Esc) while it waits, or when the session's runs are (Dynamic
+  workflows or Subagents turned off, the mode set to `basic`): clients get
+  `approval_resolved` with `cancel`, the `Workflow` call ends and no run
+  starts. `abort` waited for an answer, and a later `approve` started the
+  run, also after the switches were turned off.
+- A change of the mode or of a switch while a run goes on reaches the run's
+  next request: its system prompt and tools, and a tool the change took away
+  no longer runs. They changed only with the next run, so an agent could
+  still start in a session set to `basic`.
 - The terminal's question at quitting in a worktree names the worktree's
   folder beside `keep` and `remove`.
 - When one answer makes several tool calls, the full-screen terminal shows

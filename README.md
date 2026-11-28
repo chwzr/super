@@ -1147,7 +1147,8 @@ your user settings.
   Subagents and dynamic workflows are off in this mode, whatever their
   switches say.
 
-A change in `/settings` applies to the next request, also in a terminal
+A change in `/settings` applies to the next request, also the next request
+of a run that goes on and in a terminal
 attached to the daemon. Only your user settings decide the mode; a project's
 settings cannot change it.
 

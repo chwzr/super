@@ -44,6 +44,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use super_agent::DynTool;
 use super_workflow::{Limits, Workflow};
+use tokio_util::sync::CancellationToken;
 
 /// Identifies one run within a session.
 pub type RunId = u64;
@@ -178,6 +179,9 @@ pub struct WorkflowRuntime {
     parent: Weak<AgentSession>,
     runs: Mutex<Vec<Arc<RunRecord>>>,
     next_id: AtomicU64,
+    /// Fires when [`stop_all`](Self::stop_all) stops the session's runs, so
+    /// that a question before a run that waits is withdrawn with them.
+    stopped: Mutex<CancellationToken>,
 }
 
 impl WorkflowRuntime {
@@ -186,7 +190,13 @@ impl WorkflowRuntime {
             parent,
             runs: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
+            stopped: Mutex::new(CancellationToken::new()),
         })
+    }
+
+    /// What fires the next time the session's runs are stopped.
+    pub(crate) fn stop_signal(&self) -> CancellationToken {
+        self.stopped.lock().unwrap().clone()
     }
 
     /// The tool the model calls to run a workflow.
@@ -504,6 +514,7 @@ impl WorkflowRuntime {
     /// setting is turned off. A run the `Workflow` tool started is stopped
     /// through its background task, so no notice announces it.
     pub(crate) fn stop_all(&self) {
+        std::mem::take(&mut *self.stopped.lock().unwrap()).cancel();
         let working: Vec<Arc<RunRecord>> = match self.runs.lock() {
             Ok(runs) => runs
                 .iter()

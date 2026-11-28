@@ -387,7 +387,7 @@ pub fn install_workflow_approval_gate(session: &Arc<Session>) {
         .set_workflow_approver(Arc::new(move |plan| {
             let sdk = sdk.clone();
             Box::pin(async move {
-                let (_, answer) = sdk.open_approval(ApprovalRequest {
+                let (id, answer) = sdk.open_approval(ApprovalRequest {
                     kind: crate::approvals::ApprovalKind::Workflow,
                     title: format!("Run workflow {}?", plan.name),
                     detail: Some(plan.agent_estimate()),
@@ -396,6 +396,12 @@ pub fn install_workflow_approval_gate(session: &Arc<Session>) {
                         crate::approvals::ApprovalChoice::new("cancel", "Cancel"),
                     ],
                 });
+                // The call may stop waiting first (its turn was stopped, or
+                // the session's runs were): the question is withdrawn then.
+                let _withdraw = WithdrawUnanswered {
+                    session: sdk.clone(),
+                    id,
+                };
                 match answer.await {
                     Ok(answer) if answer.choice == "approve" => {
                         super_coding::workflows::ApprovalDecision::Approve
@@ -404,6 +410,28 @@ pub fn install_workflow_approval_gate(session: &Arc<Session>) {
                 }
             })
         }));
+}
+
+/// A question that is answered `cancel` by `local` when the one who asked
+/// stops waiting for it before anyone answered, so that every surface
+/// closes it and nobody can answer it later.
+struct WithdrawUnanswered {
+    session: Arc<Session>,
+    id: String,
+}
+
+impl Drop for WithdrawUnanswered {
+    fn drop(&mut self) {
+        let open = self
+            .session
+            .approvals
+            .list()
+            .iter()
+            .any(|(id, _)| *id == self.id);
+        if open {
+            let _ = self.session.answer_approval(&self.id, "cancel", "local");
+        }
+    }
 }
 
 /// Fluent construction of a [`Session`].

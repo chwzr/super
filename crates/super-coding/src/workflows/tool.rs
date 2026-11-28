@@ -121,7 +121,7 @@ impl AgentTool for WorkflowTool {
         &self,
         tool_call_id: &str,
         args: Value,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
         _on_update: Option<ToolUpdateSink>,
     ) -> anyhow::Result<ToolResult> {
         let args: WorkflowArgs = serde_json::from_value(args)?;
@@ -185,12 +185,36 @@ impl AgentTool for WorkflowTool {
         }
         let workflow_name = plan.name.clone();
 
-        if runtime.approve(plan).await == ApprovalDecision::Cancel {
+        // The question is withdrawn when the turn is stopped, or when the
+        // session's runs are, as turning the switches off does.
+        let stopped = runtime.stop_signal();
+        let decision = tokio::select! {
+            decision = runtime.approve(plan) => Some(decision),
+            _ = cancel.cancelled() => None,
+            _ = stopped.cancelled() => None,
+        };
+        let Some(decision) = decision else {
+            runtime.emit_outcome(None, workflow_name, WorkflowTurnStatus::Cancelled);
+            if cancel.is_cancelled() {
+                anyhow::bail!("{}", super_agent::message::ABORTED_RESULT);
+            }
+            anyhow::bail!(
+                "The session's workflow runs were stopped, as turning Dynamic workflows off does, before this run was approved, so nothing ran."
+            );
+        };
+        if decision == ApprovalDecision::Cancel {
             runtime.emit_outcome(None, workflow_name, WorkflowTurnStatus::Cancelled);
             return Ok(ToolResult::text(
                 "The user did not approve this workflow, so nothing ran. Ask what they would \
                  like to change, or carry out the task directly instead.",
             ));
+        }
+        // The switches may have been turned off while the question waited.
+        if !session.workflows_enabled() {
+            runtime.emit_outcome(None, workflow_name, WorkflowTurnStatus::Cancelled);
+            anyhow::bail!(
+                "Dynamic workflows are off in this session, so no workflow can run here."
+            );
         }
 
         let record = runtime.prepare(script, args.args.unwrap_or(Value::Null), journal)?;

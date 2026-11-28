@@ -111,7 +111,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 - `set_steering_mode` / `set_follow_up_mode` with `mode` `all` or `one-at-a-time`.
 - `compact`, optional `customInstructions`.
 - `set_auto_compaction` / `set_auto_retry` with boolean `enabled`.
-- `set_mode` with optional `mode` (`basic` or `advanced`), `subagents` and `workflows` (booleans, the Subagents and Dynamic workflows switches): sets those given for this session from now on, builds its system prompt again when the mode changed, and answers with all three (`data.mode`, `data.subagents`, `data.workflows`); with none given it only reads them. The user's settings file is not changed. A mode it does not know is refused: `mode 'expert' is not basic or advanced.` Turning Subagents off, or the mode to `basic`, stops the session's agents and workflow runs, as `/settings` does.
+- `set_mode` with optional `mode` (`basic` or `advanced`), `subagents` and `workflows` (booleans, the Subagents and Dynamic workflows switches): sets those given for this session from now on, builds its system prompt again when the mode changed, and answers with all three (`data.mode`, `data.subagents`, `data.workflows`); with none given it only reads them. A run that goes on gets the new system prompt and tools with its next request, and a tool the change took away no longer runs. The user's settings file is not changed. A mode it does not know is refused: `mode 'expert' is not basic or advanced.` Turning Subagents off, or the mode to `basic`, stops the session's agents and workflow runs, as `/settings` does.
 
 ### Tools and shell
 
@@ -212,7 +212,10 @@ worktree's folder and its choices are `keep` and `remove`; see
 [Wake-ups, loops and worktrees](#wake-ups-loops-and-worktrees). A `workflow`
 question comes before every run while `workflows.confirm` is on, in
 `--mode rpc` too; its choices are `approve` and `cancel`, and the run waits
-for the answer.
+for the answer. When the turn is stopped (`abort`) while it waits, or the
+session's runs are (Dynamic workflows or Subagents turned off, the mode set
+to `basic`), the question is withdrawn: `approval_resolved` with `cancel`
+by `local`, and no run starts.
 
 Commands from another surface: `command_applied` with `origin` (the name
 that surface gave itself: a daemon client's `hello.name`, the device a

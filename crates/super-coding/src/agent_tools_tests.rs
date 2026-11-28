@@ -1783,6 +1783,48 @@ async fn turning_subagents_off_stops_the_running_agents() {
     assert!(!fixture.session.has_queued_entries());
 }
 
+/// A change of the mode or of a switch while a run goes on reaches the
+/// run's next request: its tools, and the calls it can make.
+#[tokio::test]
+async fn a_mode_changed_during_a_run_reaches_its_next_request() {
+    let fixture = fixture(vec![(
+        "main",
+        vec![
+            Some(tool_call("g1", "Gate", json!({}))),
+            Some(tool_call(
+                "a1",
+                "Agent",
+                json!({"description": "Late", "prompt": "late task", "run_in_background": true}),
+            )),
+            Some(text("done")),
+        ],
+    )]);
+    let session = fixture.session.clone();
+    let run = tokio::spawn({
+        let session = session.clone();
+        async move { session.prompt(vec![AgentMessage::user("main")]).await }
+    });
+    let entered = fixture.entered.clone();
+    eventually("the run is in its tool", || entered.load(Ordering::SeqCst)).await;
+    let mut basic = session.settings();
+    basic.mode = Mode::Basic;
+    session.update_settings(basic);
+    fixture.gate.notify_one();
+    run.await.unwrap();
+    let requests = fixture.seen.of("main");
+    let tools: Vec<String> = requests[1]
+        .context
+        .tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    assert!(!tools.iter().any(|name| name == "Agent"), "{tools:?}");
+    // The model's Agent call finds no such tool, and no agent starts.
+    let result = last_tool_result(&requests[2].context);
+    assert!(result.is_error);
+    assert!(fixture.registry().list().is_empty());
+}
+
 #[tokio::test]
 async fn the_hosts_tool_list_chooses_among_the_tools_a_session_adds() {
     use crate::session_runner::ToolSelection;
