@@ -89,6 +89,8 @@ pub fn script(
 ) -> Command {
     let shell = resolve(shell_path);
     let marks = cfg!(unix);
+    // Git Bash cannot enter a Windows path that starts with `\\?\`.
+    let folder = super::path::without_verbatim_prefix(directory);
     let mut command = match kind(&shell) {
         ShellKind::Posix => {
             // zsh's `builtin` skips a function, and `cd -q` its `chpwd`
@@ -117,7 +119,7 @@ pub fn script(
             text.push_str(&format!(
                 "{} -- {} || exit 1; ",
                 if zsh { "builtin cd -q" } else { "command cd" },
-                posix_quote(&directory.to_string_lossy())
+                posix_quote(&folder.to_string_lossy())
             ));
             let report = report_directory.map(|file| {
                 format!(
@@ -152,7 +154,7 @@ pub fn script(
             }
             text.push_str(&format!(
                 "builtin cd {}; or exit 1\n",
-                fish_quote(&directory.to_string_lossy())
+                fish_quote(&folder.to_string_lossy())
             ));
             if let Some(file) = report_directory {
                 text.push_str(&format!(

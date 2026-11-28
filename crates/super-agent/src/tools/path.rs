@@ -44,6 +44,33 @@ pub async fn file_key(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// `path` without the `\\?\` that Windows puts in front of a canonical path,
+/// which git, Git Bash and a file name made from the path cannot take:
+/// `\\?\C:\work` is `C:\work` and `\\?\UNC\server\share` is
+/// `\\server\share`. Any other path, and every path on other systems, is
+/// returned as it is.
+pub fn without_verbatim_prefix(path: &Path) -> PathBuf {
+    if !cfg!(windows) {
+        return path.to_path_buf();
+    }
+    path.to_str()
+        .and_then(strip_verbatim)
+        .map_or_else(|| path.to_path_buf(), PathBuf::from)
+}
+
+/// The text of a `\\?\` drive or UNC path without the prefix; `None` for
+/// any other text, such as a `\\?\Volume{…}` path, which has no other
+/// spelling.
+fn strip_verbatim(text: &str) -> Option<String> {
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{rest}"));
+    }
+    let rest = text.strip_prefix(r"\\?\")?;
+    let drive = rest.as_bytes();
+    (drive.len() >= 2 && drive[0].is_ascii_alphabetic() && drive[1] == b':')
+        .then(|| rest.to_string())
+}
+
 /// Render a path relative to `cwd` when it is inside it (display only).
 pub fn display(cwd: &Path, path: &Path) -> String {
     path.strip_prefix(cwd).unwrap_or(path).display().to_string()
@@ -52,6 +79,28 @@ pub fn display(cwd: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_verbatim_windows_path_loses_its_prefix_and_other_text_stays() {
+        assert_eq!(
+            strip_verbatim(r"\\?\C:\Users\me\work").as_deref(),
+            Some(r"C:\Users\me\work")
+        );
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\server\share\work").as_deref(),
+            Some(r"\\server\share\work")
+        );
+        assert_eq!(strip_verbatim(r"\\?\Volume{1234}\work"), None);
+        assert_eq!(strip_verbatim(r"C:\Users\me"), None);
+        assert_eq!(strip_verbatim("/work"), None);
+        // Only Windows has such paths.
+        if !cfg!(windows) {
+            assert_eq!(
+                without_verbatim_prefix(Path::new(r"\\?\C:\work")),
+                PathBuf::from(r"\\?\C:\work")
+            );
+        }
+    }
 
     #[test]
     fn resolves_relative_and_absolute() {

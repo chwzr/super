@@ -989,7 +989,9 @@ async fn the_file_and_shell_tools_run_in_the_order_of_the_answer() {
     use super_agent::{DynTool, ExecutionMode, ToolSession};
 
     let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path().canonicalize().unwrap();
+    // The path goes into a shell command, which takes no `\\?\` path.
+    let cwd =
+        super_agent::tools::path::without_verbatim_prefix(&dir.path().canonicalize().unwrap());
     let file = cwd.join("p.txt");
     std::fs::write(&file, "one\n").unwrap();
     let session = ToolSession::new();

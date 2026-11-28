@@ -27,7 +27,11 @@ pub struct SessionManager {
 
 /// Slug a working directory the way pi does: `/a/b` -> `--a-b--`.
 pub fn cwd_slug(cwd: &Path) -> String {
-    let s = cwd.display().to_string().replace(['/', '\\', ':'], "-");
+    // A canonical Windows path's `\\?\` cannot be in a folder's name.
+    let s = super_agent::tools::path::without_verbatim_prefix(cwd)
+        .display()
+        .to_string()
+        .replace(['/', '\\', ':'], "-");
     format!("-{s}-")
 }
 
