@@ -167,7 +167,7 @@ pub const ABORTED_RESULT: &str = "Operation aborted";
 /// refuse a request with such a call. A result anywhere before the next
 /// assistant message counts, so nothing is answered twice.
 fn answer_cut_off_calls(messages: Vec<Message>) -> Vec<Message> {
-    let unanswered = |index: usize, assistant: &AssistantMessage| -> Vec<(String, String)> {
+    let unanswered = |index: usize, assistant: &AssistantMessage| -> Calls {
         let answered: std::collections::HashSet<&str> = messages[index + 1..]
             .iter()
             .take_while(|message| !matches!(message, Message::Assistant(_)))
@@ -182,7 +182,7 @@ fn answer_cut_off_calls(messages: Vec<Message>) -> Vec<Message> {
             .map(|call| (call.id.clone(), call.name.clone()))
             .collect()
     };
-    let missing: Vec<(usize, Vec<(String, String)>, TimestampMs)> = messages
+    let missing: Vec<(usize, Calls, TimestampMs)> = messages
         .iter()
         .enumerate()
         .filter_map(|(index, message)| match message {
@@ -197,7 +197,7 @@ fn answer_cut_off_calls(messages: Vec<Message>) -> Vec<Message> {
         return messages;
     }
     let mut out = Vec::with_capacity(messages.len() + missing.len());
-    let mut pending: Vec<(String, String)> = Vec::new();
+    let mut pending: Calls = Vec::new();
     let mut timestamp = 0;
     let mut missing = missing.into_iter().peekable();
     for (index, message) in messages.into_iter().enumerate() {
@@ -214,7 +214,10 @@ fn answer_cut_off_calls(messages: Vec<Message>) -> Vec<Message> {
     out
 }
 
-fn cut_off_results(calls: Vec<(String, String)>, timestamp: TimestampMs) -> Vec<Message> {
+/// Tool calls by id and tool name.
+type Calls = Vec<(String, String)>;
+
+fn cut_off_results(calls: Calls, timestamp: TimestampMs) -> Vec<Message> {
     calls
         .into_iter()
         .map(|(tool_call_id, tool_name)| {
