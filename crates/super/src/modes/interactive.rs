@@ -1217,6 +1217,8 @@ fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
         .or_else(|| args["ws"]["url"].as_str())
         .or_else(|| args["task_id"].as_str())
         .or_else(|| args["shell_id"].as_str())
+        .or_else(|| args["to"].as_str())
+        .or_else(|| args["description"].as_str())
         .unwrap_or("");
     let detail = detail.replace('\n', " ");
     let detail: String = detail.chars().take(80).collect();
@@ -9743,6 +9745,26 @@ mod tests {
                 cwd
             ),
             "TaskStop b12345678"
+        );
+        assert_eq!(
+            tool_title(
+                "Agent",
+                &serde_json::json!({"description": "Review the diff", "prompt": "Look at it"}),
+                cwd
+            ),
+            "Agent Review the diff"
+        );
+        assert_eq!(
+            tool_title(
+                "SendMessage",
+                &serde_json::json!({"to": "a12345678", "message": "go on"}),
+                cwd
+            ),
+            "SendMessage a12345678"
+        );
+        assert_eq!(
+            tool_title("ListAgents", &serde_json::json!({}), cwd),
+            "ListAgents"
         );
     }
 

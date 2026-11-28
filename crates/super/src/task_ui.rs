@@ -138,12 +138,23 @@ pub(crate) fn event_line(task: &TaskInfo, event: &str) -> String {
     line
 }
 
-/// The transcript line for a custom message that reached the agent from a
-/// background task, a task's notice or a monitor's event; `None` for any
-/// other message.
+/// The transcript line for a message an agent sent with `SendMessage`: who
+/// sent it, and its summary or else its first line.
+pub(crate) fn message_line(from: &str, summary: Option<&str>, message: &str) -> String {
+    let text = summary.unwrap_or_else(|| message.lines().next().unwrap_or_default());
+    let text: String = text.chars().take(100).collect();
+    format!("message from {from} · {text}")
+}
+
+/// The transcript line for a custom message that reached the agent from
+/// outside a tool call: a task's notice, a monitor's event or a message of
+/// an agent; `None` for any other message.
 pub(crate) fn background_line(message: &super_agent::AgentMessage) -> Option<String> {
     if let Some(task) = super_coding::notifications::notified_task(message) {
         return Some(notice_line(&task));
+    }
+    if let Some((from, summary, text)) = super_coding::notifications::sent_message(message) {
+        return Some(message_line(&from, summary.as_deref(), &text));
     }
     super_coding::notifications::monitored_event(message)
         .map(|(task, event)| event_line(&task, &event))
@@ -255,5 +266,17 @@ mod tests {
             format!("task {} completed · watch the log", handle.id())
         );
         assert!(background_line(&super_agent::AgentMessage::user("hi")).is_none());
+
+        let sent = super_coding::agent_message("a1234abcd", "main", None, "found it\nin line 4");
+        assert_eq!(
+            background_line(&sent).unwrap(),
+            "message from a1234abcd · found it"
+        );
+        let summarized =
+            super_coding::agent_message("a1234abcd", "main", Some("progress"), "long text");
+        assert_eq!(
+            background_line(&summarized).unwrap(),
+            "message from a1234abcd · progress"
+        );
     }
 }
