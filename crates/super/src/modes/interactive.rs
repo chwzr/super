@@ -5077,7 +5077,9 @@ pub(crate) fn shown_output(
         })
         .collect();
     match tool_name {
-        "Agent" if texts.len() == 2 && texts[1].starts_with("<agent-result>") => {
+        // A waited agent's report, or a forked skill's, without the block of
+        // its id and usage that the model gets.
+        "Agent" | "Skill" if texts.len() == 2 && texts[1].starts_with("<agent-result>") => {
             texts[0].to_string()
         }
         "ListAgents" => match details
@@ -9822,10 +9824,21 @@ mod tests {
             shown_output("Skill", &[super_ai::ContentBlock::text(loaded)], None),
             "# Writing a dynamic workflow\nStep one."
         );
-        // A skill that ran in an agent shows the agent's report.
+        // A skill that ran in an agent shows the agent's report, without
+        // the block of its id and usage.
         assert_eq!(
             shown_output("Skill", &[super_ai::ContentBlock::text("REPORT")], None),
             "REPORT"
+        );
+        let forked = [
+            super_ai::ContentBlock::text("FORKY-REPORT line one\nline two"),
+            super_ai::ContentBlock::text(
+                "<agent-result>\n<agent-id>af2pfq19y</agent-id>\n<usage><subagent_tokens>0</subagent_tokens></usage>\n</agent-result>",
+            ),
+        ];
+        assert_eq!(
+            shown_output("Skill", &forked, None),
+            "FORKY-REPORT line one\nline two"
         );
     }
 
