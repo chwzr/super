@@ -414,16 +414,20 @@ reach only the agents the main agent started itself.
 
 A skill is a Markdown file with instructions for one kind of task. SUPER
 finds skills in `~/.super/agent/skills/`, in `~/.agents/skills/`, and, in a
-trusted project, in `.super/skills/` and `.agents/skills/`. You call one
-with `/name` at the start of a prompt or `$name` anywhere in it; its text goes
-into that prompt.
+trusted project, in `.super/skills/` and `.agents/skills/`. In the
+full-screen terminal, also attached to the daemon, you call one with `/name`
+at the start of a prompt or `$name` anywhere in it; its text goes into that
+prompt. `super -p`, `--mode rpc`, ACP, the SDK and the line front end of
+`super attach` send a prompt as it is typed, so there a skill reaches the
+agent through `Skill` or the list in the system prompt only.
 
 - In the basic mode the system prompt lists each skill with its file, and the
   agent reads the file with `Read`, as before.
 - In the advanced mode the agent has the `Skill` tool, alongside `Read` or
   `Bash`. The skills are listed without their files, and `Skill` loads one by
   its name; `args` fills in `$ARGUMENTS` in the skill's text. A skill whose
-  frontmatter has `disable-model-invocation: true` is yours to call only.
+  frontmatter has `disable-model-invocation: true` is yours to call only,
+  from the full-screen terminal.
 - A skill with `context: fork` in its frontmatter runs in an agent of its own
   instead, named after the skill; `agent` chooses the agent type
   (`general-purpose` by default), and `model` and `effort` work as for
