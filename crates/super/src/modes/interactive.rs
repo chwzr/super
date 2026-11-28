@@ -1219,6 +1219,9 @@ fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
         .or_else(|| args["shell_id"].as_str())
         .or_else(|| args["to"].as_str())
         .or_else(|| args["description"].as_str())
+        .or_else(|| args["skill"].as_str())
+        .or_else(|| args["name"].as_str())
+        .or_else(|| args["scriptPath"].as_str())
         .unwrap_or("");
     let detail = detail.replace('\n', " ");
     let detail: String = detail.chars().take(80).collect();
@@ -9765,6 +9768,30 @@ mod tests {
         assert_eq!(
             tool_title("ListAgents", &serde_json::json!({}), cwd),
             "ListAgents"
+        );
+        assert_eq!(
+            tool_title(
+                "Skill",
+                &serde_json::json!({"skill": "review", "args": "src/a.rs"}),
+                cwd
+            ),
+            "Skill review"
+        );
+        assert_eq!(
+            tool_title(
+                "Workflow",
+                &serde_json::json!({"name": "audit-routes"}),
+                cwd
+            ),
+            "Workflow audit-routes"
+        );
+        assert_eq!(
+            tool_title(
+                "Workflow",
+                &serde_json::json!({"scriptPath": "/s/wf_abcdefgh.js", "resumeFromRunId": "wf_abcdefgh"}),
+                cwd
+            ),
+            "Workflow /s/wf_abcdefgh.js"
         );
     }
 
