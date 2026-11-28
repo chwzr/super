@@ -385,8 +385,11 @@ notice, a monitor's event, an agent's message, a wake-up and a loop's round
 are one line each (live and in the recent history it shows on attaching),
 an approval is asked as numbered choices and each line is sent as a prompt,
 or as a steer while the session works. It exits once the session settles after the last
-line; Ctrl+C aborts the turn, `/detach` and end of input detach, `/stop`
-stops the session, `/sessions` switches to another one (below).
+line; Ctrl+C aborts the turn, and while no turn runs it stops the session's
+background tasks ("stopped N background tasks"), as this front end has no
+stop control for one task, and detaches when none runs. `/detach` and end of
+input detach, `/stop` stops the session, `/sessions` switches to another one
+(below).
 
 When no daemon answers and none can be started, `super` runs in-process as
 it always did (`--verbose` says why). When the daemon speaks another

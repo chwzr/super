@@ -450,6 +450,10 @@
   `session/update` notifications, as in every other mode. It waited for the
   next prompt, whose response then carried the reply to it after the reply to
   the prompt.
+- In the line front end of `super attach`, `Ctrl+C` while no turn runs stops
+  the session's background tasks and says how many, and detaches only when
+  none runs. It detached and left them running, and the front end had no
+  other way to stop them but `/stop`.
 - A terminal attached to the daemon that quits after the daemon is gone says
   so, "the SUPER daemon is gone, so session <id> does not run; `super -c`
   resumes it", where it said the session kept running in the daemon.

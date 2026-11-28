@@ -376,7 +376,18 @@ impl Screen {
     }
 }
 
-const HELP: &str = "enter sends (a steer while it works) · ctrl+c aborts the turn, or detaches when idle · /detach or ctrl+d leaves it running · /stop stops the session · /sessions switches";
+const HELP: &str = "enter sends (a steer while it works) · ctrl+c aborts the turn, or when idle stops the background tasks or, with none running, detaches · /detach or ctrl+d leaves it running · /stop stops the session · /sessions switches";
+
+/// How many of the tasks in a `get_tasks` answer run.
+fn running_tasks(data: Option<&Value>) -> usize {
+    data.and_then(|data| data["tasks"].as_array())
+        .map_or(0, |tasks| {
+            tasks
+                .iter()
+                .filter(|task| task["status"] == "running")
+                .count()
+        })
+}
 
 /// Introduce the session shown: a header line, the help when `help`, and
 /// its last messages. Returns whether it is working.
@@ -586,7 +597,18 @@ async fn run(
                     screen.meta("aborting");
                     let _ = link.execute(Command::Abort {}).await;
                 } else {
-                    break 0;
+                    // This front end has no stop control per task, so its
+                    // interrupt stops the session's background tasks (the
+                    // daemon's `abort` does that for it); with none running
+                    // it detaches.
+                    let tasks = link.execute_ok(Command::GetTasks {}).await.ok().flatten();
+                    let running = running_tasks(tasks.as_ref());
+                    if running == 0 {
+                        break 0;
+                    }
+                    let _ = link.execute(Command::Abort {}).await;
+                    screen.meta(&crate::task_ui::stopped_line(running));
+                    screen.prompt();
                 }
             }
         }
