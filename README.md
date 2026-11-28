@@ -729,7 +729,10 @@ SUPER accepts text, images, resource links, and embedded resources. It streams
 answers, reasoning, tool status, usage, file locations, and diffs.
 
 Tools run in the working directory that the client supplies. Cancellation
-stops active and queued work.
+stops active and queued work. When background work ends, or a monitor sees
+an event, while no prompt runs, the session answers it in a turn of its own,
+and its updates reach the client as `session/update` notifications without a
+prompt.
 
 Client-provided stdio and streamable-HTTP MCP servers apply only to the ACP
 session and are not saved. Draft ACP v2, audio, legacy MCP SSE, and client

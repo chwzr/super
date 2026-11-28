@@ -52,6 +52,68 @@ struct ActiveSession {
     _session_lock: super_daemon::session_lock::SessionLockKeeper,
 }
 
+impl ActiveSession {
+    /// Let the session start turns of its own while no prompt runs, for a
+    /// notice, a monitor event, a message from an agent or a wake-up, as
+    /// every other host does: each such turn runs here, one at a time with
+    /// the prompts, and reaches the client as `session/update` notifications
+    /// of the session `id`, like a prompt's.
+    fn start_idle_turns(self: &Arc<Self>, id: SessionId, connection: ConnectionTo<Client>) {
+        let session = Arc::downgrade(self);
+        self.agent.set_turn_starter(Some(Arc::new(move |turn| {
+            let Some(session) = session.upgrade() else {
+                return;
+            };
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
+            let id = id.clone();
+            let connection = connection.clone();
+            runtime.spawn(async move {
+                let _guard = session.prompt.lock().await;
+                if session.closed.load(Ordering::Acquire) {
+                    return;
+                }
+                let mut receiver = session.events.lock().await;
+                tokio::pin!(turn);
+                let mut snapshots = HashMap::new();
+                let mut stop_reason = StopReason::EndTurn;
+                let mut error = None;
+                loop {
+                    tokio::select! {
+                        _ = &mut turn => {
+                            while let Ok(event) = receiver.try_recv() {
+                                let _ = forward_event(
+                                    event,
+                                    &id,
+                                    &session.cwd,
+                                    &connection,
+                                    &mut snapshots,
+                                    &mut stop_reason,
+                                    &mut error,
+                                );
+                            }
+                            break;
+                        }
+                        event = receiver.recv() => {
+                            let Some(event) = event else { break };
+                            let _ = forward_event(
+                                event,
+                                &id,
+                                &session.cwd,
+                                &connection,
+                                &mut snapshots,
+                                &mut stop_reason,
+                                &mut error,
+                            );
+                        }
+                    }
+                }
+            });
+        })));
+    }
+}
+
 impl Drop for ActiveSession {
     fn drop(&mut self) {
         self.agent.abort();
@@ -126,9 +188,9 @@ impl SuperAcpAgent {
         options.session = source;
         options.mcp_servers = acp_mcp_servers(mcp_servers)?;
         let built = options.build(sink).map_err(internal_error)?;
-        // An ACP client hears from a session only while one of its prompts
-        // runs, so the session starts no turn of its own: what background
-        // work queues reaches the agent at the next prompt's next step.
+        // Until the client has the session, it starts no turn of its own;
+        // then `start_idle_turns` lets it (the new, load and resume
+        // handlers call it once they answered).
         built.session.set_turn_starter(Some(Arc::new(|_turn| {})));
         let session_lock = match crate::setup::keep_session_lock(&built.session) {
             Ok(lock) => lock,
@@ -138,7 +200,8 @@ impl SuperAcpAgent {
             }
         };
         // What a loaded session stored (a wake-up, the notice of a workflow
-        // run that was cut off) waits for the next prompt the same way.
+        // run that was cut off) waits for the next prompt or the next turn
+        // the session starts.
         built.session.resume_stored_work();
         let id = SessionId::new(
             built
@@ -502,7 +565,7 @@ impl ConnectTo<Client> for SuperAcpAgent {
             .on_receive_request(
                 {
                     let agent = self.clone();
-                    async move |request: NewSessionRequest, responder, _connection| match agent
+                    async move |request: NewSessionRequest, responder, connection| match agent
                         .build_session(
                             request.cwd,
                             if agent.options.session == SessionSource::InMemory {
@@ -512,10 +575,14 @@ impl ConnectTo<Client> for SuperAcpAgent {
                             },
                             request.mcp_servers,
                         ) {
-                        Ok((id, session)) => responder.respond(
-                            NewSessionResponse::new(id)
-                                .config_options(session_config_options(&session.agent)),
-                        ),
+                        Ok((id, session)) => {
+                            let answered = responder.respond(
+                                NewSessionResponse::new(id.clone())
+                                    .config_options(session_config_options(&session.agent)),
+                            );
+                            session.start_idle_turns(id, connection);
+                            answered
+                        }
                         Err(error) => responder.respond_with_error(error),
                     }
                 },
@@ -534,10 +601,12 @@ impl ConnectTo<Client> for SuperAcpAgent {
                             Err(error) => return responder.respond_with_error(error),
                         };
                         replay_history(&request.session_id, &session.agent, &connection)?;
-                        responder.respond(
+                        let answered = responder.respond(
                             LoadSessionResponse::new()
                                 .config_options(session_config_options(&session.agent)),
-                        )
+                        );
+                        session.start_idle_turns(request.session_id, connection);
+                        answered
                     }
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -545,13 +614,17 @@ impl ConnectTo<Client> for SuperAcpAgent {
             .on_receive_request(
                 {
                     let agent = self.clone();
-                    async move |request: ResumeSessionRequest, responder, _connection| match agent
+                    async move |request: ResumeSessionRequest, responder, connection| match agent
                         .open_session(&request.session_id, request.cwd, request.mcp_servers)
                     {
-                        Ok(session) => responder.respond(
-                            ResumeSessionResponse::new()
-                                .config_options(session_config_options(&session.agent)),
-                        ),
+                        Ok(session) => {
+                            let answered = responder.respond(
+                                ResumeSessionResponse::new()
+                                    .config_options(session_config_options(&session.agent)),
+                            );
+                            session.start_idle_turns(request.session_id, connection);
+                            answered
+                        }
                         Err(error) => responder.respond_with_error(error),
                     }
                 },
@@ -1772,6 +1845,84 @@ mod tests {
             .clone();
         assert_eq!(session.agent.model().id, "mock-2");
         assert_eq!(session.agent.thinking_level(), ThinkingLevel::High);
+    }
+
+    #[tokio::test]
+    async fn an_entry_queued_while_idle_starts_a_turn_whose_reply_reaches_the_client() {
+        let directory = tempfile::tempdir().unwrap();
+        let provider =
+            MockProvider::start(directory.path(), MockScript::text("reply to the notice"))
+                .await
+                .unwrap();
+        let agent = SuperAcpAgent::new(SessionOptions {
+            model: Some("mock/mock-1".into()),
+            models_file: Some(provider.catalog_path()),
+            settings: Some(super_coding::Settings::default()),
+            session: SessionSource::InMemory,
+            no_context_files: true,
+            ..Default::default()
+        });
+        let sessions = agent.sessions.clone();
+        let cwd = directory.path().to_path_buf();
+        let updates: Arc<Mutex<Vec<SessionUpdate>>> = Default::default();
+        let sink = updates.clone();
+
+        Client
+            .builder()
+            .on_receive_notification(
+                async move |notification: SessionNotification, _connection| {
+                    sink.lock().unwrap().push(notification.update);
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let created = connection
+                    .send_request(NewSessionRequest::new(&cwd))
+                    .block_task()
+                    .await?;
+                // Background work queues an entry while no prompt runs.
+                let server = sessions
+                    .lock()
+                    .unwrap()
+                    .get(&created.session_id)
+                    .cloned()
+                    .unwrap();
+                server.agent.queue_entry(
+                    AgentMessage::user("a task ended"),
+                    super_coding::notifications::Priority::Next,
+                );
+                let reply = || {
+                    updates
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|update| match update {
+                            SessionUpdate::AgentMessageChunk(ContentChunk {
+                                content: ContentBlock::Text(text),
+                                ..
+                            }) => Some(text.text.clone()),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                };
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while reply() != "reply to the notice" {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "no reply without a prompt: {:?}",
+                        reply()
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

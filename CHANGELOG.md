@@ -445,6 +445,11 @@
   each call's output and result under that call, also in a terminal attached
   to the daemon. They went to the latest unfinished call in the order they
   ended, so a background command's task id could stand under another call.
+- In ACP, a notice, a monitor event or a message from an agent that comes
+  while no prompt runs starts a turn, whose updates reach the client as
+  `session/update` notifications, as in every other mode. It waited for the
+  next prompt, whose response then carried the reply to it after the reply to
+  the prompt.
 
 ## 0.0.42 - 2026-11-27
 
