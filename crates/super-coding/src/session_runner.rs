@@ -1789,6 +1789,33 @@ impl AgentSession {
         }
     }
 
+    /// Resolve once the session has nothing left to do and nothing will
+    /// bring it back: as [`AgentSession::wait_for_background_work`], and
+    /// beyond that while a wake-up is pending or a self-paced loop runs,
+    /// with the turns they start. `super -p` and `--mode json` wait here
+    /// before they exit, so that a wake-up does something there.
+    pub async fn wait_for_all_work(&self) {
+        let wakeups = self.wakeups();
+        let mut changes = wakeups.changes();
+        let mut activity = self.activity.subscribe();
+        loop {
+            self.wait_for_background_work().await;
+            changes.borrow_and_update();
+            activity.borrow_and_update();
+            if !wakeups.is_waiting() {
+                if self.has_nothing_to_do() {
+                    return;
+                }
+                // A wake-up that just fired queued its turn.
+                continue;
+            }
+            tokio::select! {
+                changed = changes.changed() => if changed.is_err() { return },
+                changed = activity.changed() => if changed.is_err() { return },
+            }
+        }
+    }
+
     /// Whether no run is in flight, no background task runs and no queued
     /// entry waits, as [`AgentSession::wait_for_background_work`] waits for.
     pub(crate) fn has_nothing_to_do(&self) -> bool {

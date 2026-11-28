@@ -376,7 +376,9 @@ due its prompt is queued with `Priority::Later`, as a `custom` message of type
 `wakeup`, which starts a run of an idle session like a notice does. It holds
 the session (`has_background_work`) until then, but `wait_for_background_work`
 does not wait for it (`Wakeups::is_waiting` and `changes` tell a host that
-waits). The pending wake-up and the self-paced loop are stored with the
+waits; `AgentSession::wait_for_all_work` waits for the session's background
+work and then for its wake-ups and the turns they start, as `super -p`
+does). The pending wake-up and the self-paced loop are stored with the
 session (`Wakeups::stored`, `super_coding::wakeup::StoredWakeups`) and come
 back with it; `resume_stored_work` starts them. A self-paced loop
 (`IterativeRuntime::start_self_paced`, which the terminal's `/loop` without an

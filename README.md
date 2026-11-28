@@ -140,7 +140,8 @@ current task, or `Alt+Enter` to queue the instruction for later.
 background keeps running and reports back when it ends, which starts a new
 turn if the agent is idle. `/tasks` lists the running background tasks;
 select one and press `x` to stop it. A run with `-p` waits for its
-background tasks before it prints the answer, and stops them on `Ctrl+C`.
+background tasks and for a pending wake-up before it prints the answer, and
+stops them on `Ctrl+C`.
 
 Common commands:
 
@@ -1236,8 +1237,10 @@ or `Bash`. A subagent has none of them.
   session remembers its wake-up and its self-paced loop: opened again, a
   wake-up whose time has passed comes at once and a later one at its time,
   and the loop goes on. The daemon keeps a session loaded while its wake-up
-  is pending, and after a restart loads it again when the wake-up is due;
-  `super -p` does not wait for one.
+  is pending, and after a restart loads it again when the wake-up is due.
+  `super -p` and `--mode json` wait for a pending wake-up and the turn it
+  starts before they exit; `Ctrl+C` ends the wait, and the wake-up stays
+  with the session.
 - `EnterWorktree` moves the session into a git worktree. With `name`, or with
   neither `name` nor `path`, it makes one, `.super/worktrees/<name>` in the
   project, on the new branch `worktree-<name>`; without a name it gets eight
@@ -1274,8 +1277,8 @@ session. Remote controllers see the same question and may answer it. A
 session stopped from an app or with `stop_session` asks its clients the same
 way and keeps the worktree when nobody answers within a minute. A session
 the daemon unloads while idle, `super -p`, `--mode rpc` and the editor mode
-keep the worktree without asking. A new conversation, and a session opened
-again, start in the session folder.
+keep the worktree without asking. A new conversation starts in the session
+folder; a session opened again works in its worktree again.
 
 ## Experimental context file
 

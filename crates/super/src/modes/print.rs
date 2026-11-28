@@ -2,8 +2,9 @@
 //! text, exit non-zero on error.
 //!
 //! Completion includes the background tasks the run started: the mode waits
-//! for them and lets their notices start the turns they start, then prints
-//! the last answer. SIGINT or SIGTERM cancels the turn and stops the tasks.
+//! for them and lets their notices start the turns they start, and for a
+//! pending wake-up and the turn it starts, then prints the last answer.
+//! SIGINT or SIGTERM cancels the turn, stops the tasks and ends the wait.
 
 use crate::args::Args;
 use crate::setup::build_startup;
@@ -116,17 +117,21 @@ pub async fn run(args: &Args) -> Result<i32> {
 
 /// Run one prompt to its end in a session that gets no further input: the
 /// prompt's run, then its background tasks and the turns their notices
-/// start. When `end` resolves first the turn is cancelled and the
-/// background tasks are stopped, and `false` comes back.
+/// start, and a pending wake-up (a stored one too) and the turns it starts.
+/// When `end` resolves first the turn is cancelled, the background tasks are
+/// stopped and the wait ends, and `false` comes back; a pending wake-up stays
+/// stored with the session.
 pub(crate) async fn run_one_prompt(
     session: &Arc<AgentSession>,
     prompt: AgentMessage,
     mode: PromptMode,
     end: impl std::future::Future<Output = ()>,
 ) -> bool {
+    // What a session loaded with `--session` or `-c` stored starts too.
+    session.resume_stored_work();
     let work = async {
         session.prompt_with_mode(vec![prompt], mode).await;
-        session.wait_for_background_work().await;
+        session.wait_for_all_work().await;
     };
     tokio::select! {
         () = work => return true,
@@ -232,6 +237,69 @@ mod tests {
         assert!(task.finish(TaskOutcome::completed("npm test ended")));
         assert!(run.await.unwrap());
         assert_eq!(*requests.lock().unwrap(), 2, "the notice had its turn");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_print_run_waits_for_a_pending_wake_up_and_its_turn_until_told_to_end() {
+        let (session, requests) = session();
+        // As the model's ScheduleWakeup would during the prompt's turn.
+        session
+            .wakeups()
+            .schedule(super_coding::wakeup::WakeupRequest {
+                delay_seconds: 120.0,
+                prompt: Some("look again".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let run = tokio::spawn({
+            let session = session.clone();
+            async move {
+                run_one_prompt(
+                    &session,
+                    AgentMessage::user("check later"),
+                    PromptMode::Ordinary,
+                    std::future::pending(),
+                )
+                .await
+            }
+        });
+        tokio::time::sleep(Duration::from_secs(100)).await;
+        assert!(!run.is_finished(), "the wake-up is pending");
+        assert_eq!(*requests.lock().unwrap(), 1);
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert!(run.await.unwrap());
+        assert_eq!(*requests.lock().unwrap(), 2, "the wake-up had its turn");
+
+        // Told to end, the wait ends and the wake-up stays pending.
+        session
+            .wakeups()
+            .schedule(super_coding::wakeup::WakeupRequest {
+                delay_seconds: 600.0,
+                prompt: Some("much later".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let (end, ended) = tokio::sync::oneshot::channel::<()>();
+        let run = tokio::spawn({
+            let session = session.clone();
+            async move {
+                run_one_prompt(
+                    &session,
+                    AgentMessage::user("and now"),
+                    PromptMode::Ordinary,
+                    async {
+                        let _ = ended.await;
+                    },
+                )
+                .await
+            }
+        });
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert!(!run.is_finished());
+        end.send(()).unwrap();
+        assert!(!run.await.unwrap());
+        assert_eq!(*requests.lock().unwrap(), 3);
+        assert!(session.wakeups().pending().is_some());
     }
 
     #[tokio::test]

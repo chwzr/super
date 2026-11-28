@@ -176,6 +176,9 @@
   passed comes at once, a later one at its time, and the loop goes on in the
   round it was in. A daemon that shuts down while wake-ups are pending loads
   those sessions again, after its restart, when the wake-ups are due.
+- `super -p` and `--mode json` wait for a pending wake-up and the turn it
+  starts, as they wait for background tasks; `Ctrl+C` or `SIGTERM` ends the
+  wait. Rust SDK: `AgentSession::wait_for_all_work`.
 
 ### Changed
 
