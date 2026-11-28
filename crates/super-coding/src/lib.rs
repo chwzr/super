@@ -26,7 +26,7 @@ pub mod settings;
 #[cfg(test)]
 mod shell_tasks_tests;
 #[cfg(test)]
-mod skill_tests;
+mod skill_workflow_tests;
 pub mod skills;
 pub mod system_prompt;
 pub mod tasks;

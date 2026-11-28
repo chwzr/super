@@ -184,9 +184,13 @@ impl WorkflowRuntime {
         })
     }
 
-    /// The tool the model calls to run a workflow it has written.
+    /// The tool the model calls to run a workflow.
     pub(crate) fn tool(self: &Arc<Self>) -> DynTool {
-        Arc::new(tool::RunWorkflowTool::new(self.clone()))
+        Arc::new(tool::WorkflowTool::new(self.clone()))
+    }
+
+    pub(crate) fn parent(&self) -> Option<Arc<AgentSession>> {
+        self.parent.upgrade()
     }
 
     /// The folder that keeps the session's workflow scripts and journals:

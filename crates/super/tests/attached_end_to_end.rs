@@ -270,7 +270,7 @@ fn script() -> MockScript {
     MockScript::text("Hello to both of you.")
         .then(vec![MockTurn::ToolCall {
             id: "call_wf".into(),
-            name: "run_workflow".into(),
+            name: "Workflow".into(),
             arguments: json!({"script": WORKFLOW, "name": "greet"}),
         }])
         .then(vec![MockTurn::Text("Nothing ran.".into())])
@@ -433,7 +433,7 @@ async fn two_terminals_share_a_session_answer_its_approvals_and_reattach_with_hi
         "assistant: Hello to both of you.",
         "user: run a workflow to greet",
         "assistant: ",
-        "tool: run_workflow",
+        "tool: Workflow",
         "assistant: Nothing ran.",
     ];
     assert_eq!(transcript(&again.view), expected);

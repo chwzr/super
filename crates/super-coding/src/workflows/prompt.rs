@@ -1,7 +1,8 @@
-//! The reference the model works from when it writes a workflow script.
+//! The guide the model works from when it writes a workflow script.
 //!
-//! This text is sent only on a turn where workflow mode is armed, because it is
-//! long and most turns do not need it. It has to be accurate: it is the only
+//! This text is the content of the built-in skill `workflow-authoring`, which
+//! the model loads with the `Skill` tool when it needs it, because it is long
+//! and most turns do not need it. It has to be accurate: it is the only
 //! description of the language the model gets, and every inaccuracy costs a
 //! round trip through a parse error. The test at the bottom parses every
 //! example here with the real parser, so this file cannot drift away from the
@@ -101,7 +102,7 @@ pub fn authoring_prompt(size: WorkflowSize, max_agents: u32, max_fanout: usize) 
     format!(
         "# Writing a dynamic workflow\n\
          \n\
-         The user asked for this task to run as a dynamic workflow. Call the `run_workflow` tool \
+         The user asked for this task to run as a dynamic workflow. Call the `Workflow` tool \
          with a script that orchestrates child agents, instead of working through the task turn by \
          turn yourself.\n\
          \n\
@@ -191,7 +192,7 @@ pub fn authoring_prompt(size: WorkflowSize, max_agents: u32, max_fanout: usize) 
          ## Example: several angles, then choose\n\
          \n\
          {PERSPECTIVES_EXAMPLE}\n\
-         Give `run_workflow` a short kebab-case `name`, a one-sentence `description`, and the \
+         Give `Workflow` a short kebab-case `name`, a one-sentence `description`, and the \
          `script`. If the script does not parse, the error names the line and a supported \
          alternative: fix it and call the tool again.\n"
     )

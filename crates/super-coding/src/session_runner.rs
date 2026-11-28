@@ -137,10 +137,12 @@ pub trait SessionBackend: Send + Sync {
 pub const REMOTE_SESSION_REFUSAL: &str =
     "not available while this session runs in the SUPER daemon";
 
-/// Tools and instructions that belong to one submitted user turn.
+/// What one submitted user turn asked for.
 ///
-/// Workflow mode is explicit and local to the prompt invocation. This keeps
-/// one prompt from enabling or disabling workflow tools for another prompt.
+/// Workflow mode is explicit and local to the prompt invocation: the user
+/// asked for the task to run as a dynamic workflow, and the turn's requests
+/// say so (the placeholder `Workflow.opt_in`). The `Workflow` tool itself is
+/// offered with every request while dynamic workflows are on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PromptMode {
     #[default]
@@ -865,10 +867,15 @@ impl AgentSession {
                     .cloned(),
             );
         }
+        // A workflow runs in the background of the main session; its tool is
+        // offered with every request while dynamic workflows are on.
+        let workflows_offered = self.workflows_enabled();
+        if workflows_offered && let Some(runtime) = self.workflows.get() {
+            tools.push(runtime.tool());
+        }
         // Skills tell the model how to work with files and commands, as the
         // basic mode's list does for `Read` or `Bash`; the guide to writing
         // a workflow is a skill too.
-        let workflows_offered = self.workflows_enabled();
         let works_with_files = tools
             .iter()
             .any(|tool| matches!(tool.name(), "Read" | "Bash"));
@@ -906,17 +913,6 @@ impl AgentSession {
         self.tool_session().files.clone()
     }
 
-    fn tools_for(&self, mode: PromptMode) -> Vec<DynTool> {
-        let mut tools = self.tools.lock().unwrap().clone();
-        if mode == PromptMode::Workflow
-            && self.workflows_enabled()
-            && let Some(runtime) = self.workflows.get()
-        {
-            tools.push(runtime.tool());
-        }
-        self.offered_in_mode(tools)
-    }
-
     /// The tools of `tools` this session's mode offers: the basic mode leaves
     /// out every tool that declares itself advanced-only with
     /// [`super_agent::AgentTool::advanced_only`].
@@ -931,14 +927,6 @@ impl AgentSession {
         self.tools
             .lock()
             .unwrap()
-            .iter()
-            .map(|tool| tool.name().to_string())
-            .collect()
-    }
-
-    #[cfg(test)]
-    fn available_tool_names_for(&self, mode: PromptMode) -> Vec<String> {
-        self.tools_for(mode)
             .iter()
             .map(|tool| tool.name().to_string())
             .collect()
@@ -1777,7 +1765,7 @@ impl AgentSession {
         };
         drop(manager);
         let mut system_prompt = self.system_prompt.lock().unwrap().clone();
-        let tools = self.tools_for(prompt_mode);
+        let tools = self.tools.lock().unwrap().clone();
         // Cursor also advertises its native Shell tool; it must use the registered shell's syntax.
         if model.provider == "cursor"
             && let Some(shell) = tools.iter().find(|tool| tool.name() == "Bash")
@@ -1822,18 +1810,10 @@ impl AgentSession {
                 system_prompt.push_str(&list);
             }
         }
-        if prompt_mode == PromptMode::Workflow
-            && self.workflows_enabled()
-            && let Some(runtime) = self.workflows.get()
-        {
-            let limits = runtime.limits();
-            let size = self.settings.lock().unwrap().workflows.size;
+        // The user asked for this turn to run as a dynamic workflow.
+        if prompt_mode == PromptMode::Workflow && self.workflows_enabled() {
             system_prompt.push_str("\n\n");
-            system_prompt.push_str(&crate::workflows::authoring_prompt(
-                size,
-                limits.max_agents,
-                limits.max_fanout,
-            ));
+            system_prompt.push_str(&super_agent::placeholder::prompt_todo("Workflow.opt_in"));
         }
         AgentContext {
             system_prompt,
@@ -3781,12 +3761,19 @@ mod ephemeral_tests {
         let mut enabled = session.settings();
         enabled.subagents.enabled = true;
         session.update_settings(enabled.clone());
-        // TaskStop stops the agents a session leaves running; the skill with
-        // the workflow guide comes with dynamic workflows, which are on by
-        // default.
+        // TaskStop stops the agents a session leaves running; the workflow
+        // tool and the skill with its guide come with dynamic workflows,
+        // which are on by default.
         assert_eq!(
             session.available_tool_names(),
-            ["Agent", "SendMessage", "ListAgents", "TaskStop", "Skill"]
+            [
+                "Agent",
+                "SendMessage",
+                "ListAgents",
+                "TaskStop",
+                "Workflow",
+                "Skill"
+            ]
         );
         let prompt = session.build_context().system_prompt;
         assert!(prompt.starts_with(&format!("root prompt\n\n{section}\n\n{type_list}\n")));
@@ -3825,18 +3812,14 @@ mod ephemeral_tests {
             session.prompt_mode_for("run a dynamic workflow for this task"),
             PromptMode::Ordinary
         );
-        assert!(
-            session
-                .available_tool_names_for(PromptMode::Workflow)
-                .is_empty()
-        );
         let prompt = session
             .build_context_for(PromptMode::Workflow)
             .system_prompt;
         assert!(!prompt.contains(&super_agent::placeholder::prompt_todo(
             "Agent.system_section"
         )));
-        assert!(!prompt.contains("Writing a dynamic workflow"));
+        assert!(!prompt.contains(&super_agent::placeholder::prompt_todo("Workflow.opt_in")));
+        assert!(!prompt.contains(&super_agent::placeholder::prompt_todo("Skill.list")));
 
         // The same switches count again in the advanced mode.
         let mut advanced = session.settings();
@@ -3845,11 +3828,8 @@ mod ephemeral_tests {
         assert_eq!(session.mode(), Mode::Advanced);
         assert!(session.available_tool_names().contains(&"Agent".into()));
         assert!(session.workflows_enabled());
-        assert!(
-            session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
-        );
+        assert!(session.available_tool_names().contains(&"Workflow".into()));
+        assert!(session.available_tool_names().contains(&"Skill".into()));
 
         advanced.mode = Mode::Basic;
         session.update_settings(advanced);
@@ -3944,18 +3924,28 @@ mod ephemeral_tests {
     }
 
     #[test]
-    fn the_workflow_tool_appears_only_in_workflow_prompt_mode() {
+    fn the_workflow_tool_is_offered_with_every_request_and_a_workflow_turn_says_so() {
         let mut settings = Settings::default();
         settings.subagents.enabled = true;
         let session = settings_test_session(settings, true);
+        let opt_in = super_agent::placeholder::prompt_todo("Workflow.opt_in");
 
-        // Subagents on, workflow not armed: an ordinary coding turn pays
-        // nothing for the feature.
+        // An ordinary turn has the tool too; the guide is a skill the model
+        // loads, not a part of the prompt.
+        assert!(session.available_tool_names().contains(&"Workflow".into()));
+        let ordinary = session.build_context();
+        assert!(ordinary.tools.iter().any(|tool| tool.name() == "Workflow"));
         assert!(
-            !session
-                .available_tool_names()
-                .contains(&"run_workflow".into())
+            !ordinary
+                .system_prompt
+                .contains("Writing a dynamic workflow")
         );
+        assert!(!ordinary.system_prompt.contains(&opt_in));
+        assert!(ordinary.system_prompt.contains(&format!(
+            "{}\n<available_skills>\n  <skill>\n    <name>workflow-authoring</name>",
+            super_agent::placeholder::prompt_todo("Skill.list")
+        )));
+
         assert_eq!(
             session.prompt_mode_for("run a dynamic workflow for this task"),
             PromptMode::Workflow
@@ -3964,41 +3954,33 @@ mod ephemeral_tests {
             session.prompt_mode_for("fix this small function"),
             PromptMode::Ordinary
         );
-        assert!(
-            !session
-                .build_context()
-                .system_prompt
-                .contains("Writing a dynamic workflow")
-        );
-
-        assert!(
-            session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
-        );
-        assert!(
-            session
-                .build_context_for(PromptMode::Workflow)
-                .system_prompt
-                .contains("Writing a dynamic workflow")
-        );
-        assert!(
-            !session
-                .available_tool_names()
-                .contains(&"run_workflow".into())
-        );
+        // A turn the user asked to run as a workflow says so, and offers the
+        // same tools.
+        let asked = session.build_context_for(PromptMode::Workflow);
+        assert!(asked.system_prompt.ends_with(&format!("\n\n{opt_in}")));
+        assert!(!asked.system_prompt.contains("Writing a dynamic workflow"));
+        let names = |context: &AgentContext| -> Vec<String> {
+            context
+                .tools
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect()
+        };
+        assert_eq!(names(&asked), names(&ordinary));
     }
 
     #[test]
-    fn workflow_prompt_mode_does_nothing_while_subagents_are_off() {
+    fn the_workflow_tool_needs_subagents_and_dynamic_workflows() {
         // Workflows are built on child agents, so the subagent setting is the
         // authority for both.
         let session = settings_test_session(Settings::default(), true);
         assert!(!session.workflows_enabled());
+        assert!(!session.available_tool_names().contains(&"Workflow".into()));
         assert!(
             !session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
+                .build_context_for(PromptMode::Workflow)
+                .system_prompt
+                .contains(&super_agent::placeholder::prompt_todo("Workflow.opt_in"))
         );
 
         let mut settings = session.settings();
@@ -4006,20 +3988,12 @@ mod ephemeral_tests {
         settings.workflows.enabled = false;
         session.update_settings(settings.clone());
         assert!(!session.workflows_enabled());
-        assert!(
-            !session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
-        );
+        assert!(!session.available_tool_names().contains(&"Workflow".into()));
 
         settings.workflows.enabled = true;
         session.update_settings(settings);
         assert!(session.workflows_enabled());
-        assert!(
-            session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
-        );
+        assert!(session.available_tool_names().contains(&"Workflow".into()));
     }
 
     #[test]
@@ -4164,9 +4138,10 @@ mod ephemeral_tests {
     #[test]
     #[ignore = "release-mode performance benchmark"]
     fn benchmark_performance_workflow_tool_exposure() {
-        // An ordinary coding turn must pay nothing for dynamic workflows. The
-        // disarmed session is the baseline. The armed one carries the extra
-        // tool and the authoring instructions.
+        // The `Workflow` tool and the skill list are part of every request
+        // while dynamic workflows are on. The disarmed session is the
+        // baseline; the armed one adds the section that says the user asked
+        // for a workflow.
         let registry = Registry::from_builtin();
         let model = registry.all().first().expect("built-in model").clone();
         let tools = benchmark_tools();
