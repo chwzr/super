@@ -650,6 +650,9 @@
   (`\\?\C:\…`, as `EnterWorktree` with `path` writes it) is stored, and
   `Bash` and `Monitor` with Git Bash run in that folder. The session could
   not be written, and Git Bash could not enter the folder.
+- A workflow run stopped with `x` in `/workflows` gets no notice, as one
+  stopped with `/tasks` or the stop key: the model was sent a stopped notice
+  and answered it in a turn of its own.
 - `super -r` (`--resume`) opens the session browser of the full-screen
   terminal, as `/resume` does. It started a new session.
 

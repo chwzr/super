@@ -861,8 +861,10 @@ async fn a_workflow_is_stopped_by_the_name_its_call_gave_it() {
     assert_eq!(run.snapshot().status, RunStatus::Stopped);
 }
 
+/// A run the user stops in its progress view ends as `/tasks` and the stop
+/// key end it: stopped, and without a notice for the model.
 #[tokio::test]
-async fn a_workflow_the_user_stops_is_announced_with_how_to_resume_it() {
+async fn a_workflow_run_stopped_from_its_progress_view_gets_no_notice() {
     let fixture = fixture(vec![
         (
             "main",
@@ -888,7 +890,47 @@ async fn a_workflow_the_user_stops_is_announced_with_how_to_resume_it() {
         fixture.entered.load(Ordering::SeqCst)
     })
     .await;
-    // The progress view stops the run itself, not its task.
+    session.stop_workflow_run(&run);
+    eventually("the run ends", || run.snapshot().status.is_finished()).await;
+    assert_eq!(run.snapshot().status, RunStatus::Stopped);
+    let task = session
+        .tasks()
+        .into_iter()
+        .find(|task| task.id == run.run_id)
+        .expect("the run's task");
+    assert_eq!(task.status, TaskStatus::Stopped);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(!session.has_queued_entries(), "no notice");
+}
+
+#[tokio::test]
+async fn a_workflow_run_stopped_by_itself_is_announced_with_how_to_resume_it() {
+    let fixture = fixture(vec![
+        (
+            "main",
+            vec![
+                Some(tool_call(
+                    "w1",
+                    "Workflow",
+                    json!({"script": GREET, "args": {"who": "Ada"}}),
+                )),
+                Some(text("started it")),
+            ],
+        ),
+        (
+            "first agent",
+            vec![Some(tool_call("g1", "Gate", json!({}))), None],
+        ),
+    ])
+    .quiet();
+    let session = fixture.session.clone();
+    session.prompt(vec![AgentMessage::user("main")]).await;
+    let run = fixture.latest_run();
+    eventually("the first agent waits at the gate", || {
+        fixture.entered.load(Ordering::SeqCst)
+    })
+    .await;
+    // A run stopped by itself, not through its task, is announced.
     run.stop();
     eventually("the notice is queued", || session.has_queued_entries()).await;
     let seen = Mutex::new(Vec::new());

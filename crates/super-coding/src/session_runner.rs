@@ -1876,6 +1876,16 @@ impl AgentSession {
     /// Stop one background task by id or by name. A session whose engine
     /// runs elsewhere asks that process and answers with what it last
     /// reported about the task.
+    /// Stop the workflow run `run` for the user, as a progress view does:
+    /// by its task, as `stop_task` stops it, so that the model gets no
+    /// notice of a stop the user made. A run without a running task is
+    /// stopped itself.
+    pub fn stop_workflow_run(&self, run: &crate::workflows::RunRecord) {
+        if self.stop_task(&run.run_id).is_err() {
+            run.stop();
+        }
+    }
+
     pub fn stop_task(&self, id_or_name: &str) -> Result<TaskInfo, TaskStopError> {
         if let Some(backend) = self.backend() {
             let task = {

@@ -3874,6 +3874,8 @@ fn handle_input(
                     let run = view.run.id;
                     open_workflow_save_picker(app, run);
                 }
+                // As `/tasks` and the stop key stop it: no notice.
+                ViewAction::StopRun => session.stop_workflow_run(&view.run),
             }
         }
         return Flow::Continue;
