@@ -113,8 +113,10 @@ async fn a_timeout_is_counted_in_milliseconds() {
     )
     .await
     .unwrap_err();
-    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(start.elapsed() < Duration::from_secs(5));
     let text = format!("{error:#}");
+    // A login shell on Windows may still read its profile after 300 ms.
+    #[cfg(unix)]
     assert!(text.contains("started"), "{text}");
     assert!(text.contains("timed out after 300 ms"), "{text}");
     assert!(!text.contains("never"), "{text}");

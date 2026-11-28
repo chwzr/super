@@ -386,16 +386,14 @@ fn command_label(command: &str) -> String {
 /// The exit code of a shell, with a signal counted as the shell counts it,
 /// 128 plus its number.
 fn exit_code(status: std::process::ExitStatus) -> Option<i32> {
-    if let Some(code) = status.code() {
-        return Some(code);
-    }
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt as _;
-        status.signal().map(|signal| 128 + signal)
+        if let Some(signal) = status.signal() {
+            return Some(128 + signal);
+        }
     }
-    #[cfg(not(unix))]
-    None
+    status.code()
 }
 
 /// Wait for a command in the background and end its task: with a notice
