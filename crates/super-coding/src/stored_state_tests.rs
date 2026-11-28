@@ -525,3 +525,112 @@ mod wakeups {
         );
     }
 }
+
+mod reads {
+    use super::*;
+
+    fn tool(session: &AgentSession, name: &str) -> super_agent::DynTool {
+        session
+            .offered_tools()
+            .into_iter()
+            .find(|tool| tool.name() == name)
+            .unwrap()
+    }
+
+    fn key(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_session_loaded_again_counts_what_it_read_of_files_nobody_changed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let file = |name: &str, text: &str| {
+            let path = root.join(name);
+            std::fs::write(&path, text).unwrap();
+            path.display().to_string()
+        };
+        let (a, b, c) = (
+            file("a.txt", "alpha\n"),
+            file("b.txt", "beta\n"),
+            file("c.txt", "gamma\n"),
+        );
+        let d = root.join("d.txt").display().to_string();
+        let (stream, _) = lanes(vec![(
+            "work",
+            vec![
+                Some(tool_call("r1", "Read", json!({"file_path": a}))),
+                Some(tool_call("r2", "Read", json!({"file_path": b}))),
+                Some(tool_call("r3", "Read", json!({"file_path": c}))),
+                Some(tool_call(
+                    "e1",
+                    "Edit",
+                    json!({"file_path": c, "old_string": "gamma", "new_string": "delta"}),
+                )),
+                Some(tool_call(
+                    "w1",
+                    "Write",
+                    json!({"file_path": d, "content": "new\n"}),
+                )),
+                Some(text("done")),
+            ],
+        )]);
+        let session = session_of(
+            SessionManager::create(&root, Some(root.join("sessions"))).unwrap(),
+            &root,
+            quiet_settings(),
+            &Events::default(),
+            Some(stream),
+        );
+        session.prompt(vec![AgentMessage::user("work")]).await;
+        let stored = file_of(&session);
+        let before = session.file_state().get(&key(&root.join("c.txt"))).unwrap();
+        drop(session);
+
+        // Someone changes b.txt while the session is not loaded.
+        std::fs::write(root.join("b.txt"), "beta, changed\n").unwrap();
+        let again = loaded(&stored, &root, &Events::default(), None);
+        let files = again.file_state();
+        assert!(files.get(&key(&root.join("a.txt"))).unwrap().whole);
+        assert_eq!(files.get(&key(&root.join("b.txt"))), None, "changed since");
+        // Its own edit counts, with the stamp the edit left (the time of the
+        // read is kept to the millisecond).
+        let edited = files.get(&key(&root.join("c.txt"))).unwrap();
+        assert_eq!(
+            super_agent::FileRead {
+                at: before.at,
+                ..edited
+            },
+            before
+        );
+        assert!(files.get(&key(&root.join("d.txt"))).unwrap().whole);
+        assert_eq!(files.len(), 3);
+
+        // So Edit takes a.txt without a new read, and b.txt only after one.
+        let edit = tool(&again, "Edit");
+        call(
+            edit.as_ref(),
+            json!({"file_path": a, "old_string": "alpha", "new_string": "omega"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "omega\n"
+        );
+        let refused = call(
+            edit.as_ref(),
+            json!({"file_path": b, "old_string": "beta", "new_string": "zeta"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.contains("has not been read yet"), "{refused}");
+        // Write overwrites d.txt, read whole by its own Write.
+        call(
+            tool(&again, "Write").as_ref(),
+            json!({"file_path": d, "content": "newer\n"}),
+        )
+        .await
+        .unwrap();
+    }
+}

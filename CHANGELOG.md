@@ -179,6 +179,13 @@
 - `super -p` and `--mode json` wait for a pending wake-up and the turn it
   starts, as they wait for background tasks; `Ctrl+C` or `SIGTERM` ends the
   wait. Rust SDK: `AgentSession::wait_for_all_work`.
+- A session opened again (`super -c`, `--session`, the daemon, `/remote`,
+  `switch_session`) takes back from its transcript what it had read: a file
+  it read, or changed itself, counts as read while its modification time and
+  size on disk are what they were then, so the model need not read it again.
+  A stored agent's session does the same when it is loaded. The results of
+  `Read`, `Edit` and `Write` carry the read in `details.fileRead`. Rust SDK:
+  `FileRead::to_json` and `from_json`, `super_coding::stored_state::rebuild_reads`.
 - A workflow run's journal is written call by call as the run goes
   (`<run id>.journal.jsonl`), so a run cut off by the end of its process can
   be resumed with `resumeFromRunId` after a restart. Such a run is announced

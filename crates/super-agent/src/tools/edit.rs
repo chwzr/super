@@ -120,7 +120,16 @@ fn not_editable(path: &Path, error: std::io::Error) -> anyhow::Error {
 }
 
 impl EditTool {
-    fn result(&self, path: &Path, summary: String, old: &str, new: &str) -> ToolResult {
+    /// The result of an edit; `read` is the record of the file after it
+    /// ([`record_own_change`]).
+    fn result(
+        &self,
+        path: &Path,
+        summary: String,
+        old: &str,
+        new: &str,
+        read: Value,
+    ) -> ToolResult {
         let (patch, first_changed_line) = unified_diff(&self.cwd, path, old, new);
         ToolResult {
             content: vec![ContentBlock::text(summary)],
@@ -128,17 +137,17 @@ impl EditTool {
                 "diff": patch,
                 "patch": patch,
                 "firstChangedLine": first_changed_line,
+                "fileRead": read,
             }),
             ..Default::default()
         }
     }
 
-    async fn write(&self, path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    async fn write(&self, path: &Path, bytes: &[u8]) -> anyhow::Result<Value> {
         tokio::fs::write(path, bytes)
             .await
             .map_err(|error| not_editable(path, error))?;
-        record_own_change(&self.session.files, path, bytes).await;
-        Ok(())
+        Ok(record_own_change(&self.session.files, path, bytes).await)
     }
 }
 
@@ -243,8 +252,14 @@ impl AgentTool for EditTool {
                         .await
                         .map_err(|error| not_editable(&path, error))?;
                 }
-                self.write(&path, new.as_bytes()).await?;
-                return Ok(self.result(&path, format!("Created {}.", path.display()), "", &new));
+                let read = self.write(&path, new.as_bytes()).await?;
+                return Ok(self.result(
+                    &path,
+                    format!("Created {}.", path.display()),
+                    "",
+                    &new,
+                    read,
+                ));
             }
             Err(error) => return Err(not_editable(&path, error)),
         };
@@ -311,7 +326,8 @@ impl AgentTool for EditTool {
             LineEnding::Lf => replaced.clone(),
             LineEnding::CrLf => replaced.replace('\n', "\r\n"),
         };
-        self.write(&path, format!("{bom}{restored}").as_bytes())
+        let read = self
+            .write(&path, format!("{bom}{restored}").as_bytes())
             .await?;
 
         let summary = if count == 1 {
@@ -319,7 +335,7 @@ impl AgentTool for EditTool {
         } else {
             format!("Replaced {count} occurrences in {}.", path.display())
         };
-        Ok(self.result(&path, summary, &normalized, &replaced))
+        Ok(self.result(&path, summary, &normalized, &replaced, read))
     }
 }
 

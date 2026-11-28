@@ -13,10 +13,11 @@
 //! This module holds data only. The native file tools decide what the key of
 //! a file is (its canonical path) and fill in the stamps.
 
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// How many files one record remembers. When it is full, the file read
 /// longest ago is forgotten first.
@@ -46,6 +47,56 @@ impl FileRead {
     /// was read, judged by its stamp alone.
     pub fn same_stamp(&self, modified: Option<SystemTime>, len: u64) -> bool {
         self.modified == modified && self.len == len
+    }
+
+    /// This read of the file with the key `key` as the tool's result
+    /// carries it in the transcript (`details.fileRead`), so that a session
+    /// loaded again can count it as read: `{"path", "at" (ms since the
+    /// epoch), "modified" (ns since the epoch, as a string) or null, "len",
+    /// "whole", "fingerprint" (16 hex digits) or null}`.
+    pub fn to_json(&self, key: &Path) -> Value {
+        let since = |time: SystemTime| time.duration_since(SystemTime::UNIX_EPOCH).ok();
+        json!({
+            "path": key,
+            "at": since(self.at).map_or(0, |at| at.as_millis() as u64),
+            "modified": self.modified.and_then(since).map(|modified| modified.as_nanos().to_string()),
+            "len": self.len,
+            "whole": self.whole,
+            "fingerprint": self.fingerprint.map(|print| format!("{print:016x}")),
+        })
+    }
+
+    /// The read [`FileRead::to_json`] wrote, with its key; `None` for
+    /// anything else.
+    pub fn from_json(value: &Value) -> Option<(PathBuf, FileRead)> {
+        let key = PathBuf::from(value.get("path")?.as_str()?);
+        let at = SystemTime::UNIX_EPOCH + Duration::from_millis(value.get("at")?.as_u64()?);
+        let modified = match value.get("modified")? {
+            Value::Null => None,
+            Value::String(nanos) => {
+                let nanos: u128 = nanos.parse().ok()?;
+                let seconds = u64::try_from(nanos / 1_000_000_000).ok()?;
+                Some(
+                    SystemTime::UNIX_EPOCH + Duration::new(seconds, (nanos % 1_000_000_000) as u32),
+                )
+            }
+            _ => return None,
+        };
+        let fingerprint = match value.get("fingerprint")? {
+            Value::Null => None,
+            Value::String(hex) => Some(u64::from_str_radix(hex, 16).ok()?),
+            _ => return None,
+        };
+        Some((
+            key,
+            FileRead {
+                at,
+                modified,
+                len: value.get("len")?.as_u64()?,
+                whole: value.get("whole")?.as_bool()?,
+                fingerprint,
+            },
+        ))
     }
 }
 
@@ -125,7 +176,37 @@ impl FileStates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+
+    #[test]
+    fn a_read_written_into_a_transcript_reads_back_the_same() {
+        let read = FileRead {
+            at: SystemTime::UNIX_EPOCH + Duration::from_millis(1_764_000_000_123),
+            modified: Some(SystemTime::UNIX_EPOCH + Duration::new(1_764_000_000, 987_654_321)),
+            len: 42,
+            whole: true,
+            fingerprint: Some(0x00ab_cdef_0123_4567),
+        };
+        let key = Path::new("/work/src/main.rs");
+        let written = read.to_json(key);
+        assert_eq!(written["modified"], "1764000000987654321");
+        assert_eq!(written["fingerprint"], "00abcdef01234567");
+        assert_eq!(
+            FileRead::from_json(&written),
+            Some((key.to_path_buf(), read.clone()))
+        );
+        let partial = FileRead {
+            modified: None,
+            whole: false,
+            fingerprint: None,
+            ..read
+        };
+        assert_eq!(
+            FileRead::from_json(&partial.to_json(key)),
+            Some((key.to_path_buf(), partial))
+        );
+        assert_eq!(FileRead::from_json(&json!({"path": "/x"})), None);
+        assert_eq!(FileRead::from_json(&Value::Null), None);
+    }
 
     fn read_at(seconds: u64, whole: bool) -> FileRead {
         FileRead {

@@ -159,7 +159,7 @@ impl AgentTool for WriteTool {
         tokio::fs::write(&path, content)
             .await
             .map_err(|error| not_writable(&path, error))?;
-        record_own_change(&self.session.files, &path, content.as_bytes()).await;
+        let read = record_own_change(&self.session.files, &path, content.as_bytes()).await;
 
         let bytes = content.len();
         Ok(ToolResult {
@@ -167,7 +167,7 @@ impl AgentTool for WriteTool {
                 "Wrote {bytes} bytes to {}.",
                 path.display()
             ))],
-            details: json!({"created": created, "bytes": bytes}),
+            details: json!({"created": created, "bytes": bytes, "fileRead": read}),
             ..Default::default()
         })
     }

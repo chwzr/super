@@ -1182,8 +1182,10 @@ session has not read, and one that changed on disk since it was read, so the
 agent reads it again first; for `Write` over an existing file only a read of
 the whole file counts. The session's own edits keep this record current. A
 new file needs no read. A subagent keeps its own record, a fork starts with a
-copy of its parent's, and a new or resumed conversation starts with an empty
-one.
+copy of its parent's, and a new conversation starts with an empty one. A
+session opened again (`super -c`, `--session`, the daemon) takes the record
+back from its transcript: each file it read, or changed itself, counts as
+read while its modification time and size on disk are what they were then.
 
 ### Shell tools
 

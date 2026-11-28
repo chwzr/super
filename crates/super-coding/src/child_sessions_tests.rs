@@ -262,6 +262,47 @@ async fn a_session_loaded_again_rebuilds_its_agents_and_resumes_one_from_its_tra
 }
 
 #[tokio::test]
+async fn a_stored_agent_loaded_again_counts_what_it_read_of_files_nobody_changed() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let sessions = root.join("sessions");
+    let notes = root.join("notes.txt");
+    std::fs::write(&notes, "keep this\n").unwrap();
+    let (stream, _) = lanes(vec![(
+        "read the notes",
+        vec![
+            Some(tool_call("r1", "Read", json!({"file_path": notes}))),
+            Some(text("read them")),
+        ],
+    )]);
+    let first = main_session(
+        stored_manager(&root, &sessions),
+        stream.clone(),
+        core_tools(&root),
+    );
+    registry(&first)
+        .start(
+            request("Reader", "read the notes", false),
+            "call_1",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let id = registry(&first).list()[0].id.clone();
+    let main_file = session_file(&first);
+    drop(first);
+
+    let second = main_session(
+        SessionManager::open(&main_file).unwrap(),
+        stream,
+        core_tools(&root),
+    );
+    let agent = second.agent_at(&id).unwrap();
+    let read = agent.file_state().get(&notes).expect("read before");
+    assert!(read.whole);
+}
+
+#[tokio::test]
 async fn an_agents_agents_are_stored_and_rebuilt_one_folder_further() {
     let directory = tempfile::tempdir().unwrap();
     let sessions = directory.path().join("sessions");

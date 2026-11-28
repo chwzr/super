@@ -1186,6 +1186,8 @@ impl AgentSession {
             return;
         }
         self.restore_worktree();
+        // What it had read, as far as nobody changed the files since.
+        crate::stored_state::rebuild_reads(&self.manager.lock().unwrap(), &self.file_state());
         let wakeups = {
             let manager = self.manager.lock().unwrap();
             crate::stored_state::latest(&manager, crate::stored_state::WAKEUP_ENTRY).and_then(
@@ -2497,7 +2499,7 @@ impl AgentSession {
             .get()
             .map_or(0, |link| link.depth)
             .saturating_add(1);
-        Ok(self.agent_session_from(
+        let session = self.agent_session_from(
             manager,
             AgentSetup {
                 id: &stored.id,
@@ -2508,7 +2510,10 @@ impl AgentSession {
                 folder: (folder != own_folder).then_some(folder.as_path()),
                 copy_file_state: false,
             },
-        ))
+        );
+        // What it had read, as far as nobody changed the files since.
+        crate::stored_state::rebuild_reads(&session.manager.lock().unwrap(), &session.file_state());
+        Ok(session)
     }
 
     /// `/root/<id>`, with the ids of the agents above this session between.

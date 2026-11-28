@@ -457,7 +457,13 @@ session in the basic mode; the others are there in both modes.
 session keeps a record of what each read returned, and `Edit` and `Write`
 refuse a file that was not read or that changed on disk since
 ([README](../README.md#file-tools)). `AgentSession::file_state` returns that
-record (`super_agent::FileStates`). A session hands every tool its own
+record (`super_agent::FileStates`). Every `Read`, `Edit` and `Write` result
+carries what it recorded in `details.fileRead` (`FileRead::to_json`: `path`,
+`at`, `modified`, `len`, `whole`, `fingerprint`), and a session loaded from
+its file (and a stored agent's session when it is loaded) takes the record
+back from there (`super_coding::stored_state::rebuild_reads`), keeping a file
+only while its modification time and size on disk are what they were then.
+A session hands every tool its own
 `super_agent::ToolSession`, the record and the free room of its context,
 through `AgentTool::for_session`; a custom tool that keeps state per session
 returns a copy of itself bound to it, and the default `None` uses the tool as

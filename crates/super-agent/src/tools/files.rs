@@ -5,7 +5,7 @@
 use crate::file_state::{FileRead, FileStates};
 use crate::tools::path::file_key;
 use std::fs::Metadata;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// A hash of a file's bytes, kept for a whole read.
@@ -41,15 +41,26 @@ pub fn unchanged(read: &FileRead, meta: &Metadata, bytes: &[u8]) -> bool {
         || (read.whole && read.fingerprint == Some(fingerprint(bytes)))
 }
 
+/// Record `read` of the file with the key `key`, and return it as the
+/// tool's result carries it (`details.fileRead`, [`FileRead::to_json`]),
+/// so that a session loaded again counts it as read.
+pub fn remember(files: &FileStates, key: PathBuf, read: FileRead) -> serde_json::Value {
+    let written = read.to_json(&key);
+    files.record(key, read);
+    written
+}
+
 /// Bring the record up to date after the session's own Edit or Write left
 /// `bytes` in the file at `path`. The record then counts as a read of the
-/// whole file.
-pub async fn record_own_change(files: &FileStates, path: &Path, bytes: &[u8]) {
+/// whole file; returned as [`remember`] returns it, or `null` when the file
+/// cannot be looked at.
+pub async fn record_own_change(files: &FileStates, path: &Path, bytes: &[u8]) -> serde_json::Value {
     let key = file_key(path).await;
     match tokio::fs::metadata(path).await {
-        Ok(meta) => files.record(key, record_of(&meta, true, Some(fingerprint(bytes)))),
+        Ok(meta) => remember(files, key, record_of(&meta, true, Some(fingerprint(bytes)))),
         Err(_) => {
             files.forget(&key);
+            serde_json::Value::Null
         }
     }
 }

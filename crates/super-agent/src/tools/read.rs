@@ -20,7 +20,7 @@ use crate::placeholder;
 use crate::tokens::{BYTES_PER_TOKEN, estimate_tokens_text};
 use crate::tool::{AgentTool, DynTool, ToolResult, ToolSession, ToolUpdateSink};
 use crate::tools::arguments;
-use crate::tools::files::{fingerprint, record_of, streaming_fingerprint};
+use crate::tools::files::{fingerprint, record_of, remember, streaming_fingerprint};
 use crate::tools::image::{ImageFitError, MAX_IMAGE_SIDE, fit_image};
 use crate::tools::mutation_queue::lock_path;
 use crate::tools::path::{absolute, file_key};
@@ -418,14 +418,16 @@ impl AgentTool for ReadTool {
                     request.offset.unwrap_or_default()
                 );
             }
-            self.session
-                .files
-                .record(key, record_of(&meta, true, Some(fingerprint(b""))));
+            let read = remember(
+                &self.session.files,
+                key,
+                record_of(&meta, true, Some(fingerprint(b""))),
+            );
             return Ok(ToolResult {
                 content: vec![ContentBlock::text(placeholder::prompt_todo(
                     "Read.empty_file",
                 ))],
-                details: json!({"wholeFile": true, "lines": {"total": 0}}),
+                details: json!({"wholeFile": true, "lines": {"total": 0}, "fileRead": read}),
                 ..Default::default()
             });
         }
@@ -450,9 +452,11 @@ impl AgentTool for ReadTool {
                         path.display()
                     ),
                 })?;
-            self.session
-                .files
-                .record(key, record_of(&meta, true, Some(print)));
+            let read = remember(
+                &self.session.files,
+                key,
+                record_of(&meta, true, Some(print)),
+            );
             let data = base64::engine::general_purpose::STANDARD.encode(&fitted.data);
             let size = |size: Option<(u32, u32)>| {
                 size.map(|(width, height)| json!({"width": width, "height": height}))
@@ -473,6 +477,7 @@ impl AgentTool for ReadTool {
                         "sent": size(fitted.size),
                         "resized": fitted.changed,
                     },
+                    "fileRead": read,
                 }),
                 ..Default::default()
             });
@@ -488,9 +493,11 @@ impl AgentTool for ReadTool {
         }
         file.seek(std::io::SeekFrom::Start(0)).await?;
         let part = read_lines(file, &path, &request, limits, &cancel).await?;
-        self.session
-            .files
-            .record(key, record_of(&meta, part.whole, part.fingerprint));
+        let read = remember(
+            &self.session.files,
+            key,
+            record_of(&meta, part.whole, part.fingerprint),
+        );
 
         let mut text = part.text;
         if part.cut.is_some() {
@@ -508,6 +515,7 @@ impl AgentTool for ReadTool {
                 "wholeFile": part.whole,
                 "lines": {"first": part.first, "last": part.last, "total": part.total},
                 "truncatedBy": part.cut.map(Cut::name),
+                "fileRead": read,
             }),
             ..Default::default()
         })
