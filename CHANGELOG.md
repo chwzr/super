@@ -414,6 +414,12 @@
   it, with its agents. Within half a second it was refused as "open in
   another SUPER process", because the process's own lock on that file had not
   moved yet. Rust SDK: `session_lock::held_by_this_process` tells such a file.
+- An agent's stored session can no longer be opened or forked as a session of
+  its own by its file's path: `--session`, `--fork`, `switch_session` and the
+  SDK's `SessionSource::Open` and `Fork` refuse it. Opened that way it ran as a
+  main session with every tool and wrote into the agent's transcript, and a
+  fork copied its `subagent` entry, which hid the new session from every list.
+  Rust SDK: `SessionManager::is_agent_session` and `refuse_agent_session`.
 
 ## 0.0.42 - 2026-11-27
 

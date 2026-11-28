@@ -419,8 +419,14 @@ impl SessionOptions {
             }
             SessionSource::Create => SessionManager::create(cwd, Some(dir))?,
             SessionSource::ContinueRecent => SessionManager::continue_recent(cwd, Some(dir))?,
-            SessionSource::Open(path) => SessionManager::open(path)?,
-            SessionSource::Fork(path) => SessionManager::fork_from(path, cwd, Some(dir))?,
+            SessionSource::Open(path) => {
+                SessionManager::refuse_agent_session(path)?;
+                SessionManager::open(path)?
+            }
+            SessionSource::Fork(path) => {
+                SessionManager::refuse_agent_session(path)?;
+                SessionManager::fork_from(path, cwd, Some(dir))?
+            }
         })
     }
 }

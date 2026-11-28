@@ -1649,6 +1649,8 @@ impl Session {
                 if let Some(guard) = guard {
                     guard(path).map_err(SdkErrorText)?;
                 }
+                super_coding::SessionManager::refuse_agent_session(path)
+                    .map_err(|error| SdkErrorText(format!("{error:#}")))?;
                 let manager = super_coding::SessionManager::open(path)
                     .map_err(|error| SdkErrorText(format!("{error:#}")))?;
                 self.inner.replace_manager(manager);

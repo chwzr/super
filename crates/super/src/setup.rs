@@ -522,6 +522,8 @@ fn refuse_held_file(
 fn locate_session(reference: &str, dir: &std::path::Path) -> Result<PathBuf> {
     let as_path = PathBuf::from(reference);
     if as_path.is_file() {
+        // An agent's session is opened through the session that started it.
+        SessionManager::refuse_agent_session(&as_path)?;
         return Ok(as_path);
     }
     SessionManager::find_by_id(dir, reference)?
@@ -731,6 +733,38 @@ pub async fn build_startup(
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn an_agents_session_file_is_not_opened_or_forked_as_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        let mut parent = SessionManager::create(dir.path(), Some(sessions.clone())).unwrap();
+        parent
+            .append_message(super_agent::AgentMessage::user("main"))
+            .unwrap();
+        let mut child = parent
+            .create_child_named(Some("a1b2c3d4e"), dir.path())
+            .unwrap();
+        child
+            .append_custom(
+                super_coding::session::manager::SUBAGENT_ENTRY,
+                Some(serde_json::json!({"agentId": "a1b2c3d4e"})),
+            )
+            .unwrap();
+        let child_file = child.session_file().unwrap().display().to_string();
+        let error = locate_session(&child_file, &sessions)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.ends_with("is the session of an agent, not a session of its own; open the session that started it."),
+            "{error}"
+        );
+        let parent_file = parent.session_file().unwrap().display().to_string();
+        assert_eq!(
+            locate_session(&parent_file, &sessions).unwrap(),
+            PathBuf::from(&parent_file)
+        );
+    }
 
     #[test]
     fn names_of_no_tool_are_named_in_a_warning() {

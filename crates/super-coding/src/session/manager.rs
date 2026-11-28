@@ -385,6 +385,36 @@ impl SessionManager {
         }
     }
 
+    /// Whether the session file at `path` is an agent's (it has a
+    /// `subagent` entry): a child of another session, which is opened
+    /// through that session and is no session of its own.
+    pub fn is_agent_session(path: &Path) -> bool {
+        let Ok(file) = File::open(path) else {
+            return false;
+        };
+        BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .any(|line| {
+                line.contains("\"subagent\"")
+                    && serde_json::from_str::<Value>(&line).is_ok_and(|value| {
+                        value["type"] == "custom" && value["customType"] == SUBAGENT_ENTRY
+                    })
+            })
+    }
+
+    /// `Err` for the file of an agent ([`is_agent_session`](Self::is_agent_session)),
+    /// which a user opens or forks through the session that started it.
+    pub fn refuse_agent_session(path: &Path) -> Result<()> {
+        if Self::is_agent_session(path) {
+            anyhow::bail!(
+                "{} is the session of an agent, not a session of its own; open the session that started it.",
+                path.display()
+            );
+        }
+        Ok(())
+    }
+
     /// Cheap listing: header + scan for name/first user message. A child
     /// session is no session of its own and is not listed: one stored next
     /// to the sessions, as children were before they had a folder of their
@@ -1697,6 +1727,21 @@ mod tests {
             child.stored_children(),
             [grandchild.session_file().unwrap()]
         );
+        // Its file is an agent's, which a user does not open or fork as a
+        // session of its own; the parent's is not.
+        assert!(SessionManager::is_agent_session(&child_file));
+        assert!(!SessionManager::is_agent_session(&parent_file));
+        let refused = SessionManager::refuse_agent_session(&child_file)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            refused,
+            format!(
+                "{} is the session of an agent, not a session of its own; open the session that started it.",
+                child_file.display()
+            )
+        );
+        assert!(SessionManager::refuse_agent_session(&parent_file).is_ok());
         // A reopened child is the same session in the same place.
         let reopened = SessionManager::open(&child_file).unwrap();
         assert_eq!(reopened.session_id(), child.session_id());

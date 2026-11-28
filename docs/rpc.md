@@ -376,7 +376,10 @@ reach them, since they run as their workflow or job says:
   `<session file without .jsonl>/agents/<agent id>.jsonl`, and an agent's
   agents one folder further. The listings of stored sessions (the terminal's
   pickers, the daemon's `list_sessions`, the platform's registry) leave them
-  out, and `--session <id>` does not find them. The child's first entries
+  out, and `--session <id>` does not find them. `--session` and `--fork`
+  with the path of a child's file, `switch_session` and the SDK's
+  `SessionSource::Open` and `Fork` refuse it: "<file> is the session of an
+  agent, not a session of its own; open the session that started it." The child's first entries
   are a `custom` entry with `customType: "subagent"` (`agentId`, `taskName`,
   `agentType`, `origin`, `canonicalPath`, `depth`, `toolUseId`, `parentSessionId`,
   `model`, `thinkingLevel`, `worktree`), and every run's end adds one with
