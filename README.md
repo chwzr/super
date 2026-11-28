@@ -319,7 +319,10 @@ the advanced mode; see [Mode](#mode).
   apps. A session you open again knows its children: `ListAgents` lists
   them and `SendMessage` resumes one where it left off. A child whose folder
   is gone since, such as a worktree the session worked in and removed, goes
-  on in the session's folder.
+  on in the session's folder. A child whose type is no longer defined, or
+  whose model is no longer in the model list, is not resumed: the message is
+  refused with a sentence that names the type or the model, since the child
+  would go on with other instructions, tools or model.
 - A child's own background commands and monitors belong to its run: their
   notices and events reach the child, and so does a message sent to it in
   the meantime. Its report comes when it has answered the last of them and

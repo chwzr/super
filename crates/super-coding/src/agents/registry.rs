@@ -624,6 +624,9 @@ impl AgentRegistry {
             return Ok(Delivery::Queued(record.info(Some(&owner))));
         }
         self.check_room()?;
+        if let Some(stored) = &record.stored {
+            resumable(&owner, stored)?;
+        }
         let session = record.session_in(&owner)?;
         // An agent without a worktree of its own whose folder is gone since
         // (a worktree the session worked in and removed) goes on in the
@@ -1056,6 +1059,36 @@ pub(crate) fn read_stored_agent(file: &Path) -> Option<StoredAgent> {
         background,
         started: header.timestamp,
     })
+}
+
+/// Whether the stored agent `stored` of `owner` can go on as it ran: the
+/// type it was started as and the model it ran on are still there. Without
+/// them it would go on with other instructions, tools or model in the middle
+/// of its conversation.
+fn resumable(owner: &AgentSession, stored: &StoredAgent) -> anyhow::Result<()> {
+    if stored.origin.is_agent_call()
+        && !owner
+            .agent_types()
+            .iter()
+            .any(|known| known.name == stored.agent_type)
+    {
+        anyhow::bail!(
+            "Agent {} ran as the agent type {}, which is not defined any more, so it cannot be resumed; start a new agent.",
+            stored.id,
+            stored.agent_type
+        );
+    }
+    let current = owner.model();
+    if let Some((provider, id)) = &stored.model
+        && !(current.provider == *provider && current.id == *id)
+        && owner.registry().resolve(id, Some(provider)).is_none()
+    {
+        anyhow::bail!(
+            "Agent {} ran on the model {provider}/{id}, which is not in the model list any more, so it cannot be resumed; start a new agent.",
+            stored.id
+        );
+    }
+    Ok(())
 }
 
 /// Register a background run of the agent `id` as a task of `owner` with

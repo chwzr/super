@@ -446,6 +446,11 @@
   still fails with "Could not start shell …".
 - Rust SDK: `ShellProcess::start` starts a shell command with an error that
   says what is missing.
+- `SendMessage` to a stored agent whose type file is gone since, or whose
+  model is no longer in the model list, is refused with a sentence that
+  names the type or the model. The agent was resumed as a general-purpose
+  agent with every tool, or on the session's model, in the middle of a
+  conversation it had under its own type.
 - `switch_session` back to a session the process left a moment before opens
   it, with its agents. Within half a second it was refused as "open in
   another SUPER process", because the process's own lock on that file had not

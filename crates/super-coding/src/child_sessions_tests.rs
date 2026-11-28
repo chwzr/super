@@ -265,6 +265,108 @@ async fn a_session_loaded_again_rebuilds_its_agents_and_resumes_one_from_its_tra
     assert_eq!(registry(&third).list().len(), 2);
 }
 
+/// A stored agent whose type file is gone since, or whose model left the
+/// model list, is not resumed under other instructions, tools or model in
+/// the middle of its conversation: the message is refused with a sentence
+/// that names what is missing.
+#[tokio::test]
+async fn a_stored_agent_whose_type_or_model_is_gone_is_not_resumed_as_something_else() {
+    let directory = tempfile::tempdir().unwrap();
+    let sessions = directory.path().join("sessions");
+    let types = directory.path().join("types");
+    std::fs::create_dir_all(&types).unwrap();
+    std::fs::write(
+        types.join("checker.md"),
+        "---\nname: checker\ntools: Read\n---\nCheck.\n",
+    )
+    .unwrap();
+    let (stream, seen) = lanes(vec![
+        ("checked", vec![Some(text("checked"))]),
+        ("plain", vec![Some(text("plain"))]),
+    ]);
+    let first = main_session(
+        stored_manager(directory.path(), &sessions),
+        stream.clone(),
+        Vec::new(),
+    );
+    first.set_agent_resources(crate::agents::AgentResources {
+        definitions: crate::agents::types::discover_in(Some(&types), None),
+        ..Default::default()
+    });
+    let mut checked = request("Checker", "checked", false);
+    checked.agent_type = Some("checker".into());
+    registry(&first)
+        .start(checked, "call_1", CancellationToken::new())
+        .await
+        .unwrap();
+    registry(&first)
+        .start(
+            request("Plain", "plain", false),
+            "call_2",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let agents = registry(&first).list();
+    let (checker, plain) = (agents[0].clone(), agents[1].clone());
+    let main_file = session_file(&first);
+    drop(first);
+    // The plain agent's model leaves the model list.
+    let plain_file = plain.session_file.clone().unwrap();
+    let rewritten: Vec<String> = std::fs::read_to_string(&plain_file)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+            if value["customType"] == SUBAGENT_ENTRY {
+                value["data"]["model"] = json!({"provider": "gone", "id": "gone-model"});
+            }
+            value.to_string()
+        })
+        .collect();
+    std::fs::write(&plain_file, rewritten.join("\n") + "\n").unwrap();
+
+    // A new process, without the type file.
+    let second = main_session(
+        SessionManager::open(&main_file).unwrap(),
+        stream,
+        Vec::new(),
+    );
+    let refused = |to: String| {
+        let send = tool(&second, "SendMessage");
+        async move {
+            let result = send
+                .execute(
+                    "call_3",
+                    json!({"to": to, "message": "again"}),
+                    CancellationToken::new(),
+                    None,
+                )
+                .await;
+            format!("{:#}", result.err().expect("refused"))
+        }
+    };
+    assert_eq!(
+        refused(checker.id.clone()).await,
+        format!(
+            "Agent {} ran as the agent type checker, which is not defined any more, so it cannot be resumed; start a new agent.",
+            checker.id
+        )
+    );
+    assert_eq!(
+        refused(plain.id.clone()).await,
+        format!(
+            "Agent {} ran on the model gone/gone-model, which is not in the model list any more, so it cannot be resumed; start a new agent.",
+            plain.id
+        )
+    );
+    assert_eq!(
+        seen.count("checked") + seen.count("plain"),
+        2,
+        "no run started"
+    );
+}
+
 #[tokio::test]
 async fn a_stored_agent_loaded_again_counts_what_it_read_of_files_nobody_changed() {
     let directory = tempfile::tempdir().unwrap();
