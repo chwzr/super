@@ -769,6 +769,54 @@ return { r }\n";
     assert_eq!(states, [json!("running"), json!("stopped")]);
 }
 
+/// A run still working when the session moves to another conversation is
+/// stopped, and its end is stored in the conversation it started in, not in
+/// the one the session moved to.
+#[tokio::test]
+async fn a_run_cut_off_by_a_move_to_another_conversation_ends_in_its_own() {
+    let script = "export const meta = { name: 'switch-wf', description: 'Switch' }\n\
+await agent('slow agent')\n\
+return 'done'\n";
+    let fixture = fixture(vec![
+        (
+            "main",
+            vec![
+                Some(tool_call("w1", "Workflow", json!({"script": script}))),
+                Some(text("started it")),
+            ],
+        ),
+        ("slow agent", vec![None]),
+    ])
+    .quiet();
+    let session = fixture.session.clone();
+    session.prompt(vec![AgentMessage::user("main")]).await;
+    let run = fixture.latest_run();
+    let seen = fixture.seen.clone();
+    eventually("the agent asks", || seen.count("slow agent") == 1).await;
+    let left = fixture.session_file();
+    let mut other =
+        SessionManager::create(fixture.folder(), Some(fixture.folder().join("other"))).unwrap();
+    other.append_message(AgentMessage::user("other")).unwrap();
+    let other_file = other.session_file().unwrap().to_path_buf();
+    session.replace_manager(other);
+    eventually("the run ends", || run.snapshot().status.is_finished()).await;
+    eventually("its end is stored", || run_states(&left).len() == 2).await;
+    let states: Vec<Value> = run_states(&left)
+        .into_iter()
+        .map(|state| state["status"].clone())
+        .collect();
+    assert_eq!(states, [json!("running"), json!("stopped")]);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(run_states(&other_file).is_empty());
+    assert!(
+        crate::stored_state::all(
+            &session.manager.lock().unwrap(),
+            crate::stored_state::WORKFLOW_RUN_ENTRY
+        )
+        .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn a_workflow_is_stopped_by_the_name_its_call_gave_it() {
     let fixture = fixture(vec![

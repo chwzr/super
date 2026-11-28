@@ -416,7 +416,16 @@ impl WorkflowRuntime {
     /// stopped because the session's host ends it is left as it was, cut
     /// off, so that it is announced when the session is loaded again.
     pub async fn run(&self, record: &Arc<RunRecord>) -> Result<Value, String> {
-        self.record_run(record, "running");
+        // The run belongs to the conversation it started in, also when the
+        // session moves to another one before it ends.
+        let conversation = self.parent.upgrade().map(|parent| {
+            let manager = parent.manager.lock().unwrap();
+            (
+                manager.session_id().to_string(),
+                manager.session_file().map(std::path::Path::to_path_buf),
+            )
+        });
+        self.record_run(record, "running", conversation.as_ref());
         let result = record
             .workflow
             .run()
@@ -438,27 +447,52 @@ impl WorkflowRuntime {
             .upgrade()
             .is_none_or(|parent| parent.is_closing());
         if !(status == "stopped" && closing) {
-            self.record_run(record, status);
+            self.record_run(record, status, conversation.as_ref());
         }
         result
     }
 
-    /// Write down in the session that `record` has `status` now.
-    fn record_run(&self, record: &RunRecord, status: &str) {
+    /// Write down in the conversation the run started in, `conversation`
+    /// (its session id and file), that `record` has `status` now: in the
+    /// session's own while it is that one, else in that conversation's file.
+    /// A conversation the session left that had no file keeps nothing.
+    fn record_run(
+        &self,
+        record: &RunRecord,
+        status: &str,
+        conversation: Option<&(String, Option<PathBuf>)>,
+    ) {
         let Some(parent) = self.parent.upgrade() else {
             return;
         };
-        crate::stored_state::record(
-            &mut parent.manager.lock().unwrap(),
-            crate::stored_state::WORKFLOW_RUN_ENTRY,
-            serde_json::json!({
-                "runId": record.run_id,
-                "name": record.name,
-                "description": record.description,
-                "status": status,
-                "at": super_ai::now_ms(),
-            }),
-        );
+        let data = serde_json::json!({
+            "runId": record.run_id,
+            "name": record.name,
+            "description": record.description,
+            "status": status,
+            "at": super_ai::now_ms(),
+        });
+        let mut manager = parent.manager.lock().unwrap();
+        match conversation {
+            Some((id, file)) if manager.session_id() != id => {
+                drop(manager);
+                if let Some(mut left) = file
+                    .as_deref()
+                    .and_then(|file| crate::SessionManager::open(file).ok())
+                {
+                    crate::stored_state::record(
+                        &mut left,
+                        crate::stored_state::WORKFLOW_RUN_ENTRY,
+                        data,
+                    );
+                }
+            }
+            _ => crate::stored_state::record(
+                &mut manager,
+                crate::stored_state::WORKFLOW_RUN_ENTRY,
+                data,
+            ),
+        }
     }
 
     pub fn get(&self, id: RunId) -> Option<Arc<RunRecord>> {
