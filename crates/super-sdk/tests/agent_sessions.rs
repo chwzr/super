@@ -324,3 +324,82 @@ return [a, b].join(' + ')\n";
     .await;
     assert_eq!(message_texts(&read["entries"])[0], "user: first step");
 }
+
+#[tokio::test]
+async fn an_agent_at_any_depth_has_a_view_by_its_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let provider = MockProvider::start(
+        directory.path().join("provider"),
+        MockScript::default()
+            .then(vec![MockTurn::ToolCall {
+                id: "call_1".into(),
+                name: "Agent".into(),
+                arguments: json!({"description": "Outer", "prompt": "outer task", "run_in_background": false}),
+            }])
+            .then(vec![MockTurn::ToolCall {
+                id: "call_2".into(),
+                name: "Agent".into(),
+                arguments: json!({"description": "Inner", "prompt": "inner task", "run_in_background": false}),
+            }])
+            .then(vec![MockTurn::Text("inner report".into())])
+            .then(vec![MockTurn::Text("outer report".into())])
+            .then(vec![MockTurn::Text("done".into())]),
+    )
+    .await
+    .unwrap();
+    let mut options = options(directory.path(), &provider, SessionSource::Create);
+    // The outer agent may start agents only when the allowlist names them.
+    options.tools = None;
+    let session = Session::create(options).await.unwrap();
+    session.prompt("nest two agents").await.unwrap();
+    let outer = execute(&session, Command::GetAgents { agent: None }).await["agents"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let inner = execute(
+        &session,
+        Command::GetAgents {
+            agent: Some(outer.clone()),
+        },
+    )
+    .await["agents"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(inner.starts_with(&format!("{outer}/")), "{inner}");
+    let view = session.agent_view(&inner).unwrap();
+    assert!(view.is_agent_view());
+    let read = execute(
+        &session,
+        Command::GetAgentEntries {
+            agent: inner.clone(),
+            since: None,
+        },
+    )
+    .await;
+    assert_eq!(view.state().session_id, read["sessionId"].as_str().unwrap());
+    assert_eq!(
+        session.agent_view(&outer).unwrap().state().session_id,
+        execute(
+            &session,
+            Command::GetAgentEntries {
+                agent: outer.clone(),
+                since: None,
+            },
+        )
+        .await["sessionId"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        format!("{:#}", session.agent_view("nobody").err().unwrap()),
+        "No agent of this session has the id or name 'nobody'; ListAgents lists them."
+    );
+    assert_eq!(
+        format!(
+            "{:#}",
+            session.agent_view(&format!("{inner}/x")).err().unwrap()
+        ),
+        "No agent of this session has the id or name 'x'; ListAgents lists them."
+    );
+}

@@ -101,6 +101,11 @@
   branch.
 - RPC: `get_agents` lists a session's subagents, those of earlier runs
   included, and `get_agent_entries` reads a subagent's transcript.
+- Daemon: `subscribe_agent` with an agent's path sends the connection that
+  agent's events live, at any depth, as `agent_event` lines that carry each
+  event as the agent's nested `events` stream does; `unsubscribe_agent` ends
+  it. Rust SDK: `Session::agent_view` returns an agent's view by its path,
+  and `super_sdk::daemon::AgentEvent` is the line.
 - The agents of a workflow run and the child session of a `/loop` job with
   an interval or an `/autoresearch` job are subagents of the session for
   storage and for the apps: each has an agent id, is saved in the session's

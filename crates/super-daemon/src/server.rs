@@ -5,13 +5,14 @@ use crate::host::{CreateRequest, Hosted, SessionHost};
 use crate::log;
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use super_sdk::daemon::{
-    ClientLine, DaemonCommand, DaemonEvent, DaemonRequest, DaemonStatus, DirectoryEntry, EndReason,
-    HelloReply, decode_client_line, negotiate,
+    AgentEvent, ClientLine, DaemonCommand, DaemonEvent, DaemonRequest, DaemonStatus,
+    DirectoryEntry, EndReason, HelloReply, decode_client_line, negotiate,
 };
 use super_sdk::protocol::Response;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -139,6 +140,9 @@ struct Client {
     /// `hello.taskControls`: the client's `abort` spares background tasks.
     task_controls: bool,
     attachment: Mutex<Option<Attachment>>,
+    /// The agents of the attached session whose events this connection
+    /// gets (`subscribe_agent`), by path, each with the task that sends them.
+    agents: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     out: mpsc::UnboundedSender<String>,
 }
 
@@ -148,6 +152,7 @@ impl Client {
     /// between the response and the first read is lost.
     fn attach(&self, ctx: &ServerContext, hosted: Arc<Hosted>) -> Option<String> {
         let previous = self.detach(ctx);
+        self.unsubscribe_agents();
         let mut events = hosted.session.events();
         let out = self.out.clone();
         let pump = tokio::spawn(async move {
@@ -167,6 +172,7 @@ impl Client {
     }
 
     fn detach(&self, ctx: &ServerContext) -> Option<String> {
+        self.unsubscribe_agents();
         let taken = self.attachment.lock().unwrap().take()?;
         taken.pump.abort();
         ctx.host.detach(&taken.hosted);
@@ -185,6 +191,62 @@ impl Client {
             .is_some_and(|attachment| attachment.hosted.session_id == session_id);
         if matches && let Some(attachment) = guard.take() {
             attachment.pump.abort();
+            drop(guard);
+            self.unsubscribe_agents();
+        }
+    }
+
+    /// Send this connection the events of the attached session's agent at
+    /// `path` from now on, each as an `agent_event` line. Returns the path as
+    /// the lines name it and the agent's session id.
+    fn subscribe_agent(&self, path: &str) -> Result<(String, String), String> {
+        let hosted = self
+            .attached()
+            .ok_or_else(|| "not attached to a session".to_string())?;
+        hosted.touch();
+        let view = hosted
+            .session
+            .agent_view(path)
+            .map_err(|error| format!("{error:#}"))?;
+        let path = agent_path(path);
+        let mut events = view.events();
+        let out = self.out.clone();
+        let named = path.clone();
+        let pump = tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                let line = AgentEvent {
+                    agent: named.clone(),
+                    event: event.0,
+                }
+                .to_line();
+                if out.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        if let Some(previous) = self.agents.lock().unwrap().insert(path.clone(), pump) {
+            previous.abort();
+        }
+        Ok((path, view.state().session_id))
+    }
+
+    /// Stop sending the events of the agent at `path`; whether they were
+    /// sent.
+    fn unsubscribe_agent(&self, path: &str) -> bool {
+        match self.agents.lock().unwrap().remove(&agent_path(path)) {
+            Some(pump) => {
+                pump.abort();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Stop sending the events of every agent: they belong to the session
+    /// the connection leaves.
+    fn unsubscribe_agents(&self) {
+        for (_, pump) in self.agents.lock().unwrap().drain() {
+            pump.abort();
         }
     }
 
@@ -195,6 +257,16 @@ impl Client {
             .as_ref()
             .map(|attachment| attachment.hosted.clone())
     }
+}
+
+/// An agent's path as the `agent_event` lines name it: its ids joined by
+/// `/`, without blanks or a leading or trailing `/`.
+fn agent_path(path: &str) -> String {
+    path.split('/')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
@@ -240,6 +312,7 @@ async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
         origin,
         task_controls,
         attachment: Mutex::new(None),
+        agents: Mutex::new(HashMap::new()),
         out: out.clone(),
     });
 
@@ -424,6 +497,13 @@ async fn daemon_command(
             Err(error) => Err(error.to_string()),
         },
         DaemonCommand::Detach {} => Ok(json!({"sessionId": client.detach(ctx)})),
+        DaemonCommand::SubscribeAgent { agent } => client
+            .subscribe_agent(&agent)
+            .map(|(agent, session_id)| json!({"agent": agent, "sessionId": session_id})),
+        DaemonCommand::UnsubscribeAgent { agent } => {
+            let subscribed = client.unsubscribe_agent(&agent);
+            Ok(json!({"agent": agent_path(&agent), "subscribed": subscribed}))
+        }
         DaemonCommand::Shutdown {} => {
             log::info("server", format!("client {} asked for shutdown", client.id));
             let response = Response::ok("shutdown").with_id(id);
@@ -492,6 +572,8 @@ pub async fn run_machine_command(
         DaemonCommand::Hello { .. }
         | DaemonCommand::Attach { .. }
         | DaemonCommand::Detach {}
+        | DaemonCommand::SubscribeAgent { .. }
+        | DaemonCommand::UnsubscribeAgent { .. }
         | DaemonCommand::Shutdown {} => Err("not available over the platform".into()),
     }
 }

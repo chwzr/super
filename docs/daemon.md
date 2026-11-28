@@ -165,6 +165,8 @@ connection.
 | `attach` | `sessionId` | `session`, `previousSessionId`; loads the session when stored, switches when already attached |
 | `detach` | | `sessionId` |
 | `stop_session` | `sessionId` | `sessionId`; aborts the turn and unloads, the file stays; a session in a worktree it made asks first (below) |
+| `subscribe_agent` | `agent` | `agent`, `sessionId`; from now on this connection gets the events of the attached session's agent at the path `agent` as `agent_event` lines (below) |
+| `unsubscribe_agent` | `agent` | `agent`, `subscribed`: whether its events were sent |
 | `shutdown` | | the daemon exits 0 |
 
 A session:
@@ -190,6 +192,32 @@ null for a stored session.
 | `session_updated` | `session` | state, name, model, thinking level or attached-client count changed |
 | `session_ended` | `sessionId`, `reason` (`stopped`, `idle`, `shutdown`) | the session was unloaded; attached connections become unattached |
 | `daemon_shutdown` | `reason` | the daemon is about to exit |
+
+### An agent's events
+
+A connection attached to a session follows one of its agents live with
+`subscribe_agent`. `agent` is the agent's `path` as `get_agents` gives it:
+the agent's id, or the ids from the session down joined by `/` for an agent
+at any depth ([rpc.md](rpc.md#agents)); a stored agent is loaded for it.
+From then on each event of the agent's session reaches the connection as
+one line,
+
+```json
+{"type":"agent_event","agent":"a1b2c3d4e/a5f6g7h8i","event":{"type":"message_end","message":{…}}}
+```
+
+where `event` is exactly what the agent's session emits and what its nested
+`events` stream on the platform carries (`agent_start` … `agent_settled`),
+for every later run of the agent too. Only the connection that subscribed
+gets them, so a client that never subscribes sees nothing new. The
+subscription ends with `unsubscribe_agent`, `detach`, another `attach`, the
+session's end and the end of the connection. Subscribing on an unattached
+connection fails with `not attached to a session`, and to a path no agent
+has with the sentence `get_agent_entries` gives. Read the agent's
+transcript so far with `get_agent_entries`; the events come from the moment
+of the subscription. These are new commands, so the protocol version stays
+2. Over the platform the two commands answer `not available over the
+platform`: a remote client follows the agent's nested `events` stream.
 
 ## Lifecycle
 
@@ -617,7 +645,8 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
   here with the same headers as session commands (`t`, `from`, `name`,
   `exp`). `status`, `list_sessions`, `list_workspaces`, `list_directories`,
   `create_session`, `resume_session` and `stop_session` run exactly as over
-  the socket; `hello`, `attach`, `detach` and `shutdown` answer
+  the socket; `hello`, `attach`, `detach`, `subscribe_agent`,
+  `unsubscribe_agent` and `shutdown` answer
   `not available over the platform`. Expired commands are dropped and the
   cursor in `~/.super/agent/remote/cursors/` keeps a restarted daemon from
   running recent commands again.

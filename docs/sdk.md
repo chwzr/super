@@ -343,7 +343,10 @@ view whose events are the agent's and which answers reading commands only
 by agent id, and `Session::subscribe_agents` returns them with a receiver of
 `super_sdk::AgentChange`: `Loaded { id, session, events }`, with the agent's
 events subscribed before its run starts, and `Reset` when the session moved
-to another conversation. The RPC commands `get_agents` and
+to another conversation. `Session::agent_view(path)` returns the view of
+the agent at a path of ids (`a1b2c3d4e/a5f6g7h8i`), at any depth, loading a
+stored one on the way; the daemon's `subscribe_agent` sends its `events` to
+a socket client. The RPC commands `get_agents` and
 `get_agent_entries` list a session's agents and read one's transcript
 ([rpc.md](rpc.md#agents)). `super_remote::SessionTransport` mirrors each view
 to streams nested under the session's (`SessionStreams::agent`). An embedder

@@ -157,6 +157,13 @@ ids from there down, separated by `/`, for an agent of an agent
 (`a1b2c3d4e/a5f6g7h8i`). An agent that had ended before the session was
 loaded again is read from its stored session.
 
+An agent's live events reach a client through the platform on the agent's
+nested `events` stream ([Agents](#agents-1)) and, on the daemon's socket,
+after `subscribe_agent` with the agent's path, as `agent_event` lines that
+carry each event unchanged ([daemon.md](daemon.md#an-agents-events)).
+`--mode rpc` and the SDK's `execute` have no such command: an embedder
+follows an agent with `Session::agent_view(path)` and its `events`.
+
 ### Approvals
 
 Some steps wait for a human: a dynamic workflow before it starts, the project

@@ -642,6 +642,38 @@ impl Session {
         self.in_agent_order(views)
     }
 
+    /// The view of the agent at `path`: an agent id of this session, or ids
+    /// separated by `/` for an agent of an agent, as `get_agents` gives it.
+    /// A stored agent is loaded on the way, so that its view exists. Fails
+    /// with the sentence of `get_agent_entries` when no agent has the path.
+    pub fn agent_view(&self, path: &str) -> anyhow::Result<Arc<Session>> {
+        use anyhow::Context as _;
+        // Says what is wrong with the path, and loads what is stored.
+        self.inner.agent_at(path)?;
+        let mut owner = self.inner.clone();
+        let mut view: Option<Arc<Session>> = None;
+        for segment in path.split('/').map(str::trim).filter(|id| !id.is_empty()) {
+            let session = owner
+                .agent_registry()
+                .context("This session has no agents.")?
+                .session_of(segment)?;
+            let views = match &view {
+                None => &self.agents,
+                Some(parent) => &parent.agents,
+            };
+            let found = views
+                .lock()
+                .unwrap()
+                .views
+                .values()
+                .find(|known| Arc::ptr_eq(&known.inner, &session))
+                .cloned();
+            view = Some(found.with_context(|| format!("Agent {segment} is not loaded."))?);
+            owner = session;
+        }
+        view.context("Give the id of an agent of this session.")
+    }
+
     /// The loaded agent sessions as [`Session::agent_sessions`] lists them,
     /// and a receiver of every change after that: a session that is loaded
     /// (with its events from that moment) and the agents being forgotten.
