@@ -32,8 +32,13 @@ pub mod system_prompt;
 pub mod tasks;
 pub mod tools;
 pub mod trust;
+pub mod wakeup;
+#[cfg(test)]
+mod wakeup_tests;
 pub mod workflows;
 pub mod worktree;
+#[cfg(test)]
+mod worktree_tests;
 
 pub use agents::{AgentInfo, AgentRegistry, AgentResources, AgentType, AgentTypeSummary};
 pub use notifications::{Priority, agent_message, monitor_event, task_notification};
@@ -48,3 +53,5 @@ pub use tasks::{
     BackgroundTasks, TaskHandle, TaskInfo, TaskKind, TaskOutcome, TaskSpec, TaskStatus,
     TaskStopError, TaskUsage,
 };
+pub use wakeup::{WakeupInfo, Wakeups};
+pub use worktree::EnteredWorktree;

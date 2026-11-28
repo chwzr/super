@@ -119,10 +119,18 @@ async fn notice_of(
 async fn monitor_and_task_stop_come_with_bash_in_the_advanced_mode() {
     let directory = tempfile::tempdir().unwrap();
     let session = session_in(directory.path(), test_settings());
-    // `Skill` comes with Bash too.
+    // `Skill`, `ScheduleWakeup` and the worktree tools come with Bash too.
     assert_eq!(
         session.available_tool_names(),
-        ["Bash", "Monitor", "TaskStop", "Skill"]
+        [
+            "Bash",
+            "Monitor",
+            "TaskStop",
+            "Skill",
+            "ScheduleWakeup",
+            "EnterWorktree",
+            "ExitWorktree"
+        ]
     );
 
     let mut basic = session.settings();

@@ -255,6 +255,15 @@ fn in_folder(prompt: &str, folder: &Path) -> String {
     )
 }
 
+/// `tools` as they work in `folder` ([`super_agent::AgentTool::in_directory`]);
+/// a tool that does not depend on a folder stays as it is.
+fn in_directory(tools: Vec<DynTool>, folder: &Path) -> Vec<DynTool> {
+    tools
+        .into_iter()
+        .map(|tool| tool.in_directory(folder).unwrap_or(tool))
+        .collect()
+}
+
 const SESSION_TITLE_MAX_CHARS: usize = 36;
 /// Output budget for the one retry of a helper request whose first, tight
 /// budget was spent on reasoning the model would not switch off.
@@ -348,6 +357,21 @@ pub struct AgentSession {
     /// Bumped when a run ends, an entry is queued or a task ends, so
     /// [`AgentSession::wait_for_background_work`] looks again.
     activity: tokio::sync::watch::Sender<u64>,
+    /// The worktree the session moved into with `EnterWorktree`; its tools,
+    /// its agents and its prompt's working-directory line use it while set.
+    worktree: Mutex<Option<crate::worktree::EnteredWorktree>>,
+    /// `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`, bound to this
+    /// session; offered in the advanced mode to a session that is no child.
+    session_folder_tools: OnceLock<Vec<DynTool>>,
+    /// This session's pending wake-up and its self-paced loop.
+    wakeups: OnceLock<Arc<crate::wakeup::Wakeups>>,
+    /// Built as the session of a child: an agent, a workflow agent or a
+    /// loop iteration.
+    child: bool,
+    /// The tools or the prompt changed during a run (the session moved into
+    /// or out of a worktree): the run builds its context again before its
+    /// next model request.
+    context_stale: std::sync::atomic::AtomicBool,
 }
 
 struct ReasoningRunState {
@@ -520,11 +544,22 @@ impl AgentSession {
             remote_tasks: Mutex::new(Vec::new()),
             turn_starter: Mutex::new(None),
             activity: tokio::sync::watch::channel(0).0,
+            worktree: Mutex::new(None),
+            session_folder_tools: OnceLock::new(),
+            wakeups: OnceLock::new(),
+            child,
+            context_stale: std::sync::atomic::AtomicBool::new(false),
         });
         assert!(
             session
                 .tasks
                 .set(BackgroundTasks::new(Arc::downgrade(&session)))
+                .is_ok()
+        );
+        assert!(
+            session
+                .wakeups
+                .set(crate::wakeup::Wakeups::new(Arc::downgrade(&session)))
                 .is_ok()
         );
         let room_of = Arc::downgrade(&session);
@@ -552,6 +587,20 @@ impl AgentSession {
         assert!(session.skill_tool.set(skill_tool).is_ok());
         let agent_tools = crate::agents::tools::agent_tools(Arc::downgrade(&session));
         assert!(session.agent_tools.set(agent_tools).is_ok());
+        let this = Arc::downgrade(&session);
+        let session_folder_tools: Vec<DynTool> = vec![
+            Arc::new(crate::tools::schedule_wakeup::ScheduleWakeupTool::new(
+                this.clone(),
+            )),
+            Arc::new(crate::tools::worktree::EnterWorktreeTool::new(this.clone())),
+            Arc::new(crate::tools::worktree::ExitWorktreeTool::new(this)),
+        ];
+        assert!(
+            session
+                .session_folder_tools
+                .set(session_folder_tools)
+                .is_ok()
+        );
         if subagents_allowed {
             let agents = AgentRegistry::new(Arc::downgrade(&session), 0);
             // A session loaded again knows the agents it had.
@@ -839,6 +888,10 @@ impl AgentSession {
                 tools.push(session_tool);
             }
         }
+        // In a worktree the tools work there.
+        if let Some(folder) = self.worktree_folder() {
+            tools = in_directory(tools, &folder);
+        }
         let agents_offered = self.subagents_enabled();
         if let Some(agent_tools) = self.agent_tools.get() {
             if agents_offered {
@@ -884,8 +937,84 @@ impl AgentSession {
         {
             tools.push(skill_tool.clone());
         }
+        // Wake-ups and worktrees belong to the session the user works in, not
+        // to a child; like the skills they come with the file tools.
+        if works_with_files
+            && !self.child
+            && let Some(session_folder_tools) = self.session_folder_tools.get()
+        {
+            tools.extend(session_folder_tools.iter().cloned());
+        }
         let tools = self.bound_to_session(tools);
         *self.tools.lock().unwrap() = self.offered_in_mode(tools);
+    }
+
+    /// The folder this session works in: the worktree it entered with
+    /// `EnterWorktree`, else its session folder.
+    pub fn working_folder(&self) -> std::path::PathBuf {
+        self.worktree_folder()
+            .unwrap_or_else(|| self.manager.lock().unwrap().cwd().to_path_buf())
+    }
+
+    /// The worktree this session works in, while it is in one.
+    pub fn worktree(&self) -> Option<crate::worktree::EnteredWorktree> {
+        self.worktree.lock().unwrap().clone()
+    }
+
+    fn worktree_folder(&self) -> Option<std::path::PathBuf> {
+        self.worktree
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|entered| entered.worktree.path.clone())
+    }
+
+    /// Move the session into `entered`: from the next request on, its tools
+    /// work there and its prompt's working-directory line names it, and the
+    /// shell starts there.
+    pub(crate) fn enter_worktree(&self, entered: crate::worktree::EnteredWorktree) {
+        *self.worktree.lock().unwrap() = Some(entered);
+        self.moved();
+    }
+
+    /// Move the session back to its own folder; returns the worktree it was
+    /// in. The worktree itself stays as it is.
+    pub(crate) fn leave_worktree(&self) -> Option<crate::worktree::EnteredWorktree> {
+        let left = self.worktree.lock().unwrap().take();
+        if left.is_some() {
+            self.moved();
+        }
+        left
+    }
+
+    /// The session's folder changed: the shell starts in the new one, and
+    /// the tools are built for it.
+    fn moved(&self) {
+        if let Some(shell) = &self.tool_session().shell {
+            shell.reset();
+        }
+        *self.context_usage_cache.lock().unwrap() = None;
+        self.rebuild_tools();
+        self.context_stale
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// This session's base tools as they work in its folder, for a child it
+    /// starts: in the worktree while the session is in one.
+    fn base_tools_here(&self) -> Vec<DynTool> {
+        let tools = self.base_tools.lock().unwrap().clone();
+        match self.worktree_folder() {
+            Some(folder) => in_directory(tools, &folder),
+            None => tools,
+        }
+    }
+
+    /// This session's pending wake-up and self-paced loop.
+    pub fn wakeups(&self) -> Arc<crate::wakeup::Wakeups> {
+        self.wakeups
+            .get()
+            .expect("every session has its wake-ups")
+            .clone()
     }
 
     /// What this session's tools keep per session.
@@ -946,11 +1075,14 @@ impl AgentSession {
             runtime.stop_all();
         }
         // Background work and what it queued belong to the conversation
-        // that is left, and so does what it read.
+        // that is left, and so does what it read, a pending wake-up and the
+        // worktree it moved into; the worktree stays on disk.
         self.file_state().clear();
         if let Some(shell) = &self.tool_session().shell {
             shell.reset();
         }
+        self.wakeups().reset();
+        self.leave_worktree();
         self.background_tasks().reset();
         self.remote_tasks.lock().unwrap().clear();
         for queue in [&self.steering, &self.follow_up] {
@@ -1649,7 +1781,10 @@ impl AgentSession {
                 };
 
                 let context_file_changed = session.sync_context_file();
-                let mut context_changed = mode_changed || context_file_changed;
+                let moved = session
+                    .context_stale
+                    .swap(false, std::sync::atomic::Ordering::SeqCst);
+                let mut context_changed = mode_changed || context_file_changed || moved;
                 if has_tool_results {
                     let settings = session.settings();
                     let cancel = session.cancel.lock().unwrap().clone();
@@ -1765,6 +1900,9 @@ impl AgentSession {
         };
         drop(manager);
         let mut system_prompt = self.system_prompt.lock().unwrap().clone();
+        if let Some(folder) = self.worktree_folder() {
+            system_prompt = in_folder(&system_prompt, &folder);
+        }
         let tools = self.tools.lock().unwrap().clone();
         // Cursor also advertises its native Shell tool; it must use the registered shell's syntax.
         if model.provider == "cursor"
@@ -1860,12 +1998,17 @@ impl AgentSession {
         let mut settings = self.settings();
         settings.subagents.enabled = false;
         let mut system_prompt = self.system_prompt.lock().unwrap().clone();
+        // A child of a session in a worktree works there too.
+        let folder = self.worktree_folder();
+        if let Some(folder) = &folder {
+            system_prompt = in_folder(&system_prompt, folder);
+        }
         system_prompt.push_str(&format!(
             "\n\nYou are child agent {canonical_path}. Complete only the assigned task. Return a concise result to the parent agent."
         ));
         let manager = self.child_manager(
             None,
-            None,
+            folder.as_deref(),
             history,
             serde_json::json!({
                 "taskName": task_name,
@@ -1882,7 +2025,7 @@ impl AgentSession {
                 model,
                 thinking,
                 system_prompt,
-                tools: self.base_tools.lock().unwrap().clone(),
+                tools: self.base_tools_here(),
                 settings,
             },
         );
@@ -1916,7 +2059,12 @@ impl AgentSession {
         } else {
             Vec::new()
         };
-        let folder = child.worktree.map(|worktree| worktree.path.as_path());
+        // Its own worktree, else the one this session works in.
+        let folder = child
+            .worktree
+            .map(|worktree| worktree.path.clone())
+            .or_else(|| self.worktree_folder());
+        let folder = folder.as_deref();
         let model = &child.model;
         let manager = self.child_manager(
             Some(child.id),
@@ -3906,12 +4054,18 @@ mod ephemeral_tests {
         let mut advanced = session.settings();
         advanced.mode = Mode::Advanced;
         session.update_settings(advanced);
-        // `Skill` comes with `Read` in the advanced mode.
-        assert_eq!(
-            session.available_tool_names(),
-            ["Read", "AdvancedOnly", "Skill"]
-        );
-        assert_eq!(names(&session), ["Read", "AdvancedOnly", "Skill"]);
+        // `Skill`, `ScheduleWakeup` and the worktree tools come with `Read`
+        // in the advanced mode.
+        let advanced = [
+            "Read",
+            "AdvancedOnly",
+            "Skill",
+            "ScheduleWakeup",
+            "EnterWorktree",
+            "ExitWorktree",
+        ];
+        assert_eq!(session.available_tool_names(), advanced);
+        assert_eq!(names(&session), advanced);
     }
 
     #[test]

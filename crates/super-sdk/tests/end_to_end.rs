@@ -263,9 +263,18 @@ async fn the_dispatcher_answers_state_and_model_questions() {
     assert_eq!(
         tools,
         &[
-            "Read", "Write", "Edit", "Bash", "Monitor", "TaskStop", "Skill"
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Monitor",
+            "TaskStop",
+            "Skill",
+            "ScheduleWakeup",
+            "EnterWorktree",
+            "ExitWorktree"
         ],
-        "the four default tools, and the three that come with them in the advanced mode"
+        "the four default tools, and the six that come with them in the advanced mode"
     );
 
     let models = session

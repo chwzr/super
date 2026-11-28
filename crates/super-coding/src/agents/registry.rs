@@ -1000,14 +1000,16 @@ fn task_outcome(name: &str, outcome: &ChildTurnOutcome) -> TaskOutcome {
 
 /// The git worktree an agent with `isolation: "worktree"` works in:
 /// `.super/worktrees/agent-<id>` in the project of `owner`'s folder, on the
-/// new branch `worktree-agent-<id>` from the project's `HEAD`.
+/// new branch `worktree-agent-<id>` from where the `worktree.baseRef`
+/// setting says ([`worktree::start_point`]).
 pub(crate) async fn agent_worktree(
     owner: &AgentSession,
     agent_id: &str,
 ) -> anyhow::Result<Worktree> {
-    let project = owner.manager.lock().unwrap().cwd().to_path_buf();
+    let project = owner.working_folder();
     let name = format!("agent-{agent_id}");
-    tokio::task::spawn_blocking(move || worktree::create(&project, &name, None))
+    let start = worktree::start_point(&project, owner.settings().worktree.base_ref).await;
+    tokio::task::spawn_blocking(move || worktree::create(&project, &name, start.as_deref()))
         .await
         .context("the worktree could not be made")?
         .map_err(|error| {

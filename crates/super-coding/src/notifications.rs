@@ -22,8 +22,15 @@
 //! A message one agent sends another with `SendMessage` is queued the same
 //! way too: [`agent_message`] builds a message of type [`AGENT_MESSAGE`],
 //! its header placeholder followed by an `<agent-message>` block.
+//!
+//! A wake-up that comes due ([`crate::wakeup`]) is queued as a message of
+//! type [`WAKEUP`] whose text is the prompt it brings back; a round of a
+//! self-paced loop as a message of type [`LOOP_ROUND`]: the loop's prompt
+//! followed by the `Loop.self_paced_instructions` placeholder.
 
+use crate::iterative::JobId;
 use crate::tasks::{TaskInfo, TaskOutcome};
+use crate::wakeup::WakeupInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use super_agent::{AgentMessage, CustomMessage};
@@ -51,6 +58,84 @@ pub const MONITOR_EVENT: &str = "monitor_event";
 
 /// `customType` of a message one agent sent another with `SendMessage`.
 pub const AGENT_MESSAGE: &str = "agent_message";
+
+/// `customType` of the message a wake-up brings when it is due.
+pub const WAKEUP: &str = "wakeup";
+
+/// `customType` of the message that starts a round of a self-paced loop.
+pub const LOOP_ROUND: &str = "loop_round";
+
+/// The message a wake-up outside a loop brings when it is due: the prompt
+/// the model gave, as it gave it. Its details carry the wake-up for clients.
+pub fn wakeup_message(wakeup: &WakeupInfo) -> AgentMessage {
+    AgentMessage::Custom(CustomMessage {
+        custom_type: WAKEUP.into(),
+        content: UserContent::Text(wakeup.prompt.clone().unwrap_or_default()),
+        display: true,
+        details: Some(json!({"wakeup": wakeup})),
+        timestamp: super_ai::now_ms(),
+    })
+}
+
+/// The message that starts round `round` of the self-paced loop `job`: the
+/// loop's `prompt`, a blank line and the `Loop.self_paced_instructions`
+/// placeholder. Its details carry the loop, the round and, from the second
+/// round on, the wake-up that started it.
+pub fn loop_round(
+    job: JobId,
+    prompt: &str,
+    round: u32,
+    max_rounds: u32,
+    woken_by: Option<&WakeupInfo>,
+) -> AgentMessage {
+    let text = format!(
+        "{prompt}\n\n{}",
+        super_agent::placeholder::prompt_todo("Loop.self_paced_instructions")
+    );
+    AgentMessage::Custom(CustomMessage {
+        custom_type: LOOP_ROUND.into(),
+        content: UserContent::Text(text),
+        display: true,
+        details: Some(json!({
+            "job": job,
+            "round": round,
+            "maxRounds": max_rounds,
+            "prompt": prompt,
+            "wakeup": woken_by,
+        })),
+        timestamp: super_ai::now_ms(),
+    })
+}
+
+/// The wake-up a message of type [`WAKEUP`] brings, from its details: what
+/// clients show in place of its text.
+pub fn woken(message: &AgentMessage) -> Option<WakeupInfo> {
+    match message {
+        AgentMessage::Custom(custom) if custom.custom_type == WAKEUP => {
+            serde_json::from_value(custom.details.as_ref()?.get("wakeup")?.clone()).ok()
+        }
+        _ => None,
+    }
+}
+
+/// A round of a self-paced loop, from its message's details: the round,
+/// the most rounds, the loop's prompt and the wake-up that started it.
+pub fn looped(message: &AgentMessage) -> Option<(u32, u32, String, Option<WakeupInfo>)> {
+    match message {
+        AgentMessage::Custom(custom) if custom.custom_type == LOOP_ROUND => {
+            let details = custom.details.as_ref()?;
+            Some((
+                u32::try_from(details.get("round")?.as_u64()?).ok()?,
+                u32::try_from(details.get("maxRounds")?.as_u64()?).ok()?,
+                details.get("prompt")?.as_str()?.to_string(),
+                details
+                    .get("wakeup")
+                    .and_then(|wakeup| serde_json::from_value(wakeup.clone()).ok()),
+            ))
+        }
+        _ => None,
+    }
+}
 
 /// Whether `message` is the notice of a background task.
 pub fn is_task_notification(message: &AgentMessage) -> bool {
@@ -401,6 +486,43 @@ mod tests {
         assert!(matches!(converted.as_slice(), [super_ai::Message::User(_)]));
         // Without a summary the element is left out.
         assert!(!text(&agent_message("main", "a1", None, "go on")).contains("<summary>"));
+    }
+
+    #[test]
+    fn a_wake_up_brings_its_prompt_and_a_round_the_loops_prompt_and_the_placeholder() {
+        let wakeup = WakeupInfo {
+            id: 3,
+            delay_seconds: 120,
+            due_at: 10,
+            reason: Some("CI takes a while".into()),
+            noop: true,
+            prompt: Some("check <CI>".into()),
+            job: None,
+            round: None,
+        };
+        let message = wakeup_message(&wakeup);
+        assert_eq!(text(&message), "check <CI>");
+        assert_eq!(woken(&message), Some(wakeup.clone()));
+        assert!(!is_task_notification(&message));
+        let converted = super_agent::convert_to_llm(std::slice::from_ref(&message));
+        assert!(matches!(converted.as_slice(), [super_ai::Message::User(_)]));
+
+        let round = loop_round(7, "tidy the docs", 2, 100, Some(&wakeup));
+        assert_eq!(
+            text(&round),
+            format!(
+                "tidy the docs\n\n{}",
+                super_agent::placeholder::prompt_todo("Loop.self_paced_instructions")
+            )
+        );
+        assert_eq!(
+            looped(&round),
+            Some((2, 100, "tidy the docs".to_string(), Some(wakeup)))
+        );
+        assert_eq!(woken(&round), None);
+        assert_eq!(looped(&message), None);
+        let first = loop_round(7, "tidy the docs", 1, 100, None);
+        assert_eq!(looped(&first).unwrap().3, None);
     }
 
     #[test]

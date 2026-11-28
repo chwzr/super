@@ -134,7 +134,7 @@ impl AgentTool for WorkflowTool {
                 "Dynamic workflows are off in this session, so no workflow can run here."
             );
         }
-        let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
+        let cwd = session.working_folder();
         let label = non_empty(args.name.as_deref());
 
         let source = if let Some(script) = args.script.filter(|script| !script.trim().is_empty()) {

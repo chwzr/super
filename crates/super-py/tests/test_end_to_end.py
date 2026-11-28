@@ -86,8 +86,11 @@ async def test_state_models_tools_and_ping_are_typed(tmp_path: Path) -> None:
     assert state.model['provider'] == 'mock'
     assert state.thinking_level == 'off'
     # In the advanced mode, the default, Monitor and TaskStop come with Bash,
-    # and Skill with Read and Bash.
-    tools = ['Read', 'Write', 'Edit', 'Bash', 'Monitor', 'TaskStop', 'Skill']
+    # and Skill, ScheduleWakeup and the worktree tools with Read and Bash.
+    tools = [
+        'Read', 'Write', 'Edit', 'Bash', 'Monitor', 'TaskStop', 'Skill',
+        'ScheduleWakeup', 'EnterWorktree', 'ExitWorktree',
+    ]
     assert state.tools == tools
     assert await session.ping() is True
     assert await session.tools() == tools

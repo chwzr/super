@@ -319,11 +319,7 @@ impl WorkflowRuntime {
             self.parent.clone(),
             limits.max_concurrency,
         ));
-        let cwd = parent
-            .manager
-            .lock()
-            .map(|manager| manager.cwd().display().to_string())
-            .unwrap_or_default();
+        let cwd = parent.working_folder().display().to_string();
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let directory = self.directory();

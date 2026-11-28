@@ -541,8 +541,8 @@ fn type_named(session: &AgentSession, name: &str) -> AgentType {
 async fn each_agent_type_gets_its_tools() {
     let fixture = fixture_with(core_tools, Vec::new());
     let session = fixture.session.clone();
-    // The main session runs workflows; every session with Read or Bash
-    // loads skills.
+    // The main session runs workflows, wake-ups and worktrees; every
+    // session with Read or Bash loads skills.
     assert_eq!(
         session.available_tool_names(),
         [
@@ -558,7 +558,10 @@ async fn each_agent_type_gets_its_tools() {
             "Monitor",
             "TaskStop",
             "Workflow",
-            "Skill"
+            "Skill",
+            "ScheduleWakeup",
+            "EnterWorktree",
+            "ExitWorktree"
         ]
     );
     let names = |agent_type: &str| {
@@ -663,7 +666,18 @@ async fn each_agent_type_gets_its_tools() {
     assert_eq!(
         session.available_tool_names(),
         [
-            "Read", "Write", "Edit", "Bash", "Gate", "Probe", "Monitor", "TaskStop", "Skill"
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Gate",
+            "Probe",
+            "Monitor",
+            "TaskStop",
+            "Skill",
+            "ScheduleWakeup",
+            "EnterWorktree",
+            "ExitWorktree"
         ]
     );
 }

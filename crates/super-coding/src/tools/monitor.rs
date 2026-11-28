@@ -252,7 +252,7 @@ impl AgentTool for MonitorTool {
                     .as_ref()
                     .and_then(|shell| shell.get())
                     .filter(|directory| directory.is_dir())
-                    .unwrap_or_else(|| session.manager.lock().unwrap().cwd().to_path_buf());
+                    .unwrap_or_else(|| session.working_folder());
                 let mut process = shell::script(
                     shell_path,
                     &command,
