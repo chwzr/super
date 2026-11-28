@@ -367,29 +367,85 @@ fn build_request(model: &Model, context: &Context, options: &StreamOptions) -> V
     body
 }
 
-/// Gemini rejects some JSON-schema keywords. Strip the unsupported ones.
-/// Its schema knows `minimum` and `maximum` but not their exclusive forms,
-/// which the file tools' line counts use.
+/// Gemini's function schemas are a subset of JSON schema: some keywords are
+/// rejected, and every schema needs a `type`. Strip the unsupported keywords
+/// and give a schema without a type one, so that a request never fails on a
+/// tool's schema. Its schema knows `minimum` and `maximum` but not their
+/// exclusive forms, which the file tools' line counts use.
 fn sanitize_schema(schema: &Value) -> Value {
-    match schema {
-        Value::Object(map) => {
-            let mut out = serde_json::Map::new();
-            for (k, v) in map {
-                if matches!(
-                    k.as_str(),
-                    "additionalProperties"
-                        | "$schema"
-                        | "default"
-                        | "exclusiveMinimum"
-                        | "exclusiveMaximum"
-                ) {
-                    continue;
-                }
-                out.insert(k.clone(), sanitize_schema(v));
-            }
-            Value::Object(out)
+    typed_schema(schema, "object")
+}
+
+/// Keywords Gemini's function schemas reject.
+fn unsupported_keyword(key: &str) -> bool {
+    matches!(
+        key,
+        "additionalProperties" | "$schema" | "default" | "exclusiveMinimum" | "exclusiveMaximum"
+    )
+}
+
+/// `schema` without the unsupported keywords, at any depth, and with a
+/// `type` wherever a schema stands: the parameters themselves, each
+/// property, `items` and the alternatives of `anyOf`/`oneOf`/`allOf`. A
+/// schema without one, such as `Workflow`'s `args`, which takes any value,
+/// becomes an object when it has properties, an array when it has items,
+/// and else `default_type`: a narrower type than any value, but one every
+/// value the model then sends is still valid for.
+fn typed_schema(schema: &Value, default_type: &str) -> Value {
+    let Value::Object(map) = schema else {
+        return schema.clone();
+    };
+    let mut out = serde_json::Map::new();
+    for (key, value) in map {
+        if unsupported_keyword(key) {
+            continue;
         }
-        Value::Array(items) => Value::Array(items.iter().map(sanitize_schema).collect()),
+        let value = match (key.as_str(), value) {
+            ("properties", Value::Object(properties)) => Value::Object(
+                properties
+                    .iter()
+                    .map(|(name, property)| (name.clone(), typed_schema(property, "string")))
+                    .collect(),
+            ),
+            ("items", _) => typed_schema(value, "string"),
+            ("anyOf" | "oneOf" | "allOf", Value::Array(options)) => Value::Array(
+                options
+                    .iter()
+                    .map(|option| typed_schema(option, "string"))
+                    .collect(),
+            ),
+            _ => without_unsupported_keywords(value),
+        };
+        out.insert(key.clone(), value);
+    }
+    let alternatives = ["anyOf", "oneOf", "allOf"]
+        .iter()
+        .any(|key| out.contains_key(*key));
+    if !out.contains_key("type") && !alternatives {
+        let kind = if out.contains_key("properties") {
+            "object"
+        } else if out.contains_key("items") {
+            "array"
+        } else {
+            default_type
+        };
+        out.insert("type".into(), json!(kind));
+    }
+    Value::Object(out)
+}
+
+/// Any other value inside a schema, without the unsupported keywords.
+fn without_unsupported_keywords(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, _)| !unsupported_keyword(key))
+                .map(|(key, value)| (key.clone(), without_unsupported_keywords(value)))
+                .collect(),
+        ),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(without_unsupported_keywords).collect())
+        }
         other => other.clone(),
     }
 }
@@ -423,6 +479,84 @@ mod vertex_tests {
                 "required": ["offset"],
             })
         );
+    }
+
+    /// Whether every schema in `schema` has a type or alternatives.
+    fn every_schema_is_typed(schema: &Value) -> bool {
+        let Some(map) = schema.as_object() else {
+            return true;
+        };
+        let typed = map.contains_key("type")
+            || ["anyOf", "oneOf", "allOf"]
+                .iter()
+                .any(|key| map.contains_key(*key));
+        let properties = map
+            .get("properties")
+            .and_then(Value::as_object)
+            .is_none_or(|properties| properties.values().all(every_schema_is_typed));
+        let items = map.get("items").is_none_or(every_schema_is_typed);
+        typed && properties && items
+    }
+
+    #[test]
+    fn a_property_without_a_type_gets_one_so_the_request_cannot_fail() {
+        // The shape of `Workflow`'s parameters: `args` takes any value and
+        // has a description only.
+        let workflow = json!({
+            "type": "object",
+            "properties": {
+                "script": {"type": "string", "maxLength": 100, "description": "script"},
+                "args": {"description": "args"},
+                "resumeFromRunId": {"type": "string", "pattern": "^wf_[a-z0-9-]{6,}$"},
+            },
+            "additionalProperties": false,
+        });
+        let sent = sanitize_schema(&workflow);
+        assert_eq!(
+            sent["properties"]["args"],
+            json!({"description": "args", "type": "string"})
+        );
+        assert_eq!(
+            sent["properties"]["script"],
+            workflow["properties"]["script"]
+        );
+        assert_eq!(
+            sent["properties"]["resumeFromRunId"],
+            workflow["properties"]["resumeFromRunId"]
+        );
+        assert!(every_schema_is_typed(&sent), "{sent}");
+
+        // Deeper too, and a schema says what it is by its keywords.
+        let nested = json!({
+            "properties": {
+                "list": {"items": {}},
+                "shape": {"properties": {"default": {"type": "boolean", "default": true}}},
+                "either": {"anyOf": [{"type": "string"}, {"description": "anything"}]},
+                "choice": {"enum": ["a", "b"]},
+            },
+        });
+        let sent = sanitize_schema(&nested);
+        assert!(every_schema_is_typed(&sent), "{sent}");
+        assert_eq!(sent["type"], "object");
+        assert_eq!(
+            sent["properties"]["list"],
+            json!({"type": "array", "items": {"type": "string"}})
+        );
+        // A property named like a keyword stays; the keyword in it goes.
+        assert_eq!(
+            sent["properties"]["shape"],
+            json!({"type": "object", "properties": {"default": {"type": "boolean"}}})
+        );
+        assert_eq!(
+            sent["properties"]["either"],
+            json!({"anyOf": [{"type": "string"}, {"description": "anything", "type": "string"}]})
+        );
+        assert_eq!(
+            sent["properties"]["choice"],
+            json!({"enum": ["a", "b"], "type": "string"})
+        );
+        // Parameters without anything are an object without properties.
+        assert_eq!(sanitize_schema(&json!({})), json!({"type": "object"}));
     }
 
     #[test]

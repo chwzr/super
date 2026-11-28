@@ -299,6 +299,12 @@
   placeholders until their text is written.
 - Gemini requests leave `exclusiveMinimum` and `exclusiveMaximum` out of tool
   schemas, which its API does not accept.
+- Gemini requests give every schema in a tool's parameters a type, which its
+  API requires: a parameter that takes any value, such as `Workflow`'s
+  `args`, is sent as a string, so a session with dynamic workflows on works
+  with Gemini models. A property named like a schema keyword, such as
+  `default`, is no longer left out. Other providers get the schema as the
+  tool has it.
 - `Bash` takes `timeout` in milliseconds, 120,000 by default and 600,000 at
   most, where it took seconds without a default; its `cwd` parameter is gone.
   The shell starts as a login shell from the user's profile (POSIX shells
