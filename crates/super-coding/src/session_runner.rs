@@ -2182,12 +2182,18 @@ impl AgentSession {
     /// again, built from its stored session the way
     /// [`create_agent_session`](Self::create_agent_session) builds a new one,
     /// with nothing read. A type that is gone is taken as `general-purpose`,
-    /// a model that is gone as this session's.
+    /// a model that is gone as this session's. An agent whose folder is gone
+    /// (the worktree this session worked in was removed) works in this
+    /// session's folder; one with a worktree of its own gets it back before
+    /// its next run.
     pub(crate) fn load_agent_session(
         self: &Arc<Self>,
         stored: &StoredAgent,
     ) -> anyhow::Result<Arc<Self>> {
-        let manager = SessionManager::open(&stored.file)?;
+        let mut manager = SessionManager::open(&stored.file)?;
+        if stored.worktree.is_none() && !manager.cwd().exists() {
+            manager.set_cwd(&self.working_folder());
+        }
         let types = self.agent_types();
         let agent_type = types
             .iter()

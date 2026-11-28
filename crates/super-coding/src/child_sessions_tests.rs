@@ -617,3 +617,90 @@ async fn an_agent_with_a_worktree_works_in_it_and_keeps_it_only_when_it_changed_
     // The kept one is still there.
     assert!(path.exists());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_agent_whose_folder_is_gone_is_loaded_and_resumed_in_its_parents_folder() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let sessions = root.join("sessions");
+    let (stream, seen) = lanes(vec![(
+        "child task",
+        vec![
+            Some(text("first report")),
+            Some(tool_call("b1", "Bash", json!({"command": "pwd"}))),
+            Some(text("second report")),
+        ],
+    )]);
+    let first = main_session(
+        stored_manager(&root, &sessions),
+        stream.clone(),
+        core_tools(&root),
+    );
+    // The session works in another folder, as in a worktree it entered,
+    // while the agent starts and runs there.
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    first.enter_worktree(crate::worktree::EnteredWorktree {
+        worktree: crate::worktree::Worktree {
+            path: elsewhere.clone(),
+            branch: "worktree-elsewhere".into(),
+            base: "0000000".into(),
+            project: root.clone(),
+        },
+        created: true,
+        original: root.clone(),
+        entered_at: 0,
+    });
+    registry(&first)
+        .start(
+            request("Work", "child task", false),
+            "call_1",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let work = registry(&first).list().pop().unwrap();
+    let stored = SessionManager::open(work.session_file.as_ref().unwrap()).unwrap();
+    assert_eq!(stored.cwd(), elsewhere.as_path());
+    let main_file = session_file(&first);
+    first.leave_worktree();
+    drop(first);
+    // The folder is removed later.
+    std::fs::remove_dir_all(&elsewhere).unwrap();
+
+    // Loading the session and the agent does not fail.
+    let second = main_session(
+        SessionManager::open(&main_file).unwrap(),
+        stream,
+        core_tools(&root),
+    );
+    assert_eq!(registry(&second).list()[0].id, work.id);
+    let loaded = registry(&second).session_of(&work.id).unwrap();
+    // The agent works in its parent's folder instead.
+    assert_eq!(loaded.working_folder(), root);
+    tool(&second, "SendMessage")
+        .execute(
+            "call_2",
+            json!({"to": work.id, "message": "go on"}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    let collected = Mutex::new(Vec::new());
+    let notice = next_notice(&second, &collected).await;
+    assert!(
+        notice.contains("<result>second report</result>"),
+        "{notice}"
+    );
+    let resumed = seen.of("child task");
+    let pwd = last_tool_result(&resumed[2].context);
+    assert!(!pwd.is_error, "{:?}", texts(&pwd));
+    assert_eq!(texts(&pwd)[0], root.display().to_string());
+    let system = resumed[1].context.system_prompt.clone().unwrap();
+    assert!(
+        system.contains(&format!("Current working directory: {}", root.display())),
+        "{system}"
+    );
+}

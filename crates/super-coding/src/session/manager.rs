@@ -1086,6 +1086,12 @@ impl SessionManager {
         &self.cwd
     }
 
+    /// Work in `cwd` from now on, for a session whose folder is gone; the
+    /// stored header keeps the folder the session was made in.
+    pub fn set_cwd(&mut self, cwd: &Path) {
+        self.cwd = cwd.to_path_buf();
+    }
+
     pub fn session_dir(&self) -> &Path {
         &self.session_dir
     }

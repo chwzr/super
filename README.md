@@ -306,7 +306,9 @@ the advanced mode; see [Mode](#mode).
 - Each child's conversation is saved beside its session, in the folder named
   after the session's file, and is no session of its own in `/resume` or the
   apps. A session you open again knows its children: `ListAgents` lists
-  them and `SendMessage` resumes one where it left off.
+  them and `SendMessage` resumes one where it left off. A child whose folder
+  is gone since, such as a worktree the session worked in and removed, goes
+  on in the session's folder.
 - A child's own background commands belong to its run: their notices reach
   the child, and its report comes when the last of them is done.
 - At most 20 children of a session run at once, and children nest three

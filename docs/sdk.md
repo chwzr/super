@@ -324,7 +324,11 @@ rebuilds its registry from that folder (`AgentRegistry::restore`), so
 `list` has the agents of earlier runs at once, and an agent's session is
 loaded from its file the first time it is needed: a `SendMessage` that
 resumes it, `session_of`, `agent_at`, or a client's `get_agent_entries`.
-`AgentRegistry::built_sessions` lists the loaded ones.
+`AgentRegistry::built_sessions` lists the loaded ones. An agent whose stored
+folder no longer exists, and that has no worktree of its own, is loaded to
+work in the session's folder (`AgentSession::working_folder`); its file
+keeps the folder it was made in (`SessionManager::set_cwd` changes the folder
+in memory only).
 
 A `Session` wraps every loaded agent session as a `Session` of its own, a
 view whose events are the agent's and which answers reading commands only
