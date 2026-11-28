@@ -7,12 +7,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use super_agent::DynTool;
 use super_ai::{Model, Registry, ThinkingLevel};
+use super_coding::agents::AgentResources;
 use super_coding::context_files;
 use super_coding::session::manager::{SessionManager, default_session_dir};
 use super_coding::session_runner::{AgentSession, SessionEventSink};
 use super_coding::settings::Settings;
 use super_coding::skills::Skill;
-use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt};
+use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt, prompt_context};
 use super_coding::trust;
 use super_mcp::McpManager;
 use super_tui::Theme;
@@ -28,6 +29,10 @@ pub struct Startup {
     pub enabled_models: Vec<Model>,
     pub initial_message: Option<String>,
     pub needs_login: bool,
+    /// Lines about tool names that are no tool's ([`tool_name_warnings`]),
+    /// which the terminal shows in its transcript; the other modes have
+    /// printed them on standard error.
+    pub warnings: Vec<String>,
 }
 
 pub struct ReloadedRuntime {
@@ -39,6 +44,8 @@ pub struct ReloadedRuntime {
     pub themes: Vec<Theme>,
     pub tools: Vec<DynTool>,
     pub system_prompt: String,
+    pub agent_resources: AgentResources,
+    pub tool_selection: super_coding::ToolSelection,
 }
 
 // The tool table lives in super-sdk so the command-line program and every SDK
@@ -84,6 +91,63 @@ fn configured_tools(
     Ok((names, manager))
 }
 
+/// Lines about the names in `--tools`, `--exclude-tools`, `defaultTools`
+/// and the `tools` of the agent types in `types` that are no tool's, which
+/// would otherwise be left out without a word.
+pub fn tool_name_warnings(
+    args: &Args,
+    settings: &Settings,
+    types: &[super_coding::agents::AgentType],
+) -> Vec<String> {
+    if args.no_tools {
+        return Vec::new();
+    }
+    let allow = args.tools.as_ref().map(|_| Args::split_csv(&args.tools));
+    super_sdk::tools::tool_name_warnings(
+        allow.as_deref(),
+        &Args::split_csv(&args.exclude_tools),
+        settings.default_tools.as_deref(),
+        types,
+    )
+}
+
+/// [`tool_name_warnings`] for a front end that builds no session of its
+/// own, such as the line front end attached to the daemon: the settings and
+/// agent types of `cwd`, with the project's when it is trusted. Unix only,
+/// as the line front end is.
+#[cfg(unix)]
+pub fn tool_name_warnings_in(args: &Args, cwd: &std::path::Path) -> Vec<String> {
+    let cli_trust = if args.approve {
+        Some(true)
+    } else if args.no_approve {
+        Some(false)
+    } else {
+        None
+    };
+    let bootstrap = Settings::load(cwd, false);
+    let trusted = trust::resolve_non_interactive(cwd, cli_trust, bootstrap.default_project_trust);
+    let settings = Settings::load(cwd, trusted);
+    let types = super_coding::agents::types::discover(cwd, trusted);
+    tool_name_warnings(args, &settings, &types)
+}
+
+/// Which of the tools a session adds itself `--tools`, `--exclude-tools` and
+/// the `-Name` entries of `defaultTools` let through.
+fn tool_selection(args: &Args, settings: &Settings) -> super_coding::ToolSelection {
+    let allow = args.tools.as_ref().map(|_| Args::split_csv(&args.tools));
+    super_sdk::tools::tool_selection(
+        allow.as_deref(),
+        &Args::split_csv(&args.exclude_tools),
+        settings.default_tools.as_deref(),
+    )
+}
+
+/// The `--skill` paths, made absolute against `cwd`, so the skills list in
+/// the system prompt names files `Read` takes as they are.
+fn skill_paths(args: &Args, cwd: &std::path::Path) -> Vec<PathBuf> {
+    args.skills.iter().map(|path| cwd.join(path)).collect()
+}
+
 /// Reload the file-backed inputs used by an existing interactive session.
 pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRuntime> {
     let cli_trust = if args.approve {
@@ -104,7 +168,7 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
     } else {
         context_files::discover(cwd)
     };
-    let skill_paths: Vec<PathBuf> = args.skills.iter().map(PathBuf::from).collect();
+    let skill_paths = skill_paths(args, cwd);
     let skills = if args.no_skills {
         super_coding::skills::discover(cwd, false, &skill_paths)
             .into_iter()
@@ -124,27 +188,22 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
         super_coding::prompts::discover(cwd, trusted, &template_paths)
     };
 
-    let files = context_files::system_prompt_files(cwd);
     let (tool_names, mcp) = configured_tools(args, cwd, trusted, &settings)?;
-    let custom = args.system_prompt.clone().or(files.replace);
-    let append = match (&args.append_system_prompt, &files.append) {
-        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
-        (Some(value), None) => Some(value.clone()),
-        (None, Some(value)) => Some(value.clone()),
-        (None, None) => None,
-    };
-    let system_prompt = build_system_prompt(&SystemPromptOptions {
-        custom_prompt: custom.as_deref(),
-        append: append.as_deref(),
-        selected_tools: &tool_names,
-        cwd: &cwd.display().to_string(),
-        context_files: &context,
-        skills: &skills,
-    });
+    let system_prompt = system_prompt(args, cwd, &settings, &tool_names, &context, &skills);
+    let agent_resources = agent_resources(
+        args,
+        cwd,
+        trusted,
+        &settings,
+        &tool_names,
+        &context,
+        &skills,
+    );
     let tools = build_tools(&tool_names, cwd, &settings, mcp.as_ref());
 
     let (theme, themes) = load_themes(args, cwd, trusted, &settings);
 
+    let tool_selection = tool_selection(args, &settings);
     Ok(ReloadedRuntime {
         settings,
         skills,
@@ -154,7 +213,80 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
         themes,
         tools,
         system_prompt,
+        agent_resources,
+        tool_selection,
     })
+}
+
+/// The system prompt of a session in `cwd`: `--system-prompt` or the
+/// project's replacement file, else the body of `settings.mode`, followed by
+/// `--append-system-prompt` and the project's append file, the project
+/// context, the skills and the working directory.
+pub fn system_prompt(
+    args: &Args,
+    cwd: &std::path::Path,
+    settings: &Settings,
+    tool_names: &[String],
+    context: &[context_files::ContextFile],
+    skills: &[Skill],
+) -> String {
+    let files = context_files::system_prompt_files(cwd);
+    let custom = args.system_prompt.clone().or(files.replace);
+    let append = appended_text(args, files.append);
+    build_system_prompt(&SystemPromptOptions {
+        mode: settings.mode,
+        custom_prompt: custom.as_deref(),
+        append: append.as_deref(),
+        selected_tools: tool_names,
+        cwd: &cwd.display().to_string(),
+        context_files: context,
+        skills,
+    })
+}
+
+/// What the agents of a session in `cwd` start from: the agent types of
+/// the definition files (the project's only when it is trusted), the
+/// context of the system prompt that [`system_prompt`] builds, without the
+/// skills (agents run in the advanced mode, which lists them for the
+/// `Skill` tool on each request), and the skills that tool loads.
+pub fn agent_resources(
+    args: &Args,
+    cwd: &std::path::Path,
+    trusted: bool,
+    settings: &Settings,
+    tool_names: &[String],
+    context: &[context_files::ContextFile],
+    skills: &[Skill],
+) -> AgentResources {
+    let files = context_files::system_prompt_files(cwd);
+    let append = appended_text(args, files.append);
+    AgentResources {
+        definitions: super_coding::agents::discover(cwd, trusted),
+        prompt_context: Some(prompt_context(&SystemPromptOptions {
+            mode: settings.mode,
+            custom_prompt: None,
+            append: append.as_deref(),
+            selected_tools: tool_names,
+            cwd: &cwd.display().to_string(),
+            context_files: context,
+            skills: &[],
+        })),
+        skills: skills.to_vec(),
+        project: Some(super_coding::agents::ProjectFolder {
+            folder: cwd.to_path_buf(),
+            trusted,
+        }),
+    }
+}
+
+/// `--append-system-prompt` followed by the project's append file.
+fn appended_text(args: &Args, file: Option<String>) -> Option<String> {
+    match (&args.append_system_prompt, file) {
+        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
+        (Some(value), None) => Some(value.clone()),
+        (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
 }
 
 /// Discover theme files from `--theme`, the `themes` setting, and the
@@ -374,15 +506,29 @@ pub fn session_file_guard(session: &Arc<AgentSession>) -> super_sdk::SessionFile
 
 /// `Err` when `path` is not the file this process has open and another
 /// process holds its lock.
+/// A guard for [`super_sdk::SessionOptions::file_guard`]: a file another
+/// process holds is refused before a session is built from it.
+pub fn held_file_guard() -> super_sdk::SessionFileGuard {
+    std::sync::Arc::new(|path: &std::path::Path| {
+        refuse_held_file(None, path).map_err(|held| {
+            format!(
+                "{held}. Close it there, or run `super` signed in to attach to it through the daemon"
+            )
+        })
+    })
+}
+
 fn refuse_held_file(
     current: Option<&std::path::Path>,
     path: &std::path::Path,
 ) -> std::result::Result<(), String> {
     let canonical = |path: &std::path::Path| std::fs::canonicalize(path).ok();
+    // The file this process holds is ours too while its lock keeper has
+    // not yet followed the session to the file it switched to.
     let ours = current.is_some_and(|current| {
         current == path
             || canonical(current).is_some_and(|current| Some(current) == canonical(path))
-    });
+    }) || super_daemon::session_lock::held_by_this_process(path);
     if !ours && super_daemon::session_lock::is_held(path) {
         return Err(format!(
             "{} (the SUPER daemon or another terminal)",
@@ -395,6 +541,8 @@ fn refuse_held_file(
 fn locate_session(reference: &str, dir: &std::path::Path) -> Result<PathBuf> {
     let as_path = PathBuf::from(reference);
     if as_path.is_file() {
+        // An agent's session is opened through the session that started it.
+        SessionManager::refuse_agent_session(&as_path)?;
         return Ok(as_path);
     }
     SessionManager::find_by_id(dir, reference)?
@@ -481,7 +629,7 @@ pub async fn build_startup(
     } else {
         context_files::discover(&cwd)
     };
-    let skill_paths: Vec<PathBuf> = args.skills.iter().map(PathBuf::from).collect();
+    let skill_paths = skill_paths(args, &cwd);
     let skills = if args.no_skills {
         super_coding::skills::discover(&cwd, false, &skill_paths)
             .into_iter()
@@ -502,23 +650,23 @@ pub async fn build_startup(
     };
 
     // System prompt.
-    let files = context_files::system_prompt_files(&cwd);
     let (tool_names, mcp) = configured_tools(args, &cwd, trusted, &settings)?;
-    let custom = args.system_prompt.clone().or(files.replace);
-    let append = match (&args.append_system_prompt, &files.append) {
-        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
-        (Some(a), None) => Some(a.clone()),
-        (None, Some(b)) => Some(b.clone()),
-        (None, None) => None,
-    };
-    let system_prompt = build_system_prompt(&SystemPromptOptions {
-        custom_prompt: custom.as_deref(),
-        append: append.as_deref(),
-        selected_tools: &tool_names,
-        cwd: &cwd.display().to_string(),
-        context_files: &context,
-        skills: &skills,
-    });
+    let system_prompt = system_prompt(args, &cwd, &settings, &tool_names, &context, &skills);
+    let agent_resources = agent_resources(
+        args,
+        &cwd,
+        trusted,
+        &settings,
+        &tool_names,
+        &context,
+        &skills,
+    );
+    let warnings = tool_name_warnings(args, &settings, &agent_resources.definitions);
+    if !interactive {
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+    }
 
     // Session.
     let dir = session_dir(args, &settings);
@@ -585,6 +733,8 @@ pub async fn build_startup(
         sink,
         !args.no_tools,
     );
+    session.set_agent_resources(agent_resources);
+    session.set_tool_selection(tool_selection(args, &settings));
 
     let initial_message = initial_message(args, &cwd)?;
 
@@ -601,6 +751,7 @@ pub async fn build_startup(
         enabled_models,
         initial_message,
         needs_login,
+        warnings,
     })
 }
 
@@ -608,6 +759,54 @@ pub async fn build_startup(
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn an_agents_session_file_is_not_opened_or_forked_as_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        let mut parent = SessionManager::create(dir.path(), Some(sessions.clone())).unwrap();
+        parent
+            .append_message(super_agent::AgentMessage::user("main"))
+            .unwrap();
+        let mut child = parent
+            .create_child_named(Some("a1b2c3d4e"), dir.path())
+            .unwrap();
+        child
+            .append_custom(
+                super_coding::session::manager::SUBAGENT_ENTRY,
+                Some(serde_json::json!({"agentId": "a1b2c3d4e"})),
+            )
+            .unwrap();
+        let child_file = child.session_file().unwrap().display().to_string();
+        let error = locate_session(&child_file, &sessions)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.ends_with("is the session of an agent, not a session of its own; open the session that started it."),
+            "{error}"
+        );
+        let parent_file = parent.session_file().unwrap().display().to_string();
+        assert_eq!(
+            locate_session(&parent_file, &sessions).unwrap(),
+            PathBuf::from(&parent_file)
+        );
+    }
+
+    #[test]
+    fn names_of_no_tool_are_named_in_a_warning() {
+        let mut settings = Settings {
+            default_tools: Some(vec!["read".into(), "+bash".into()]),
+            ..Default::default()
+        };
+        let args = Args::parse_from(["super", "--tools", "Read,edit"]);
+        assert_eq!(
+            tool_name_warnings(&args, &settings, &[]),
+            ["unknown tool names ignored: edit (use Edit), read (use Read), bash (use Bash)"]
+        );
+        settings.default_tools = Some(vec!["Read".into(), "-Monitor".into()]);
+        let args = Args::parse_from(["super", "--exclude-tools", "Bash"]);
+        assert!(tool_name_warnings(&args, &settings, &[]).is_empty());
+    }
 
     #[test]
     fn switching_to_a_file_another_process_holds_is_refused() {
@@ -633,12 +832,38 @@ mod tests {
             )
         );
         assert_eq!(refuse_held_file(Some(&ours), &free), Ok(()));
+        // A file this process's lock keeper still holds while the session
+        // moved on is not another process's.
+        let left = dir.path().join("2026_dddd4444-0000.jsonl");
+        std::fs::write(&left, "{}\n").unwrap();
+        let mut keeper = super_daemon::session_lock::SessionFileLock::new();
+        keeper.follow(Some(&left)).unwrap();
+        assert_eq!(refuse_held_file(Some(&free), &left), Ok(()));
+        drop(keeper);
+        assert!(!super_daemon::session_lock::held_by_this_process(&left));
         assert_eq!(
             refuse_held_file(Some(&ours), &ours),
             Ok(()),
             "the file this process holds itself"
         );
         assert!(refuse_held_file(None, &theirs).is_err());
+    }
+
+    #[test]
+    fn skill_paths_from_the_command_line_are_absolute() {
+        let cwd = std::env::temp_dir().join("project");
+        let elsewhere = std::env::temp_dir().join("shared-skills");
+        let args = Args::parse_from([
+            "super",
+            "--skill",
+            "skills/review",
+            "--skill",
+            elsewhere.to_str().unwrap(),
+        ]);
+        assert_eq!(
+            skill_paths(&args, &cwd),
+            [cwd.join("skills/review"), elsewhere]
+        );
     }
 
     #[test]

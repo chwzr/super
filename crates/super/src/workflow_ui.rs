@@ -64,6 +64,9 @@ pub(crate) enum ViewAction {
     Close,
     /// The user asked to save this run's script.
     Save,
+    /// The user stopped the whole run: the session stops its task, as
+    /// `/tasks` does, so that the model gets no notice of it.
+    StopRun,
 }
 
 /// Everything the view draws from, with no handle to the run itself.
@@ -189,7 +192,7 @@ impl WorkflowView {
                 // On the run, `x` stops everything. Inside a phase it stops the
                 // one selected agent, whose `agent()` call then returns null
                 // and lets the rest of the script carry on.
-                Focus::Run => self.run.stop(),
+                Focus::Run => return ViewAction::StopRun,
                 Focus::Phase | Focus::Agent => {
                     if let Some(agent) =
                         ViewState::visible_agents(&snapshot, self.state.phase, self.state.filter)

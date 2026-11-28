@@ -384,6 +384,41 @@ async fn a_session_stopped_before_its_first_message_resumes() {
     daemon.stop().await;
 }
 
+/// `switch_session` and `new_session` would put another file, or none,
+/// under a hosted session's id and lock: the daemon refuses them and names
+/// its own commands, and the session stays on its file.
+#[tokio::test]
+async fn switch_session_and_new_session_are_refused_in_a_hosted_session() {
+    let daemon = Daemon::start(Duration::ZERO, Duration::from_secs(60)).await;
+    let mut a = daemon.client("A").await;
+    let created = a
+        .call(json!({"type": "create_session", "cwd": daemon.work_dir(), "model": "mock/mock-1"}))
+        .await;
+    let id = created["data"]["session"]["sessionId"].clone();
+    let file = created["data"]["session"]["sessionFile"].clone();
+    a.call(json!({"type": "attach", "sessionId": id})).await;
+    let other = PathBuf::from(daemon.work_dir()).join("other.jsonl");
+    std::fs::write(&other, "").unwrap();
+    for (command, expected) in [
+        (
+            json!({"type": "switch_session", "sessionPath": other}),
+            "switch_session does not work in a session the SUPER daemon hosts; attach to the other session with resume_session or attach.",
+        ),
+        (
+            json!({"type": "new_session"}),
+            "new_session does not work in a session the SUPER daemon hosts; start a new session with create_session and attach to it.",
+        ),
+    ] {
+        let refused = a.call(command).await;
+        assert_eq!(refused["success"], false, "{refused}");
+        assert_eq!(refused["error"], expected);
+    }
+    let state = a.call(json!({"type": "get_state"})).await;
+    assert_eq!(state["data"]["sessionId"], id, "{state}");
+    assert_eq!(state["data"]["sessionFile"], file, "{state}");
+    daemon.stop().await;
+}
+
 #[tokio::test]
 async fn the_sweep_unloads_a_session_nobody_watches() {
     let daemon = Daemon::start(Duration::from_millis(50), Duration::from_millis(20)).await;

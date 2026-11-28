@@ -189,18 +189,20 @@ async fn a_prompt_streams_events_and_ends_with_agent_settled() {
 
 #[tokio::test]
 async fn a_tool_call_reaches_the_client_and_the_filesystem() {
+    // The file tools take absolute paths, anywhere on the machine.
+    let target = tempfile::tempdir().expect("temp dir");
+    let path = target.path().join("note.txt");
     let script = MockScript {
         turns: vec![
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
-                name: "write".into(),
-                arguments: json!({"path": "note.txt", "content": "written over rpc\n"}),
+                name: "Write".into(),
+                arguments: json!({"file_path": path, "content": "written over rpc\n"}),
             }],
             vec![MockTurn::Text("Wrote it.".into())],
         ],
     };
     let mut harness = Harness::start(script).await;
-    let path = harness._directory.path().join("note.txt");
 
     harness
         .send(json!({"type": "prompt", "message": "write a note"}))
@@ -213,7 +215,7 @@ async fn a_tool_call_reaches_the_client_and_the_filesystem() {
         .iter()
         .find(|value| value["type"] == "tool_execution_start")
         .expect("tool_execution_start");
-    assert_eq!(start["toolName"], "write");
+    assert_eq!(start["toolName"], "Write");
     let end = lines
         .iter()
         .find(|value| value["type"] == "tool_execution_end")
@@ -286,4 +288,68 @@ async fn responses_are_decodable_with_the_shipped_client_helper() {
         }
         other => panic!("expected a response, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_stored_worktree_that_is_gone_is_announced_to_the_client_of_a_deferred_session() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = directory.path().canonicalize().unwrap();
+    let provider = MockProvider::start(&root, MockScript::text("hi"))
+        .await
+        .expect("mock provider starts");
+    // A session stored while it worked in a worktree that is gone since.
+    let gone = root.join("gone-worktree");
+    let mut manager = super_coding::SessionManager::create(&root, Some(root.join("sessions")))
+        .expect("a stored session");
+    manager
+        .append_message(super_agent::AgentMessage::user("hi"))
+        .unwrap();
+    let entered = super_coding::EnteredWorktree {
+        worktree: super_coding::worktree::Worktree {
+            path: gone.clone(),
+            branch: "worktree-gone".into(),
+            base: "0000000".into(),
+            project: root.clone(),
+        },
+        created: true,
+        original: root.clone(),
+        entered_at: 0,
+    };
+    manager
+        .append_custom("session_worktree", Some(json!({"worktree": entered})))
+        .unwrap();
+    let file = manager.session_file().unwrap().to_path_buf();
+    drop(manager);
+
+    let session: Arc<Session> = Session::create(SessionOptions {
+        cwd: root.clone(),
+        model: Some("mock/mock-1".into()),
+        models_file: Some(provider.catalog_path()),
+        no_context_files: true,
+        session: super_sdk::SessionSource::Open(file),
+        defer_stored_work: true,
+        ..Default::default()
+    })
+    .await
+    .expect("session builds");
+    let (client_write, server_read) = tokio::io::duplex(64 * 1024);
+    let (server_write, client_read) = tokio::io::duplex(1024 * 1024);
+    tokio::spawn(async move {
+        let _ = super_sdk::rpc::serve_streams(session, server_read, server_write).await;
+    });
+    let mut harness = Harness {
+        _provider: provider,
+        _directory: directory,
+        input: client_write,
+        output: BufReader::new(client_read),
+    };
+    harness.send(json!({"id": "1", "type": "ping"})).await;
+    let seen = harness.read_until(|line| line["type"] == "response").await;
+    let moved = seen
+        .iter()
+        .find(|line| line["type"] == "worktree_changed")
+        .unwrap_or_else(|| panic!("no worktree_changed in {seen:?}"));
+    assert_eq!(moved["missing"], json!(gone.display().to_string()));
+    assert_eq!(moved["worktree"], Value::Null);
+    assert_eq!(moved["folder"], json!(root.display().to_string()));
 }

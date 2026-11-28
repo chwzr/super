@@ -179,3 +179,136 @@ async fn a_signed_in_super_attaches_to_the_daemon_and_leaves_the_session_running
         .expect("wait");
     assert_eq!(exit.code(), Some(0));
 }
+
+/// Read `stdout` until it has a line with `text`; everything read so far.
+async fn read_until(
+    stdout: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    seen: &mut String,
+    text: &str,
+) {
+    let found = tokio::time::timeout(Duration::from_secs(30), async {
+        while let Ok(Some(line)) = stdout.next_line().await {
+            seen.push_str(&line);
+            seen.push('\n');
+            if line.contains(text) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+    assert!(found, "no line with {text:?} in:\n{seen}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctrl_c_in_the_line_front_end_stops_the_background_tasks_while_idle() {
+    use tokio::io::AsyncBufReadExt as _;
+    let sandbox = Sandbox::new();
+    let script = MockScript {
+        turns: vec![
+            vec![super_sdk::mock::MockTurn::ToolCall {
+                id: "call_a".into(),
+                name: "Bash".into(),
+                arguments: serde_json::json!({"command": "sleep 30; echo late", "run_in_background": true}),
+            }],
+            vec![super_sdk::mock::MockTurn::Text("It runs.".into())],
+        ],
+    };
+    let provider = MockProvider::start(sandbox.path("mock"), script)
+        .await
+        .expect("mock provider");
+    let socket = sandbox.socket();
+    let mut daemon = sandbox.command(
+        "daemon-home",
+        &["daemon", "run", "--socket", socket.to_str().unwrap()],
+    );
+    daemon
+        .env("SUPER_MODELS_FILE", provider.catalog_path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut daemon = daemon.spawn().expect("spawn the daemon");
+    wait_for(&socket).await;
+
+    let mut client = sandbox
+        .command("client-home", &["--model", "mock/mock-1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn super");
+    let mut input = client.stdin.take().unwrap();
+    let mut stdout = tokio::io::BufReader::new(client.stdout.take().unwrap()).lines();
+    let mut seen = String::new();
+    input.write_all(b"start it\n").await.unwrap();
+    read_until(&mut stdout, &mut seen, "It runs.").await;
+    // The turn is over and the command runs in the background: the
+    // interrupt stops it and the front end stays.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let pid = client.id().expect("a running client") as i32;
+    // SAFETY: a signal to the child this test started.
+    unsafe {
+        libc::kill(pid, libc::SIGINT);
+    }
+    read_until(&mut stdout, &mut seen, "stopped 1 background task").await;
+    // With nothing running, the next one detaches.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    unsafe {
+        libc::kill(pid, libc::SIGINT);
+    }
+    read_until(&mut stdout, &mut seen, "detached from").await;
+    drop(input);
+    let exit = tokio::time::timeout(Duration::from_secs(20), client.wait())
+        .await
+        .expect("super finished in time")
+        .expect("wait");
+    assert_eq!(exit.code(), Some(0), "{seen}");
+
+    let stopped = output(sandbox.command("client-home", &["daemon", "stop"]), "").await;
+    assert!(String::from_utf8_lossy(&stopped.stdout).contains("stopped"));
+    let _ = tokio::time::timeout(Duration::from_secs(20), daemon.wait()).await;
+}
+
+/// The line front end names the tool names of the settings that no tool
+/// has, on standard error, as every other way to start a session does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_line_front_end_names_tool_names_no_tool_has() {
+    let sandbox = Sandbox::new();
+    std::fs::write(
+        sandbox.path("client-home/.super/agent/settings.json"),
+        r#"{"defaultTools":["read","bash","Edit"]}"#,
+    )
+    .unwrap();
+    let provider = MockProvider::start(sandbox.path("mock"), MockScript::text("Answer one."))
+        .await
+        .expect("mock provider");
+    let socket = sandbox.socket();
+    let mut daemon = sandbox.command(
+        "daemon-home",
+        &["daemon", "run", "--socket", socket.to_str().unwrap()],
+    );
+    daemon
+        .env("SUPER_MODELS_FILE", provider.catalog_path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut daemon = daemon.spawn().expect("spawn the daemon");
+    wait_for(&socket).await;
+
+    let attached = output(
+        sandbox.command("client-home", &["--model", "mock/mock-1"]),
+        "hi\n",
+    )
+    .await;
+    let stdout = String::from_utf8_lossy(&attached.stdout);
+    let stderr = String::from_utf8_lossy(&attached.stderr);
+    assert_eq!(attached.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("attached to session"), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("warning: unknown tool names ignored: read (use Read), bash (use Bash)"),
+        "{stderr}"
+    );
+
+    let stopped = output(sandbox.command("client-home", &["daemon", "stop"]), "").await;
+    assert!(String::from_utf8_lossy(&stopped.stdout).contains("stopped"));
+    let _ = tokio::time::timeout(Duration::from_secs(20), daemon.wait()).await;
+}

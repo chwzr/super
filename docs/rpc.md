@@ -54,7 +54,10 @@ Failures are responses and do not close the connection:
 }
 ```
 
-Malformed input uses command `parse`.
+A line that is no JSON object, or whose `type` is missing or unknown, is
+answered with command `parse`. A known command whose fields do not fit, such
+as `stop_task` without `taskId`, is answered with its own command. Either
+response carries the line's `id` when it has one.
 
 ## Commands
 
@@ -65,15 +68,25 @@ All payload fields use camelCase.
 - `{"type":"prompt","message":"...","images":[],"streamingBehavior":"steer"}`: accept a prompt. `streamingBehavior` is optional only while idle. Use `steer` or `followUp` while busy.
 - `{"type":"steer","message":"...","images":[]}`: deliver after current-turn tools.
 - `{"type":"follow_up","message":"...","images":[]}`: deliver once the agent stops.
-- `{"type":"abort"}`: cancel and respond once idle.
+- `{"type":"abort"}`: cancel the turn and respond once idle. Unless the
+  client said in `initialize` that it shows a stop control for each
+  background task, `abort` also stops the background tasks (see
+  [Background tasks](#background-tasks)).
 - `{"type":"clear_queue"}`: returns `data.messages`.
 - `{"type":"ping"}`: returns `data.pong: true`.
+- `{"type":"initialize","taskControls":true}`: what the client says about
+  itself, best as its first command. `taskControls: true` means it shows a
+  stop control for each background task, so its `abort` cancels the turn
+  only. It counts for the client that sent it: in `--mode rpc` that is every
+  direct client of the process, a remote client by its name. A client that
+  never sends it, or sends `false`, is one without such controls. A daemon
+  client says this in `hello` instead ([daemon.md](daemon.md#the-connection)).
 
 An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### State and sessions
 
-- `get_state`: model, thinking level, streaming state, session id/file/name, message count, tool names, queue modes, retry and compaction state.
+- `get_state`: model, thinking level, streaming state, session id/file/name, message count, tool names, queue modes, retry and compaction state, `mode` (`basic` or `advanced`) with the `subagents` and `workflows` switches, the session's folder (`cwd`) and, while it works in one, its `worktree` (`path`, `branch`, `created`: whether `EnterWorktree` made it, `original`: the folder it goes back to), else `null`.
 - `get_messages`: active conversation after branching/compaction.
 - `get_entries`, optionally `since`: append-only entries after a durable entry-id cursor and current `leafId`.
 - `get_tree`: recursive `{entry, children, label}` nodes and `leafId`.
@@ -82,6 +95,17 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 - `set_session_name` with `name`, and `auto: true` for a title a client generated from the first prompt rather than a name someone typed (front ends take it as the title without showing a rename).
 - `new_session`: replace active history with an empty in-memory session.
 - `switch_session` with `sessionPath`.
+  Both abort a turn that runs and answer once it has ended, so that what is
+  left of it is written into the conversation it belongs to, as `abort`
+  without task controls does for the turn; the conversation's workflow runs
+  are stopped, and each run's end is stored in the conversation it started
+  in, with no `workflow_outcome` after the move. A `steer` or `follow_up`
+  still queued is dropped, as `clear_queue`
+  drops it. A notice, a monitor's events or an agent's message that waited
+  for the turn is written into the conversation that is left, where the
+  model reads it with that conversation's next prompt, and a wake-up that
+  came due is pending there again, so it comes at once when that
+  conversation is loaded. The other conversation gets none of it.
 - `fork` with `entryId`: move to the selected point and return editable user text.
 - `get_fork_messages`: user entries available for branching.
 - `export_html`, optional `outputPath`: writes an HTML transcript and returns its path.
@@ -98,12 +122,65 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 - `set_steering_mode` / `set_follow_up_mode` with `mode` `all` or `one-at-a-time`.
 - `compact`, optional `customInstructions`.
 - `set_auto_compaction` / `set_auto_retry` with boolean `enabled`.
+- `set_mode` with optional `mode` (`basic` or `advanced`), `subagents` and `workflows` (booleans, the Subagents and Dynamic workflows switches): sets those given for this session from now on, builds its system prompt again when the mode changed, and answers with all three (`data.mode`, `data.subagents`, `data.workflows`); with none given it only reads them. A run that goes on gets the new system prompt and tools with its next request, and a tool the change took away no longer runs. The user's settings file is not changed. A mode it does not know is refused: `mode 'expert' is not basic or advanced.` Turning Subagents off, or the mode to `basic`, stops the session's agents and workflow runs, as `/settings` does.
 
 ### Tools and shell
 
-- `get_tools`: enabled tool names.
-- `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
+- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`, or when the tool allowlist names them, `Skill` comes with `Read` or `Bash`, and so do `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` in a session that is no agent's, with the Subagents switch on `Agent`, `SendMessage`, `ListAgents` and `TaskStop` are there, and with the Dynamic workflows switch on too, `Workflow` and `Skill`. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Skill`, `Monitor`, `TaskStop`, `ScheduleWakeup`, `EnterWorktree` or `ExitWorktree` tools.
+- `bash` with `command`: runs immediately, in the session's working folder (its worktree while it works in one), streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
+
+### Tasks
+
+See [Background tasks](#background-tasks) for what a task is.
+
+- `get_tasks`: `data.tasks`, every background task the session remembers,
+  oldest first, as the `task` object below.
+- `stop_task` with `taskId`, the task's id, name or description: stops one
+  running task and returns `data.task` with `status: "stopped"`. A name or
+  description names the running task that has it, also when a task that
+  ended has it too. Fails when no task has that id, name or description,
+  when several running tasks have it, or when the task is not running any
+  more.
+
+### Agents
+
+See [Agents](#agents-1) for how an agent's session is stored and sent.
+
+- `get_agents`, optional `agent`: `data.agents`, the agents of the session,
+  oldest first, those of an earlier run of the session included: the ones
+  it started with the `Agent` tool, the agents of its workflow runs, and the
+  child sessions of its `/loop` jobs with an interval and its `/autoresearch`
+  jobs. Each is `{id, path, name, type, status, background, sessionFile,
+  worktree, origin}`: `path` is what the agent commands take, `status` is
+  `running`, `completed`, `failed` or `stopped`, `background` says whether
+  its latest run is or was a background task, and `sessionFile` and
+  `worktree` (`{path, branch, base, project}`) are there when the agent has
+  them. `origin` says where it comes from: `{"kind": "agent"}` for an
+  `Agent` call (or a skill that runs in an agent), `{"kind": "workflow",
+  "runId": "wf_…"}` for an agent of a workflow run, and `{"kind": "job",
+  "jobId": 3, "jobKind": "loop"}` (or `"autoresearch"`) for a job's child
+  session. A workflow's agent has the `type` `workflow` and the name of its
+  `label`, else of its task (`wf_<phase>_<n>`); a job's child has the type
+  `loop` or `autoresearch` and the name `loop_<job id>` or
+  `autoresearch_<job id>`; its status is that of its latest iteration. With
+  `agent`, the agents that agent started.
+- `get_agent_entries` with `agent`, optional `since`: the entries of the
+  agent's session, its transcript, as `get_entries` answers for the session
+  (`entries` after the `since` entry id, and `leafId`), with the agent's
+  `sessionId` and `sessionFile`. Fails when no agent has that path.
+
+`agent` is an agent's `path`: its id for an agent of this session, and the
+ids from there down, separated by `/`, for an agent of an agent
+(`a1b2c3d4e/a5f6g7h8i`). An agent that had ended before the session was
+loaded again is read from its stored session.
+
+An agent's live events reach a client through the platform on the agent's
+nested `events` stream ([Agents](#agents-1)) and, on the daemon's socket,
+after `subscribe_agent` with the agent's path, as `agent_event` lines that
+carry each event unchanged ([daemon.md](daemon.md#an-agents-events)).
+`--mode rpc` and the SDK's `execute` have no such command: an embedder
+follows an agent with `Session::agent_view(path)` and its `events`.
 
 ### Approvals
 
@@ -124,15 +201,32 @@ Lifecycle: `agent_start`, `agent_end`, `agent_settled`, `turn_start`, `turn_end`
 `message_start`, `message_update`, `message_end`.
 
 Tools: `tool_execution_start`, `tool_execution_update`, `tool_execution_end`,
-and direct-shell `bash_execution_update`.
+and direct-shell `bash_execution_update`. The `args` of `Read`, `Edit` and
+`Write` name the file in `file_path`, an absolute path; `Edit` has
+`old_string`, `new_string` and `replace_all`. Sessions stored before this
+change carry `path` (and `edits` for `edit`) under the old lower-case tool
+names. An `Edit` result keeps its unified diff in `details.diff`.
 
 Session: `queue_update`, `compaction_start`, `compaction_end`, `retry`,
 `model_changed`, `workflow_progress`, `workflow_outcome`, and `event_lag`.
 
-Approvals: `approval_request` with `approvalId`, `kind`, `title`, `detail`,
-and `choices` (`[{id, label, detail}]`); `approval_resolved` with
-`approvalId`, `choice`, and `by` (`local` for the terminal, `rpc` for a direct
-client, otherwise the remote device name).
+Background tasks: `task_started`, `task_updated` (its `progress` line
+changed) and `task_ended`, each with `task`.
+
+Approvals: `approval_request` with `approvalId`, `kind` (`workflow`,
+`trust`, `login`, `worktree` or `other`), `title`, `detail`, and `choices`
+(`[{id, label, detail}]`); `approval_resolved` with `approvalId`, `choice`,
+and `by` (`local` for the terminal, `rpc` for a direct client, otherwise the
+remote device name). A `worktree` question comes when a session that works
+in a worktree it made with `EnterWorktree` ends: its `detail` is the
+worktree's folder and its choices are `keep` and `remove`; see
+[Wake-ups, loops and worktrees](#wake-ups-loops-and-worktrees). A `workflow`
+question comes before every run while `workflows.confirm` is on, in
+`--mode rpc` too; its choices are `approve` and `cancel`, and the run waits
+for the answer. When the turn is stopped (`abort`) while it waits, or the
+session's runs are (Dynamic workflows or Subagents turned off, the mode set
+to `basic`), the question is withdrawn: `approval_resolved` with `cancel`
+by `local`, and no run starts.
 
 Commands from another surface: `command_applied` with `origin` (the name
 that surface gave itself: a daemon client's `hello.name`, the device a
@@ -151,6 +245,200 @@ started itself when the session is mirrored for remote control.
 `text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`,
 `toolcall_start`, `toolcall_delta`, `toolcall_end`, `done`, and `error`. Assemble
 live output by `contentIndex`. `message_end.message` is authoritative.
+
+## Background tasks
+
+A background task is work a tool started that keeps running after the tool
+call returned: a shell command, a monitor, an agent or a workflow. Every
+session keeps a list of them.
+
+```json
+{"type":"task_started","task":{"id":"b3k9x0q2a","kind":"shell","description":"npm test","status":"running","toolUseId":"call_1","outputFile":"/tmp/super-tasks/…/b3k9x0q2a.output","startedAt":1764280000000}}
+{"type":"task_ended","task":{"id":"b3k9x0q2a","kind":"shell","description":"npm test","status":"completed","toolUseId":"call_1","outputFile":"/tmp/super-tasks/…/b3k9x0q2a.output","summary":"…","startedAt":1764280000000,"endedAt":1764280042000}}
+```
+
+A `task` has `id`, `kind` (`shell`, `monitor`, `agent` or `workflow`),
+`description`, `status` (`running`, `completed`, `failed` or `stopped`),
+`startedAt` and, once it ended, `endedAt` (milliseconds since the Unix
+epoch), and, when they are known, `name`, `toolUseId` (the tool call that
+started it), `outputFile` (its full output or transcript), `progress` and
+`summary`.
+
+When a task ends by itself, the session queues a notice for the agent. While
+the agent is idle the notice starts a new run: `agent_start`, the notice's
+`message_start` and `message_end`, the reply, `agent_settled`. While it works
+the notice arrives at its next step, between two tool rounds. Notices that
+wait together arrive together, in one run or one step; `one-at-a-time` of
+`set_steering_mode` and `set_follow_up_mode` paces only what a client queued
+with `steer` and `follow_up`. The notice is
+a message with `role: "custom"` and `customType: "task_notification"`; its
+`details` carry the `task` and the `outcome` (`status`, `summary` and, when
+there is one, `result` and `usage`). Show it as a notice, not as something
+the user typed. It is part of the session history, so `get_entries` and
+`get_messages` return it too. A task stopped with `stop_task`, with `abort`
+or by the model gets no notice: it ends with `task_ended` and
+`status: "stopped"`.
+
+A `Workflow` call starts its run as a task of kind `workflow` whose id is the
+run's id (`wf_` and eight letters or digits) and whose `name` is the call's
+`name`, else the script's, while no other running task has it; its notice's `result` is the
+workflow's answer. The call's result has `details.runId`, `details.name`,
+`details.scriptPath` (where the run's script was saved, or `null`) and
+`details.resumedFrom` (the run whose finished agent calls it replays, or
+`null`). The question before a run starts is the `approval_request` of kind
+`workflow` above. The session stores each run's start and end (`custom`
+entries with `customType: "workflow_run"`: `runId`, `name`, `description`,
+`status`, `at`). A run that the end of its process cut off is announced once
+when the session is loaded again: a notice with `status: "stopped"`, the run's
+id as `task.id`, a summary that says how many of its agent calls had
+finished, and a placeholder `outcome.result`; its stored entry then says
+`stopped` with `cutOff: true`. A skill that runs in an agent of its own is a `Skill` call
+whose result has `details.skill` and `details.agent`, and in the background
+a task of kind `agent`.
+
+A monitor (`kind: "monitor"`) also reaches the agent while it runs: each of
+its events is a `custom` message with `customType: "monitor_event"`, queued
+and delivered the way a notice is. Its `details` carry the `task`, the
+`event` (the lines of the event) and `omittedLines` (lines left out of a
+long event, which are in the task's output file). Show it as a notice too.
+
+A message between agents (`SendMessage`) is a `custom` message with
+`customType: "agent_message"`, queued and delivered the same way. Its
+`details` carry `from` (`main`, or the id of the agent that sent it), `to`,
+`summary` (or `null`) and `message`. The main session gets one when one of
+its agents writes to `main`. Show it as a notice too.
+
+An agent in the background (`kind: "agent"`) is a task with the agent's id
+and, while no other running task has it, the agent's name as its `name`, so
+`stop_task` takes either; its notice's `result` is the agent's report and `outputFile` its stored
+transcript. A message that resumes an agent that had ended starts a new run
+of the same task id. An `Agent` call's `details` carry the `agent` (`id`,
+`name`, `type`, `status`, `background`, `sessionFile`, and `worktree` while
+it has one) and, for an agent the call waited for, its `usage`; a
+`SendMessage` call's carry `to` and, for an agent, the `agent` and
+`resumed`. The notice of an agent that left changes in its worktree names it
+in `outcome.worktree`.
+
+A `Bash` call with `run_in_background` answers at once; its `details` carry
+`backgroundTaskId` and `outputFile`. A `Bash` call in the foreground has
+`details.exitCode` and, when the output was too long to return,
+`details.fullOutputPath`. A `Monitor` call's `details` carry `taskId`,
+`outputFile` and `timeoutMs`, and a `TaskStop` call's the stopped `task`.
+
+`abort` cancels the turn. Whether the background tasks stop with it depends
+on the client: one that shows a stop control for each task (`initialize`
+with `taskControls: true`, or `hello.taskControls` on the daemon) keeps them
+running and stops them one by one with `stop_task`; any other client stops
+them all with `abort`, since it has no other way to.
+
+## Wake-ups, loops and worktrees
+
+A `ScheduleWakeup` call answers at once. Its `details.wakeup` is the pending
+wake-up: `id`, `delaySeconds` (kept between 60 and 3600), `dueAt`
+(milliseconds since the Unix epoch), `reason`, `noop`, `prompt` and, during a
+self-paced loop of the terminal, `job` and `round`; `details.requestedDelaySeconds`
+is the delay the model asked for. A call with `stop` has `details.stopped`
+(`loop` with its `round`, or the cancelled `wakeup`, or `null`). A session has
+one pending wake-up. It is stored in the session with its self-paced loop (a
+`custom` entry with `customType: "session_wakeup"`: `wakeup` and `loop`, with
+the loop's `job`, `goal`, `round` and `maxRounds`), and comes back when the
+session is loaded again: a wake-up whose time has passed fires at once, a
+later one at its time, and the loop goes on in the round it was in (with a
+new `job` id); a loop that was cut off before its round scheduled a wake-up
+runs that round again.
+
+When a wake-up outside a loop is due, the session queues a `custom` message
+with `customType: "wakeup"`: its text is the wake-up's `prompt`, and its
+`details.wakeup` is the wake-up. It starts a run like a notice when the agent
+is idle. While the agent works it waits until the run's last turn has ended
+and then comes as one more turn of that run, before its `agent_settled`, as
+a message queued with `follow_up` does. A round of a
+self-paced loop (the terminal's `/loop` without an interval in the advanced
+mode) is a `custom` message with `customType: "loop_round"`, whose
+`details` carry `job`, `round`, `maxRounds`, `prompt` (the loop's goal) and
+`wakeup` (the wake-up that started it, or `null` for the first round). Show
+both as notices; `reason` and `noop` are worth showing with them.
+
+An `EnterWorktree` call's `details.worktree` has `worktree` (`path`,
+`branch`, `base`, `project`), `created` (`false` for a worktree entered by
+its `path`), `original` (the folder the session goes back to) and
+`enteredAt`, and `details.start` is the ref a new branch started from
+(`refs/remotes/origin/<branch>`, or `null` for `HEAD`). An `ExitWorktree`
+call's `details` carry `action`, `left` (whether the session left a
+worktree) and `worktree`, and `removed` for a removed one. While a session
+works in a worktree, its tools, the agents it starts and the working
+directory in its system prompt use the worktree. Each move is the event
+`worktree_changed`, with `folder` (the folder the session works in now) and
+`worktree` (as in `get_state`, or `null`). The worktree is stored in the
+session (a `custom` entry with `customType: "session_worktree"`): a session
+loaded again works in it again while its folder exists. When the folder is
+gone, the session works in its own folder, stores that, and says so once:
+`worktree_changed` then also carries `missing`, the worktree's folder, and
+the stored entry has `missing` too, which the terminal shows as a line.
+`--mode rpc` does this, and starts a stored wake-up that is due, once its
+client listens: over standard input at once, with `--rpc-listen` when the
+first WebSocket client has connected.
+
+A session that ends in a worktree it made asks its clients whether to keep
+or remove it, with an `approval_request` of kind `worktree` (above). Answer
+it with `answer_approval` and `keep` or `remove`; `remove` stops the
+session's background tasks and deletes the worktree with its branch and its
+changes. The interactive terminal asks when it quits; the daemon asks when a
+client stops the session with `stop_session`, and keeps the worktree when no
+answer comes within a minute. `--mode rpc` cannot ask at its end: it keeps
+the worktree, and its last line on standard output, after the client closed
+its input, is the event `worktree_kept` with the `worktree` (as in
+`get_state`); with `--rpc-listen` it names the worktree on standard error
+instead. The session is in that worktree again when it is loaded.
+
+## Agents
+
+An agent the `Agent` tool starts runs in a session of its own, which is
+stored and sent like the session itself, but is not a session of its own in
+any list. So does every agent of a workflow run and the child session of a
+`/loop` job with an interval or an `/autoresearch` job; they differ only in
+their `origin` and in that the model's `ListAgents` and `SendMessage` do not
+reach them, since they run as their workflow or job says:
+
+- **Stored** next to its parent's session file, in a folder named after it:
+  `<session file without .jsonl>/agents/<agent id>.jsonl`, and an agent's
+  agents one folder further. The listings of stored sessions (the terminal's
+  pickers, the daemon's `list_sessions`, the platform's registry) leave them
+  out, and `--session <id>` does not find them. `--session` and `--fork`
+  with the path of a child's file, `switch_session` and the SDK's
+  `SessionSource::Open` and `Fork` refuse it: "<file> is the session of an
+  agent, not a session of its own; open the session that started it." The child's first entries
+  are a `custom` entry with `customType: "subagent"` (`agentId`, `taskName`,
+  `agentType`, `agentTypeSource` (`built-in` or the type's definition file,
+  for an agent an `Agent` call started), `origin`, `canonicalPath`, `depth`,
+  `toolUseId`, `parentSessionId`, `model`, `thinkingLevel`, `worktree`), and
+  every run's end adds one with
+  `customType: "agent_run"` (`status`, `background`, `worktree`).
+- **Rebuilt** when the session is loaded again, after a restart or in the
+  daemon: `get_agents` and the model's `ListAgents` list the stored agents,
+  and a message to one resumes it from its transcript. An agent whose run was
+  cut off by the end of its process counts as `stopped`.
+- **Sent** to its own S2 streams, nested under its parent's, while the
+  session is mirrored for remote control:
+  `sessions/<machine>/<session>/agents/<agent id>/events`, `entries` and
+  `commands`, one level further for an agent of an agent. They are written
+  from the moment the agent's session is loaded: when it starts, and when a
+  stored one is resumed or read. The events are those of a session, from the
+  agent's `agent_start` to its `agent_settled`; the entries are its
+  transcript.
+- **Read only.** An agent runs as its parent says. Its `commands` stream,
+  and the view of its session the SDK hands out, answer the reading
+  commands (`get_*` and `ping`) and refuse every other one with "An agent's
+  session takes reading commands only; send this command to the session that
+  started the agent." Stop an agent with `stop_task` on its parent's
+  session; the model writes to it with `SendMessage`.
+
+An agent started with `isolation: "worktree"` works in a git worktree of its
+own, `.super/worktrees/agent-<id>` at the top of the project (its main
+working tree, also while the session works in a worktree), on the new
+branch `worktree-agent-<id>`. When a run ends with nothing changed in it, the
+worktree and its branch are removed; otherwise both stay, and the agent's
+`worktree` names them. A resumed agent gets its worktree back first.
 
 ## Minimal Python subprocess client
 

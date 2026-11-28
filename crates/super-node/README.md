@@ -6,7 +6,7 @@ Bun, and Deno's Node-compatibility layer.
 ```ts
 import { Session } from "@chwzr/super-agent-sdk"
 
-const session = await Session.create({ tools: ["read", "bash"] })
+const session = await Session.create({ tools: ["Read", "Bash"] })
 const events = session.events()
 session.promptDetached("List the files here")
 for await (const event of events) {

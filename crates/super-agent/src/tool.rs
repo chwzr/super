@@ -1,6 +1,9 @@
 //! The tool contract used by the agent runtime.
 
+use crate::background::{ShellDirectory, TaskHost};
+use crate::file_state::FileStates;
 use serde_json::Value;
+use std::path::Path;
 use std::sync::Arc;
 use super_ai::{ContentBlock, ToolDef, Usage};
 use tokio_util::sync::CancellationToken;
@@ -49,6 +52,45 @@ impl ToolResult {
 /// Sink for streaming partial tool results (e.g. live bash output).
 pub type ToolUpdateSink = Arc<dyn Fn(ToolResult) + Send + Sync>;
 
+/// The free room of a session's context, in tokens, as the session estimates
+/// it at the moment of the call. `None` when it cannot tell.
+pub type ContextRoomFn = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// What a tool may use of the session it runs for.
+///
+/// A session binds its tools to its own `ToolSession` with
+/// [`AgentTool::for_session`], so that two sessions sharing one tool list (a
+/// parent and its child agent) keep apart what is per session. A tool built
+/// outside a session gets a fresh one of its own.
+#[derive(Clone, Default)]
+pub struct ToolSession {
+    /// What the session has read of each file. `Read` writes it; `Edit` and
+    /// `Write` check it.
+    pub files: Arc<FileStates>,
+    /// The free room of the session's context, for a read that may fill
+    /// more of it than the default limit (`Read` with `allow_large`).
+    pub context_room: Option<ContextRoomFn>,
+    /// Where a `cd` left the shell, in a session whose `cd` carries over to
+    /// the next command: the main session. `None` everywhere else, where
+    /// every command starts in the session folder.
+    pub shell: Option<Arc<ShellDirectory>>,
+    /// The session's background tasks, for `Bash` with `run_in_background`.
+    /// `None` outside a session.
+    pub tasks: Option<Arc<dyn TaskHost>>,
+}
+
+impl ToolSession {
+    /// A session state of its own, with an empty file record.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The free room of the context in tokens, when the session can tell.
+    pub fn context_room(&self) -> Option<u64> {
+        self.context_room.as_ref().and_then(|room| room())
+    }
+}
+
 #[async_trait::async_trait]
 pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
@@ -64,6 +106,27 @@ pub trait AgentTool: Send + Sync {
     /// Normalize raw arguments before schema validation (compat shims).
     fn prepare_arguments(&self, args: Value) -> Value {
         args
+    }
+    /// Whether this tool exists in the advanced mode only. A session in the
+    /// basic mode (the `mode` setting) leaves such a tool out of every request,
+    /// wherever it was added. A tool that is new with the advanced mode returns
+    /// `true`; the core tools keep the default and are there in both modes.
+    fn advanced_only(&self) -> bool {
+        false
+    }
+    /// A copy of this tool that works with `session`, for a tool that keeps
+    /// state per session (the file tools keep what was read). A session
+    /// calls this for every tool it offers; `None`, the default, means the
+    /// tool has no such state and is used as it is.
+    fn for_session(&self, _session: &ToolSession) -> Option<DynTool> {
+        None
+    }
+    /// A copy of this tool that works in the folder `cwd` instead of the
+    /// one it was built for, for a session that works somewhere else (an
+    /// agent in a worktree of its own). `None`, the default, means the tool
+    /// does not depend on a folder and is used as it is.
+    fn in_directory(&self, _cwd: &Path) -> Option<DynTool> {
+        None
     }
     /// Execute. Return Err on failure. The loop converts it into an error
     /// tool result visible to the model.

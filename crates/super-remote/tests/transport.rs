@@ -9,7 +9,7 @@ use super_remote::RemoteStatus;
 use super_remote::fake::{FakePlatform, TestCredentials, now_ms, serve};
 use super_remote::s2::S2Client;
 use super_remote::transport::{RemoteNotice, SessionStreams, SessionTransport, TransportOptions};
-use super_sdk::mock::{MockProvider, MockScript};
+use super_sdk::mock::{MockProvider, MockScript, MockTurn};
 use super_sdk::{Session, SessionOptions, ThinkingLevel};
 
 async fn session_with(
@@ -23,7 +23,7 @@ async fn session_with(
         models_file: Some(provider.catalog_path()),
         thinking_level: Some(ThinkingLevel::Off),
         settings: Some(super_coding::Settings::default()),
-        tools: Some(vec!["read".into()]),
+        tools: Some(vec!["Read".into()]),
         trust_project_files: false,
         no_context_files: true,
         ..Default::default()
@@ -329,5 +329,177 @@ async fn shell_can_be_refused_by_policy() {
         .unwrap()
         .iter()
         .any(|notice| matches!(notice, RemoteNotice::Refused { origin, command } if origin == "iPhone" && command == "bash")));
+    transport.stop().await;
+}
+
+fn has_type(record: &super_remote::fake::StoredRecord, kind: &str) -> bool {
+    record.headers.iter().any(|(k, v)| k == "t" && v == kind)
+}
+
+#[tokio::test]
+async fn an_agents_events_entries_and_commands_flow_through_streams_under_its_parents() {
+    let directory = tempfile::tempdir().unwrap();
+    let fake = Arc::new(FakePlatform::default());
+    let base_url = serve(fake.clone()).await;
+    let provider = MockProvider::start(
+        directory.path(),
+        MockScript::default()
+            .then(vec![MockTurn::ToolCall {
+                id: "call_1".into(),
+                name: "Agent".into(),
+                arguments: json!({"description": "Count", "prompt": "count the files", "run_in_background": false}),
+            }])
+            .then(vec![MockTurn::Text("three files".into())])
+            .then(vec![MockTurn::Text("done".into())]),
+    )
+    .await
+    .unwrap();
+    let mut settings = super_coding::Settings::default();
+    settings.subagents.enabled = true;
+    let session = Session::create(SessionOptions {
+        cwd: directory.path().to_path_buf(),
+        model: Some("mock/mock-1".into()),
+        models_file: Some(provider.catalog_path()),
+        thinking_level: Some(ThinkingLevel::Off),
+        settings: Some(settings),
+        // An allowlist names the agent tools too.
+        tools: Some(
+            [
+                "Read",
+                "Agent",
+                "SendMessage",
+                "ListAgents",
+                "TaskStop",
+                "Workflow",
+                "Skill",
+                "ScheduleWakeup",
+                "EnterWorktree",
+                "ExitWorktree",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+        ),
+        trust_project_files: false,
+        no_context_files: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let client = Arc::new(S2Client::new(
+        reqwest::Client::new(),
+        base_url,
+        Arc::new(TestCredentials),
+    ));
+    let streams = SessionStreams::new("machine1", "sess1");
+    let transport = SessionTransport::start(
+        client,
+        session.clone(),
+        streams.clone(),
+        TransportOptions {
+            cursor_dir: Some(directory.path().join("cursors")),
+            linger: Duration::from_millis(5),
+            ..TransportOptions::default()
+        },
+        Arc::new(|_| {}),
+    );
+    session
+        .prompt("count the files with an agent")
+        .await
+        .unwrap();
+    let id = session.agent_sessions()[0].0.clone();
+    let nested = streams.agent(&id);
+    assert_eq!(
+        nested.events,
+        format!("sessions/machine1/sess1/agents/{id}/events")
+    );
+
+    // The agent's whole run is on its own events stream, from its start.
+    wait_until(|| {
+        fake.records(&nested.events)
+            .iter()
+            .any(|record| has_type(record, "agent_settled"))
+    })
+    .await;
+    let events = fake.records(&nested.events);
+    assert!(has_type(&events[0], "agent_start"));
+    assert!(events.iter().any(|record| has_type(record, "message_end")));
+    // Its transcript is on its own entries stream.
+    wait_until(|| {
+        fake.records(&nested.entries)
+            .iter()
+            .any(|record| record.body.contains("three files"))
+    })
+    .await;
+    let entries: Vec<Value> = fake
+        .records(&nested.entries)
+        .iter()
+        .map(|record| serde_json::from_str(&record.body).unwrap())
+        .collect();
+    assert!(entries.iter().any(|entry| {
+        entry["type"] == "custom"
+            && entry["customType"] == "subagent"
+            && entry["data"]["agentId"] == json!(id)
+    }));
+    // The parent's streams carry the parent's run, not the agent's.
+    wait_until(|| {
+        fake.records(&streams.events)
+            .iter()
+            .any(|record| has_type(record, "agent_settled"))
+    })
+    .await;
+    assert!(
+        !fake
+            .records(&streams.entries)
+            .iter()
+            .any(|record| record.body.contains("\"customType\":\"subagent\""))
+    );
+
+    // The agent's commands stream answers reading commands, there.
+    let command = |id: &str, kind: &str, body: Value| {
+        (
+            vec![
+                ("t".into(), kind.into()),
+                ("exp".into(), (now_ms() + 60_000).to_string()),
+            ],
+            {
+                let mut body = body;
+                body["id"] = json!(id);
+                body["type"] = json!(kind);
+                body.to_string()
+            },
+        )
+    };
+    fake.append(
+        &nested.commands,
+        vec![
+            command("q1", "get_state", json!({})),
+            command("q2", "prompt", json!({"message": "do more"})),
+        ],
+    );
+    let responses = || -> Vec<Value> {
+        fake.records(&nested.events)
+            .iter()
+            .filter(|record| has_type(record, "response"))
+            .filter_map(|record| serde_json::from_str(&record.body).ok())
+            .collect()
+    };
+    wait_until(|| responses().len() == 2).await;
+    let answered = responses();
+    let state = answered
+        .iter()
+        .find(|response| response["id"] == "q1")
+        .unwrap();
+    assert_eq!(state["success"], true);
+    assert_eq!(
+        state["data"]["sessionId"],
+        json!(session.agent_sessions()[0].1.state().session_id)
+    );
+    let refused = answered
+        .iter()
+        .find(|response| response["id"] == "q2")
+        .unwrap();
+    assert_eq!(refused["success"], false);
+    assert_eq!(refused["error"], json!(super_sdk::AGENT_VIEW_REFUSAL));
+    assert_eq!(transport.agent_ids(), [id]);
     transport.stop().await;
 }

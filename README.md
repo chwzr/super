@@ -37,7 +37,7 @@ SUPER is built in Rust and based on incredible work from
 - **Private by design.** The SUPER harness runs locally and collects no
   telemetry.
 
-SUPER uses four focused tools by default: `read`, `write`, `edit`, and `bash`.
+SUPER uses four focused tools by default: `Read`, `Write`, `Edit`, and `Bash`.
 Super Neo Citrus Dark is the default dark theme.
 
 ## Install
@@ -136,11 +136,22 @@ syntax colors for fenced code.
 Send a new instruction while the agent works. Press `Enter` to steer the
 current task, or `Alt+Enter` to queue the instruction for later.
 
+`Esc` or `Ctrl+C` cancels the current turn. Work the agent started in the
+background keeps running and reports back when it ends, which starts a new
+turn if the agent is idle. While background tasks run, the line under the
+input says how many and which key stops them all: `Ctrl+B`, which does
+nothing while none runs. Bind `stopBackgroundTasks` in
+`~/.super/agent/keybindings.json` to give it another key. `/tasks`
+lists the running background tasks; select one and press `x` to stop it.
+A run with `-p` waits for its
+background tasks and for a pending wake-up before it prints the answer, and
+stops them on `Ctrl+C`.
+
 Common commands:
 
 - **Setup:** `/login`, `/model`, `/provider`, `/mcp`, `/settings`, `/hotkeys`.
 - **Sessions:** `/compact`, `/resume`, `/export`, `/cache-usage`.
-- **Automation:** `/loop`, `/autoresearch`, `/jobs`.
+- **Automation:** `/loop`, `/autoresearch`, `/jobs`, `/tasks`.
 - **Support:** `/bug`, `/fast`, `/update`.
 
 Use `/fast` to toggle the low-latency tier for a supported provider. This
@@ -205,12 +216,23 @@ environment, SUPER prints
 
 ### Loop and autoresearch
 
-Use a loop for repeated work. With no limit, it runs until the goal is complete
-or you stop it:
+Use a loop for repeated work:
 
 ```text
 /loop make the parser tests pass
 ```
+
+In the advanced mode, a loop without an interval is self-paced and runs in the
+session itself. Each round is a turn with your goal. At the end of a round the
+agent calls `ScheduleWakeup` to say when the next round starts, between one
+minute and one hour later, or that the loop is over. The loop also ends when a
+round leaves nothing running and no wake-up pending, and after 100 rounds at
+most. Your own prompts and the notices of background tasks can come between
+rounds; a wake-up scheduled in them continues the loop too. See
+[Wake-ups and worktrees](#wake-ups-and-worktrees).
+
+In the basic mode, a loop without an interval runs its iterations back to back
+until the goal is complete or you stop it.
 
 Put an interval before the goal to wait between turns. The first turn starts
 immediately. Compound intervals support days, hours, minutes, seconds,
@@ -221,7 +243,8 @@ milliseconds, microseconds, and nanoseconds:
 /loop 2d4h review dependency updates
 ```
 
-Use `--iterations` for a fixed number of turns:
+Use `--iterations` for a fixed number of turns; a self-paced loop runs at most
+that many rounds:
 
 ```text
 /loop make the parser tests pass --iterations 8
@@ -241,9 +264,16 @@ Limits:
 - Autoresearch does not accept an interval.
 - The maximum explicit iteration limit is 100.
 
-Each job branches from the current conversation into a persistent SUPER
-session. Run `/jobs`, `/loop` without a goal, or `/autoresearch` without a goal
-to manage jobs.
+Each job with an interval, every job in the basic mode and every autoresearch
+job branches from the current conversation into a persistent SUPER session.
+That session is saved and sent like a subagent's (see
+[Subagents](#subagents)): it is no session of its own in `/resume`, and the
+apps list it among the session's agents. A job that is the first thing in a
+new session saves that session too, so `super -c` and `/resume` open it
+again with its job's session. A self-paced loop runs in the
+session itself, one at a time. Run `/jobs`, `/loop`
+without a goal, or `/autoresearch` without a goal to manage jobs; stopping a
+self-paced loop there cancels its pending wake-up.
 
 | Key            | Action                                   |
 | -------------- | ---------------------------------------- |
@@ -255,13 +285,75 @@ to manage jobs.
 
 ### Subagents
 
-Subagents let one task branch into focused child sessions. Open `/settings`
-and set `Subagents` to `on`. SUPER then gives the main agent tools to start,
-guide, wait for, and stop child agents.
+Subagents let one task branch into focused child agents. Open `/settings` and
+set `Subagents` to `on`. SUPER then gives the main agent `Agent`, which starts
+a child agent, `SendMessage`, which writes to one, and `ListAgents`, which
+lists them; `TaskStop` stops one that runs in the background. Subagents need
+the advanced mode; see [Mode](#mode).
 
-Each child uses the same working directory. SUPER allows four active child turns
-and one child level. Project settings cannot enable subagents, and `--no-tools`
-keeps them off.
+- A child runs in the background by default. When it ends, its report
+  reaches the main agent in a notice, which starts a new turn if the main
+  agent is idle. With `run_in_background` set to `false`, the main agent waits
+  for the report instead.
+- `subagent_type` chooses the kind of child: `general-purpose`, the default;
+  `Explore` and `Plan`, which read but do not edit files and start no agents;
+  and `fork`, which starts with a copy of the whole conversation, tool calls
+  and their results included, and runs on the same model and thinking level.
+- More types come from Markdown files in `.super/agents/` of a trusted
+  project and in `~/.super/agent/agents/`. The frontmatter gives `name`,
+  `description`, `model`, `effort` and `tools`, and the text below it is the
+  type's instructions. A project's file wins over yours of the same name, and
+  a file can replace a built-in type except `fork`. A type whose `tools`
+  names its tools gets those and no other: `tools: Read, Bash` gives a child
+  `Read` and `Bash`, without `SendMessage`, `Skill`, `Monitor` or `TaskStop`.
+  `Monitor` and `TaskStop` come when the list names them, also without
+  `Bash`; `ListAgents` only with `Agent`, since a child that starts no agents
+  has none to list. Without `tools`, or with `*`, a child gets every tool its
+  parent has. A value written without quotes that has `: ` in it, such as
+  `description: Reviews code: read only`, is read as its text, and a
+  comment such as `tools: Read, Bash # no edits` stays a comment; a file whose
+  frontmatter is not YAML even so is left out, so that a type never gets
+  every tool because its `tools` could not be read. Skills read their
+  frontmatter the same way.
+- `model` takes any model SUPER knows, and `effort` a thinking level that the
+  model accepts; a call with one it does not accept fails and names the
+  levels it does.
+- `SendMessage` reaches a running child at its next step and resumes one that
+  has ended, in the background. A child writes to the agent that started it
+  with `to` set to `main`.
+- Each child's conversation is saved beside its session, in the folder named
+  after the session's file, and is no session of its own in `/resume` or the
+  apps. A session you open again knows its children: `ListAgents` lists
+  them and `SendMessage` resumes one where it left off. A child whose folder
+  is gone since, such as a worktree the session worked in and removed, goes
+  on in the session's folder. A child whose type is no longer defined, or
+  whose model is no longer in the model list, is not resumed: the message is
+  refused with a sentence that names the type or the model, since the child
+  would go on with other instructions, tools or model. A type counts as the
+  one the child ran as only when it comes from the same place: when your
+  file that replaced a built-in type is gone, the built-in type of that
+  name does not resume the child, nor does a file added later resume a
+  child of the built-in type, and the refusal says where the type is
+  defined now.
+- A child's own background commands and monitors belong to its run: their
+  notices and events reach the child, and so does a message sent to it in
+  the meantime. Its report comes when it has answered the last of them and
+  nothing of its own runs any more.
+- At most 20 children of a session run at once, and children nest three
+  levels deep.
+- `Esc` and `Ctrl+C` stop the turn and the child the main agent waits for.
+  Children in the background keep running; `/tasks` and `TaskStop` stop them.
+- With `isolation` set to `worktree`, a child works in a git worktree of its
+  own, `.super/worktrees/agent-<id>` at the top of the project, also while
+  the session works in a worktree, on the new branch `worktree-agent-<id>`,
+  which starts where `worktree.baseRef` says (see
+  [Wake-ups and worktrees](#wake-ups-and-worktrees)), else at the commit the
+  session's folder is at. When it ends with
+  nothing changed, the worktree and the branch are removed; otherwise they
+  stay, and its report names them. `remote` is not available.
+
+Every other child uses the same working directory. Project settings cannot
+enable subagents, and `--no-tools` keeps them off.
 
 ### Dynamic workflows
 
@@ -277,9 +369,71 @@ use a workflow to compare the provider adapters
 Run `/workflows` to inspect, pause, resume, stop, restart, or save a workflow.
 A saved workflow becomes a reusable slash command after `/reload`.
 
+While `Subagents` and `Dynamic workflows` are on in the advanced mode, the
+main agent has the `Workflow` tool on every request. The guide to writing a
+script is the built-in skill `workflow-authoring`, which the agent loads with
+`Skill`; see [Skills](#skills). SUPER still asks before a run starts while
+`workflows.confirm` is on: the terminal, `--mode rpc`, the daemon's clients
+and an ACP client are asked. `super -p` and `--mode json` have nobody to ask
+and start the run; turn `Dynamic workflows` off there to keep runs out.
+
+- A run starts in the background and the call returns at once with the run's
+  id, `wf_` and eight letters or digits. The run is a background task with
+  that id, named by the call's `name` or else by the script, while no other
+  running task has that name: `/tasks` and `TaskStop` stop it by either,
+  and when it ends its answer
+  reaches the agent in a notice, which starts a new turn if the agent is
+  idle. `Esc` stops the turn, not the run.
+- The script comes from `script`, from a file with `scriptPath`, or, with
+  `name` alone, from a saved workflow in `.super/workflows/` of a trusted
+  project or in `~/.super/agent/workflows/`. The project is the one SUPER
+  found the session's skills in, trusted as they are (`--approve` counts),
+  also while the session works in a worktree. Along with `script`, `name` only
+  names the run. `args` reaches the script as `args`. `description` and
+  `title` are accepted and not used.
+- Every run saves its script in the session's folder, as
+  `<session file without .jsonl>/workflows/<run id>.js`, and the call names
+  the file, so a later call can run it again with `scriptPath`. Its
+  finished agent calls are kept next to it in `<run id>.journal.jsonl`, each
+  as soon as it finishes, so a run that was cut off when SUPER ended can be
+  resumed after a restart. Such a run is announced once, as stopped, when the
+  session is opened again.
+- `resumeFromRunId` starts a run that replays the finished agent calls of an
+  earlier run of the session, also one from before the session was opened
+  again, up to the first call whose prompt changed; from there the agents run
+  again. A run that is still running cannot be resumed.
+
 One workflow can start up to 1,000 agents, with 16 active at once. Workflow
 scripts cannot read files, use the network, load modules, or start processes.
-Only their child agents use SUPER tools.
+Only their child agents use SUPER tools. Each one is saved and sent like a
+subagent (see [Subagents](#subagents)), so the apps list it among the
+session's agents and show its conversation; `ListAgents` and `SendMessage`
+reach only the agents the main agent started itself.
+
+### Skills
+
+A skill is a Markdown file with instructions for one kind of task. SUPER
+finds skills in `~/.super/agent/skills/`, in `~/.agents/skills/`, and, in a
+trusted project, in `.super/skills/` and `.agents/skills/`. In the
+full-screen terminal, also attached to the daemon, you call one with `/name`
+at the start of a prompt or `$name` anywhere in it; its text goes into that
+prompt. `super -p`, `--mode rpc`, ACP, the SDK and the line front end of
+`super attach` send a prompt as it is typed, so there a skill reaches the
+agent through `Skill` or the list in the system prompt only.
+
+- In the basic mode the system prompt lists each skill with its file, and the
+  agent reads the file with `Read`, as before.
+- In the advanced mode the agent has the `Skill` tool, alongside `Read` or
+  `Bash`. The skills are listed without their files, and `Skill` loads one by
+  its name; `args` fills in `$ARGUMENTS` in the skill's text. A skill whose
+  frontmatter has `disable-model-invocation: true` is yours to call only,
+  from the full-screen terminal.
+- A skill with `context: fork` in its frontmatter runs in an agent of its own
+  instead, named after the skill; `agent` chooses the agent type
+  (`general-purpose` by default), and `model` and `effort` work as for
+  `Agent`. The call waits for the agent's report, or, with `background: true`,
+  returns at once with the agent's name and id, and a notice brings the report
+  when it ends. Such a skill needs `Subagents` on.
 
 ## Models and integrations
 
@@ -596,7 +750,12 @@ SUPER accepts text, images, resource links, and embedded resources. It streams
 answers, reasoning, tool status, usage, file locations, and diffs.
 
 Tools run in the working directory that the client supplies. Cancellation
-stops active and queued work.
+stops active and queued work. When background work ends, or a monitor sees
+an event, while no prompt runs, the session answers it in a turn of its own,
+and its updates reach the client as `session/update` notifications without a
+prompt. While `workflows.confirm` is on, the client is asked with
+`session/request_permission` before a workflow run starts, and the run waits
+for the answer.
 
 Client-provided stdio and streamable-HTTP MCP servers apply only to the ACP
 session and are not saved. Draft ACP v2, audio, legacy MCP SSE, and client
@@ -618,7 +777,7 @@ cargo add super-agent-sdk
 ```
 
 ```rust
-let session = super_sdk::Session::builder().tools(["read", "bash"]).build().await?;
+let session = super_sdk::Session::builder().tools(["Read", "Bash"]).build().await?;
 session.prompt("What files are here?").await?;
 ```
 
@@ -656,7 +815,7 @@ bun add @chwzr/super-agent-sdk
 ```typescript
 import { Session } from "@chwzr/super-agent-sdk"
 
-const session = await Session.create({ tools: ["read", "bash"] })
+const session = await Session.create({ tools: ["Read", "Bash"] })
 await session.prompt("What files are here?")
 const stats = await session.sessionStats()
 console.log(stats.tokens.cacheRead, stats.tokens.cacheWrite, stats.tokens.cacheWrite1h)
@@ -798,7 +957,9 @@ The release module is 574,734 bytes raw and 209,375 bytes gzip. It starts with
 ### Agent automation
 
 Subagents are off by default. Session setup had no measured slowdown when they
-were enabled. Their six control tools added 71 ns to request preparation.
+were enabled. The six control tools of an earlier version added 71 ns to
+request preparation; the three agent tools that replaced them have not been
+measured yet.
 
 | Measure                    | State or size         |        p95 |
 | -------------------------- | --------------------- | ---------: |
@@ -815,9 +976,11 @@ were enabled. Their six control tools added 71 ns to request preparation.
 | Job detail view            | Long goal and result  |  46.595 us |
 
 The workflow interpreter used 2.185 us per agent call. Arming a workflow added
-651 ns to request preparation and kept the total below 1 us. Loop and
-autoresearch jobs sleep between model turns and update the TUI through small
-events.
+651 ns to request preparation and kept the total below 1 us; that was measured
+when arming added the workflow tool and its guide. The tool and the list of
+skills are now part of every request while dynamic workflows are on, which has
+not been measured yet. Loop and autoresearch jobs sleep between model turns
+and update the TUI through small events.
 
 ### TUI rendering and resize
 
@@ -989,20 +1152,246 @@ used.
 }
 ```
 
+### Mode
+
+The `mode` setting chooses between two sets of tools and system prompts. Open
+`/settings` and change `Mode`, or set `"mode"` to `"advanced"` or `"basic"` in
+your user settings.
+
+- `advanced`, the default, offers every tool. The `Subagents` and `Dynamic
+  workflows` switches decide whether the agent tools and the workflow tool are
+  among them. Skills are loaded with the `Skill` tool.
+- `basic` offers only the core tools `Read`, `Write`, `Edit`, and `Bash`, and
+  whichever of `grep`, `find`, `ls`, `mcp`, and `webmcp` you configured, with
+  the simple system prompt, which lists the skills with their files.
+  Subagents and dynamic workflows are off in this mode, whatever their
+  switches say.
+
+A change in `/settings` applies to the next request, also the next request
+of a run that goes on and in a terminal
+attached to the daemon. Only your user settings decide the mode; a project's
+settings cannot change it.
+
 ### Tool selection
 
 Choose which tools are available when a session starts with `defaultTools` in
-your settings. For example, `["read", "bash"]` starts sessions with only those
-two tools.
+your settings. For example, `["Read", "Bash"]` starts sessions with `Read` and
+`Bash` of the four core tools, and without `grep`, `find`, `ls` and `mcp`; the
+tools of the advanced mode that come with them are added as the next
+paragraph says.
+
+Tool names are case-sensitive. `Read`, `Write`, `Edit`, and `Bash` start with a
+capital letter, and their lower-case names from earlier versions are no longer
+recognized: SUPER leaves out a name no tool has and says so when a session
+starts, with the tool's name in its new case: on standard error, in the
+transcript of the full-screen terminal, and in the daemon's log for a session
+the daemon starts. A name in the `tools` of an agent type that no tool has is
+named the same way. The other tools of the
+advanced mode are not added here: `Monitor` and `TaskStop` come with `Bash`
+(see [Shell tools](#shell-tools)), or when `--tools` names them, `Skill`,
+`ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` with `Read` or `Bash`
+(see [Wake-ups and worktrees](#wake-ups-and-worktrees)), and the agent tools
+and `Workflow` with their switches. A `-` entry such as `"-Monitor"` leaves
+one of them out.
 
 To adjust the default selection, use `+` to add a tool and `-` to remove one.
-For example, `["+grep", "-write"]` adds search and removes the write tool. Add
+For example, `["+grep", "-Write"]` adds search and removes the Write tool. Add
 `"+mcp"` to keep access to your configured MCP servers.
 
 Save this selection in your user settings to use it across projects. A trusted
 project can provide its own selection or adjust yours with `+` and `-` entries.
 For a single run, `--tools` selects the tools, `--exclude-tools` removes tools,
 and `--no-tools` disables them all. These options override your saved selection.
+`--tools` and `--exclude-tools` apply to every tool by its name, so
+`--tools Read` offers `Read` and nothing else, and `--exclude-tools Monitor`
+leaves out `Monitor`. Agents a session starts get no tool it left out.
+
+### File tools
+
+`Read`, `Edit`, and `Write` work the same way in both modes. Each takes an
+absolute `file_path`; a relative path is refused.
+
+- `Read` returns numbered lines, 2,000 by default. `offset` and `limit` choose
+  the lines. A read of a whole file is refused above 256 KB, and a read
+  returns at most 25,000 tokens, counted at about four bytes a token: a read
+  of a whole file above that returns its first part and says where to go on;
+  a read with `offset` or `limit` above it is refused. `allow_large` raises
+  both limits to 70% of the free room in the context. Images (PNG, JPEG, GIF,
+  WebP) are sent as images; one larger than 2,000 pixels on a side or 5 MB in
+  base64 is scaled down and, if it is still too heavy, saved again as JPEG.
+  Every other file, notebooks and PDFs among them, is read as text.
+- `Edit` replaces `old_string` with `new_string`, one replacement per call;
+  `replace_all` replaces every occurrence. It keeps a file's byte-order mark
+  and Windows line endings. When `old_string` is not in the file as given,
+  curly quotes count as straight ones on both sides; the text that is in the
+  file is replaced, and where it has curly quotes the straight quotes of
+  `new_string` are written curly in the same style.
+- `Write` writes `content` to a file and creates missing folders.
+
+A session remembers what it read. `Edit` and `Write` refuse a file the
+session has not read, and one that changed on disk since it was read, so the
+agent reads it again first; for `Write` over an existing file only a read of
+the whole file counts, also when a read of a part of the file came after
+it while the file did not change. The session's own edits keep this record
+current. A new file needs no read. A subagent keeps its own record, a fork
+starts with a copy of its parent's, and a new conversation starts with an
+empty one. A session opened again (`super -c`, `--session`, the daemon)
+takes the record back from its transcript: each file it read, or changed
+itself, counts as read while its modification time and size on disk are what
+they were then, and one that changed since is refused as changed on disk.
+Moving back in the conversation (`/tree`, `fork` over RPC) does the same with
+the branch it moves to, so what was read only on the branch it left counts
+no more.
+
+When one answer makes several calls, `Edit`, `Write` and `Bash` each run
+alone, in their place: the calls before one have ended when it starts, and
+the calls after it start when it has ended. So do `SendMessage`,
+`ListAgents`, `TaskStop` and `Workflow`, so that they find an agent or a task
+a call before them started, and two messages reach an agent in their order,
+and so does `ScheduleWakeup`, so that a stop after a wake-up cancels it and
+the second of two wake-ups replaces the first.
+Calls of other tools next to each other, such as several reads or several
+`Agent` calls, run at the same time.
+
+### Shell tools
+
+`Bash` runs a command in the shell from `shellPath`, Bash unless you choose
+PowerShell or cmd, and works the same way in both modes.
+
+- The shell starts from your profile: zsh, the other POSIX shells and fish
+  start as login shells, and Bash and `sh` read the files a login shell
+  reads (`/etc/profile`, then `~/.bash_profile`, `~/.bash_login` or
+  `~/.profile`; `sh` reads `/etc/profile` and `~/.profile`) and run the
+  command in that same shell, so `$$` is the shell that runs it and
+  `kill $$` ends the command. What the profile prints is left out of the
+  command's output, a background command's output file and a monitor's
+  events (on macOS and Linux), and a job the profile starts with its output
+  sent elsewhere, such as an agent, does not hold up the command. A `cd`,
+  `pwd` or `printf` function the profile defines, or a zsh `chpwd` hook,
+  does not run for SUPER's own change of folder, and an `EXIT` trap the
+  profile sets and `~/.bash_logout` print nothing, also for a command that
+  ends with `exit`. The folders of the `PATH` SUPER runs with come first,
+  in their order, and the profile's other folders after them, so that a
+  system profile such as macOS's `path_helper` does not put `/usr/bin` in
+  front of Homebrew or an activated virtual environment. A profile that
+  ends the shell, such as one that runs `exit` or `exec` of another shell,
+  leaves the command unrun, and the result, a background command's end and
+  a monitor's end say that it did not run; one that only sends the shell's
+  output elsewhere, such as `exec >/dev/null`, lets it run. A profile that
+  traces commands (`set -x`) traces the command, not SUPER's work on
+  `PATH`. A POSIX shell runs the command with `eval`, so a syntax error in
+  it comes back with the shell's message and the command's own line
+  numbers. Its output and errors
+  come back together in the order it wrote them. PowerShell and cmd start
+  as before.
+- `timeout` is in milliseconds, 120,000 (two minutes) by default and 600,000
+  at most. A command that does nothing but `sleep` is refused; it can wait in
+  the background instead.
+- In the main session a `cd` carries over to the next command while it stays
+  inside the session folder, with a POSIX shell or fish on macOS and Linux.
+  A command that ends outside it puts the shell back in the session folder.
+  A command that sets its own `EXIT` trap keeps its `cd` too, unless it also
+  ends with `exit`. A subagent's commands always start in the session folder, and so does a
+  new or resumed conversation. PowerShell, cmd and Bash on Windows start
+  every command in the session folder. Two commands of one answer run one
+  after the other, so a `cd` in the first reaches the second.
+- Up to 30,000 characters of output come back to the agent. Longer output is
+  saved to a file, and the agent gets its path and the first 2,000 bytes.
+- An exit code other than 0 is an error that starts with `Exit code N`. For
+  `grep`, `rg`, `egrep`, `fgrep`, `find`, `diff`, `test`, `[`, `git grep` and
+  `git diff` as the last command, exit code 1 is an answer, not an error.
+- With `run_in_background` the command runs as a background task, for ten
+  minutes by default and two hours at most. Its output goes to the task's
+  output file, and the agent is told when it ends or reaches its limit.
+- `dangerouslyDisableSandbox` is accepted and has no effect, because SUPER
+  has no sandbox.
+
+In the advanced mode two tools come with `Bash`:
+
+- `Monitor` watches a script or a WebSocket in the background. Each line the
+  script writes to its standard output reaches the agent as an event, and
+  lines that arrive within 200 ms come as one; standard error goes only to
+  the monitor's output file. With `ws`, each text frame is an event, a binary
+  frame shows as a short line, and a close from the server ends the watch. A
+  monitor ends after `timeout_ms`, five minutes by default and ten at most,
+  and one that brings more than 60 events within a minute is stopped. The
+  agent is told when a monitor ends.
+- `TaskStop` stops a background task by its id or its name: a command, a
+  monitor, an agent or a workflow run. A command's, a monitor's and an
+  agent's name is the `description` its call gave it; a name several running
+  tasks share is refused, and the running one is stopped when a task that
+  ended has the same name. It does not touch `/loop` and `/autoresearch`
+  jobs. For an agent it answers once the agent's run has stopped (it waits
+  up to ten seconds), so a `SendMessage` after it in the same answer
+  resumes the agent.
+
+### Wake-ups and worktrees
+
+In the advanced mode the main session has three more tools alongside `Read`
+or `Bash`. A subagent has none of them.
+
+- `ScheduleWakeup` brings the agent back later. `delaySeconds` is kept
+  between 60 and 3,600. During a self-paced `/loop` the wake-up starts the
+  loop's next round, and `stop` ends the loop; outside a loop it brings back
+  its `prompt`, and `stop` cancels it. A session has one pending wake-up at a
+  time, and a new one replaces it. When it comes due it starts a turn, or
+  waits for the turn that runs. `reason` and `noop` are shown in the
+  transcript and kept in the session; they change nothing else. The
+  session remembers its wake-up and its self-paced loop: opened again, a
+  wake-up whose time has passed comes at once and a later one at its time,
+  and the loop goes on. The daemon keeps a session loaded while its wake-up
+  is pending, and after a restart loads it again when the wake-up is due.
+  `super -p` and `--mode json` wait for a pending wake-up and the turn it
+  starts before they exit; `Ctrl+C` ends the wait, and the wake-up stays
+  with the session.
+- `EnterWorktree` moves the session into a git worktree. With `name`, or with
+  neither `name` nor `path`, it makes one, `.super/worktrees/<name>` at the
+  top of the project (the main working tree, also when the session works in
+  a linked worktree of yours, where `HEAD` is that worktree's; that linked
+  worktree itself when the repository is bare and has no main working
+  tree), on the new
+  branch `worktree-<name>`; without a name it gets eight
+  random letters and digits. With `path` it enters a worktree of the same
+  repository that exists. From then on `Bash`, the file tools and the
+  working directory in the system prompt use the worktree, and so do the
+  subagents the session starts, your `!command` and a client's `bash`
+  command. A session in a worktree cannot enter another
+  one. The session remembers its worktree: opened again (`super -c`,
+  `--session`, the daemon), it works there again, or in its own folder with a
+  line that says so when the worktree's folder is gone.
+- `ExitWorktree` takes the session back to its folder. It acts only on a
+  worktree `EnterWorktree` made in this session; for one it entered by its
+  path it does nothing. `action` `keep` leaves the worktree and its branch;
+  `remove` deletes both. `remove` is refused while the worktree has
+  uncommitted files or commits after the one it started from, unless
+  `discard_changes` is set, and while a background task started in it still
+  runs.
+
+`worktree.baseRef` chooses where a new worktree's branch starts, for
+`EnterWorktree` and for subagents with `isolation` set to `worktree`:
+
+- `fresh`, the default, starts from the default branch of the `origin`
+  remote, which SUPER fetches first for at most 30 seconds; at that limit
+  the fetch is stopped with everything it started, such as `git
+  remote-http` or `ssh`. A repository without such a branch starts from
+  `HEAD`.
+- `head` starts from `HEAD`, the state your folder is in.
+
+```json
+{ "worktree": { "baseRef": "head" } }
+```
+
+When you quit the terminal while the session works in a worktree it made,
+SUPER asks whether to keep or remove the worktree, and each choice names its
+folder; `Esc` goes back to the session. Remote controllers see the same question and may answer it. A
+session stopped from an app or with `stop_session` asks its clients the same
+way and keeps the worktree when nobody answers within a minute. A session
+the daemon unloads while idle, `super -p`, `--mode json`, `--mode rpc` and
+the editor mode keep the worktree without asking; the daemon's session is in
+it again when it is loaded, and the others say at their end where it is:
+`super -p` and the editor mode in a line on standard error, `--mode json` and
+`--mode rpc` with a last `worktree_kept` event. A new conversation starts in the session
+folder; a session opened again works in its worktree again.
 
 ## Experimental context file
 

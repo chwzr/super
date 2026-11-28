@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! let session = super_sdk::Session::builder()
-//!     .tools(["read", "bash"])
+//!     .tools(["Read", "Bash"])
 //!     .build()
 //!     .await?;
 //!
@@ -76,17 +76,21 @@ pub mod rpc;
 // Re-exported so a binding crate needs only one dependency to name the types
 // that appear in this crate's public API.
 #[cfg(feature = "native")]
-pub use approvals::{ApprovalAnswer, ApprovalChoice, ApprovalKind, ApprovalRequest};
+pub use approvals::{
+    ApprovalAnswer, ApprovalChoice, ApprovalKind, ApprovalRequest, WORKTREE_KEEP, WORKTREE_REMOVE,
+    workflow_request, worktree_exit_request,
+};
 #[cfg(feature = "native")]
 pub use options::{SessionOptions, SessionSource};
 #[cfg(feature = "native")]
 pub use session::{
-    BashResult, EventStream, PromptArgs, SdkError, Session, SessionBuilder, SessionFileGuard,
-    SessionNotice, SessionObserver, SessionState, install_workflow_approval_gate, mirrored_sink,
+    AGENT_VIEW_REFUSAL, AgentChange, BashResult, CommandSender, EventStream, PromptArgs, SdkError,
+    Session, SessionBuilder, SessionFileGuard, SessionNotice, SessionObserver, SessionState,
+    install_workflow_approval_gate, mirrored_sink,
 };
 #[cfg(feature = "native")]
 pub use super_agent::{AgentMessage, DynTool, StreamFn};
 #[cfg(feature = "native")]
 pub use super_ai::{Model, ThinkingLevel};
 #[cfg(feature = "native")]
-pub use super_coding::SessionEntry;
+pub use super_coding::{AgentInfo, SessionEntry, TaskInfo, TaskKind, TaskStatus};

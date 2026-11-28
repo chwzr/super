@@ -67,6 +67,7 @@ pub(super) fn typed(command: &Command) -> Typed {
         Command::SetFollowUpMode { .. } => Typed::Setting("follow-up mode"),
         Command::SetAutoCompaction { .. } => Typed::Setting("auto-compaction"),
         Command::SetAutoRetry { .. } => Typed::Setting("auto-retry"),
+        Command::SetMode { .. } => Typed::Setting("mode"),
         Command::GetState {}
         | Command::GetMessages {}
         | Command::GetEntries { .. }
@@ -76,9 +77,15 @@ pub(super) fn typed(command: &Command) -> Typed {
         | Command::GetAvailableModels { .. }
         | Command::GetAvailableThinkingLevels {}
         | Command::GetTools {}
+        | Command::GetTasks {}
+        | Command::GetAgents { .. }
+        | Command::GetAgentEntries { .. }
+        // The task's end shows through its event, as for a task stopped here.
+        | Command::StopTask { .. }
         | Command::GetForkMessages {}
         | Command::GetApprovals {}
         | Command::AnswerApproval { .. }
+        | Command::Initialize { .. }
         | Command::Ping {} => Typed::Nothing,
     }
 }
@@ -329,6 +336,7 @@ mod tests {
                 output,
                 is_error,
                 done,
+                ..
             } => format!("tool {title} {output} {is_error} {done}"),
             Cell::Notice(text) => format!("notice {text}"),
             Cell::ReasoningEffort { level, generations } => {
@@ -417,6 +425,7 @@ mod tests {
         fn is_running(&self) -> bool {
             false
         }
+        fn stop_task(&self, _: &str) {}
     }
 
     fn plan() -> super_coding::workflows::WorkflowPlan {

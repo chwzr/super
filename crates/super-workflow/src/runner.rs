@@ -65,6 +65,26 @@ pub trait AgentRunner: Send + Sync + 'static {
     fn tokens_used(&self, _index: AgentId) -> u64 {
         0
     }
+
+    /// The run's [`Journal`] changed. Called once per change, in the order
+    /// the changes are made and before the next one: a host that writes the
+    /// journal down as the run goes, so that a run cut off by the end of its
+    /// process can be resumed, does it here. Hosts that keep the journal in
+    /// memory only leave this alone.
+    fn journal_changed(&self, _change: JournalChange<'_>) {}
+}
+
+/// One change of a run's [`Journal`], for [`AgentRunner::journal_changed`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum JournalChange<'a> {
+    /// The agent at `index` finished with `value` for `prompt`.
+    Completed {
+        index: AgentId,
+        prompt: &'a str,
+        value: &'a Json,
+    },
+    /// Every position from `from` on was forgotten: the prompt there changed.
+    Invalidated { from: AgentId },
 }
 
 /// Bounds on one run.
@@ -144,6 +164,23 @@ impl Journal {
             .insert(index, (prompt.to_string(), AgentOutcome::Done(value)));
     }
 
+    /// Every remembered answer as (position, prompt, answer), by position:
+    /// what a host writes down so that a run can be resumed after the
+    /// process that ran it has ended. [`Journal::record_completed`] reads
+    /// each one back.
+    pub fn completed(&self) -> Vec<(AgentId, &str, &Json)> {
+        let mut entries: Vec<(AgentId, &str, &Json)> = self
+            .entries
+            .iter()
+            .filter_map(|(index, (prompt, outcome))| match outcome {
+                AgentOutcome::Done(value) => Some((*index, prompt.as_str(), value)),
+                _ => None,
+            })
+            .collect();
+        entries.sort_by_key(|(index, _, _)| *index);
+        entries
+    }
+
     pub(crate) fn record(&mut self, index: AgentId, prompt: &str, outcome: &AgentOutcome) {
         if outcome.is_journalable() {
             self.entries
@@ -157,11 +194,18 @@ impl Journal {
         (recorded == prompt).then(|| outcome.clone())
     }
 
+    /// Whether anything is remembered at this position or a later one.
+    pub(crate) fn has_from(&self, index: AgentId) -> bool {
+        self.entries.keys().any(|recorded| *recorded >= index)
+    }
+
     /// Forget this position and every later one.
     ///
     /// Called when a prompt stops matching: everything after a changed input is
-    /// no longer trustworthy, even if it completed.
-    pub(crate) fn invalidate_from(&mut self, index: AgentId) {
+    /// no longer trustworthy, even if it completed. A host that reads a
+    /// journal back from what [`AgentRunner::journal_changed`] reported
+    /// replays a [`JournalChange::Invalidated`] with it.
+    pub fn invalidate_from(&mut self, index: AgentId) {
         self.entries.retain(|recorded, _| *recorded < index);
     }
 }
@@ -188,6 +232,32 @@ mod tests {
             journal.take_matching(4, "audit a.rs"),
             Some(AgentOutcome::Done(Json::String("ok".into())))
         );
+    }
+
+    #[test]
+    fn the_remembered_answers_read_back_by_position() {
+        let mut journal = Journal::default();
+        journal.record(2, "c", &AgentOutcome::Done(Json::String("three".into())));
+        journal.record(0, "a", &AgentOutcome::Done(Json::String("one".into())));
+        journal.record(1, "b", &AgentOutcome::Failed("boom".into()));
+        let completed: Vec<(AgentId, String, Json)> = journal
+            .completed()
+            .into_iter()
+            .map(|(index, prompt, value)| (index, prompt.to_string(), value.clone()))
+            .collect();
+        assert_eq!(
+            completed,
+            [
+                (0, "a".to_string(), Json::String("one".into())),
+                (2, "c".to_string(), Json::String("three".into())),
+            ]
+        );
+        let mut again = Journal::default();
+        for (index, prompt, value) in completed {
+            again.record_completed(index, &prompt, value);
+        }
+        assert_eq!(again.len(), 2);
+        assert!(again.take_matching(2, "c").is_some());
     }
 
     #[test]

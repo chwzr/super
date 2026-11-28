@@ -1,11 +1,16 @@
-//! System prompt assembly: identity + tool list + guidelines, appended
-//! custom text, project context blocks, skills XML, and the cwd line.
+//! System prompt assembly: the body of the mode (in the basic mode identity,
+//! tool list and guidelines), appended custom text, project context blocks,
+//! skills XML, and the cwd line.
 
 use crate::context_files::ContextFile;
+use crate::settings::Mode;
 use crate::skills::Skill;
 
 pub struct SystemPromptOptions<'a> {
-    /// Replaces the default prompt body (context/skills/cwd still append).
+    /// Which body the prompt starts with when `custom_prompt` is `None`.
+    pub mode: Mode,
+    /// Replaces the default prompt body in either mode (context/skills/cwd
+    /// still append).
     pub custom_prompt: Option<&'a str>,
     pub append: Option<&'a str>,
     pub selected_tools: &'a [String],
@@ -16,10 +21,10 @@ pub struct SystemPromptOptions<'a> {
 
 fn tool_snippet(name: &str) -> Option<&'static str> {
     Some(match name {
-        "read" => "Read file contents (text and images)",
-        "bash" => "Execute shell commands",
-        "edit" => "Make targeted text replacements in files",
-        "write" => "Create or overwrite files",
+        "Read" => "Read file contents (text and images)",
+        "Bash" => "Execute shell commands",
+        "Edit" => "Make targeted text replacements in files",
+        "Write" => "Create or overwrite files",
         "grep" => "Search file contents for patterns (respects .gitignore)",
         "find" => "Find files by glob pattern (respects .gitignore)",
         "ls" => "List directory contents",
@@ -28,11 +33,25 @@ fn tool_snippet(name: &str) -> Option<&'static str> {
 }
 
 pub fn build_system_prompt(options: &SystemPromptOptions) -> String {
-    let cwd = options.cwd.replace('\\', "/");
-    let mut prompt = match options.custom_prompt {
-        Some(custom) => custom.to_string(),
-        None => default_prompt(options),
+    let mut prompt = match (options.custom_prompt, options.mode) {
+        (Some(custom), _) => custom.to_string(),
+        (None, Mode::Basic) => default_prompt(options),
+        (None, Mode::Advanced) => advanced_prompt(),
     };
+    prompt.push_str(&prompt_context(options));
+    prompt
+}
+
+/// What the system prompt adds after its body: the appended text, the
+/// project context, the skills and the working directory. A child agent's
+/// prompt repeats it after the instructions of its type.
+///
+/// The skills, with their files, are listed in the basic mode only. In the
+/// advanced mode the session lists them for its `Skill` tool on each
+/// request instead (`crate::skills::skill_list_section`).
+pub fn prompt_context(options: &SystemPromptOptions) -> String {
+    let cwd = options.cwd.replace('\\', "/");
+    let mut prompt = String::new();
 
     if let Some(append) = options.append {
         prompt.push_str("\n\n");
@@ -55,9 +74,10 @@ pub fn build_system_prompt(options: &SystemPromptOptions) -> String {
     let file_read_tool = options
         .selected_tools
         .iter()
-        .find(|tool| matches!(tool.as_str(), "read" | "bash"));
+        .find(|tool| matches!(tool.as_str(), "Read" | "Bash"));
     if let Some(tool) = file_read_tool
         && !options.skills.is_empty()
+        && options.mode == Mode::Basic
     {
         prompt.push('\n');
         prompt.push_str(&crate::skills::format_skills_for_prompt_with_tool(
@@ -69,6 +89,11 @@ pub fn build_system_prompt(options: &SystemPromptOptions) -> String {
 
     prompt.push_str(&format!("\nCurrent working directory: {cwd}"));
     prompt
+}
+
+/// The body of the advanced mode's prompt, which is not written yet.
+fn advanced_prompt() -> String {
+    super_agent::placeholder::prompt_todo("SystemPrompt.advanced")
 }
 
 fn default_prompt(options: &SystemPromptOptions) -> String {
@@ -85,8 +110,8 @@ fn default_prompt(options: &SystemPromptOptions) -> String {
 
     let mut guidelines: Vec<&str> = Vec::new();
     let has = |t: &str| options.selected_tools.iter().any(|x| x == t);
-    if has("bash") && !has("grep") && !has("find") && !has("ls") {
-        guidelines.push("Use bash for file operations like ls, rg, find");
+    if has("Bash") && !has("grep") && !has("find") && !has("ls") {
+        guidelines.push("Use Bash for file operations like ls, rg, find");
     }
     guidelines.push("Be concise in your responses");
     guidelines.push("Show file paths clearly when working with files");
@@ -107,6 +132,7 @@ mod tests {
 
     fn base_options<'a>(tools: &'a [String]) -> SystemPromptOptions<'a> {
         SystemPromptOptions {
+            mode: Mode::Basic,
             custom_prompt: None,
             append: None,
             selected_tools: tools,
@@ -118,17 +144,17 @@ mod tests {
 
     #[test]
     fn default_prompt_lists_tools_and_cwd() {
-        let tools = vec!["read".to_string(), "bash".to_string()];
+        let tools = vec!["Read".to_string(), "Bash".to_string()];
         let p = build_system_prompt(&base_options(&tools));
-        assert!(p.contains("- read:"));
-        assert!(p.contains("- bash:"));
-        assert!(p.contains("Use bash for file operations"));
+        assert!(p.contains("- Read:"));
+        assert!(p.contains("- Bash:"));
+        assert!(p.contains("Use Bash for file operations"));
         assert!(p.ends_with("Current working directory: /work"));
     }
 
     #[test]
     fn skills_are_available_with_bash_as_the_only_reader() {
-        let tools = vec!["bash".to_string()];
+        let tools = vec!["Bash".to_string()];
         let skill = Skill {
             name: "example".into(),
             description: "Example skill".into(),
@@ -139,16 +165,16 @@ mod tests {
         options.skills = std::slice::from_ref(&skill);
         let prompt = build_system_prompt(&options);
         assert!(prompt.contains("<name>example</name>"));
-        assert!(prompt.contains("Use bash to load a skill's file"));
+        assert!(prompt.contains("Use Bash to load a skill's file"));
 
-        let no_reader = vec!["edit".to_string()];
+        let no_reader = vec!["Edit".to_string()];
         options.selected_tools = &no_reader;
         assert!(!build_system_prompt(&options).contains("<available_skills>"));
     }
 
     #[test]
     fn custom_prompt_keeps_appends() {
-        let tools = vec!["read".to_string()];
+        let tools = vec!["Read".to_string()];
         let mut o = base_options(&tools);
         o.custom_prompt = Some("You are a poet.");
         o.append = Some("Rhyme everything.");
@@ -159,8 +185,96 @@ mod tests {
     }
 
     #[test]
+    fn the_advanced_body_is_a_placeholder_before_the_same_dynamic_parts() {
+        let tools = vec!["Read".to_string(), "Bash".to_string()];
+        let skill = Skill {
+            name: "example".into(),
+            description: "Example skill".into(),
+            file_path: "/skills/example/SKILL.md".into(),
+            disable_model_invocation: false,
+        };
+        let files = vec![ContextFile {
+            path: "/p/AGENTS.md".into(),
+            content: "be nice".into(),
+        }];
+        let mut basic = base_options(&tools);
+        basic.append = Some("Rhyme everything.");
+        basic.context_files = &files;
+        basic.skills = std::slice::from_ref(&skill);
+        let basic_prompt = build_system_prompt(&basic);
+        let advanced = SystemPromptOptions {
+            mode: Mode::Advanced,
+            ..basic
+        };
+        let advanced_prompt = build_system_prompt(&advanced);
+        let placeholder = super_agent::placeholder::prompt_todo("SystemPrompt.advanced");
+
+        assert!(advanced_prompt.starts_with(&format!("{placeholder}\n\n")));
+        assert!(!advanced_prompt.contains("expert coding assistant"));
+        assert!(!advanced_prompt.contains("- Read:"));
+        // Everything after the body is what the basic mode appends, except
+        // the skills with their files: the advanced mode lists them for its
+        // `Skill` tool on each request.
+        assert!(basic_prompt.contains("<name>example</name>"));
+        assert!(basic_prompt.contains("<location>/skills/example/SKILL.md</location>"));
+        assert!(!advanced_prompt.contains("<available_skills>"));
+        assert!(!advanced_prompt.contains("SKILL.md"));
+        let basic_body = default_prompt(&advanced);
+        let without_skills = SystemPromptOptions {
+            mode: Mode::Basic,
+            skills: &[],
+            ..advanced
+        };
+        assert_eq!(
+            advanced_prompt.strip_prefix(placeholder.as_str()),
+            build_system_prompt(&without_skills).strip_prefix(basic_body.as_str())
+        );
+        assert!(advanced_prompt.contains("Rhyme everything."));
+        assert!(advanced_prompt.contains("<project_instructions path=\"/p/AGENTS.md\">"));
+        assert!(advanced_prompt.ends_with("Current working directory: /work"));
+    }
+
+    #[test]
+    fn the_context_is_what_follows_the_body() {
+        let tools = vec!["Read".to_string()];
+        let files = vec![ContextFile {
+            path: "/p/AGENTS.md".into(),
+            content: "be nice".into(),
+        }];
+        let mut options = base_options(&tools);
+        options.mode = Mode::Advanced;
+        options.append = Some("Rhyme everything.");
+        options.context_files = &files;
+        let context = prompt_context(&options);
+        assert!(context.starts_with("\n\nRhyme everything."));
+        assert!(context.ends_with("Current working directory: /work"));
+        assert_eq!(
+            build_system_prompt(&options),
+            format!("{}{context}", advanced_prompt())
+        );
+        options.custom_prompt = Some("You are a poet.");
+        assert_eq!(
+            build_system_prompt(&options),
+            format!("You are a poet.{context}")
+        );
+    }
+
+    #[test]
+    fn a_custom_prompt_replaces_the_body_in_both_modes() {
+        let tools = vec!["Read".to_string()];
+        for mode in [Mode::Basic, Mode::Advanced] {
+            let mut options = base_options(&tools);
+            options.mode = mode;
+            options.custom_prompt = Some("You are a poet.");
+            let prompt = build_system_prompt(&options);
+            assert!(prompt.starts_with("You are a poet."));
+            assert!(!prompt.contains(super_agent::placeholder::PREFIX));
+        }
+    }
+
+    #[test]
     fn context_files_wrapped() {
-        let tools = vec!["read".to_string()];
+        let tools = vec!["Read".to_string()];
         let files = vec![ContextFile {
             path: "/p/AGENTS.md".into(),
             content: "be nice".into(),

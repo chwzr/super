@@ -1,7 +1,7 @@
 //! Running a shell command *the user* asked for, as opposed to one the model
 //! asked for.
 //!
-//! The model-facing `bash` tool (in `crates/super-agent/src/tools/bash.rs`)
+//! The model-facing `Bash` tool (in `crates/super-agent/src/tools/bash.rs`)
 //! reports a non-zero exit status as a tool error, because that is what makes
 //! the model notice and react. A direct command from an SDK caller is different:
 //! the caller wants the exit code as data, not as a failure. This module is

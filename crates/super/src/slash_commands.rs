@@ -148,7 +148,7 @@ pub(crate) const SUPER_SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand::new("workflows", "Browse and manage workflow runs", None),
     SlashCommand::new(
         "loop",
-        "Run a goal loop in a new session",
+        "Run a goal loop",
         Some("[interval] <goal> [--iterations N]"),
     ),
     SlashCommand::new(
@@ -157,6 +157,7 @@ pub(crate) const SUPER_SLASH_COMMANDS: &[SlashCommand] = &[
         Some("<goal> [--iterations N]"),
     ),
     SlashCommand::new("jobs", "Browse and manage iterative jobs", None),
+    SlashCommand::new("tasks", "Browse and stop background tasks", None),
     SlashCommand::new(
         "rc",
         "Hand this session to the SUPER daemon (alias for /remote)",
@@ -320,6 +321,7 @@ mod tests {
                 "loop",
                 "autoresearch",
                 "jobs",
+                "tasks",
                 "rc",
                 "sessions"
             ]

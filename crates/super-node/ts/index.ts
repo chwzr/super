@@ -10,7 +10,27 @@ const binding = require(
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 export type StreamingBehavior = "steer" | "followUp"
 export type QueueMode = "all" | "one-at-a-time"
-export type ToolName = "read" | "write" | "edit" | "bash" | "grep" | "find" | "ls" | "mcp"
+export type ToolName =
+  | "Read"
+  | "Write"
+  | "Edit"
+  | "Bash"
+  | "grep"
+  | "find"
+  | "ls"
+  | "mcp"
+  // The tools a session adds itself in the advanced mode.
+  | "Monitor"
+  | "TaskStop"
+  | "Agent"
+  | "SendMessage"
+  | "ListAgents"
+  | "Workflow"
+  | "Skill"
+  | "ScheduleWakeup"
+  | "EnterWorktree"
+  | "ExitWorktree"
+export type Mode = "basic" | "advanced"
 
 export interface ImageInput {
   type: "image"
@@ -62,6 +82,65 @@ export interface SessionState {
   followUpMode: QueueMode
   autoCompactionEnabled: boolean
   autoRetryEnabled: boolean
+  /** The session's own folder. */
+  cwd: string
+  /** The worktree the session works in, or `null`. */
+  worktree: SessionWorktree | null
+  mode: Mode
+  subagents: boolean
+  workflows: boolean
+}
+export interface SessionWorktree {
+  path: string
+  branch: string
+  created: boolean
+  original: string
+}
+/** The mode and the two agent switches of a session, as `setMode` answers. */
+export interface ModeSettings {
+  mode: Mode
+  subagents: boolean
+  workflows: boolean
+}
+export type TaskKind = "shell" | "monitor" | "agent" | "workflow"
+export type TaskStatus = "running" | "completed" | "failed" | "stopped"
+/** A background task: a command, a monitor, an agent or a workflow. */
+export interface TaskInfo {
+  id: string
+  name?: string
+  kind: TaskKind
+  description: string
+  status: TaskStatus
+  toolUseId?: string
+  outputFile?: string
+  progress?: string
+  summary?: string
+  /** Milliseconds since the Unix epoch. */
+  startedAt: number
+  endedAt?: number
+}
+/** Where an agent comes from. */
+export type AgentOrigin =
+  | { kind: "agent" }
+  | { kind: "workflow"; runId: string }
+  | { kind: "job"; jobId: number; jobKind: "loop" | "autoresearch" }
+export interface AgentInfo {
+  id: string
+  /** What `agents` and `agentEntries` take: ids joined by `/`. */
+  path: string
+  name: string
+  type: string
+  status: TaskStatus
+  background: boolean
+  sessionFile?: string
+  worktree?: { path: string; branch: string; base: string; project: string }
+  origin: AgentOrigin
+}
+export interface AgentEntries {
+  entries: Record<string, unknown>[]
+  leafId: string | null
+  sessionId: string
+  sessionFile: string | null
 }
 export interface BashResult {
   output: string
@@ -313,6 +392,36 @@ export class Session {
   }
   async ping(): Promise<boolean> {
     return (await this.#require<{ pong: boolean }>({ type: "ping" })).pong
+  }
+
+  /** Every background task the session remembers, oldest first. */
+  async tasks(): Promise<TaskInfo[]> {
+    return (await this.#require<{ tasks: TaskInfo[] }>({ type: "get_tasks" })).tasks
+  }
+  /** Stop one running background task by its id or name. */
+  async stopTask(taskId: string): Promise<TaskInfo> {
+    return (await this.#require<{ task: TaskInfo }>({ type: "stop_task", taskId })).task
+  }
+  /** The session's agents, or with `agent` (a path) the agents of that agent. */
+  async agents(agent?: string): Promise<AgentInfo[]> {
+    const command: Command = { type: "get_agents" }
+    if (agent !== undefined) command.agent = agent
+    return (await this.#require<{ agents: AgentInfo[] }>(command)).agents
+  }
+  /** An agent's transcript, after the entry `since` when given. */
+  async agentEntries(agent: string, since?: string): Promise<AgentEntries> {
+    const command: Command = { type: "get_agent_entries", agent }
+    if (since !== undefined) command.since = since
+    return this.#require(command)
+  }
+  /**
+   * Set the mode and the agent switches given, for this session only, and
+   * answer all three; with nothing given, only read them.
+   */
+  async setMode(
+    settings: { mode?: Mode; subagents?: boolean; workflows?: boolean } = {},
+  ): Promise<ModeSettings> {
+    return this.#require({ type: "set_mode", ...settings })
   }
 }
 

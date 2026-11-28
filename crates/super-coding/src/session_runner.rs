@@ -1,22 +1,29 @@
 //! AgentSession: the high-level facade every mode drives. Owns the session
 //! manager, tool set, queues, retry, auto-compaction, and cost accounting.
 
+use crate::agents::registry::{AgentLink, AgentRegistry, MAX_DEPTH, StoredAgent};
+use crate::agents::{AgentObserver, AgentResources, AgentType, AgentTypeSummary};
+use crate::child_turn::{ForkTurns, fork_messages};
 use crate::compaction::{
     self, estimate_context_tokens, extract_file_ops, file_ops_details, plan_compaction,
     should_compact,
 };
 use crate::iterative::IterativeRuntime;
-use crate::session::manager::SessionManager;
-use crate::settings::{CacheWarmingMode, CompactionMode, QueueMode, ReasoningEffortMode, Settings};
-use crate::subagents::{ForkTurns, SUBAGENT_SYSTEM_PROMPT, SubagentRuntime, fork_messages};
+use crate::notifications::Priority;
+use crate::session::manager::{SUBAGENT_ENTRY, SessionManager};
+use crate::settings::{
+    CacheWarmingMode, CompactionMode, Mode, QueueMode, ReasoningEffortMode, Settings,
+};
+use crate::tasks::{BackgroundTasks, TaskInfo, TaskStopError};
 use crate::workflows::{WorkflowApprover, WorkflowRuntime};
 use anyhow::Context as _;
 use futures::future::BoxFuture;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use super_agent::{
-    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, StreamFn,
-    TurnUpdate,
+    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, FileStates,
+    ShellDirectory, StreamFn, ToolSession, TurnUpdate,
 };
 use super_ai::{Model, Registry, StopReason, ThinkingLevel, Usage};
 use tokio_util::sync::CancellationToken;
@@ -76,9 +83,38 @@ pub enum SessionEvent {
     /// A pooled account hit its rate limit and the request moved to the
     /// next account. `index` is zero-based; `total` is the pool size.
     AccountSwitched(super_ai::auth::accounts::AccountSwitch),
+    /// A background task was registered; see [`crate::tasks`].
+    TaskStarted(TaskInfo),
+    /// A running background task changed its progress line.
+    TaskUpdated(TaskInfo),
+    /// A background task ended: completed, failed or stopped.
+    TaskEnded(TaskInfo),
+    /// The folder the session works in changed: it moved into a worktree or
+    /// back to its own folder, or the worktree it worked in was gone when
+    /// it was loaded again.
+    WorktreeChanged {
+        /// The folder its tools work in now.
+        folder: std::path::PathBuf,
+        /// The worktree it works in, if any.
+        worktree: Option<crate::worktree::EnteredWorktree>,
+        /// The worktree whose folder was gone when the session was loaded.
+        missing: Option<std::path::PathBuf>,
+    },
 }
 
 pub type SessionEventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
+
+/// Where a child session's events go: nowhere until a host forwards them
+/// ([`AgentSession::forward_events`]).
+type EventRelay = Arc<Mutex<Option<SessionEventSink>>>;
+
+/// Runs a turn the session starts on its own, because an entry was queued
+/// while it was idle ([`AgentSession::queue_entry`]). The future resolves
+/// to whether a turn ran: another run may have taken the entries first.
+/// A host that tracks its runs (the SDK, which announces `agent_settled`)
+/// installs one with [`AgentSession::set_turn_starter`]; without one the
+/// session spawns the future on the current Tokio runtime.
+pub type TurnStarter = Arc<dyn Fn(BoxFuture<'static, bool>) + Send + Sync>;
 
 /// Runs the engine of a session somewhere else, such as the SUPER daemon.
 ///
@@ -104,16 +140,28 @@ pub trait SessionBackend: Send + Sync {
     fn compact(&self, custom_instructions: Option<String>) -> BoxFuture<'static, ()>;
     /// Whether a run is in flight there.
     fn is_running(&self) -> bool;
+    /// Stop one background task there, by id or by name.
+    fn stop_task(&self, task_id: &str);
+    /// Set the session's mode and its Subagents and Dynamic workflows
+    /// switches there, as [`AgentSession::update_settings`] changed them
+    /// here.
+    fn set_mode(&self, _mode: Mode, _subagents: bool, _workflows: bool) {}
 }
+
+/// Builds the system prompt of a session for a mode, as its host built it
+/// at the start: [`AgentSession::set_prompt_builder`].
+pub type PromptBuilder = Arc<dyn Fn(Mode) -> String + Send + Sync>;
 
 /// Why an operation that only works on a session this process runs refused.
 pub const REMOTE_SESSION_REFUSAL: &str =
     "not available while this session runs in the SUPER daemon";
 
-/// Tools and instructions that belong to one submitted user turn.
+/// What one submitted user turn asked for.
 ///
-/// Workflow mode is explicit and local to the prompt invocation. This keeps
-/// one prompt from enabling or disabling workflow tools for another prompt.
+/// Workflow mode is explicit and local to the prompt invocation: the user
+/// asked for the task to run as a dynamic workflow, and the turn's requests
+/// say so (the placeholder `Workflow.opt_in`). The `Workflow` tool itself is
+/// offered with every request while dynamic workflows are on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PromptMode {
     #[default]
@@ -134,6 +182,87 @@ pub enum WorkflowTurnStatus {
 struct QueuedPrompt {
     message: AgentMessage,
     mode: PromptMode,
+    /// Queued with [`AgentSession::queue_entry`]: it starts a turn while the
+    /// session is idle, keeps the active prompt mode, is not shown as queued
+    /// input and is not handed back to the editor.
+    starts_turn: bool,
+}
+
+/// How [`AgentSession::create_child`] builds a child session from its
+/// session manager.
+struct ChildSpec {
+    /// Start with a copy of what the parent read.
+    copy_file_state: bool,
+    model: Model,
+    thinking: ThinkingLevel,
+    system_prompt: String,
+    /// The child's base tools, before they are bound to it.
+    tools: Vec<DynTool>,
+    settings: Settings,
+}
+
+/// What a workflow run or a job asks of
+/// [`AgentSession::create_subagent_session`].
+pub(crate) struct SubagentSpec<'a> {
+    /// The name clients see the child by.
+    pub name: &'a str,
+    /// What the child's system prompt calls it.
+    pub canonical_path: &'a str,
+    pub fork_turns: ForkTurns,
+    /// A model of the registry; `None` is this session's.
+    pub model: Option<&'a str>,
+    /// A thinking level; `None` is the model's or this session's.
+    pub effort: Option<&'a str>,
+    /// The workflow run or job it belongs to.
+    pub origin: crate::agents::AgentOrigin,
+}
+
+impl<'a> SubagentSpec<'a> {
+    /// A child named `name`, called `canonical_path`, that starts with
+    /// `fork_turns` of the conversation on this session's model.
+    pub(crate) fn new(
+        name: &'a str,
+        canonical_path: &'a str,
+        fork_turns: ForkTurns,
+        origin: crate::agents::AgentOrigin,
+    ) -> Self {
+        SubagentSpec {
+            name,
+            canonical_path,
+            fork_turns,
+            model: None,
+            effort: None,
+            origin,
+        }
+    }
+}
+
+/// An agent [`AgentSession::create_agent_session`] makes.
+pub(crate) struct AgentChild<'a> {
+    pub id: &'a str,
+    pub agent_type: &'a AgentType,
+    pub description: &'a str,
+    pub model: Model,
+    pub thinking: ThinkingLevel,
+    /// 1 for an agent of the main session.
+    pub depth: usize,
+    pub tool_use_id: &'a str,
+    /// The worktree it works in, for `isolation: "worktree"`.
+    pub worktree: Option<&'a crate::worktree::Worktree>,
+}
+
+/// What an agent's session is built from, whether the agent starts now or
+/// its stored session is loaded.
+struct AgentSetup<'a> {
+    id: &'a str,
+    agent_type: &'a AgentType,
+    model: Model,
+    thinking: ThinkingLevel,
+    depth: usize,
+    /// The folder it works in, when it is not this session's: its worktree.
+    folder: Option<&'a Path>,
+    /// Start from what this session read: a fork that starts now.
+    copy_file_state: bool,
 }
 
 pub struct TreeNavigationOutcome {
@@ -159,6 +288,35 @@ fn empty_answer_reason(assistant: &super_ai::AssistantMessage, budget: u64) -> S
         ),
         _ => format!("the model reached its {budget}-token budget before answering"),
     }
+}
+
+/// `prompt` for a session that works in `folder`: its last working
+/// directory line names `folder` instead. A prompt without one is returned
+/// as it is.
+fn in_folder(prompt: &str, folder: &Path) -> String {
+    const LINE: &str = "Current working directory: ";
+    let Some(start) = prompt.rfind(LINE) else {
+        return prompt.to_string();
+    };
+    let value = start + LINE.len();
+    let end = prompt[value..]
+        .find('\n')
+        .map_or(prompt.len(), |offset| value + offset);
+    format!(
+        "{}{}{}",
+        &prompt[..value],
+        folder.display().to_string().replace('\\', "/"),
+        &prompt[end..]
+    )
+}
+
+/// `tools` as they work in `folder` ([`super_agent::AgentTool::in_directory`]);
+/// a tool that does not depend on a folder stays as it is.
+fn in_directory(tools: Vec<DynTool>, folder: &Path) -> Vec<DynTool> {
+    tools
+        .into_iter()
+        .map(|tool| tool.in_directory(folder).unwrap_or(tool))
+        .collect()
 }
 
 const SESSION_TITLE_MAX_CHARS: usize = 36;
@@ -192,6 +350,59 @@ fn normalize_session_title(text: &str) -> Option<String> {
     (!title.is_empty()).then(|| title.to_string())
 }
 
+/// Which of the tools a session adds itself the host's tool list lets
+/// through, by name: the agent tools, `Monitor`, `TaskStop`, `Workflow`,
+/// `Skill`, `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`. They are
+/// offered as the mode and the switches say, unless an allowlist (`--tools`)
+/// leaves them out or they are named to be left out (`--exclude-tools`, a
+/// `-Name` entry of `defaultTools`). The default lets every one through.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolSelection {
+    /// Only these, when given.
+    pub allow: Option<Vec<String>>,
+    /// Never these.
+    pub exclude: Vec<String>,
+}
+
+impl ToolSelection {
+    /// Whether the allowlist names the tool `name`.
+    pub fn names(&self, name: &str) -> bool {
+        self.allow
+            .as_ref()
+            .is_some_and(|allow| allow.iter().any(|allowed| allowed == name))
+    }
+
+    /// Whether the tool `name` may be offered.
+    pub fn admits(&self, name: &str) -> bool {
+        self.allow
+            .as_ref()
+            .is_none_or(|allow| allow.iter().any(|allowed| allowed == name))
+            && !self.exclude.iter().any(|excluded| excluded == name)
+    }
+
+    /// This selection for an agent of a type that gets `choice` of the
+    /// tools: a type that names its tools gets those and nothing else, one
+    /// that leaves tools out goes without them.
+    pub fn narrowed(&self, choice: &crate::agents::ToolChoice) -> ToolSelection {
+        use crate::agents::ToolChoice;
+        let mut narrowed = self.clone();
+        match choice {
+            ToolChoice::All => {}
+            ToolChoice::AllExcept(names) => narrowed.exclude.extend(names.iter().cloned()),
+            ToolChoice::Only(names) => {
+                narrowed.allow = Some(
+                    names
+                        .iter()
+                        .filter(|name| self.admits(name))
+                        .cloned()
+                        .collect(),
+                );
+            }
+        }
+        narrowed
+    }
+}
+
 pub struct AgentSession {
     pub manager: Mutex<SessionManager>,
     /// Read with [`AgentSession::registry`]; a host replaces it when the
@@ -215,8 +426,19 @@ pub struct AgentSession {
     context_file: Mutex<Option<crate::context_file::ContextFile>>,
     api_key_override: Option<(String, String)>,
     sink: SessionEventSink,
-    subagents_allowed: bool,
-    subagents: OnceLock<Arc<SubagentRuntime>>,
+    /// The agents this session started; set when it may start agents (see
+    /// [`AgentSession::agent_registry`]).
+    agents: OnceLock<Arc<AgentRegistry>>,
+    /// Set for an agent's own session: who started it.
+    agent_link: OnceLock<AgentLink>,
+    /// What this session's agents start from besides the session.
+    agent_resources: Mutex<AgentResources>,
+    /// `Agent`, `SendMessage` and `ListAgents`, bound to this session.
+    agent_tools: OnceLock<Vec<DynTool>>,
+    /// Hears of this session's agent sessions; see [`AgentObserver`].
+    agent_observer: Mutex<Option<Arc<dyn AgentObserver>>>,
+    /// Set for a child session: where its events go.
+    event_relay: OnceLock<EventRelay>,
     workflows: OnceLock<Arc<WorkflowRuntime>>,
     iterative: OnceLock<Arc<IterativeRuntime>>,
     workflow_approver: Mutex<Option<WorkflowApprover>>,
@@ -225,6 +447,65 @@ pub struct AgentSession {
     stream_fn: Mutex<Option<StreamFn>>,
     /// Set while the engine runs elsewhere; see [`SessionBackend`].
     backend: Mutex<Option<Arc<dyn SessionBackend>>>,
+    /// This session's background tasks; set once at construction.
+    tasks: OnceLock<Arc<BackgroundTasks>>,
+    /// What this session's tools keep per session (what was read of each
+    /// file); set once at construction, and every tool is bound to it.
+    tool_session: OnceLock<ToolSession>,
+    /// `Monitor` and `TaskStop`, which work on this session's background
+    /// tasks; offered alongside `Bash`.
+    task_tools: OnceLock<Vec<DynTool>>,
+    /// `Skill`, which loads this session's skills; offered in the advanced
+    /// mode alongside `Read` or `Bash`, or with the `Workflow` tool.
+    skill_tool: OnceLock<DynTool>,
+    /// What the session's process last reported about its tasks, while the
+    /// engine runs elsewhere.
+    remote_tasks: Mutex<Vec<TaskInfo>>,
+    /// The worktree the session's process reported it works in, while the
+    /// engine runs elsewhere: [`AgentSession::working_folder`] there.
+    remote_folder: Mutex<Option<std::path::PathBuf>>,
+    turn_starter: Mutex<Option<TurnStarter>>,
+    /// Bumped when a run ends, an entry is queued or a task ends, so
+    /// [`AgentSession::wait_for_background_work`] looks again.
+    activity: tokio::sync::watch::Sender<u64>,
+    /// The worktree the session moved into with `EnterWorktree`; its tools,
+    /// its agents and its prompt's working-directory line use it while set.
+    worktree: Mutex<Option<crate::worktree::EnteredWorktree>>,
+    /// `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`, bound to this
+    /// session; offered in the advanced mode to a session that is no child.
+    session_folder_tools: OnceLock<Vec<DynTool>>,
+    /// This session's pending wake-up and its self-paced loop.
+    wakeups: OnceLock<Arc<crate::wakeup::Wakeups>>,
+    /// Which of the tools the session adds itself the host's tool list lets
+    /// through; see [`ToolSelection`].
+    tool_selection: Mutex<ToolSelection>,
+    /// Built as the session of a child: an agent, a workflow agent or a
+    /// loop iteration.
+    child: bool,
+    /// The tools or the prompt changed during a run (the session moved into
+    /// or out of a worktree): the run builds its context again before its
+    /// next model request.
+    context_stale: std::sync::atomic::AtomicBool,
+    /// This session, for the work it starts on its own.
+    weak_self: std::sync::Weak<AgentSession>,
+    /// What the session stored and brought back, waiting for its host to be
+    /// ready: see [`AgentSession::resume_stored_work`].
+    stored_work: Mutex<StoredWork>,
+    /// The session's host is ending it; see [`AgentSession::set_closing`].
+    closing: std::sync::atomic::AtomicBool,
+    /// How the host builds the system prompt for a mode; see
+    /// [`AgentSession::set_prompt_builder`].
+    prompt_builder: Mutex<Option<PromptBuilder>>,
+}
+
+/// What [`AgentSession::resume_stored_work`] does with what the session
+/// stored, once its host is ready and holds the session's file.
+#[derive(Default)]
+struct StoredWork {
+    /// It was brought back and not started yet.
+    waiting: bool,
+    /// The worktree whose folder was gone: written down and announced.
+    missing_worktree: Option<std::path::PathBuf>,
 }
 
 struct ReasoningRunState {
@@ -278,6 +559,15 @@ impl AgentSession {
         (self.sink)(SessionEvent::WorkflowOutcome { run, name, status });
     }
 
+    pub(crate) fn emit_event(&self, event: SessionEvent) {
+        (self.sink)(event);
+    }
+
+    pub(crate) fn note_activity(&self) {
+        self.activity
+            .send_modify(|version| *version = version.wrapping_add(1));
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         manager: SessionManager,
@@ -317,10 +607,45 @@ impl AgentSession {
         sink: SessionEventSink,
         subagents_allowed: bool,
     ) -> Arc<Self> {
+        Self::construct(
+            manager,
+            tools,
+            registry.into(),
+            settings,
+            system_prompt,
+            model,
+            thinking,
+            api_key_override,
+            sink,
+            subagents_allowed,
+            false,
+        )
+    }
+
+    /// A session; `child` for a child agent's, whose shell starts every
+    /// command in the session folder instead of where a `cd` left it.
+    #[allow(clippy::too_many_arguments)]
+    fn construct(
+        manager: SessionManager,
+        tools: Vec<DynTool>,
+        registry: Arc<Registry>,
+        settings: Settings,
+        system_prompt: String,
+        model: Model,
+        thinking: ThinkingLevel,
+        api_key_override: Option<(String, String)>,
+        sink: SessionEventSink,
+        subagents_allowed: bool,
+        child: bool,
+    ) -> Arc<Self> {
         let totals = manager.usage_totals();
-        let session = Arc::new(AgentSession {
+        let session = Arc::new_cyclic(|weak_self| AgentSession {
+            weak_self: weak_self.clone(),
+            stored_work: Mutex::new(StoredWork::default()),
+            closing: std::sync::atomic::AtomicBool::new(false),
+            prompt_builder: Mutex::new(None),
             manager: Mutex::new(manager),
-            registry: RwLock::new(registry.into()),
+            registry: RwLock::new(registry),
             base_tools: Mutex::new(tools.clone()),
             session_tools: Mutex::new(Vec::new()),
             tools: Mutex::new(tools),
@@ -339,23 +664,96 @@ impl AgentSession {
             context_file: Mutex::new(None),
             api_key_override,
             sink,
-            subagents_allowed,
-            subagents: OnceLock::new(),
+            agents: OnceLock::new(),
+            agent_link: OnceLock::new(),
+            agent_resources: Mutex::new(AgentResources::default()),
+            agent_tools: OnceLock::new(),
+            agent_observer: Mutex::new(None),
+            event_relay: OnceLock::new(),
             workflows: OnceLock::new(),
             iterative: OnceLock::new(),
             workflow_approver: Mutex::new(None),
             stream_fn: Mutex::new(None),
             backend: Mutex::new(None),
+            tasks: OnceLock::new(),
+            tool_session: OnceLock::new(),
+            task_tools: OnceLock::new(),
+            skill_tool: OnceLock::new(),
+            remote_tasks: Mutex::new(Vec::new()),
+            remote_folder: Mutex::new(None),
+            turn_starter: Mutex::new(None),
+            activity: tokio::sync::watch::channel(0).0,
+            worktree: Mutex::new(None),
+            session_folder_tools: OnceLock::new(),
+            wakeups: OnceLock::new(),
+            tool_selection: Mutex::new(ToolSelection::default()),
+            child,
+            context_stale: std::sync::atomic::AtomicBool::new(false),
         });
+        assert!(
+            session
+                .tasks
+                .set(BackgroundTasks::new(Arc::downgrade(&session)))
+                .is_ok()
+        );
+        assert!(
+            session
+                .wakeups
+                .set(crate::wakeup::Wakeups::new(Arc::downgrade(&session)))
+                .is_ok()
+        );
+        let room_of = Arc::downgrade(&session);
+        let tool_session = ToolSession {
+            files: Arc::new(FileStates::new()),
+            context_room: Some(Arc::new(move || {
+                let session = room_of.upgrade()?;
+                let (used, window) = session.context_usage();
+                Some(window.saturating_sub(used))
+            })),
+            // A `cd` carries over in the main session only.
+            shell: (!child).then(|| Arc::new(ShellDirectory::new())),
+            tasks: Some(session.background_tasks().host()),
+        };
+        assert!(session.tool_session.set(tool_session).is_ok());
+        let this = Arc::downgrade(&session);
+        let task_tools: Vec<DynTool> = vec![
+            Arc::new(crate::tools::monitor::MonitorTool::new(this.clone())),
+            Arc::new(crate::tools::task_stop::TaskStopTool::new(this)),
+        ];
+        assert!(session.task_tools.set(task_tools).is_ok());
+        let skill_tool: DynTool = Arc::new(crate::tools::skill::SkillTool::new(Arc::downgrade(
+            &session,
+        )));
+        assert!(session.skill_tool.set(skill_tool).is_ok());
+        let agent_tools = crate::agents::tools::agent_tools(Arc::downgrade(&session));
+        assert!(session.agent_tools.set(agent_tools).is_ok());
+        let this = Arc::downgrade(&session);
+        let session_folder_tools: Vec<DynTool> = vec![
+            Arc::new(crate::tools::schedule_wakeup::ScheduleWakeupTool::new(
+                this.clone(),
+            )),
+            Arc::new(crate::tools::worktree::EnterWorktreeTool::new(this.clone())),
+            Arc::new(crate::tools::worktree::ExitWorktreeTool::new(this)),
+        ];
+        assert!(
+            session
+                .session_folder_tools
+                .set(session_folder_tools)
+                .is_ok()
+        );
         if subagents_allowed {
-            let runtime = SubagentRuntime::new(Arc::downgrade(&session));
-            assert!(session.subagents.set(runtime).is_ok());
+            let agents = AgentRegistry::new(Arc::downgrade(&session), 0);
+            // A session loaded again knows the agents it had.
+            agents.restore();
+            assert!(session.agents.set(agents).is_ok());
             let workflows = WorkflowRuntime::new(Arc::downgrade(&session));
             assert!(session.workflows.set(workflows).is_ok());
             let iterative = IterativeRuntime::new(Arc::downgrade(&session));
             assert!(session.iterative.set(iterative).is_ok());
         }
         session.rebuild_tools();
+        // A session loaded again is where it was.
+        session.restore_stored_state();
         session
     }
 
@@ -466,12 +864,50 @@ impl AgentSession {
         self.settings.lock().unwrap().clone()
     }
 
+    /// The mode this session runs in, from the `mode` setting. It follows
+    /// [`AgentSession::update_settings`], and everything that differs between
+    /// the basic and the advanced mode asks here.
+    pub fn mode(&self) -> Mode {
+        self.settings.lock().unwrap().mode
+    }
+
+    /// Replace the session's settings. A change of the mode builds the
+    /// system prompt again when the host installed a
+    /// [`AgentSession::set_prompt_builder`]; a session whose engine runs
+    /// elsewhere passes a change of the mode or of the Subagents and Dynamic
+    /// workflows switches on to it.
     pub fn update_settings(&self, settings: Settings) {
         *self.context_usage_cache.lock().unwrap() = None;
         let was_enabled = self.subagents_enabled();
         let workflows_were_enabled = self.workflows_enabled();
         let cache_warming = settings.cache_warming;
+        let switches = |settings: &Settings| {
+            (
+                settings.mode,
+                settings.subagents.enabled,
+                settings.workflows.enabled,
+            )
+        };
+        let before = switches(&self.settings.lock().unwrap());
+        let after = switches(&settings);
         *self.settings.lock().unwrap() = settings;
+        if before != after
+            && let Some(backend) = self.backend()
+        {
+            backend.set_mode(after.0, after.1, after.2);
+        }
+        if before.0 != after.0 {
+            let builder = self.prompt_builder.lock().unwrap().clone();
+            if let Some(builder) = builder {
+                self.set_system_prompt(builder(after.0));
+            }
+        }
+        if before != after {
+            // A run that goes on takes the new prompt and tools at its next
+            // request, as it does after the session moved.
+            self.context_stale
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if cache_warming == CacheWarmingMode::Off
             || (cache_warming == CacheWarmingMode::Streaming && !self.is_running())
         {
@@ -484,6 +920,27 @@ impl AgentSession {
             self.stop_workflows();
         }
         self.rebuild_tools();
+    }
+
+    /// The system prompt the next model request starts from, before the
+    /// parts the session adds itself for the tools it offers.
+    pub fn system_prompt(&self) -> String {
+        self.system_prompt.lock().unwrap().clone()
+    }
+
+    /// Replace the system prompt the next model request starts from, for
+    /// example after the mode changed.
+    pub fn set_system_prompt(&self, system_prompt: String) {
+        *self.context_usage_cache.lock().unwrap() = None;
+        *self.system_prompt.lock().unwrap() = system_prompt;
+    }
+
+    /// Install how the host builds this session's system prompt for a mode,
+    /// so that [`AgentSession::update_settings`] builds it again when the
+    /// mode changes, whoever changed it (the `set_mode` command of a client,
+    /// a terminal attached to the daemon). The SDK installs one.
+    pub fn set_prompt_builder(&self, builder: Option<PromptBuilder>) {
+        *self.prompt_builder.lock().unwrap() = builder;
     }
 
     /// Replace resources used by the next model request.
@@ -539,8 +996,8 @@ impl AgentSession {
 
     /// Stop every child agent and workflow run this session started.
     fn stop_child_work(&self) {
-        if let Some(runtime) = self.subagents.get() {
-            runtime.interrupt_all();
+        if let Some(agents) = self.agents.get() {
+            agents.stop_all();
         }
         if let Some(runtime) = self.workflows.get() {
             runtime.stop_all();
@@ -556,8 +1013,13 @@ impl AgentSession {
         }
     }
 
-    fn subagents_enabled(&self) -> bool {
-        self.subagents_allowed && self.settings.lock().unwrap().subagents.enabled
+    /// Whether this session offers the agent tools: it may start agents,
+    /// runs in the advanced mode and has the Subagents switch on. The basic
+    /// mode has no child agents, whatever the switch says.
+    pub(crate) fn subagents_enabled(&self) -> bool {
+        self.agents.get().is_some()
+            && self.mode().is_advanced()
+            && self.settings.lock().unwrap().subagents.enabled
     }
 
     /// Dynamic workflows are built on child agents, so they need subagents on
@@ -607,21 +1069,345 @@ impl AgentSession {
                 tools.push(session_tool);
             }
         }
-        if self.subagents_enabled()
-            && let Some(runtime) = self.subagents.get()
-        {
-            tools.extend(runtime.control_tools());
+        // In a worktree the tools work there.
+        if let Some(folder) = self.worktree_folder() {
+            tools = in_directory(tools, &folder);
         }
-        *self.tools.lock().unwrap() = tools;
+        // The host chose these; what follows the session adds itself.
+        let chosen = tools.len();
+        let agents_offered = self.subagents_enabled();
+        if let Some(agent_tools) = self.agent_tools.get() {
+            if agents_offered {
+                tools.extend(agent_tools.iter().cloned());
+            } else if self.agent_link.get().is_some() {
+                // An agent that starts no agents still writes to main.
+                tools.extend(
+                    agent_tools
+                        .iter()
+                        .filter(|tool| tool.name() == "SendMessage")
+                        .cloned(),
+                );
+            }
+        }
+        // Monitor runs commands as Bash does, and TaskStop stops what they
+        // or the agents leave running. A host or an agent type that names
+        // one of them gets it without Bash too.
+        let has_bash = tools.iter().any(|tool| tool.name() == "Bash");
+        let selection = self.tool_selection();
+        if let Some(task_tools) = self.task_tools.get() {
+            tools.extend(
+                task_tools
+                    .iter()
+                    .filter(|tool| {
+                        selection.names(tool.name())
+                            || match tool.name() {
+                                "Monitor" => has_bash,
+                                _ => has_bash || agents_offered,
+                            }
+                    })
+                    .cloned(),
+            );
+        }
+        // A workflow runs in the background of the main session; its tool is
+        // offered with every request while dynamic workflows are on.
+        let workflows_offered = self.workflows_enabled();
+        if workflows_offered && let Some(runtime) = self.workflows.get() {
+            tools.push(runtime.tool());
+        }
+        // Skills tell the model how to work with files and commands, as the
+        // basic mode's list does for `Read` or `Bash`; the guide to writing
+        // a workflow is a skill too.
+        let works_with_files = tools
+            .iter()
+            .any(|tool| matches!(tool.name(), "Read" | "Bash"));
+        if (works_with_files || workflows_offered)
+            && let Some(skill_tool) = self.skill_tool.get()
+        {
+            tools.push(skill_tool.clone());
+        }
+        // Wake-ups and worktrees belong to the session the user works in, not
+        // to a child; like the skills they come with the file tools.
+        if works_with_files
+            && !self.child
+            && let Some(session_folder_tools) = self.session_folder_tools.get()
+        {
+            tools.extend(session_folder_tools.iter().cloned());
+        }
+        let mut position = 0;
+        tools.retain(|tool| {
+            position += 1;
+            position <= chosen || selection.admits(tool.name())
+        });
+        let tools = self.bound_to_session(tools);
+        *self.tools.lock().unwrap() = self.offered_in_mode(tools);
     }
 
-    fn tools_for(&self, mode: PromptMode) -> Vec<DynTool> {
-        let mut tools = self.tools.lock().unwrap().clone();
-        if mode == PromptMode::Workflow
-            && self.workflows_enabled()
-            && let Some(runtime) = self.workflows.get()
+    /// Which of the tools this session adds itself its host lets through.
+    pub fn tool_selection(&self) -> ToolSelection {
+        self.tool_selection.lock().unwrap().clone()
+    }
+
+    /// Let through only what `selection` admits of the tools this session
+    /// adds itself, from the next request on. The host's own tools are the
+    /// ones it built; the agents this session starts follow the selection
+    /// too.
+    pub fn set_tool_selection(&self, selection: ToolSelection) {
+        *self.tool_selection.lock().unwrap() = selection;
+        self.rebuild_tools();
+    }
+
+    /// The folder this session works in: the worktree it entered with
+    /// `EnterWorktree`, else its session folder.
+    pub fn working_folder(&self) -> std::path::PathBuf {
+        self.worktree_folder()
+            .or_else(|| self.remote_folder.lock().unwrap().clone())
+            .unwrap_or_else(|| self.manager.lock().unwrap().cwd().to_path_buf())
+    }
+
+    /// Follow the worktree the process running this session's engine works
+    /// in (`None` while it works in the session's own folder), so that the
+    /// working folder of a session shown here is the one its tools use.
+    pub fn adopt_remote_folder(&self, worktree: Option<std::path::PathBuf>) {
+        *self.remote_folder.lock().unwrap() = worktree;
+    }
+
+    /// The worktree this session works in, while it is in one.
+    pub fn worktree(&self) -> Option<crate::worktree::EnteredWorktree> {
+        self.worktree.lock().unwrap().clone()
+    }
+
+    fn worktree_folder(&self) -> Option<std::path::PathBuf> {
+        self.worktree
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|entered| entered.worktree.path.clone())
+    }
+
+    /// Move the session into `entered`: from the next request on, its tools
+    /// work there and its prompt's working-directory line names it, and the
+    /// shell starts there. `EnterWorktree` does this after it made or found
+    /// the worktree.
+    pub fn enter_worktree(&self, entered: crate::worktree::EnteredWorktree) {
+        self.record_worktree(Some(&entered), None);
+        *self.worktree.lock().unwrap() = Some(entered);
+        self.moved();
+    }
+
+    /// Move the session back to its own folder; returns the worktree it was
+    /// in. The worktree itself stays as it is.
+    pub fn leave_worktree(&self) -> Option<crate::worktree::EnteredWorktree> {
+        let left = self.worktree.lock().unwrap().take();
+        if left.is_some() {
+            self.record_worktree(None, None);
+            self.moved();
+        }
+        left
+    }
+
+    /// Leave the worktree without writing it down, for a session that moves
+    /// to another conversation: the one it leaves is in the worktree again
+    /// when it is loaded.
+    fn forget_worktree(&self) {
+        if self.worktree.lock().unwrap().take().is_some() {
+            self.moved();
+        }
+    }
+
+    /// Write down the worktree the session works in, so that it is there
+    /// again when the session is loaded ([`crate::stored_state`]).
+    fn record_worktree(
+        &self,
+        entered: Option<&crate::worktree::EnteredWorktree>,
+        missing: Option<&Path>,
+    ) {
+        if self.is_remote() {
+            return;
+        }
+        let mut data = serde_json::json!({ "worktree": entered });
+        if let Some(missing) = missing {
+            data["missing"] = serde_json::json!(missing);
+        }
+        crate::stored_state::record(
+            &mut self.manager.lock().unwrap(),
+            crate::stored_state::WORKTREE_ENTRY,
+            data,
+        );
+    }
+
+    /// The session's folder changed: the shell starts in the new one, and
+    /// the tools are built for it.
+    fn moved(&self) {
+        if let Some(shell) = &self.tool_session().shell {
+            shell.reset();
+        }
+        *self.context_usage_cache.lock().unwrap() = None;
+        self.rebuild_tools();
+        self.context_stale
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        (self.sink)(SessionEvent::WorktreeChanged {
+            folder: self.working_folder(),
+            worktree: self.worktree(),
+            missing: None,
+        });
+    }
+
+    /// Bring back what this session stored besides its conversation
+    /// ([`crate::stored_state`]) when it is loaded again: the worktree it
+    /// worked in, what it had read, the workflow runs that were cut off and
+    /// its wake-up and self-paced loop. What starts turns (a wake-up that
+    /// is due, the next round of the loop, the notice of a cut-off run)
+    /// waits for [`AgentSession::resume_stored_work`].
+    fn restore_stored_state(&self) {
+        if self.child || self.is_remote() {
+            return;
+        }
+        self.restore_worktree();
+        // What it had read, as far as nobody changed the files since.
+        crate::stored_state::rebuild_reads(&self.manager.lock().unwrap(), &self.file_state());
+        let wakeups = {
+            let manager = self.manager.lock().unwrap();
+            crate::stored_state::latest(&manager, crate::stored_state::WAKEUP_ENTRY).and_then(
+                |data| serde_json::from_value::<crate::wakeup::StoredWakeups>(data.clone()).ok(),
+            )
+        };
+        if let Some(stored) = wakeups {
+            self.wakeups().restore(stored);
+        }
+        self.stored_work.lock().unwrap().waiting = true;
+    }
+
+    /// Start what [`AgentSession::restore_stored_state`] brought back and
+    /// what needs the session's host: a worktree whose folder was gone is
+    /// written down and announced, a wake-up whose time has passed fires now
+    /// and a later one at its time, a self-paced loop goes on, and each
+    /// workflow run that was cut off is marked and its notice queued. This
+    /// writes the session's file, so a host calls it once the session is
+    /// set up and the file is its own (the SDK when it wraps the session,
+    /// print and JSON mode before their prompt, the terminal and ACP after
+    /// they took the file's lock); a session that moves to another
+    /// conversation calls it itself. Calling it again does nothing.
+    pub fn resume_stored_work(self: &Arc<Self>) {
+        if self.child || self.is_remote() {
+            return;
+        }
+        let work = std::mem::take(&mut *self.stored_work.lock().unwrap());
+        if !work.waiting {
+            return;
+        }
+        if let Some(missing) = work.missing_worktree {
+            self.record_worktree(None, Some(&missing));
+            (self.sink)(SessionEvent::WorktreeChanged {
+                folder: self.working_folder(),
+                worktree: None,
+                missing: Some(missing),
+            });
+        }
+        // Workflow runs the end of their process cut off are announced once.
+        let runtime = self.workflows();
+        let known = |run_id: &str| {
+            runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.find(run_id).is_some())
+        };
+        let notices = crate::workflows::cut_off_runs(&mut self.manager.lock().unwrap(), known);
+        for notice in notices {
+            self.queue_entry(notice, Priority::Next);
+        }
+        if let Some(restored) = self.wakeups().resume()
+            && let Some(runtime) = self.iterative_jobs()
         {
-            tools.push(runtime.tool());
+            // A session that cannot run loops (no tools) leaves it stored.
+            let _ = runtime.resume_self_paced(restored);
+        }
+    }
+
+    /// The worktree the session worked in, when the session is loaded
+    /// again: it works there again, or in its own folder when the
+    /// worktree's folder is gone, which [`AgentSession::resume_stored_work`]
+    /// writes down and announces.
+    fn restore_worktree(&self) {
+        let stored = {
+            let manager = self.manager.lock().unwrap();
+            crate::stored_state::latest(&manager, crate::stored_state::WORKTREE_ENTRY)
+                .and_then(|data| data.get("worktree").cloned())
+                .and_then(|worktree| {
+                    serde_json::from_value::<crate::worktree::EnteredWorktree>(worktree).ok()
+                })
+        };
+        let Some(entered) = stored else {
+            return;
+        };
+        if entered.worktree.path.is_dir() {
+            *self.worktree.lock().unwrap() = Some(entered);
+            self.moved();
+            return;
+        }
+        self.stored_work.lock().unwrap().missing_worktree = Some(entered.worktree.path);
+    }
+
+    /// Say that the session's host is ending it: what its background work
+    /// leaves unfinished from now on was cut off, and is announced when
+    /// the session is loaded again, not recorded as stopped.
+    pub fn set_closing(&self) {
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the session's host is ending it.
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// This session's base tools as they work in its folder, for a child it
+    /// starts: in the worktree while the session is in one.
+    fn base_tools_here(&self) -> Vec<DynTool> {
+        let tools = self.base_tools.lock().unwrap().clone();
+        match self.worktree_folder() {
+            Some(folder) => in_directory(tools, &folder),
+            None => tools,
+        }
+    }
+
+    /// This session's pending wake-up and self-paced loop.
+    pub fn wakeups(&self) -> Arc<crate::wakeup::Wakeups> {
+        self.wakeups
+            .get()
+            .expect("every session has its wake-ups")
+            .clone()
+    }
+
+    /// What this session's tools keep per session.
+    pub(crate) fn tool_session(&self) -> &ToolSession {
+        self.tool_session
+            .get()
+            .expect("the tool session is set at construction")
+    }
+
+    /// `tools` bound to this session's own state with
+    /// [`super_agent::AgentTool::for_session`], so a tool list shared with a
+    /// parent or child session keeps each session's reads apart.
+    fn bound_to_session(&self, tools: Vec<DynTool>) -> Vec<DynTool> {
+        let session = self.tool_session();
+        tools
+            .into_iter()
+            .map(|tool| tool.for_session(session).unwrap_or(tool))
+            .collect()
+    }
+
+    /// What this session has read of each file: `Read` records into it,
+    /// `Edit` and `Write` check it. A child agent has its own; a fork starts
+    /// with a copy of its parent's.
+    pub fn file_state(&self) -> Arc<FileStates> {
+        self.tool_session().files.clone()
+    }
+
+    /// The tools of `tools` this session's mode offers: the basic mode leaves
+    /// out every tool that declares itself advanced-only with
+    /// [`super_agent::AgentTool::advanced_only`].
+    fn offered_in_mode(&self, mut tools: Vec<DynTool>) -> Vec<DynTool> {
+        if !self.mode().is_advanced() {
+            tools.retain(|tool| !tool.advanced_only());
         }
         tools
     }
@@ -635,27 +1421,42 @@ impl AgentSession {
             .collect()
     }
 
+    /// The tools the session offers the model now, in order.
     #[cfg(test)]
-    fn available_tool_names_for(&self, mode: PromptMode) -> Vec<String> {
-        self.tools_for(mode)
-            .iter()
-            .map(|tool| tool.name().to_string())
-            .collect()
+    pub(crate) fn offered_tools(&self) -> Vec<DynTool> {
+        self.tools.lock().unwrap().clone()
     }
 
     /// Switch the active session without appending synthetic history.
     pub fn replace_manager(&self, manager: SessionManager) {
         self.cache_warm_cancel.lock().unwrap().cancel();
         *self.context_file.lock().unwrap() = None;
-        if let Some(runtime) = self.subagents.get() {
-            runtime.reset();
+        if let Some(agents) = self.agents.get() {
+            agents.reset();
         }
         if let Some(runtime) = self.workflows.get() {
             runtime.stop_all();
+            runtime.forget_runs();
         }
         if let Some(runtime) = self.iterative.get() {
             runtime.stop_all();
         }
+        // Background work and what it queued belong to the conversation
+        // that is left, and so does what it read, a pending wake-up and the
+        // worktree it moved into; the worktree stays on disk, and the
+        // conversation that is left keeps them written down for when it is
+        // loaded again.
+        self.leave_queued_entries();
+        self.file_state().clear();
+        if let Some(shell) = &self.tool_session().shell {
+            shell.reset();
+        }
+        self.wakeups().reset();
+        self.forget_worktree();
+        *self.stored_work.lock().unwrap() = StoredWork::default();
+        self.background_tasks().reset();
+        self.remote_tasks.lock().unwrap().clear();
+        *self.remote_folder.lock().unwrap() = None;
         let totals = manager.usage_totals();
         let context = manager.build_session_context();
         if let Some((provider, model_id)) = context.model
@@ -669,6 +1470,66 @@ impl AgentSession {
         *self.manager.lock().unwrap() = manager;
         *self.context_usage_cache.lock().unwrap() = None;
         *self.totals.lock().unwrap() = totals;
+        // The conversation it moved to may have agents of its own, and the
+        // state it was left in.
+        if let Some(agents) = self.agents.get() {
+            agents.restore();
+        }
+        self.restore_stored_state();
+        if let Some(this) = self.weak_self.upgrade() {
+            this.resume_stored_work();
+        }
+    }
+
+    /// Empty the queues for a move to another conversation. What a client
+    /// queued is dropped, as `clear_queue` drops it. What the session queued
+    /// itself stays with the conversation that is left: a wake-up that came
+    /// due is pending there again, so that it comes at once when that
+    /// conversation is loaded, and a notice, a monitor's events or a message
+    /// from an agent is written into its history, where the model reads it
+    /// with the next prompt there.
+    fn leave_queued_entries(&self) {
+        let mut entries = Vec::new();
+        for queue in [&self.steering, &self.follow_up] {
+            entries.extend(queue.lock().unwrap().drain(..));
+        }
+        if self.is_remote() {
+            self.emit_queues();
+            return;
+        }
+        let mut manager = self.manager.lock().unwrap();
+        for entry in entries.into_iter().filter(|entry| entry.starts_turn) {
+            let wakeup = match &entry.message {
+                AgentMessage::Custom(custom)
+                    if custom.custom_type == crate::notifications::WAKEUP =>
+                {
+                    custom
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("wakeup"))
+                        .and_then(|wakeup| {
+                            serde_json::from_value::<crate::wakeup::WakeupInfo>(wakeup.clone()).ok()
+                        })
+                }
+                _ => None,
+            };
+            match wakeup {
+                Some(wakeup) => {
+                    let mut stored = self.wakeups().stored();
+                    stored.wakeup.get_or_insert(wakeup);
+                    crate::stored_state::record(
+                        &mut manager,
+                        crate::stored_state::WAKEUP_ENTRY,
+                        serde_json::to_value(&stored).unwrap_or_default(),
+                    );
+                }
+                None => {
+                    let _ = manager.append_message(entry.message);
+                }
+            }
+        }
+        drop(manager);
+        self.emit_queues();
     }
 
     pub fn set_model(&self, model: Model) {
@@ -818,6 +1679,11 @@ impl AgentSession {
             }
             false
         };
+        // The record of reads follows the branch: a file read only on the
+        // branch left behind is not read on this one.
+        let files = self.file_state();
+        files.clear();
+        crate::stored_state::rebuild_reads(&manager, &files);
 
         Ok(TreeNavigationOutcome {
             editor_text,
@@ -835,10 +1701,11 @@ impl AgentSession {
             backend.queue(message, mode, false);
             return;
         }
-        self.steering
-            .lock()
-            .unwrap()
-            .push_back(QueuedPrompt { message, mode });
+        self.steering.lock().unwrap().push_back(QueuedPrompt {
+            message,
+            mode,
+            starts_turn: false,
+        });
         self.emit_queues();
     }
 
@@ -851,18 +1718,74 @@ impl AgentSession {
             backend.queue(message, mode, true);
             return;
         }
-        self.follow_up
-            .lock()
-            .unwrap()
-            .push_back(QueuedPrompt { message, mode });
+        self.follow_up.lock().unwrap().push_back(QueuedPrompt {
+            message,
+            mode,
+            starts_turn: false,
+        });
         self.emit_queues();
     }
 
-    /// Drain both queues back to the caller (Escape restores to editor).
-    pub fn reclaim_queued(&self) -> Vec<AgentMessage> {
-        if let Some(backend) = self.backend() {
-            return backend.reclaim_queued();
+    /// Queue something that reaches the agent from outside a tool call: the
+    /// notice of a background task, a wake-up. While the session is idle the
+    /// entry starts a new turn (see [`TurnStarter`]); while it is busy a
+    /// [`Priority::Next`] entry is delivered at its next step, between two
+    /// tool rounds, a [`Priority::Now`] entry the same way but ahead of
+    /// everything else, and a [`Priority::Later`] entry once the turn is
+    /// over. The entry enters the session history when it is delivered, so
+    /// a reloaded session still has it. A custom message
+    /// ([`crate::notifications::task_notification`]) is shown by clients as
+    /// a notice, not as something the user typed.
+    ///
+    /// A session whose engine runs elsewhere queues nothing: its entries
+    /// come from the process that runs it.
+    pub fn queue_entry(self: &Arc<Self>, message: AgentMessage, priority: Priority) {
+        if self.is_remote() {
+            return;
         }
+        let entry = QueuedPrompt {
+            message,
+            mode: PromptMode::Ordinary,
+            starts_turn: true,
+        };
+        match priority {
+            Priority::Now => self.steering.lock().unwrap().push_front(entry),
+            Priority::Next => self.steering.lock().unwrap().push_back(entry),
+            Priority::Later => self.follow_up.lock().unwrap().push_back(entry),
+        }
+        self.note_activity();
+        self.wake();
+    }
+
+    /// Install how the session runs the turns it starts on its own; `None`
+    /// spawns them on the current Tokio runtime.
+    pub fn set_turn_starter(&self, starter: Option<TurnStarter>) {
+        *self.turn_starter.lock().unwrap() = starter;
+    }
+
+    /// Whether an entry from [`AgentSession::queue_entry`] waits for a turn.
+    pub fn has_queued_entries(&self) -> bool {
+        self.steering
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|prompt| prompt.starts_turn)
+            || self
+                .follow_up
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|prompt| prompt.starts_turn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn running_flag_for_test(&self) -> std::sync::MutexGuard<'_, bool> {
+        self.running.lock().unwrap()
+    }
+
+    /// Everything queued, in the order it would be delivered.
+    #[cfg(test)]
+    pub(crate) fn take_queued_for_test(&self) -> Vec<AgentMessage> {
         let mut out: Vec<AgentMessage> = self
             .steering
             .lock()
@@ -877,10 +1800,214 @@ impl AgentSession {
                 .drain(..)
                 .map(|prompt| prompt.message),
         );
+        out
+    }
+
+    /// Start a turn for queued entries when nothing runs.
+    fn wake(self: &Arc<Self>) {
+        if self.is_remote() || *self.running.lock().unwrap() {
+            // The run in flight delivers the entries.
+            return;
+        }
+        let turn: BoxFuture<'static, bool> = Box::pin(self.clone().run_queued());
+        let starter = self.turn_starter.lock().unwrap().clone();
+        match starter {
+            Some(starter) => starter(turn),
+            None => {
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    runtime.spawn(turn);
+                }
+            }
+        }
+    }
+
+    /// The turn [`AgentSession::wake`] starts: the queued entries, as the
+    /// queue modes release them, become the turn's prompts.
+    async fn run_queued(self: Arc<Self>) -> bool {
+        let settings = self.settings();
+        let (prompts, mode) = {
+            let mut running = self.running.lock().unwrap();
+            if *running || self.is_remote() {
+                return false;
+            }
+            let mut entries = drain_entries(&self.steering, settings.steering_mode);
+            if entries.is_empty() {
+                entries = drain_entries(&self.follow_up, settings.follow_up_mode);
+            }
+            if entries.is_empty() {
+                return false;
+            }
+            *running = true;
+            let mode = if entries
+                .iter()
+                .any(|entry| !entry.starts_turn && entry.mode == PromptMode::Workflow)
+            {
+                PromptMode::Workflow
+            } else {
+                PromptMode::Ordinary
+            };
+            (
+                entries.into_iter().map(|entry| entry.message).collect(),
+                mode,
+            )
+        };
+        self.emit_queues();
+        self.cache_warm_cancel.lock().unwrap().cancel();
+        self.run_claimed(prompts, mode, true).await;
+        true
+    }
+
+    /// This session's background tasks.
+    pub fn background_tasks(&self) -> Arc<BackgroundTasks> {
+        self.tasks
+            .get()
+            .expect("every session has a task registry")
+            .clone()
+    }
+
+    /// The session's tasks, oldest first: those of the process running its
+    /// engine when that is another one.
+    pub fn tasks(&self) -> Vec<TaskInfo> {
+        if self.is_remote() {
+            return self.remote_tasks.lock().unwrap().clone();
+        }
+        self.background_tasks().list()
+    }
+
+    /// Stop the workflow run `run` for the user, as a progress view does:
+    /// by its task, as `stop_task` stops it, so that the model gets no
+    /// notice of a stop the user made. A run without a running task is
+    /// stopped itself.
+    pub fn stop_workflow_run(&self, run: &crate::workflows::RunRecord) {
+        if self.stop_task(&run.run_id).is_err() {
+            run.stop();
+        }
+    }
+
+    /// Stop one background task by id or by name. A session whose engine
+    /// runs elsewhere asks that process and answers with what it last
+    /// reported about the task.
+    pub fn stop_task(&self, id_or_name: &str) -> Result<TaskInfo, TaskStopError> {
+        if let Some(backend) = self.backend() {
+            let task = {
+                let tasks = self.remote_tasks.lock().unwrap();
+                tasks[crate::tasks::pick(&tasks, id_or_name)?].clone()
+            };
+            if !task.status.is_running() {
+                return Err(TaskStopError::NotRunning {
+                    id: task.id,
+                    status: task.status,
+                });
+            }
+            backend.stop_task(&task.id);
+            return Ok(task);
+        }
+        self.background_tasks().stop(id_or_name)
+    }
+
+    /// Stop every background task this process runs; returns how many.
+    pub fn stop_background_tasks(&self) -> usize {
+        self.background_tasks().stop_all().len()
+    }
+
+    /// Follow a task the process running this session's engine reported.
+    pub fn absorb_task(&self, task: TaskInfo) {
+        let mut tasks = self.remote_tasks.lock().unwrap();
+        match tasks.iter_mut().find(|known| known.id == task.id) {
+            Some(known) => *known = task,
+            None => tasks.push(task),
+        }
+    }
+
+    /// Replace what is known of the tasks of the process running this
+    /// session's engine, after attaching to it.
+    pub fn replace_remote_tasks(&self, tasks: Vec<TaskInfo>) {
+        *self.remote_tasks.lock().unwrap() = tasks;
+    }
+
+    /// Whether the session has work that will reach the agent later: a
+    /// running task, a held wake-up, an entry waiting for a turn. A host
+    /// keeps such a session loaded.
+    pub fn has_background_work(&self) -> bool {
+        self.background_tasks().is_busy() || self.has_queued_entries()
+    }
+
+    /// Resolve once no run is in flight, no background task runs and no
+    /// queued entry waits: the turns that task notices start are part of
+    /// the wait. A print-mode run waits here before it exits.
+    pub async fn wait_for_background_work(&self) {
+        let mut activity = self.activity.subscribe();
+        loop {
+            activity.borrow_and_update();
+            if self.has_nothing_to_do() {
+                return;
+            }
+            if activity.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Resolve once the session has nothing left to do and nothing will
+    /// bring it back: as [`AgentSession::wait_for_background_work`], and
+    /// beyond that while a wake-up is pending or a self-paced loop runs,
+    /// with the turns they start. `super -p` and `--mode json` wait here
+    /// before they exit, so that a wake-up does something there.
+    pub async fn wait_for_all_work(&self) {
+        let wakeups = self.wakeups();
+        let mut changes = wakeups.changes();
+        let mut activity = self.activity.subscribe();
+        loop {
+            self.wait_for_background_work().await;
+            changes.borrow_and_update();
+            activity.borrow_and_update();
+            if !wakeups.is_waiting() {
+                if self.has_nothing_to_do() {
+                    return;
+                }
+                // A wake-up that just fired queued its turn.
+                continue;
+            }
+            tokio::select! {
+                changed = changes.changed() => if changed.is_err() { return },
+                changed = activity.changed() => if changed.is_err() { return },
+            }
+        }
+    }
+
+    /// Whether no run is in flight, no background task runs and no queued
+    /// entry waits, as [`AgentSession::wait_for_background_work`] waits for.
+    pub(crate) fn has_nothing_to_do(&self) -> bool {
+        // In the order work moves through: a task counts as running until
+        // its notice is queued, and a queued entry until the run that takes
+        // it holds the running flag.
+        !self.background_tasks().has_running()
+            && !self.has_queued_entries()
+            && !*self.running.lock().unwrap()
+    }
+
+    /// Drain both queues back to the caller (Escape restores to editor).
+    /// Entries from [`AgentSession::queue_entry`] stay: nobody typed them.
+    pub fn reclaim_queued(&self) -> Vec<AgentMessage> {
+        if let Some(backend) = self.backend() {
+            return backend.reclaim_queued();
+        }
+        let take_typed = |queue: &Mutex<VecDeque<QueuedPrompt>>| {
+            let mut queue = queue.lock().unwrap();
+            let (typed, kept): (VecDeque<QueuedPrompt>, VecDeque<QueuedPrompt>) =
+                queue.drain(..).partition(|prompt| !prompt.starts_turn);
+            *queue = kept;
+            typed.into_iter().map(|prompt| prompt.message)
+        };
+        let mut out: Vec<AgentMessage> = take_typed(&self.steering).collect();
+        out.extend(take_typed(&self.follow_up));
         self.emit_queues();
         out
     }
 
+    /// Cancel the current turn. Background tasks keep running; a client
+    /// without a stop control per task also calls
+    /// [`AgentSession::stop_background_tasks`].
     pub fn abort(&self) {
         if let Some(backend) = self.backend() {
             backend.abort();
@@ -891,6 +2018,7 @@ impl AgentSession {
     fn emit_queues(&self) {
         let preview = |q: &VecDeque<QueuedPrompt>| {
             q.iter()
+                .filter(|prompt| !prompt.starts_turn)
                 .map(|prompt| match &prompt.message {
                     AgentMessage::User(u) => u.content.as_text().chars().take(80).collect(),
                     other => other.role().to_string(),
@@ -1121,7 +2249,10 @@ impl AgentSession {
                 };
 
                 let context_file_changed = session.sync_context_file();
-                let mut context_changed = mode_changed || context_file_changed;
+                let moved = session
+                    .context_stale
+                    .swap(false, std::sync::atomic::Ordering::SeqCst);
+                let mut context_changed = mode_changed || context_file_changed || moved;
                 if has_tool_results {
                     let settings = session.settings();
                     let cancel = session.cancel.lock().unwrap().clone();
@@ -1237,12 +2368,15 @@ impl AgentSession {
         };
         drop(manager);
         let mut system_prompt = self.system_prompt.lock().unwrap().clone();
-        let tools = self.tools_for(prompt_mode);
+        if let Some(folder) = self.worktree_folder() {
+            system_prompt = in_folder(&system_prompt, &folder);
+        }
+        let tools = self.tools.lock().unwrap().clone();
         // Cursor also advertises its native Shell tool; it must use the registered shell's syntax.
         if model.provider == "cursor"
-            && let Some(shell) = tools.iter().find(|tool| tool.name() == "bash")
+            && let Some(shell) = tools.iter().find(|tool| tool.name() == "Bash")
         {
-            system_prompt.push_str("\n\nSUPER shell tool (bash): ");
+            system_prompt.push_str("\n\nSUPER shell tool (Bash): ");
             system_prompt.push_str(&shell.description());
         }
         if self.settings().experimental_context_file
@@ -1265,22 +2399,30 @@ impl AgentSession {
                 file.path().display(), model.context_window
             ));
         }
-        if self.subagents_enabled() {
+        if self.subagents_enabled() && tools.iter().any(|tool| tool.name() == "Agent") {
             system_prompt.push_str("\n\n");
-            system_prompt.push_str(SUBAGENT_SYSTEM_PROMPT);
+            system_prompt.push_str(&super_agent::placeholder::prompt_todo(
+                "Agent.system_section",
+            ));
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&crate::agents::type_list_section(&self.agent_type_list()));
         }
+        // The advanced mode lists the skills for its `Skill` tool here; the
+        // basic mode's prompt lists them with their files.
+        if tools.iter().any(|tool| tool.name() == "Skill") {
+            let list = crate::skills::skill_list_section(&crate::tools::skill::summaries(self));
+            if !list.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&list);
+            }
+        }
+        // The user asked for this turn to run as a dynamic workflow.
         if prompt_mode == PromptMode::Workflow
             && self.workflows_enabled()
-            && let Some(runtime) = self.workflows.get()
+            && tools.iter().any(|tool| tool.name() == "Workflow")
         {
-            let limits = runtime.limits();
-            let size = self.settings.lock().unwrap().workflows.size;
             system_prompt.push_str("\n\n");
-            system_prompt.push_str(&crate::workflows::authoring_prompt(
-                size,
-                limits.max_agents,
-                limits.max_fanout,
-            ));
+            system_prompt.push_str(&super_agent::placeholder::prompt_todo("Workflow.opt_in"));
         }
         AgentContext {
             system_prompt,
@@ -1290,71 +2432,508 @@ impl AgentSession {
         }
     }
 
+    /// A child session for a workflow agent or a loop: the parent's system
+    /// prompt with one sentence for the child, the parent's tools, and as
+    /// much of the parent's text conversation as `fork_turns` asks for. It
+    /// gets an agent id, is stored in this session's folder of agents as
+    /// `<id>.jsonl`, and has a record among this session's agents (when the
+    /// session keeps them), so clients list, read and mirror it like an
+    /// agent.
     pub(crate) fn create_subagent_session(
         self: &Arc<Self>,
-        task_name: &str,
-        canonical_path: &str,
-        fork_turns: ForkTurns,
-        model_pattern: Option<&str>,
-        reasoning_effort: Option<&str>,
-    ) -> anyhow::Result<Arc<Self>> {
-        let (model, suggested_thinking) = match model_pattern {
+        spec: SubagentSpec<'_>,
+    ) -> anyhow::Result<crate::child_turn::ChildAgent> {
+        let (model, suggested_thinking) = match spec.model {
             Some(pattern) => self
                 .registry()
                 .resolve(pattern, None)
                 .with_context(|| format!("no model matches subagent model '{pattern}'"))?,
             None => (self.model(), None),
         };
-        let thinking = match reasoning_effort {
+        let thinking = match spec.effort {
             Some(level) => ThinkingLevel::parse(level)
                 .with_context(|| format!("unknown subagent reasoning_effort '{level}'"))?,
             None => suggested_thinking.unwrap_or_else(|| self.thinking_level()),
         };
-        let (mut manager, parent_messages, parent_id) = {
-            let parent = self.manager.lock().unwrap();
-            (
-                parent.create_child()?,
-                if fork_turns == ForkTurns::None {
-                    Vec::new()
-                } else {
-                    parent.build_session_context().messages
-                },
-                parent.session_id().to_string(),
-            )
+        let history = if spec.fork_turns == ForkTurns::None {
+            Vec::new()
+        } else {
+            let messages = self
+                .manager
+                .lock()
+                .unwrap()
+                .build_session_context()
+                .messages;
+            fork_messages(&messages, spec.fork_turns)
         };
-        for message in fork_messages(&parent_messages, fork_turns) {
-            manager.append_message(message)?;
-        }
-        manager.append_custom(
-            "subagent",
-            Some(serde_json::json!({
-                "taskName": task_name,
-                "canonicalPath": canonical_path,
-                "parentSessionId": parent_id,
-            })),
-        )?;
-
         let mut settings = self.settings();
         settings.subagents.enabled = false;
         let mut system_prompt = self.system_prompt.lock().unwrap().clone();
+        // A child of a session in a worktree works there too.
+        let folder = self.worktree_folder();
+        if let Some(folder) = &folder {
+            system_prompt = in_folder(&system_prompt, folder);
+        }
+        let canonical_path = spec.canonical_path;
         system_prompt.push_str(&format!(
             "\n\nYou are child agent {canonical_path}. Complete only the assigned task. Return a concise result to the parent agent."
         ));
-
-        let child = Self::new_with_subagents_allowed(
+        let id = self
+            .background_tasks()
+            .new_id(crate::tasks::TaskKind::Agent);
+        let depth = self
+            .agent_link
+            .get()
+            .map_or(0, |link| link.depth)
+            .saturating_add(1);
+        let manager = self.child_manager(
+            Some(&id),
+            folder.as_deref(),
+            history,
+            serde_json::json!({
+                "taskName": spec.name,
+                "canonicalPath": canonical_path,
+                "agentId": id,
+                "agentType": spec.origin.child_type(),
+                "origin": spec.origin,
+                "depth": depth,
+                "model": {"provider": model.provider, "id": model.id},
+                "thinkingLevel": thinking,
+            }),
+        )?;
+        let child = self.create_child(
             manager,
-            self.base_tools.lock().unwrap().clone(),
-            self.registry(),
-            settings,
-            system_prompt,
-            model,
-            thinking,
-            self.api_key_override.clone(),
-            Arc::new(|_| {}),
-            false,
+            ChildSpec {
+                // A fork carries on the parent's conversation and starts
+                // from what the parent read; any other child reads for
+                // itself.
+                copy_file_state: spec.fork_turns != ForkTurns::None,
+                model,
+                thinking,
+                system_prompt,
+                tools: self.base_tools_here(),
+                settings,
+            },
         );
+        // Its `Skill` tool loads the parent's skills.
+        child.set_agent_resources(self.agent_resources());
+        let record = self.agents.get().map(|registry| {
+            (
+                Arc::downgrade(registry),
+                registry.adopt(&id, spec.name, spec.origin, &child),
+            )
+        });
+        Ok(crate::child_turn::ChildAgent::new(child, record))
+    }
+
+    /// A workflow's child named `name`, for tests.
+    #[cfg(test)]
+    pub(crate) fn test_child(self: &Arc<Self>, name: &str, fork_turns: ForkTurns) -> Arc<Self> {
+        let path = format!("/root/{name}");
+        self.create_subagent_session(SubagentSpec::new(
+            name,
+            &path,
+            fork_turns,
+            crate::agents::AgentOrigin::Workflow {
+                run_id: "wf_test0000".into(),
+            },
+        ))
+        .unwrap()
+        .session
+    }
+
+    /// The session of an agent the `Agent` tool starts. A fork starts with
+    /// an exact copy of this conversation, this system prompt and what this
+    /// session read; any other type with its instructions followed by the
+    /// context of this session's prompt ([`AgentResources::prompt_context`])
+    /// and nothing read. Its tools are this session's that its type allows;
+    /// it gets the agent tools when its type may start agents and it is not
+    /// as deep as agents nest, else `SendMessage` only, to write to main. It
+    /// is stored in this session's folder of agents as `<id>.jsonl`, and an
+    /// agent with a worktree works there.
+    pub(crate) fn create_agent_session(
+        self: &Arc<Self>,
+        child: AgentChild<'_>,
+    ) -> anyhow::Result<Arc<Self>> {
+        let fork = child.agent_type.is_fork();
+        let history = if fork {
+            let messages = self
+                .manager
+                .lock()
+                .unwrap()
+                .build_session_context()
+                .messages;
+            crate::child_turn::exact_copy(messages)
+        } else {
+            Vec::new()
+        };
+        // Its own worktree, else the one this session works in.
+        let folder = child
+            .worktree
+            .map(|worktree| worktree.path.clone())
+            .or_else(|| self.worktree_folder());
+        let folder = folder.as_deref();
+        let model = &child.model;
+        let manager = self.child_manager(
+            Some(child.id),
+            folder,
+            history,
+            serde_json::json!({
+                "taskName": child.description,
+                "canonicalPath": self.agent_path(child.id),
+                "agentId": child.id,
+                "agentType": child.agent_type.name,
+                "agentTypeSource": child.agent_type.source.label(),
+                "depth": child.depth,
+                "toolUseId": child.tool_use_id,
+                "model": {"provider": model.provider, "id": model.id},
+                "thinkingLevel": child.thinking,
+                "worktree": child.worktree,
+            }),
+        )?;
+        Ok(self.agent_session_from(
+            manager,
+            AgentSetup {
+                id: child.id,
+                agent_type: child.agent_type,
+                model: child.model,
+                thinking: child.thinking,
+                depth: child.depth,
+                folder,
+                copy_file_state: fork,
+            },
+        ))
+    }
+
+    /// The session of an agent this session started before it was loaded
+    /// again, built from its stored session the way
+    /// [`create_agent_session`](Self::create_agent_session) builds a new one,
+    /// with nothing read. A type that is gone is taken as `general-purpose`,
+    /// a model that is gone as this session's. An agent whose folder is gone
+    /// (the worktree this session worked in was removed) works in this
+    /// session's folder; one with a worktree of its own gets it back before
+    /// its next run.
+    pub(crate) fn load_agent_session(
+        self: &Arc<Self>,
+        stored: &StoredAgent,
+    ) -> anyhow::Result<Arc<Self>> {
+        let mut manager = SessionManager::open(&stored.file)?;
+        if stored.worktree.is_none() && !manager.cwd().exists() {
+            manager.set_cwd(&self.working_folder());
+        }
+        let types = self.agent_types();
+        let agent_type = types
+            .iter()
+            .find(|known| known.name == stored.agent_type)
+            .or_else(|| {
+                types
+                    .iter()
+                    .find(|known| known.name == crate::agents::types::GENERAL_PURPOSE)
+            })
+            .context("no agent type to load the agent with")?;
+        let model = stored
+            .model
+            .as_ref()
+            .and_then(|(provider, id)| self.registry().resolve(id, Some(provider)))
+            .map(|(model, _)| model)
+            .unwrap_or_else(|| self.model());
+        let thinking = stored
+            .thinking
+            .filter(|level| model.supported_thinking_levels().contains(level))
+            .unwrap_or_else(|| self.thinking_level());
+        let own_folder = self.manager.lock().unwrap().cwd().to_path_buf();
+        let folder = manager.cwd().to_path_buf();
+        let depth = self
+            .agent_link
+            .get()
+            .map_or(0, |link| link.depth)
+            .saturating_add(1);
+        let session = self.agent_session_from(
+            manager,
+            AgentSetup {
+                id: &stored.id,
+                agent_type,
+                model,
+                thinking,
+                depth,
+                folder: (folder != own_folder).then_some(folder.as_path()),
+                copy_file_state: false,
+            },
+        );
+        // What it had read, as far as nobody changed the files since.
+        crate::stored_state::rebuild_reads(&session.manager.lock().unwrap(), &session.file_state());
+        Ok(session)
+    }
+
+    /// Move an agent's session to `folder`, for an agent whose folder is
+    /// gone (a worktree its parent worked in and removed): its tools work
+    /// there, its prompt's working-directory line names it, and its stored
+    /// file keeps the folder it was made in, as a stored agent loaded with
+    /// a folder that is gone does ([`load_agent_session`](Self::load_agent_session)).
+    pub(crate) fn move_agent_to(&self, folder: &Path) {
+        self.manager.lock().unwrap().set_cwd(folder);
+        {
+            let mut base = self.base_tools.lock().unwrap();
+            let tools = std::mem::take(&mut *base);
+            *base = in_directory(tools, folder);
+        }
+        let prompt = in_folder(&self.system_prompt(), folder);
+        self.set_system_prompt(prompt);
+        self.rebuild_tools();
+    }
+
+    /// `/root/<id>`, with the ids of the agents above this session between.
+    fn agent_path(&self, id: &str) -> String {
+        format!(
+            "{}/{}",
+            self.agent_link
+                .get()
+                .map_or("/root", |link| link.path.as_str()),
+            id
+        )
+    }
+
+    /// Build an agent's session on `manager`: see
+    /// [`create_agent_session`](Self::create_agent_session).
+    fn agent_session_from(
+        self: &Arc<Self>,
+        manager: SessionManager,
+        setup: AgentSetup<'_>,
+    ) -> Arc<Self> {
+        let mut system_prompt = if setup.agent_type.is_fork() {
+            self.system_prompt()
+        } else {
+            format!(
+                "{}{}",
+                setup.agent_type.instructions,
+                self.child_prompt_context()
+            )
+        };
+        let mut tools = self.base_tools.lock().unwrap().clone();
+        if let Some(folder) = setup.folder {
+            system_prompt = in_folder(&system_prompt, folder);
+            tools = tools
+                .into_iter()
+                .map(|tool| tool.in_directory(folder).unwrap_or(tool))
+                .collect();
+        }
+        tools.retain(|tool| setup.agent_type.tools.allows(tool.name()));
+        let mut settings = self.settings();
+        // Workflows belong to the main session.
+        settings.workflows.enabled = false;
+        let session = self.create_child(
+            manager,
+            ChildSpec {
+                copy_file_state: setup.copy_file_state,
+                model: setup.model,
+                thinking: setup.thinking,
+                system_prompt,
+                tools,
+                settings,
+            },
+        );
+        // The type's list of tools holds for the tools the session adds
+        // itself as it does for the base tools.
+        *session.tool_selection.lock().unwrap() =
+            self.tool_selection().narrowed(&setup.agent_type.tools);
+        let link = AgentLink {
+            parent: Arc::downgrade(self),
+            id: setup.id.to_string(),
+            depth: setup.depth,
+            path: self.agent_path(setup.id),
+        };
+        assert!(session.agent_link.set(link).is_ok());
+        if setup.agent_type.can_start_agents() && setup.depth < MAX_DEPTH {
+            let agents = AgentRegistry::new(Arc::downgrade(&session), setup.depth);
+            assert!(session.agents.set(agents.clone()).is_ok());
+            agents.restore();
+        }
+        session.set_agent_resources(self.agent_resources());
+        session.rebuild_tools();
+        session
+    }
+
+    /// A new child's session manager, stored in this session's folder of
+    /// agents as `<name>.jsonl` (its own id when `name` is `None`) and
+    /// working in `folder` (this session's when `None`): `history` first,
+    /// then the `subagent` entry that names the parent. A stored session
+    /// that has not written its file yet, such as one whose first act is a
+    /// `/loop` job, writes it now, so that the child's parent can be opened
+    /// again.
+    fn child_manager(
+        &self,
+        name: Option<&str>,
+        folder: Option<&Path>,
+        history: Vec<AgentMessage>,
+        entry: serde_json::Value,
+    ) -> anyhow::Result<SessionManager> {
+        let (mut manager, parent_id) = {
+            let mut parent = self.manager.lock().unwrap();
+            parent.persist_header()?;
+            let folder = folder.unwrap_or_else(|| parent.cwd()).to_path_buf();
+            (
+                parent.create_child_named(name, &folder)?,
+                parent.session_id().to_string(),
+            )
+        };
+        for message in history {
+            manager.append_message(message)?;
+        }
+        let mut entry = entry;
+        entry["parentSessionId"] = serde_json::Value::String(parent_id);
+        manager.append_custom(SUBAGENT_ENTRY, Some(entry))?;
+        Ok(manager)
+    }
+
+    /// Build a child session on `manager`. Its events go nowhere until a
+    /// host forwards them ([`forward_events`](Self::forward_events)).
+    fn create_child(self: &Arc<Self>, manager: SessionManager, spec: ChildSpec) -> Arc<Self> {
+        let relay: EventRelay = Arc::default();
+        let sink: SessionEventSink = {
+            let relay = relay.clone();
+            Arc::new(move |event| {
+                let forward = relay.lock().unwrap().clone();
+                if let Some(forward) = forward {
+                    forward(event);
+                }
+            })
+        };
+        let child = Self::construct(
+            manager,
+            spec.tools,
+            self.registry(),
+            spec.settings,
+            spec.system_prompt,
+            spec.model,
+            spec.thinking,
+            self.api_key_override.clone(),
+            sink,
+            false,
+            true,
+        );
+        assert!(child.event_relay.set(relay).is_ok());
+        child.set_tool_selection(self.tool_selection());
         child.set_stream_fn(self.stream_fn.lock().unwrap().clone());
-        Ok(child)
+        if spec.copy_file_state {
+            child.file_state().copy_from(&self.file_state());
+        }
+        child
+    }
+
+    /// Send the events of this child session to `sink` from now on, or
+    /// nowhere with `None`: what a host that shows or mirrors an agent's
+    /// session does when its [`AgentObserver`] hears of it. Returns whether
+    /// it took: a session that is no child keeps the sink it was built with.
+    pub fn forward_events(&self, sink: Option<SessionEventSink>) -> bool {
+        match self.event_relay.get() {
+            Some(relay) => {
+                *relay.lock().unwrap() = sink;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Install what hears of this session's agent sessions, and tell it of
+    /// those that exist already. A session's agents are told to their own
+    /// observer, which the host installs on them in turn.
+    pub fn set_agent_observer(&self, observer: Option<Arc<dyn AgentObserver>>) {
+        *self.agent_observer.lock().unwrap() = observer.clone();
+        if let (Some(observer), Some(agents)) = (observer, self.agents.get()) {
+            for (id, session) in agents.built_sessions() {
+                observer.agent_session(&id, &session);
+            }
+        }
+    }
+
+    pub(crate) fn agent_observer(&self) -> Option<Arc<dyn AgentObserver>> {
+        self.agent_observer.lock().unwrap().clone()
+    }
+
+    /// The session of the agent at `path`: an agent id of this session, or
+    /// ids separated by `/` for an agent of an agent (`a1b2c3d4e/a5f6g7h8i`).
+    /// A stored agent's session is built if it was not yet.
+    pub fn agent_at(&self, path: &str) -> anyhow::Result<Arc<Self>> {
+        let mut ids = path.split('/').map(str::trim).filter(|id| !id.is_empty());
+        let first = ids
+            .next()
+            .context("Give the id of an agent of this session.")?;
+        let mut session = self
+            .agent_registry()
+            .context("This session has no agents.")?
+            .session_of(first)?;
+        for id in ids {
+            let next = session
+                .agent_registry()
+                .with_context(|| format!("Agent {} has no agents.", session.agent_path_label()))?
+                .session_of(id)?;
+            session = next;
+        }
+        Ok(session)
+    }
+
+    /// This agent's id, for a message about it.
+    fn agent_path_label(&self) -> String {
+        self.agent_link
+            .get()
+            .map_or_else(|| "main".to_string(), |link| link.id.clone())
+    }
+
+    /// The agents this session started, when it may start agents: the main
+    /// session that may have subagents, and an agent of a type that may
+    /// start agents while it is not as deep as agents nest. The registry
+    /// exists in the basic mode and with the Subagents switch off too; the
+    /// tools are not offered then.
+    pub fn agent_registry(&self) -> Option<Arc<AgentRegistry>> {
+        self.agents.get().cloned()
+    }
+
+    /// Who started this session, when it is an agent's.
+    pub fn agent_link(&self) -> Option<&AgentLink> {
+        self.agent_link.get()
+    }
+
+    /// Install what this session's agents start from: the types of the
+    /// definition files and the context of the system prompt. A host sets
+    /// it where it builds the system prompt, and again when it builds it
+    /// anew.
+    pub fn set_agent_resources(&self, resources: AgentResources) {
+        *self.agent_resources.lock().unwrap() = resources;
+        *self.context_usage_cache.lock().unwrap() = None;
+    }
+
+    pub fn agent_resources(&self) -> AgentResources {
+        self.agent_resources.lock().unwrap().clone()
+    }
+
+    /// Every agent type this session's agents can have: the built-in ones
+    /// with the definition files' types.
+    pub fn agent_types(&self) -> Vec<AgentType> {
+        crate::agents::with_definitions(&self.agent_resources.lock().unwrap().definitions)
+    }
+
+    /// The name and description of every agent type, as the model is told
+    /// of them.
+    pub fn agent_type_list(&self) -> Vec<AgentTypeSummary> {
+        crate::agents::type_list(&self.agent_types())
+    }
+
+    /// What an agent's system prompt has after its instructions: this
+    /// session's prompt context, else the working directory alone.
+    fn child_prompt_context(&self) -> String {
+        if let Some(context) = &self.agent_resources.lock().unwrap().prompt_context {
+            return context.clone();
+        }
+        let cwd = self.manager.lock().unwrap().cwd().display().to_string();
+        crate::system_prompt::prompt_context(&crate::system_prompt::SystemPromptOptions {
+            mode: self.mode(),
+            custom_prompt: None,
+            append: None,
+            selected_tools: &[],
+            cwd: &cwd,
+            context_files: &[],
+            skills: &[],
+        })
     }
 
     async fn run_ephemeral(
@@ -1457,16 +3036,19 @@ impl AgentSession {
         } else {
             format!("Recent session context:\n{transcript}\n\nSide question:\n{question}")
         };
+        // The side question reads with a record of its own: the main
+        // conversation never sees those reads.
+        let side = ToolSession::new();
         let read_tools = self
             .tools
             .lock()
             .unwrap()
             .iter()
-            .filter(|tool| tool.name() == "read")
-            .cloned()
+            .filter(|tool| tool.name() == "Read")
+            .map(|tool| tool.for_session(&side).unwrap_or_else(|| tool.clone()))
             .collect();
         self.run_ephemeral(
-            "Answer the side question from the supplied session context. This is a read-only request. Use the read tool only when a file is needed. Do not propose or perform edits. Give no more than 150 words or 600 characters. Use no more than five bullets. Return only the answer.".into(),
+            "Answer the side question from the supplied session context. This is a read-only request. Use the Read tool only when a file is needed. Do not propose or perform edits. Give no more than 150 words or 600 characters. Use no more than five bullets. Return only the answer.".into(),
             prompt,
             read_tools,
             500,
@@ -1557,6 +3139,19 @@ impl AgentSession {
             }
             *running = true;
         }
+        self.run_claimed(prompts, prompt_mode, false).await;
+    }
+
+    /// Run `prompts` once this caller holds the `running` flag. `announce`
+    /// delivers them through the loop's message events, which records them
+    /// and shows them to clients: entries the session queued itself. A
+    /// prompt the caller submitted is recorded here and shown by the caller.
+    async fn run_claimed(
+        self: &Arc<Self>,
+        prompts: Vec<AgentMessage>,
+        prompt_mode: PromptMode,
+        announce: bool,
+    ) {
         let cancel = {
             let mut guard = self.cancel.lock().unwrap();
             *guard = CancellationToken::new();
@@ -1564,7 +3159,7 @@ impl AgentSession {
         };
 
         // Persist prompts and run.
-        {
+        if !announce {
             let mut manager = self.manager.lock().unwrap();
             for p in &prompts {
                 let _ = manager.append_message(p.clone());
@@ -1580,18 +3175,34 @@ impl AgentSession {
         let active_prompt_mode = Arc::new(Mutex::new(prompt_mode));
         let mut config = self.loop_config(self, active_prompt_mode.clone());
         let mut context = self.build_context_for(prompt_mode);
-        // The prompts were already persisted. Context includes them, so run
-        // as a continuation without a second prompt list.
+        // Persisted prompts are in the context already, so the run is a
+        // continuation without a second prompt list; announced ones are
+        // handed to the loop, which records them as it delivers them.
+        let mut announced = announce.then_some(prompts);
 
         let mut attempt: u32 = 0;
         loop {
-            let messages = super_agent::run_agent_loop_continue(
-                context,
-                config.clone(),
-                cancel.clone(),
-                sink.clone(),
-            )
-            .await;
+            let messages = match announced.take() {
+                Some(prompts) => {
+                    super_agent::run_agent_loop(
+                        prompts,
+                        context,
+                        config.clone(),
+                        cancel.clone(),
+                        sink.clone(),
+                    )
+                    .await
+                }
+                None => {
+                    super_agent::run_agent_loop_continue(
+                        context,
+                        config.clone(),
+                        cancel.clone(),
+                        sink.clone(),
+                    )
+                    .await
+                }
+            };
 
             // Retry on transient error stops.
             let last_error = messages.iter().rev().find_map(|m| match m {
@@ -1654,6 +3265,13 @@ impl AgentSession {
         if self.settings.lock().unwrap().cache_warming == CacheWarmingMode::Streaming {
             self.cache_warm_cancel.lock().unwrap().cancel();
         }
+        self.note_activity();
+        // An entry that came after the loop last looked starts the next
+        // turn. After an interrupt queued entries wait for the next turn,
+        // so a stopped turn is not followed by one the user did not ask for.
+        if !cancel.is_cancelled() && self.has_queued_entries() {
+            self.wake();
+        }
     }
 
     fn on_agent_event(self: &Arc<Self>, event: &AgentEvent) {
@@ -1676,9 +3294,16 @@ impl AgentSession {
                 if persist {
                     // User prompts were persisted in prompt(). Avoid double
                     // writes by checking the current leaf message identity.
+                    // The session's own state entries may have come in
+                    // between ([`crate::stored_state`]).
                     let mut manager = self.manager.lock().unwrap();
+                    let last = manager
+                        .entries()
+                        .iter()
+                        .rev()
+                        .find(|entry| !crate::stored_state::is_state_entry(entry));
                     let duplicate = matches!(
-                        (manager.entries().last(), message),
+                        (last, message),
                         (Some(crate::session::entry::SessionEntry::Message { message: last, .. }), m) if last == m
                     );
                     if !duplicate {
@@ -2133,26 +3758,56 @@ fn transcript_excerpt(messages: &[AgentMessage], max_messages: usize, max_chars:
 }
 
 fn drain_queue(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> Vec<AgentMessage> {
+    drain_entries(queue, mode)
+        .into_iter()
+        .map(|prompt| prompt.message)
+        .collect()
+}
+
+/// What the next step takes of `queue`. `mode` paces what the user queued:
+/// one message a step with `OneAtATime`. The entries the session queued
+/// itself (notices, monitor events, messages from agents) are not paced:
+/// every one that waits goes with the step, in its place in the queue.
+fn drain_entries(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> Vec<QueuedPrompt> {
     let mut q = queue.lock().unwrap();
     match mode {
-        QueueMode::All => q.drain(..).map(|prompt| prompt.message).collect(),
-        QueueMode::OneAtATime => q
-            .pop_front()
-            .map(|prompt| prompt.message)
-            .into_iter()
-            .collect(),
+        QueueMode::All => q.drain(..).collect(),
+        QueueMode::OneAtATime => {
+            let mut taken = Vec::new();
+            let mut typed = false;
+            let mut kept = VecDeque::new();
+            for prompt in q.drain(..) {
+                if prompt.starts_turn || !typed {
+                    typed |= !prompt.starts_turn;
+                    taken.push(prompt);
+                } else {
+                    kept.push_back(prompt);
+                }
+            }
+            *q = kept;
+            taken
+        }
     }
 }
 
+/// The prompt mode the next queued input asks for. Entries the session
+/// queued itself keep the mode that is active.
 fn queued_mode(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> Option<PromptMode> {
     let queue = queue.lock().unwrap();
     match mode {
-        QueueMode::All => queue
+        QueueMode::All => {
+            let typed: Vec<&QueuedPrompt> =
+                queue.iter().filter(|prompt| !prompt.starts_turn).collect();
+            typed
+                .iter()
+                .any(|prompt| prompt.mode == PromptMode::Workflow)
+                .then_some(PromptMode::Workflow)
+                .or_else(|| (!typed.is_empty()).then_some(PromptMode::Ordinary))
+        }
+        QueueMode::OneAtATime => queue
             .iter()
-            .any(|prompt| prompt.mode == PromptMode::Workflow)
-            .then_some(PromptMode::Workflow)
-            .or_else(|| (!queue.is_empty()).then_some(PromptMode::Ordinary)),
-        QueueMode::OneAtATime => queue.front().map(|prompt| prompt.mode),
+            .find(|prompt| !prompt.starts_turn)
+            .map(|prompt| prompt.mode),
     }
 }
 
@@ -2505,7 +4160,7 @@ mod ephemeral_tests {
                 let quoted_path = path.replace('\'', "'\\''");
                 message.content.push(super_ai::ContentBlock::ToolCall(super_ai::ToolCall {
                     id: format!("edit_{step}"),
-                    name: "bash".into(),
+                    name: "Bash".into(),
                     arguments: serde_json::json!({"command": format!("printf '%s' '{replacement}' > '{quoted_path}'")}),
                     thought_signature: None,
                 }));
@@ -2580,9 +4235,7 @@ mod ephemeral_tests {
             .unwrap()
             .path()
             .to_path_buf();
-        let child = session
-            .create_subagent_session("task", "/root/task", ForkTurns::None, None, None)
-            .unwrap();
+        let child = session.test_child("task", ForkTurns::None);
         child.sync_context_file();
         let child_path = child
             .context_file
@@ -2777,72 +4430,74 @@ mod ephemeral_tests {
         let mut model = session.model();
         model.provider = "cursor".into();
         session.set_model(model);
-        for (path, syntax) in [
-            ("pwsh.exe", "PowerShell 7"),
-            ("powershell.exe", "Windows PowerShell 5.1"),
-            ("cmd.exe", "cmd.exe syntax"),
-            ("bash", "POSIX shell syntax"),
+        // The description of Bash is the placeholder of its shell family.
+        for (path, key) in [
+            ("pwsh.exe", "Bash.description.pwsh"),
+            ("powershell.exe", "Bash.description.powershell"),
+            ("cmd.exe", "Bash.description.cmd"),
+            ("bash", "Bash.description"),
         ] {
             let mut tool = super_agent::tools::bash::BashTool::new("/test".into());
             tool.shell_path = Some(path.into());
             session.install_session_tool(Arc::new(tool));
             let context = session.build_context();
+            let placeholder = super_agent::placeholder::prompt_todo(key);
             assert!(
-                context.system_prompt.contains(path),
+                context
+                    .system_prompt
+                    .ends_with(&format!("SUPER shell tool (Bash): {placeholder}")),
                 "{}",
                 context.system_prompt
             );
-            assert!(
-                context.system_prompt.contains(syntax),
-                "{}",
-                context.system_prompt
-            );
-            assert!(context.tools[0].to_def().description.contains(syntax));
+            assert_eq!(context.tools[0].to_def().description, placeholder);
         }
-        assert!(session.remove_session_tool("bash"));
+        assert!(session.remove_session_tool("Bash"));
         assert_eq!(session.build_context().system_prompt, "root prompt");
     }
 
     fn benchmark_tools() -> Vec<DynTool> {
         let cwd = std::path::PathBuf::from("/synthetic");
         vec![
-            Arc::new(super_agent::tools::read::ReadTool { cwd: cwd.clone() }),
-            Arc::new(super_agent::tools::write::WriteTool { cwd: cwd.clone() }),
-            Arc::new(super_agent::tools::edit::EditTool { cwd: cwd.clone() }),
+            Arc::new(super_agent::tools::read::ReadTool::new(cwd.clone())),
+            Arc::new(super_agent::tools::write::WriteTool::new(cwd.clone())),
+            Arc::new(super_agent::tools::edit::EditTool::new(cwd.clone())),
             Arc::new(super_agent::tools::bash::BashTool::new(cwd)),
         ]
     }
 
     #[test]
     fn subagent_tools_follow_settings_and_command_line_authority() {
+        let section = super_agent::placeholder::prompt_todo("Agent.system_section");
+        let type_list = super_agent::placeholder::prompt_todo("Agent.type_list");
         let session = settings_test_session(Settings::default(), true);
         assert!(session.available_tool_names().is_empty());
-        assert!(
-            !session
-                .build_context()
-                .system_prompt
-                .contains("Subagent coordination")
-        );
+        assert_eq!(session.build_context().system_prompt, "root prompt");
 
         let mut enabled = session.settings();
         enabled.subagents.enabled = true;
         session.update_settings(enabled.clone());
+        // TaskStop stops the agents a session leaves running; the workflow
+        // tool and the skill with its guide come with dynamic workflows,
+        // which are on by default.
         assert_eq!(
             session.available_tool_names(),
             [
-                "spawn_agent",
-                "send_message",
-                "followup_task",
-                "wait_agent",
-                "list_agents",
-                "interrupt_agent"
+                "Agent",
+                "SendMessage",
+                "ListAgents",
+                "TaskStop",
+                "Workflow",
+                "Skill"
             ]
         );
-        assert!(
-            session
-                .build_context()
-                .system_prompt
-                .contains("Subagent coordination")
+        let prompt = session.build_context().system_prompt;
+        assert!(prompt.starts_with(&format!("root prompt\n\n{section}\n\n{type_list}\n")));
+
+        enabled.workflows.enabled = false;
+        session.update_settings(enabled.clone());
+        assert_eq!(
+            session.available_tool_names(),
+            ["Agent", "SendMessage", "ListAgents", "TaskStop"]
         );
 
         enabled.subagents.enabled = false;
@@ -2853,27 +4508,165 @@ mod ephemeral_tests {
         blocked_settings.subagents.enabled = true;
         let blocked = settings_test_session(blocked_settings, false);
         assert!(blocked.available_tool_names().is_empty());
-        assert!(
-            !blocked
-                .build_context()
-                .system_prompt
-                .contains("Subagent coordination")
-        );
+        assert_eq!(blocked.build_context().system_prompt, "root prompt");
     }
 
     #[test]
-    fn the_workflow_tool_appears_only_in_workflow_prompt_mode() {
+    fn the_basic_mode_ignores_the_subagent_and_workflow_switches() {
+        let mut settings = Settings {
+            mode: Mode::Basic,
+            ..Settings::default()
+        };
+        settings.subagents.enabled = true;
+        settings.workflows.enabled = true;
+        let session = settings_test_session(settings, true);
+        assert_eq!(session.mode(), Mode::Basic);
+        assert!(session.available_tool_names().is_empty());
+        assert!(!session.workflows_enabled());
+        assert_eq!(
+            session.prompt_mode_for("run a dynamic workflow for this task"),
+            PromptMode::Ordinary
+        );
+        let prompt = session
+            .build_context_for(PromptMode::Workflow)
+            .system_prompt;
+        assert!(!prompt.contains(&super_agent::placeholder::prompt_todo(
+            "Agent.system_section"
+        )));
+        assert!(!prompt.contains(&super_agent::placeholder::prompt_todo("Workflow.opt_in")));
+        assert!(!prompt.contains(&super_agent::placeholder::prompt_todo("Skill.list")));
+
+        // The same switches count again in the advanced mode.
+        let mut advanced = session.settings();
+        advanced.mode = Mode::Advanced;
+        session.update_settings(advanced.clone());
+        assert_eq!(session.mode(), Mode::Advanced);
+        assert!(session.available_tool_names().contains(&"Agent".into()));
+        assert!(session.workflows_enabled());
+        assert!(session.available_tool_names().contains(&"Workflow".into()));
+        assert!(session.available_tool_names().contains(&"Skill".into()));
+
+        advanced.mode = Mode::Basic;
+        session.update_settings(advanced);
+        assert!(session.available_tool_names().is_empty());
+    }
+
+    struct AdvancedOnlyTool;
+
+    #[async_trait::async_trait]
+    impl super_agent::AgentTool for AdvancedOnlyTool {
+        fn name(&self) -> &str {
+            "AdvancedOnly"
+        }
+
+        fn advanced_only(&self) -> bool {
+            true
+        }
+
+        fn description(&self) -> String {
+            String::new()
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(
+            &self,
+            _tool_call_id: &str,
+            _args: serde_json::Value,
+            _cancel: CancellationToken,
+            _on_update: Option<super_agent::ToolUpdateSink>,
+        ) -> anyhow::Result<super_agent::ToolResult> {
+            Ok(super_agent::ToolResult::text("done"))
+        }
+    }
+
+    #[test]
+    fn an_advanced_only_tool_is_left_out_in_the_basic_mode() {
+        let settings = Settings {
+            mode: Mode::Basic,
+            ..Settings::default()
+        };
+        let registry = Registry::from_builtin();
+        let model = registry.all().first().expect("built-in model").clone();
+        let session = AgentSession::new(
+            SessionManager::in_memory(std::path::Path::new("/test")),
+            vec![
+                Arc::new(super_agent::tools::read::ReadTool::new("/test".into())),
+                Arc::new(AdvancedOnlyTool),
+            ],
+            registry,
+            settings,
+            "root prompt".into(),
+            model,
+            ThinkingLevel::Off,
+            None,
+            Arc::new(|_| {}),
+        );
+        let names = |session: &AgentSession| -> Vec<String> {
+            session
+                .build_context()
+                .tools
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect()
+        };
+        assert_eq!(session.available_tool_names(), ["Read"]);
+        assert_eq!(names(&session), ["Read"]);
+        session.remove_session_tool("AdvancedOnly");
+        session.install_session_tool(Arc::new(AdvancedOnlyTool));
+        assert_eq!(names(&session), ["Read"]);
+
+        let mut advanced = session.settings();
+        advanced.mode = Mode::Advanced;
+        session.update_settings(advanced);
+        // `Skill`, `ScheduleWakeup` and the worktree tools come with `Read`
+        // in the advanced mode.
+        let advanced = [
+            "Read",
+            "AdvancedOnly",
+            "Skill",
+            "ScheduleWakeup",
+            "EnterWorktree",
+            "ExitWorktree",
+        ];
+        assert_eq!(session.available_tool_names(), advanced);
+        assert_eq!(names(&session), advanced);
+    }
+
+    #[test]
+    fn the_system_prompt_can_be_replaced_for_the_next_request() {
+        let session = settings_test_session(Settings::default(), false);
+        assert_eq!(session.system_prompt(), "root prompt");
+        session.set_system_prompt("new prompt".into());
+        assert_eq!(session.system_prompt(), "new prompt");
+        assert_eq!(session.build_context().system_prompt, "new prompt");
+    }
+
+    #[test]
+    fn the_workflow_tool_is_offered_with_every_request_and_a_workflow_turn_says_so() {
         let mut settings = Settings::default();
         settings.subagents.enabled = true;
         let session = settings_test_session(settings, true);
+        let opt_in = super_agent::placeholder::prompt_todo("Workflow.opt_in");
 
-        // Subagents on, workflow not armed: an ordinary coding turn pays
-        // nothing for the feature.
+        // An ordinary turn has the tool too; the guide is a skill the model
+        // loads, not a part of the prompt.
+        assert!(session.available_tool_names().contains(&"Workflow".into()));
+        let ordinary = session.build_context();
+        assert!(ordinary.tools.iter().any(|tool| tool.name() == "Workflow"));
         assert!(
-            !session
-                .available_tool_names()
-                .contains(&"run_workflow".into())
+            !ordinary
+                .system_prompt
+                .contains("Writing a dynamic workflow")
         );
+        assert!(!ordinary.system_prompt.contains(&opt_in));
+        assert!(ordinary.system_prompt.contains(&format!(
+            "{}\n<available_skills>\n  <skill>\n    <name>workflow-authoring</name>",
+            super_agent::placeholder::prompt_todo("Skill.list")
+        )));
+
         assert_eq!(
             session.prompt_mode_for("run a dynamic workflow for this task"),
             PromptMode::Workflow
@@ -2882,41 +4675,33 @@ mod ephemeral_tests {
             session.prompt_mode_for("fix this small function"),
             PromptMode::Ordinary
         );
-        assert!(
-            !session
-                .build_context()
-                .system_prompt
-                .contains("Writing a dynamic workflow")
-        );
-
-        assert!(
-            session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
-        );
-        assert!(
-            session
-                .build_context_for(PromptMode::Workflow)
-                .system_prompt
-                .contains("Writing a dynamic workflow")
-        );
-        assert!(
-            !session
-                .available_tool_names()
-                .contains(&"run_workflow".into())
-        );
+        // A turn the user asked to run as a workflow says so, and offers the
+        // same tools.
+        let asked = session.build_context_for(PromptMode::Workflow);
+        assert!(asked.system_prompt.ends_with(&format!("\n\n{opt_in}")));
+        assert!(!asked.system_prompt.contains("Writing a dynamic workflow"));
+        let names = |context: &AgentContext| -> Vec<String> {
+            context
+                .tools
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect()
+        };
+        assert_eq!(names(&asked), names(&ordinary));
     }
 
     #[test]
-    fn workflow_prompt_mode_does_nothing_while_subagents_are_off() {
+    fn the_workflow_tool_needs_subagents_and_dynamic_workflows() {
         // Workflows are built on child agents, so the subagent setting is the
         // authority for both.
         let session = settings_test_session(Settings::default(), true);
         assert!(!session.workflows_enabled());
+        assert!(!session.available_tool_names().contains(&"Workflow".into()));
         assert!(
             !session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
+                .build_context_for(PromptMode::Workflow)
+                .system_prompt
+                .contains(&super_agent::placeholder::prompt_todo("Workflow.opt_in"))
         );
 
         let mut settings = session.settings();
@@ -2924,20 +4709,12 @@ mod ephemeral_tests {
         settings.workflows.enabled = false;
         session.update_settings(settings.clone());
         assert!(!session.workflows_enabled());
-        assert!(
-            !session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
-        );
+        assert!(!session.available_tool_names().contains(&"Workflow".into()));
 
         settings.workflows.enabled = true;
         session.update_settings(settings);
         assert!(session.workflows_enabled());
-        assert!(
-            session
-                .available_tool_names_for(PromptMode::Workflow)
-                .contains(&"run_workflow".into())
-        );
+        assert!(session.available_tool_names().contains(&"Workflow".into()));
     }
 
     #[test]
@@ -2946,10 +4723,12 @@ mod ephemeral_tests {
             QueuedPrompt {
                 message: AgentMessage::user("ordinary"),
                 mode: PromptMode::Ordinary,
+                starts_turn: false,
             },
             QueuedPrompt {
                 message: AgentMessage::user("workflow"),
                 mode: PromptMode::Workflow,
+                starts_turn: false,
             },
         ])));
 
@@ -2958,6 +4737,61 @@ mod ephemeral_tests {
             Some(PromptMode::Ordinary)
         );
         assert_eq!(drain_queue(&queue, QueueMode::OneAtATime).len(), 1);
+        assert_eq!(
+            queued_mode(&queue, QueueMode::OneAtATime),
+            Some(PromptMode::Workflow)
+        );
+    }
+
+    #[test]
+    fn every_waiting_entry_of_the_session_goes_with_a_one_at_a_time_step() {
+        let entry = |text: &str, starts_turn: bool| QueuedPrompt {
+            message: AgentMessage::user(text),
+            mode: if text.starts_with("workflow") {
+                PromptMode::Workflow
+            } else {
+                PromptMode::Ordinary
+            },
+            starts_turn,
+        };
+        let queue = Arc::new(Mutex::new(VecDeque::from([
+            entry("notice 1", true),
+            entry("typed 1", false),
+            entry("notice 2", true),
+            entry("workflow 2", false),
+            entry("notice 3", true),
+        ])));
+        let texts = |messages: Vec<AgentMessage>| -> Vec<String> {
+            messages
+                .iter()
+                .map(|message| match message {
+                    AgentMessage::User(user) => user.content.as_text(),
+                    _ => String::new(),
+                })
+                .collect()
+        };
+
+        // The user's messages come one a step; the session's own entries
+        // all go with the next step.
+        assert_eq!(
+            texts(drain_queue(&queue, QueueMode::OneAtATime)),
+            ["notice 1", "typed 1", "notice 2", "notice 3"]
+        );
+        assert_eq!(
+            queued_mode(&queue, QueueMode::OneAtATime),
+            Some(PromptMode::Workflow)
+        );
+        assert_eq!(
+            texts(drain_queue(&queue, QueueMode::OneAtATime)),
+            ["workflow 2"]
+        );
+        assert!(queue.lock().unwrap().is_empty());
+
+        // A notice queued before a user's message does not hide its mode.
+        queue
+            .lock()
+            .unwrap()
+            .extend([entry("notice 4", true), entry("workflow 3", false)]);
         assert_eq!(
             queued_mode(&queue, QueueMode::OneAtATime),
             Some(PromptMode::Workflow)
@@ -2985,9 +4819,7 @@ mod ephemeral_tests {
             .append_message(AgentMessage::user("parent context"))
             .unwrap();
 
-        let child = parent
-            .create_subagent_session("inspect", "/root/inspect", ForkTurns::All, None, None)
-            .unwrap();
+        let child = parent.test_child("inspect", ForkTurns::All);
         assert!(Arc::ptr_eq(&parent.registry(), &child.registry()));
         assert!(child.available_tool_names().is_empty());
         let context = child.manager.lock().unwrap().build_session_context();
@@ -3007,9 +4839,7 @@ mod ephemeral_tests {
             .append_message(AgentMessage::user("parent context"))
             .unwrap();
 
-        let child = parent
-            .create_subagent_session("inspect", "/root/inspect", ForkTurns::None, None, None)
-            .unwrap();
+        let child = parent.test_child("inspect", ForkTurns::None);
         assert!(
             child
                 .manager
@@ -3052,8 +4882,8 @@ mod ephemeral_tests {
             21,
             500,
             (
-                "new_root_session_4_base_tools_0_control_tools",
-                "new_root_session_4_base_tools_6_control_tools",
+                "new_root_session_4_base_tools_0_agent_tools",
+                "new_root_session_4_base_tools_3_agent_tools",
             ),
             || make_session(false),
             || make_session(true),
@@ -3069,8 +4899,8 @@ mod ephemeral_tests {
             21,
             10_000,
             (
-                "empty_session_4_base_tools_0_control_tools",
-                "empty_session_4_base_tools_6_control_tools",
+                "empty_session_4_base_tools_0_agent_tools",
+                "empty_session_4_base_tools_3_agent_tools",
             ),
             || off.build_context(),
             || on.build_context(),
@@ -3080,9 +4910,10 @@ mod ephemeral_tests {
     #[test]
     #[ignore = "release-mode performance benchmark"]
     fn benchmark_performance_workflow_tool_exposure() {
-        // An ordinary coding turn must pay nothing for dynamic workflows. The
-        // disarmed session is the baseline. The armed one carries the extra
-        // tool and the authoring instructions.
+        // The `Workflow` tool and the skill list are part of every request
+        // while dynamic workflows are on. The disarmed session is the
+        // baseline; the armed one adds the section that says the user asked
+        // for a workflow.
         let registry = Registry::from_builtin();
         let model = registry.all().first().expect("built-in model").clone();
         let tools = benchmark_tools();

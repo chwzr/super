@@ -6,7 +6,7 @@ Quick start::
     import super_sdk
 
     async def main() -> None:
-        async with await super_sdk.Session.create(tools=["read", "bash"]) as session:
+        async with await super_sdk.Session.create(tools=["Read", "Bash"]) as session:
             async def show() -> None:
                 async for event in session.events():
                     if event.type == "message_update":
@@ -32,22 +32,34 @@ from __future__ import annotations
 from ._super import SuperError, __version__
 from ._session import BashResult, Event, EventStream, Session, SessionState
 from .types import (
+    AgentEntriesData,
+    AgentInfoData,
+    AgentOriginData,
     CommandData,
     EventData,
     ImageInput,
     MessageData,
+    Mode,
+    ModeData,
     ModelData,
     PromptCacheData,
     QueueMode,
     ResponseData,
     SessionStatsData,
     StreamingBehavior,
+    TaskInfoData,
+    TaskKind,
+    TaskStatus,
     ThinkingLevel,
     TokenUsageData,
     ToolName,
+    WorktreeData,
 )
 
 __all__ = [
+    'AgentEntriesData',
+    'AgentInfoData',
+    'AgentOriginData',
     'BashResult',
     'CommandData',
     'Event',
@@ -56,6 +68,8 @@ __all__ = [
     'ImageInput',
     'SuperError',
     'MessageData',
+    'Mode',
+    'ModeData',
     'ModelData',
     'PromptCacheData',
     'QueueMode',
@@ -64,8 +78,12 @@ __all__ = [
     'SessionState',
     'SessionStatsData',
     'StreamingBehavior',
+    'TaskInfoData',
+    'TaskKind',
+    'TaskStatus',
     'ThinkingLevel',
     'TokenUsageData',
     'ToolName',
+    'WorktreeData',
     '__version__',
 ]

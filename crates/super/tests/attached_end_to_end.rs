@@ -270,7 +270,7 @@ fn script() -> MockScript {
     MockScript::text("Hello to both of you.")
         .then(vec![MockTurn::ToolCall {
             id: "call_wf".into(),
-            name: "run_workflow".into(),
+            name: "Workflow".into(),
             arguments: json!({"script": WORKFLOW, "name": "greet"}),
         }])
         .then(vec![MockTurn::Text("Nothing ran.".into())])
@@ -433,7 +433,7 @@ async fn two_terminals_share_a_session_answer_its_approvals_and_reattach_with_hi
         "assistant: Hello to both of you.",
         "user: run a workflow to greet",
         "assistant: ",
-        "tool: run_workflow",
+        "tool: Workflow",
         "assistant: Nothing ran.",
     ];
     assert_eq!(transcript(&again.view), expected);
@@ -516,4 +516,227 @@ async fn a_lost_daemon_is_reported_reconnected_and_finally_handed_back() {
     let local = super_coding::SessionManager::open(Path::new(&file)).expect("the file opens");
     assert_eq!(local.session_id(), terminal.remote.session_id());
     assert_eq!(local.build_session_context().messages.len(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mode_and_the_agent_switches_of_an_attached_terminal_reach_the_daemons_session() {
+    let sandbox = Sandbox::new();
+    let provider = MockProvider::start(sandbox.path("mock"), script())
+        .await
+        .expect("mock provider");
+    let mut daemon = sandbox.start_daemon(&provider).await;
+    let first = terminal(&sandbox, &provider, "Terminal A", None).await;
+    let session_id = first.remote.session_id();
+    // Another client reads the daemon's copy of the session.
+    let reader = DaemonClient::connect_to(&sandbox.socket(), &info("Reader"))
+        .await
+        .expect("connect");
+    reader.attach(&session_id).await.expect("attach");
+    let state = || async {
+        reader
+            .execute_ok(super_sdk::Command::GetState {})
+            .await
+            .expect("get_state")
+            .expect("state")
+    };
+    let before = state().await;
+    assert_eq!(before["mode"], "advanced");
+    assert_eq!(before["subagents"], true, "the sandbox's settings");
+    let tools = |state: &serde_json::Value| -> Vec<String> {
+        serde_json::from_value(state["tools"].clone()).unwrap()
+    };
+    assert!(tools(&before).contains(&"Agent".to_string()));
+
+    // `/settings` saves the file and updates the session it shows.
+    let mut settings = first.view.settings();
+    settings.mode = super_coding::settings::Mode::Basic;
+    first.view.update_settings(settings.clone());
+    // The settings come first and the tools right after them.
+    let mut after = state().await;
+    for _ in 0..200 {
+        if after["mode"] == "basic" && tools(&after).len() == 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        after = state().await;
+    }
+    assert_eq!(after["mode"], "basic");
+    assert_eq!(tools(&after), ["Read", "Write", "Edit", "Bash"]);
+
+    settings.mode = super_coding::settings::Mode::Advanced;
+    settings.subagents.enabled = false;
+    first.view.update_settings(settings);
+    let mut after = state().await;
+    for _ in 0..200 {
+        if after["mode"] == "advanced"
+            && after["subagents"] == false
+            && tools(&after).contains(&"Monitor".to_string())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        after = state().await;
+    }
+    assert_eq!(after["subagents"], false);
+    assert!(!tools(&after).contains(&"Agent".to_string()));
+    assert!(tools(&after).contains(&"Monitor".to_string()));
+    daemon.kill().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attached_terminal_sees_the_daemons_background_tasks_and_stops_them_all() {
+    let sandbox = Sandbox::new();
+    let background = |id: &str, command: &str| MockTurn::ToolCall {
+        id: id.into(),
+        name: "Bash".into(),
+        arguments: json!({"command": command, "run_in_background": true}),
+    };
+    let script = MockScript {
+        turns: vec![
+            vec![
+                background("call_a", "sleep 30; echo first"),
+                background("call_b", "sleep 30; echo second"),
+            ],
+            vec![MockTurn::Text("Both run.".into())],
+        ],
+    };
+    let provider = MockProvider::start(sandbox.path("mock"), script)
+        .await
+        .expect("mock provider");
+    let mut daemon = sandbox.start_daemon(&provider).await;
+    let mut first = terminal(&sandbox, &provider, "Terminal A", None).await;
+    let session_id = first.remote.session_id();
+    first
+        .view
+        .prompt_with_mode(
+            vec![AgentMessage::user("run two commands")],
+            PromptMode::Ordinary,
+        )
+        .await;
+    events_until(&mut first.events, agent_end).await;
+
+    // The view counts what the daemon runs, as its footer line does.
+    let running = |view: &AgentSession| {
+        view.tasks()
+            .into_iter()
+            .filter(|task| task.status.is_running())
+            .map(|task| task.id)
+            .collect::<Vec<_>>()
+    };
+    eventually("the view lists the two commands", || {
+        running(&first.view).len() == 2
+    })
+    .await;
+
+    // What the stop key does: stop each running task through the view.
+    for id in running(&first.view) {
+        first.view.stop_task(&id).expect("a running task");
+    }
+    let reader = DaemonClient::connect_to(&sandbox.socket(), &info("Reader"))
+        .await
+        .expect("connect");
+    reader.attach(&session_id).await.expect("attach");
+    let mut stopped = 0;
+    for _ in 0..500 {
+        let tasks = reader
+            .execute_ok(super_sdk::Command::GetTasks {})
+            .await
+            .expect("get_tasks")
+            .expect("tasks");
+        stopped = tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|task| task["status"] == "stopped")
+            .count();
+        if stopped == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(stopped, 2, "the daemon stopped both commands");
+    eventually("the view hears that both ended", || {
+        running(&first.view).is_empty()
+    })
+    .await;
+    daemon.kill().await.ok();
+}
+
+/// After the daemon's session enters a worktree, a view of it works in that
+/// worktree, as the session's tools do: the footer's branch and the user's
+/// own commands follow it, in a terminal that saw the move and in one that
+/// attaches after it.
+#[tokio::test]
+async fn an_attached_terminal_follows_the_worktree_the_daemons_session_entered() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.path("work");
+    for arguments in [
+        vec!["init", "--quiet", "-b", "main"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "commit.gpgsign", "false"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(&arguments)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::write(work.join("README"), "hello\n").unwrap();
+    for arguments in [
+        vec!["add", "README"],
+        vec!["commit", "--quiet", "-m", "first"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(&arguments)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let script = MockScript {
+        turns: vec![
+            vec![MockTurn::ToolCall {
+                id: "call_w".into(),
+                name: "EnterWorktree".into(),
+                arguments: json!({"name": "bangwt"}),
+            }],
+            vec![MockTurn::Text("In it.".into())],
+        ],
+    };
+    let provider = MockProvider::start(sandbox.path("mock"), script)
+        .await
+        .expect("mock provider");
+    let mut daemon = sandbox.start_daemon(&provider).await;
+    let mut first = terminal(&sandbox, &provider, "Terminal A", None).await;
+    let session_id = first.remote.session_id();
+    first
+        .view
+        .prompt_with_mode(vec![AgentMessage::user("enter")], PromptMode::Ordinary)
+        .await;
+    events_until(&mut first.events, agent_end).await;
+    let worktree = work.canonicalize().unwrap().join(".super/worktrees/bangwt");
+    let in_worktree = |view: &AgentSession| {
+        view.working_folder()
+            .canonicalize()
+            .is_ok_and(|folder| folder == worktree)
+    };
+    eventually("the view works in the worktree", || {
+        in_worktree(&first.view)
+    })
+    .await;
+    let second = terminal(&sandbox, &provider, "Terminal B", Some(&session_id)).await;
+    assert!(
+        in_worktree(&second.view),
+        "{:?}",
+        second.view.working_folder()
+    );
+    daemon.kill().await.ok();
 }

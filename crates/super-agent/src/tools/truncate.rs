@@ -21,7 +21,7 @@ pub struct TruncationResult {
     pub first_line_exceeds_limit: bool,
 }
 
-/// Keep the head of `content` (read tool).
+/// Keep the head of `content` (Read tool).
 pub fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> TruncationResult {
     let total_bytes = content.len();
     let lines: Vec<&str> = content.split('\n').collect();
@@ -87,7 +87,7 @@ pub fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
     }
 }
 
-/// Keep the tail of `content` (bash tool). If the final line alone exceeds
+/// Keep the tail of `content` (Bash tool). If the final line alone exceeds
 /// the byte budget, keep its last `max_bytes` bytes (partial line).
 pub fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> TruncationResult {
     let total_bytes = content.len();

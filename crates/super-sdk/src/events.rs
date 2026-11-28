@@ -201,6 +201,43 @@ pub fn session_event_json(event: &SessionEvent) -> Option<Value> {
             "to": switch.to, "index": switch.index, "total": switch.total,
             "retryAfterSecs": switch.retry_after_secs,
         }),
+        SessionEvent::TaskStarted(task) => json!({"type": "task_started", "task": task}),
+        SessionEvent::TaskUpdated(task) => json!({"type": "task_updated", "task": task}),
+        SessionEvent::TaskEnded(task) => json!({"type": "task_ended", "task": task}),
+        SessionEvent::WorktreeChanged {
+            folder,
+            worktree,
+            missing,
+        } => {
+            let mut event = json!({
+                "type": "worktree_changed",
+                "folder": folder,
+                "worktree": worktree.as_ref().map(worktree_json),
+            });
+            if let Some(missing) = missing {
+                event["missing"] = json!(missing);
+            }
+            event
+        }
+    })
+}
+
+/// The line `--mode rpc` and `--mode json` end with when the session works
+/// in a worktree it made: nobody can be asked whether to keep or remove it
+/// there, so it is kept, and this says where it is.
+pub fn worktree_kept(entered: &super_coding::EnteredWorktree) -> Value {
+    json!({"type": "worktree_kept", "worktree": worktree_json(entered)})
+}
+
+/// A worktree a session works in, as `get_state` and `worktree_changed`
+/// report it: its folder, its branch, whether `EnterWorktree` made it, and
+/// the folder the session goes back to.
+pub fn worktree_json(entered: &super_coding::EnteredWorktree) -> Value {
+    json!({
+        "path": entered.worktree.path,
+        "branch": entered.worktree.branch,
+        "created": entered.created,
+        "original": entered.original,
     })
 }
 
@@ -384,6 +421,16 @@ pub fn decode_session_event(value: &Value) -> Option<SessionEvent> {
                 retry_after_secs: value["retryAfterSecs"].as_u64().unwrap_or(0),
             },
         )),
+        "task_started" => Some(SessionEvent::TaskStarted(field(value, "task")?)),
+        "task_updated" => Some(SessionEvent::TaskUpdated(field(value, "task")?)),
+        "task_ended" => Some(SessionEvent::TaskEnded(field(value, "task")?)),
+        // The wire carries part of the worktree only; the folder is what a
+        // view follows.
+        "worktree_changed" => Some(SessionEvent::WorktreeChanged {
+            folder: value["folder"].as_str()?.into(),
+            worktree: None,
+            missing: value["missing"].as_str().map(Into::into),
+        }),
         _ => None,
     }
 }
@@ -412,7 +459,7 @@ pub fn bash_execution_update(id: Option<&str>, delta: &str) -> Value {
 /// every client receives them with the message.
 pub fn announced_command(command: &Command) -> Option<Value> {
     let name = command.name();
-    if name.starts_with("get_") || matches!(name, "ping" | "answer_approval") {
+    if name.starts_with("get_") || matches!(name, "ping" | "answer_approval" | "initialize") {
         return None;
     }
     let mut value = serde_json::to_value(command).ok()?;
@@ -462,6 +509,29 @@ pub fn event_lag(skipped: u64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A view of a session that runs elsewhere learns the folder its
+    /// engine moved to, and a worktree that was gone.
+    #[test]
+    fn a_worktree_change_comes_back_with_its_folder() {
+        let decoded = decode_session_event(&json!({
+            "type": "worktree_changed",
+            "folder": "/p/.super/worktrees/w",
+            "worktree": {"path": "/p/.super/worktrees/w", "branch": "worktree-w"},
+            "missing": "/p/.super/worktrees/old",
+        }));
+        let Some(SessionEvent::WorktreeChanged {
+            folder, missing, ..
+        }) = decoded
+        else {
+            panic!("{decoded:?}");
+        };
+        assert_eq!(folder, std::path::Path::new("/p/.super/worktrees/w"));
+        assert_eq!(
+            missing.as_deref(),
+            Some(std::path::Path::new("/p/.super/worktrees/old"))
+        );
+    }
 
     #[test]
     fn workflow_outcomes_have_a_controller_owned_json_event() {
@@ -522,14 +592,14 @@ mod tests {
             content_index: 1,
             tool_call: super_ai::ToolCall {
                 id: "call_1".into(),
-                name: "write".into(),
+                name: "Write".into(),
                 arguments: json!({}),
                 thought_signature: None,
             },
         });
         assert_eq!(event["type"], "toolcall_start");
         assert_eq!(event["id"], "call_1");
-        assert_eq!(event["toolName"], "write");
+        assert_eq!(event["toolName"], "Write");
     }
 
     /// Encode then decode: the attached terminal must see the event the
@@ -550,8 +620,8 @@ mod tests {
         let assistant = super_ai::AssistantMessage::empty("openai-completions", "mock", "mock-1");
         let tool_call = super_ai::ToolCall {
             id: "call_1".into(),
-            name: "read".into(),
-            arguments: json!({"path": "a.rs"}),
+            name: "Read".into(),
+            arguments: json!({"file_path": "/work/a.rs"}),
             thought_signature: None,
         };
         let result = super_agent::ToolResult {
@@ -560,6 +630,19 @@ mod tests {
             ..Default::default()
         };
         let agent = |event| SessionEvent::Agent(Box::new(event));
+        let task = super_coding::TaskInfo {
+            id: "b1234abcd".into(),
+            name: Some("tests".into()),
+            kind: super_coding::TaskKind::Shell,
+            description: "cargo test".into(),
+            status: super_coding::TaskStatus::Running,
+            tool_use_id: Some("call_1".into()),
+            output_file: Some("/tmp/b1234abcd.output".into()),
+            progress: None,
+            summary: None,
+            started_at: 5,
+            ended_at: None,
+        };
         for event in [
             agent(AgentEvent::AgentStart),
             agent(AgentEvent::AgentEnd {
@@ -578,18 +661,18 @@ mod tests {
             }),
             agent(AgentEvent::ToolExecutionStart {
                 tool_call_id: "call_1".into(),
-                tool_name: "read".into(),
-                args: json!({"path": "a.rs"}),
+                tool_name: "Read".into(),
+                args: json!({"file_path": "/work/a.rs"}),
             }),
             agent(AgentEvent::ToolExecutionUpdate {
                 tool_call_id: "call_1".into(),
-                tool_name: "read".into(),
-                args: json!({"path": "a.rs"}),
+                tool_name: "Read".into(),
+                args: json!({"file_path": "/work/a.rs"}),
                 partial: result.clone(),
             }),
             agent(AgentEvent::ToolExecutionEnd {
                 tool_call_id: "call_1".into(),
-                tool_name: "read".into(),
+                tool_name: "Read".into(),
                 result: result.clone(),
                 is_error: true,
             }),
@@ -635,6 +718,17 @@ mod tests {
                 index: 1,
                 total: 2,
                 retry_after_secs: 60,
+            }),
+            SessionEvent::TaskStarted(task.clone()),
+            SessionEvent::TaskUpdated(super_coding::TaskInfo {
+                progress: Some("12 lines".into()),
+                ..task.clone()
+            }),
+            SessionEvent::TaskEnded(super_coding::TaskInfo {
+                status: super_coding::TaskStatus::Completed,
+                summary: Some("cargo test ended".into()),
+                ended_at: Some(9),
+                ..task.clone()
             }),
         ] {
             round_trip(event);

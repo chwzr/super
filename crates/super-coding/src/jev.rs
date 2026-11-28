@@ -750,7 +750,7 @@ mod tests {
     fn result(id: &str, text: &str) -> AgentMessage {
         AgentMessage::ToolResult(ToolResultMessage {
             tool_call_id: id.into(),
-            tool_name: "read".into(),
+            tool_name: "Read".into(),
             content: vec![ContentBlock::text(text)],
             details: None,
             usage: None,
@@ -789,7 +789,7 @@ mod tests {
     fn request_contains_inputs_but_omits_result_bodies() {
         let messages = vec![
             AgentMessage::user("fix it"),
-            assistant(&[("old", "read")], None),
+            assistant(&[("old", "Read")], None),
             result("old", "secret result body"),
         ];
         let interactions = collect_interactions(&messages, messages.len());
@@ -807,15 +807,15 @@ mod tests {
         let messages = vec![
             AgentMessage::user("keep prose exactly"),
             assistant(
-                &[("keep", "read"), ("shorten", "read"), ("drop", "read")],
+                &[("keep", "Read"), ("shorten", "Read"), ("drop", "Read")],
                 Some("assistant prose"),
             ),
             result("keep", "exact"),
             result("shorten", &long),
             result("drop", "gone"),
-            assistant(&[("unmatched", "read")], None),
+            assistant(&[("unmatched", "Read")], None),
             result("orphan", "orphan exact"),
-            assistant(&[("recent", "read")], None),
+            assistant(&[("recent", "Read")], None),
             result("recent", "recent exact"),
         ];
         let interactions = collect_interactions(&messages, 7);
@@ -871,7 +871,7 @@ mod tests {
             });
             message.content.push(ContentBlock::ToolCall(ToolCall {
                 id: id.clone(),
-                name: "read".into(),
+                name: "Read".into(),
                 arguments: json!({"path": format!("{id}-{}", "界".repeat(2_000))}),
                 thought_signature: None,
             }));
@@ -960,7 +960,7 @@ mod tests {
         let messages = vec![
             AgentMessage::user("find the cause"),
             AgentMessage::Assistant(hidden),
-            assistant(&[("read_1", "read")], None),
+            assistant(&[("read_1", "Read")], None),
             result("read_1", &format!("head{}tail", "界".repeat(3_000))),
         ];
         let request =

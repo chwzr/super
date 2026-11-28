@@ -8,9 +8,9 @@ use super_ai::{ContentBlock, Message, Model, StreamOptions, ThinkingLevel, UserC
 const TOOL_RESULT_SERIALIZE_CAP: usize = 2000;
 
 /// chars/4 heuristic, matching pi's estimator for messages without usage.
-pub fn estimate_tokens_text(text: &str) -> u64 {
-    (text.len() as u64).div_ceil(4)
-}
+/// It lives in `super_agent::tokens`, where the `Read` limits count with it
+/// too.
+pub use super_agent::tokens::estimate_tokens_text;
 
 pub fn estimate_message_tokens(message: &AgentMessage) -> u64 {
     let text = match message {
@@ -150,12 +150,12 @@ pub fn extract_file_ops(messages: &[AgentMessage]) -> (Vec<String>, Vec<String>)
             continue;
         };
         for tc in a.tool_calls() {
-            let Some(path) = tc.arguments["path"].as_str() else {
+            let Some(path) = tc.arguments["file_path"].as_str() else {
                 continue;
             };
             match tc.name.as_str() {
-                "read" => read.push(path.to_string()),
-                "edit" | "write" => modified.push(path.to_string()),
+                "Read" => read.push(path.to_string()),
+                "Edit" | "Write" => modified.push(path.to_string()),
                 _ => {}
             }
         }
@@ -375,7 +375,7 @@ mod tests {
     fn tool_result(text: &str) -> AgentMessage {
         AgentMessage::ToolResult(ToolResultMessage {
             tool_call_id: "c".into(),
-            tool_name: "bash".into(),
+            tool_name: "Bash".into(),
             content: vec![ContentBlock::text(text)],
             details: None,
             usage: None,
@@ -450,19 +450,25 @@ mod tests {
         let mut a = AssistantMessage::empty("f", "f", "f");
         a.content.push(ContentBlock::ToolCall(ToolCall {
             id: "1".into(),
-            name: "read".into(),
-            arguments: json!({"path": "src/a.rs"}),
+            name: "Read".into(),
+            arguments: json!({"file_path": "/work/src/a.rs"}),
             thought_signature: None,
         }));
         a.content.push(ContentBlock::ToolCall(ToolCall {
             id: "2".into(),
-            name: "edit".into(),
-            arguments: json!({"path": "src/b.rs"}),
+            name: "Edit".into(),
+            arguments: json!({"file_path": "/work/src/b.rs"}),
+            thought_signature: None,
+        }));
+        a.content.push(ContentBlock::ToolCall(ToolCall {
+            id: "3".into(),
+            name: "Write".into(),
+            arguments: json!({"file_path": "/work/src/c.rs", "content": ""}),
             thought_signature: None,
         }));
         let (read, modified) = extract_file_ops(&[AgentMessage::Assistant(a)]);
-        assert_eq!(read, vec!["src/a.rs"]);
-        assert_eq!(modified, vec!["src/b.rs"]);
+        assert_eq!(read, vec!["/work/src/a.rs"]);
+        assert_eq!(modified, vec!["/work/src/b.rs", "/work/src/c.rs"]);
     }
 
     #[test]
@@ -495,8 +501,8 @@ mod tests {
         message.stop_reason = StopReason::ToolUse;
         message.content.push(ContentBlock::ToolCall(ToolCall {
             id: "call-1".into(),
-            name: "read".into(),
-            arguments: json!({"path": "src/lib.rs"}),
+            name: "Read".into(),
+            arguments: json!({"file_path": "/work/src/lib.rs"}),
             thought_signature: None,
         }));
         assert_eq!(

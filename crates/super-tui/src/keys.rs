@@ -94,6 +94,43 @@ impl KeyEvent {
     }
 }
 
+impl KeyEvent {
+    /// The key as the terminal names it to the user: "Ctrl+X",
+    /// "Ctrl+Shift+P", "Alt+Up", "Esc".
+    pub fn label(&self) -> String {
+        let mut label = String::new();
+        if self.ctrl {
+            label.push_str("Ctrl+");
+        }
+        if self.alt {
+            label.push_str("Alt+");
+        }
+        if self.shift {
+            label.push_str("Shift+");
+        }
+        match self.key {
+            Key::Char(' ') => label.push_str("Space"),
+            Key::Char(c) => label.extend(c.to_uppercase()),
+            Key::Enter => label.push_str("Enter"),
+            Key::Tab => label.push_str("Tab"),
+            Key::BackTab => label.push_str("Shift+Tab"),
+            Key::Backspace => label.push_str("Backspace"),
+            Key::Delete => label.push_str("Delete"),
+            Key::Up => label.push_str("Up"),
+            Key::Down => label.push_str("Down"),
+            Key::Left => label.push_str("Left"),
+            Key::Right => label.push_str("Right"),
+            Key::Home => label.push_str("Home"),
+            Key::End => label.push_str("End"),
+            Key::PageUp => label.push_str("PageUp"),
+            Key::PageDown => label.push_str("PageDown"),
+            Key::Escape => label.push_str("Esc"),
+            Key::F(number) => label.push_str(&format!("F{number}")),
+        }
+        label
+    }
+}
+
 impl fmt::Display for KeyEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.ctrl {
@@ -398,6 +435,23 @@ mod tests {
         let mut out = Vec::new();
         d.feed(bytes, &mut out);
         out
+    }
+
+    #[test]
+    fn a_key_has_a_label_for_the_user() {
+        for (spec, label) in [
+            ("ctrl+x", "Ctrl+X"),
+            ("ctrl+b", "Ctrl+B"),
+            ("shift+ctrl+p", "Ctrl+Shift+P"),
+            ("alt+up", "Alt+Up"),
+            ("escape", "Esc"),
+            ("shift+tab", "Shift+Tab"),
+            ("ctrl+space", "Ctrl+Space"),
+            ("f5", "F5"),
+            ("pagedown", "PageDown"),
+        ] {
+            assert_eq!(KeyEvent::parse(spec).unwrap().label(), label, "{spec}");
+        }
     }
 
     #[test]

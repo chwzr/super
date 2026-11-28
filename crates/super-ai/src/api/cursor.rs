@@ -413,14 +413,19 @@ async fn run(
                             (name, args.tool_call_id, decode_arguments(args.args)?, None)
                         }
                         Some(wire::exec_server_message::Message::Shell(args) | wire::exec_server_message::Message::ShellStream(args)) => {
-                            let mut arguments = serde_json::json!({"command": args.command});
-                            if !args.working_directory.is_empty() {
-                                arguments["cwd"] = args.working_directory.clone().into();
-                            }
+                            // Bash has no working-directory parameter: a folder
+                            // Cursor names is entered by the command itself.
+                            let command = if args.working_directory.is_empty() {
+                                args.command.clone()
+                            } else {
+                                format!("cd '{}' && {}", args.working_directory.replace('\'', r"'\''"), args.command)
+                            };
+                            let mut arguments = serde_json::json!({"command": command});
+                            // Both Cursor and Bash count the timeout in milliseconds.
                             if let Some(timeout) = [Some(args.timeout), args.hard_timeout].into_iter().flatten().filter(|value| *value > 0).min() {
-                                arguments["timeout"] = (f64::from(timeout) / 1000.0).into();
+                                arguments["timeout"] = timeout.into();
                             }
-                            ("bash".into(), args.tool_call_id.clone(), arguments, Some(args))
+                            ("Bash".into(), args.tool_call_id.clone(), arguments, Some(args))
                         }
                         _ => {
                             send_exec_throw(&request_tx, exec.id, "This Cursor-native tool is not supported by SUPER. Use the registered mcp_super tools instead")?;
@@ -1290,7 +1295,7 @@ mod tests {
                 Message::Assistant(crate::AssistantMessage {
                     content: vec![ContentBlock::ToolCall(ToolCall {
                         id: "call-1".into(),
-                        name: "read".into(),
+                        name: "Read".into(),
                         arguments: serde_json::json!({"path": "x"}),
                         thought_signature: None,
                     })],
@@ -1302,7 +1307,7 @@ mod tests {
                 }),
             ],
             tools: vec![ToolDef {
-                name: "read".into(),
+                name: "Read".into(),
                 description: "Read a file".into(),
                 parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             }],
@@ -1314,7 +1319,7 @@ mod tests {
             panic!("run request");
         };
         assert_eq!(request.requested_model.unwrap().model_id, "auto");
-        assert_eq!(request.mcp_tools.unwrap().mcp_tools[0].tool_name, "read");
+        assert_eq!(request.mcp_tools.unwrap().mcp_tools[0].tool_name, "Read");
         let action = request.action.unwrap().action.unwrap();
         let wire::conversation_action::Action::UserMessageAction(action) = action;
         assert_eq!(action.user_message.unwrap().text, "new");
@@ -1374,7 +1379,7 @@ mod tests {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let result = ToolResultMessage {
             tool_call_id: "call-1".into(),
-            tool_name: "read".into(),
+            tool_name: "Read".into(),
             content: vec![ContentBlock::text("file data")],
             details: None,
             usage: None,
@@ -1414,7 +1419,7 @@ mod tests {
             .insert(response_id.clone(), sender);
         let result = ToolResultMessage {
             tool_call_id: "call-1".into(),
-            tool_name: "read".into(),
+            tool_name: "Read".into(),
             content: vec![ContentBlock::text("file data")],
             details: None,
             usage: None,
@@ -1692,7 +1697,7 @@ mod tests {
                                 assert_eq!(reply.id, 8);
                                 assert_eq!(reply.exec_id, "context-8");
                                 let context = result.success.unwrap().context.unwrap();
-                                assert_eq!(context.tools[0].tool_name, if shell_mode && mode != "shell-disabled" { "bash" } else { "read" });
+                                assert_eq!(context.tools[0].tool_name, if shell_mode && mode != "shell-disabled" { "Bash" } else { "Read" });
                                 assert_eq!(context.rules[0].content, "Follow SUPER instructions");
                                 assert_eq!(context.rules[0].source, 2);
                                 assert_eq!(context.rules[0].rule_type.as_ref().unwrap().global, Some(Vec::new()));
@@ -1708,7 +1713,7 @@ mod tests {
                                 } else { wire::frame(&wire::AgentServerMessage {
                                     message: Some(wire::agent_server_message::Message::ExecServerMessage(wire::ExecServerMessage {
                                         id: 9, exec_id: "exec-9".into(), message: Some(wire::exec_server_message::Message::McpArgs(wire::McpArgs {
-                                            name: "read".into(), tool_call_id: "call-1".into(), args: HashMap::from([
+                                            name: "Read".into(), tool_call_id: "call-1".into(), args: HashMap::from([
                                                 ("timeout_ms".into(), b"\x11\x00\x00\x00\x00\x00\x4c\xed\x40".to_vec()),
                                                 ("fraction".into(), b"\x11\x00\x00\x00\x00\x00\x00\xf8\x3f".to_vec()),
                                                 ("offset".into(), b"\x11\x00\x00\x00\x00\x00\x00\x00\xc0".to_vec()),
@@ -1812,7 +1817,7 @@ mod tests {
                                         }
                                         wire::exec_client_control_message::Message::Throw(error) => {
                                             assert_eq!(mode, "shell-disabled");
-                                            assert!(error.error.contains("bash"));
+                                            assert!(error.error.contains("Bash"));
                                             let body = b"{\"error\":{\"message\":\"disabled bash\"}}";
                                             let mut frame = vec![wire::END_STREAM_FLAG];
                                             frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -1881,7 +1886,7 @@ mod tests {
                 let mut context = Context {
                     system_prompt: Some("Follow SUPER instructions".into()),
                     messages: vec![Message::User(UserMessage { content: UserContent::Text("hi".into()), timestamp: 0 })],
-                    tools: vec![ToolDef { name: if shell_mode && mode != "shell-disabled" { "bash".into() } else { "read".into() }, description: "Test tool".into(), parameters: serde_json::json!({"type":"object","properties":{}}) }],
+                    tools: vec![ToolDef { name: if shell_mode && mode != "shell-disabled" { "Bash".into() } else { "Read".into() }, description: "Test tool".into(), parameters: serde_json::json!({"type":"object","properties":{}}) }],
                     ..Default::default()
                 };
                 let output = crate::stream_simple(&model, &context, &options);
@@ -1894,8 +1899,8 @@ mod tests {
                     assert_eq!(result.stop_reason, StopReason::ToolUse);
                     if shell_mode {
                         let call = result.tool_calls().next().unwrap();
-                        assert_eq!(call.name, "bash");
-                        assert_eq!(call.arguments, serde_json::json!({"command":"date", "cwd":"workspace", "timeout":1.5}));
+                        assert_eq!(call.name, "Bash");
+                        assert_eq!(call.arguments, serde_json::json!({"command":"cd 'workspace' && date", "timeout":1500}));
                     } else {
                         let call = result.tool_calls().next().unwrap();
                         assert_eq!(serde_json::from_value::<u64>(call.arguments["timeout_ms"].clone()).unwrap(), 60000);
@@ -1904,7 +1909,7 @@ mod tests {
                     }
                     context.messages.push(Message::Assistant(result));
                     context.messages.push(Message::ToolResult(ToolResultMessage {
-                        tool_call_id: "call-1".into(), tool_name: if shell_mode { "bash".into() } else { "read".into() }, content: vec![ContentBlock::text("file data")], details: None, usage: None, is_error: mode == "shell-error", timestamp: 0,
+                        tool_call_id: "call-1".into(), tool_name: if shell_mode { "Bash".into() } else { "Read".into() }, content: vec![ContentBlock::text("file data")], details: None, usage: None, is_error: mode == "shell-error", timestamp: 0,
                     }));
                     let continued = crate::stream_simple(&model, &context, &options).result().await;
                     assert_eq!(continued.stop_reason, StopReason::Stop);

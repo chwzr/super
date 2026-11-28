@@ -5,13 +5,14 @@ use crate::host::{CreateRequest, Hosted, SessionHost};
 use crate::log;
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use super_sdk::daemon::{
-    ClientLine, DaemonCommand, DaemonEvent, DaemonRequest, DaemonStatus, DirectoryEntry, EndReason,
-    HelloReply, decode_client_line, negotiate,
+    AgentEvent, ClientLine, DaemonCommand, DaemonEvent, DaemonRequest, DaemonStatus,
+    DirectoryEntry, EndReason, HelloReply, decode_client_line, negotiate,
 };
 use super_sdk::protocol::Response;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -136,7 +137,12 @@ struct Attachment {
 struct Client {
     id: u64,
     origin: String,
+    /// `hello.taskControls`: the client's `abort` spares background tasks.
+    task_controls: bool,
     attachment: Mutex<Option<Attachment>>,
+    /// The agents of the attached session whose events this connection
+    /// gets (`subscribe_agent`), by path, each with the task that sends them.
+    agents: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     out: mpsc::UnboundedSender<String>,
 }
 
@@ -146,6 +152,7 @@ impl Client {
     /// between the response and the first read is lost.
     fn attach(&self, ctx: &ServerContext, hosted: Arc<Hosted>) -> Option<String> {
         let previous = self.detach(ctx);
+        self.unsubscribe_agents();
         let mut events = hosted.session.events();
         let out = self.out.clone();
         let pump = tokio::spawn(async move {
@@ -165,6 +172,7 @@ impl Client {
     }
 
     fn detach(&self, ctx: &ServerContext) -> Option<String> {
+        self.unsubscribe_agents();
         let taken = self.attachment.lock().unwrap().take()?;
         taken.pump.abort();
         ctx.host.detach(&taken.hosted);
@@ -183,6 +191,62 @@ impl Client {
             .is_some_and(|attachment| attachment.hosted.session_id == session_id);
         if matches && let Some(attachment) = guard.take() {
             attachment.pump.abort();
+            drop(guard);
+            self.unsubscribe_agents();
+        }
+    }
+
+    /// Send this connection the events of the attached session's agent at
+    /// `path` from now on, each as an `agent_event` line. Returns the path as
+    /// the lines name it and the agent's session id.
+    fn subscribe_agent(&self, path: &str) -> Result<(String, String), String> {
+        let hosted = self
+            .attached()
+            .ok_or_else(|| "not attached to a session".to_string())?;
+        hosted.touch();
+        let view = hosted
+            .session
+            .agent_view(path)
+            .map_err(|error| format!("{error:#}"))?;
+        let path = agent_path(path);
+        let mut events = view.events();
+        let out = self.out.clone();
+        let named = path.clone();
+        let pump = tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                let line = AgentEvent {
+                    agent: named.clone(),
+                    event: event.0,
+                }
+                .to_line();
+                if out.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        if let Some(previous) = self.agents.lock().unwrap().insert(path.clone(), pump) {
+            previous.abort();
+        }
+        Ok((path, view.state().session_id))
+    }
+
+    /// Stop sending the events of the agent at `path`; whether they were
+    /// sent.
+    fn unsubscribe_agent(&self, path: &str) -> bool {
+        match self.agents.lock().unwrap().remove(&agent_path(path)) {
+            Some(pump) => {
+                pump.abort();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Stop sending the events of every agent: they belong to the session
+    /// the connection leaves.
+    fn unsubscribe_agents(&self) {
+        for (_, pump) in self.agents.lock().unwrap().drain() {
+            pump.abort();
         }
     }
 
@@ -193,6 +257,16 @@ impl Client {
             .as_ref()
             .map(|attachment| attachment.hosted.clone())
     }
+}
+
+/// An agent's path as the `agent_event` lines name it: its ids joined by
+/// `/`, without blanks or a leading or trailing `/`.
+fn agent_path(path: &str) -> String {
+    path.split('/')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
@@ -219,11 +293,15 @@ async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
     let mut reader = BufReader::new(read);
     let mut buffer = String::new();
 
-    let origin = match read_line(&mut reader, &mut buffer).await {
+    let greeting = match read_line(&mut reader, &mut buffer).await {
         Some(first) => handshake(&ctx, client_id, &first, &out),
         None => None,
     };
-    let Some(origin) = origin else {
+    let Some(Greeting {
+        origin,
+        task_controls,
+    }) = greeting
+    else {
         drop(out);
         let _ = writer.await;
         ctx.clients.fetch_sub(1, Ordering::SeqCst);
@@ -232,7 +310,9 @@ async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
     let client = Arc::new(Client {
         id: client_id,
         origin,
+        task_controls,
         attachment: Mutex::new(None),
+        agents: Mutex::new(HashMap::new()),
         out: out.clone(),
     });
 
@@ -276,13 +356,20 @@ async fn connection(stream: UnixStream, ctx: Arc<ServerContext>) {
     log::debug("server", format!("client {client_id} disconnected"));
 }
 
-/// The first line must be `hello`. Returns the client's origin name.
+/// What a client said in `hello` that its commands need.
+struct Greeting {
+    origin: String,
+    task_controls: bool,
+}
+
+/// The first line must be `hello`. Returns the client's origin name and
+/// whether it shows a stop control per background task.
 fn handshake(
     ctx: &ServerContext,
     client_id: u64,
     line: &str,
     out: &mpsc::UnboundedSender<String>,
-) -> Option<String> {
+) -> Option<Greeting> {
     let refuse = |id: Option<String>, message: String, data: Option<Value>| {
         let response = Response {
             kind: "response".into(),
@@ -304,6 +391,7 @@ fn handshake(
                     name,
                     version,
                     protocol_versions,
+                    task_controls,
                 },
         })) => match negotiate(protocol_versions, ctx.info.protocol_versions) {
             Ok(protocol_version) => {
@@ -322,7 +410,10 @@ fn handshake(
                         client.as_str()
                     ),
                 );
-                Some(origin)
+                Some(Greeting {
+                    origin,
+                    task_controls,
+                })
             }
             Err(message) => {
                 log::warn("server", format!("client {client_id} refused: {message}"));
@@ -347,7 +438,9 @@ fn handshake(
 fn dispatch(ctx: &Arc<ServerContext>, client: &Arc<Client>, line: &str) {
     match decode_client_line(line) {
         Err(error) => {
-            let _ = client.out.send(error_line("parse", error));
+            let _ = client
+                .out
+                .send(encode(&super_sdk::protocol::parse_failure(line, &error)));
         }
         Ok(ClientLine::Daemon(request)) => {
             let ctx = ctx.clone();
@@ -366,19 +459,44 @@ fn dispatch(ctx: &Arc<ServerContext>, client: &Arc<Client>, line: &str) {
                     .with_id(request.id);
                 let _ = client.out.send(encode(&response));
             }
+            Some(_) if let Some(refusal) = refused_in_the_daemon(&request.command) => {
+                let response = Response::err(request.command.name(), refusal).with_id(request.id);
+                let _ = client.out.send(encode(&response));
+            }
             Some(hosted) => {
                 hosted.touch();
-                let origin = client.origin.clone();
+                let sender = super_sdk::CommandSender {
+                    origin: Some(client.origin.clone()),
+                    task_controls: client.task_controls,
+                };
                 let out = client.out.clone();
                 tokio::spawn(async move {
                     let response = hosted
                         .session
-                        .execute_from(request.command, request.id, Some(origin))
+                        .execute_by(request.command, request.id, sender)
                         .await;
                     let _ = out.send(encode(&response));
                 });
             }
         },
+    }
+}
+
+/// Why a session command does not go to a session the daemon hosts, or
+/// `None`. `switch_session` and `new_session` would put another file, or
+/// none, under the hosted session's id and lock: the first could open a file
+/// another SUPER process writes, the second keeps nothing it is told. A
+/// client opens another session and starts a new one with the daemon's own
+/// commands instead.
+fn refused_in_the_daemon(command: &super_sdk::protocol::Command) -> Option<&'static str> {
+    match command {
+        super_sdk::protocol::Command::SwitchSession { .. } => Some(
+            "switch_session does not work in a session the SUPER daemon hosts; attach to the other session with resume_session or attach.",
+        ),
+        super_sdk::protocol::Command::NewSession {} => Some(
+            "new_session does not work in a session the SUPER daemon hosts; start a new session with create_session and attach to it.",
+        ),
+        _ => None,
     }
 }
 
@@ -403,6 +521,13 @@ async fn daemon_command(
             Err(error) => Err(error.to_string()),
         },
         DaemonCommand::Detach {} => Ok(json!({"sessionId": client.detach(ctx)})),
+        DaemonCommand::SubscribeAgent { agent } => client
+            .subscribe_agent(&agent)
+            .map(|(agent, session_id)| json!({"agent": agent, "sessionId": session_id})),
+        DaemonCommand::UnsubscribeAgent { agent } => {
+            let subscribed = client.unsubscribe_agent(&agent);
+            Ok(json!({"agent": agent_path(&agent), "subscribed": subscribed}))
+        }
         DaemonCommand::Shutdown {} => {
             log::info("server", format!("client {} asked for shutdown", client.id));
             let response = Response::ok("shutdown").with_id(id);
@@ -471,6 +596,8 @@ pub async fn run_machine_command(
         DaemonCommand::Hello { .. }
         | DaemonCommand::Attach { .. }
         | DaemonCommand::Detach {}
+        | DaemonCommand::SubscribeAgent { .. }
+        | DaemonCommand::UnsubscribeAgent { .. }
         | DaemonCommand::Shutdown {} => Err("not available over the platform".into()),
     }
 }
@@ -521,4 +648,57 @@ fn error_line(command: &str, error: impl std::fmt::Display) -> String {
     let message = serde_json::to_string(&error.to_string())
         .unwrap_or_else(|_| "\"internal error\"".to_string());
     format!(r#"{{"type":"response","command":"{command}","success":false,"error":{message}}}"#)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::HostConfig;
+
+    fn context() -> Arc<ServerContext> {
+        let host = SessionHost::new(HostConfig {
+            session_dir: std::env::temp_dir().join("super-server-test-sessions"),
+            idle_unload: Duration::ZERO,
+            models_file: None,
+            no_context_files: true,
+        });
+        ServerContext::new(
+            host,
+            DaemonInfo {
+                version: "0.0.42".into(),
+                machine_id: "01TEST".into(),
+                machine_name: "testbox".into(),
+                platform: "macos".into(),
+                socket_path: PathBuf::from("/tmp/d.sock"),
+                protocol_versions: [2, 2],
+            },
+            CancellationToken::new(),
+        )
+    }
+
+    #[test]
+    fn hello_says_whether_the_client_has_a_stop_control_per_task() {
+        let ctx = context();
+        let (out, mut replies) = mpsc::unbounded_channel();
+        let greeting = handshake(
+            &ctx,
+            1,
+            r#"{"type":"hello","client":"macos","name":"Mac","version":"0.2.15","protocolVersions":[2,2],"taskControls":true}"#,
+            &out,
+        )
+        .expect("hello accepted");
+        assert_eq!(greeting.origin, "Mac");
+        assert!(greeting.task_controls);
+        assert!(replies.try_recv().unwrap().contains(r#""success":true"#));
+
+        let greeting = handshake(
+            &ctx,
+            2,
+            r#"{"type":"hello","client":"ios","version":"0.2.15","protocolVersions":[2,2]}"#,
+            &out,
+        )
+        .expect("hello accepted");
+        assert_eq!(greeting.origin, "ios");
+        assert!(!greeting.task_controls, "no stop controls unless said");
+    }
 }

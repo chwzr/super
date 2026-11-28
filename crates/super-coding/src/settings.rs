@@ -78,6 +78,36 @@ impl Default for RetrySettings {
     }
 }
 
+/// Which tools and which system prompt a session gets: the `mode` setting.
+///
+/// Ask a running session with `AgentSession::mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// The core tools and the simple system prompt. The `subagents` and
+    /// `workflows` switches count as off, whatever they say, and a tool that
+    /// is advanced-only (`AgentTool::advanced_only`) is left out.
+    Basic,
+    /// Every tool, and the system prompt of the advanced mode. The `subagents`
+    /// and `workflows` switches decide about the agent tools and the workflow
+    /// tool.
+    #[default]
+    Advanced,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Basic => "basic",
+            Self::Advanced => "advanced",
+        }
+    }
+
+    pub fn is_advanced(self) -> bool {
+        self == Self::Advanced
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SubagentSettings {
@@ -144,6 +174,35 @@ impl Default for WorkflowSettings {
             size: WorkflowSize::default(),
         }
     }
+}
+
+/// Where the branch of a new worktree starts: `worktree.baseRef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WorktreeBaseRef {
+    /// The remote's default branch (`origin`'s), fetched first; the local
+    /// `HEAD` when the repository has no such remote branch.
+    #[default]
+    Fresh,
+    /// The local `HEAD`: the state the session's folder is in.
+    Head,
+}
+
+impl WorktreeBaseRef {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Head => "head",
+        }
+    }
+}
+
+/// Git worktrees that `EnterWorktree` and agents with `isolation:
+/// "worktree"` make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WorktreeSettings {
+    pub base_ref: WorktreeBaseRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -282,8 +341,11 @@ pub struct Settings {
     pub reasoning_effort: ReasoningEffortSettings,
     pub retry: RetrySettings,
     pub cache_warming: CacheWarmingMode,
+    /// Only the user's own settings file decides the mode.
+    pub mode: Mode,
     pub subagents: SubagentSettings,
     pub workflows: WorkflowSettings,
+    pub worktree: WorktreeSettings,
     pub steering_mode: QueueMode,
     pub follow_up_mode: QueueMode,
     pub shell_path: Option<String>,
@@ -363,9 +425,17 @@ fn merged_settings(mut global: Value, project: Option<Value>) -> Settings {
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
+    let mode = global
+        .get("mode")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
     if let Some(mut project) = project {
         if let Some(object) = project.as_object_mut() {
             object.remove("deviceId");
+            // The mode decides whether the user's subagent and workflow
+            // switches count, so it is the user's choice like they are.
+            object.remove("mode");
         }
         if let Some(entries) = project.get("defaultTools").and_then(Value::as_array)
             && entries.iter().all(|entry| {
@@ -391,6 +461,7 @@ fn merged_settings(mut global: Value, project: Option<Value>) -> Settings {
     settings.workflows.enabled = workflows_enabled;
     settings.cache_warming = cache_warming;
     settings.voice_backend = voice_backend;
+    settings.mode = mode;
     settings
 }
 
@@ -468,6 +539,22 @@ mod tests {
     }
 
     #[test]
+    fn worktrees_start_fresh_unless_the_settings_say_head() {
+        assert_eq!(
+            Settings::default().worktree.base_ref,
+            WorktreeBaseRef::Fresh
+        );
+        let settings: Settings =
+            serde_json::from_str(r#"{"worktree":{"baseRef":"head"}}"#).unwrap();
+        assert_eq!(settings.worktree.base_ref, WorktreeBaseRef::Head);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["worktree"]["baseRef"], "head");
+        // A project may choose it: it changes no authority of the user.
+        let settings = merged_settings(json!({}), Some(json!({"worktree":{"baseRef":"head"}})));
+        assert_eq!(settings.worktree.base_ref, WorktreeBaseRef::Head);
+    }
+
+    #[test]
     fn daemon_idle_unload_defaults_to_an_hour() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings.daemon.idle_unload_minutes(), 60);
@@ -481,17 +568,17 @@ mod tests {
 
     #[test]
     fn project_tool_modifiers_preserve_user_selection() {
-        let user = json!({"defaultTools":["read", "+grep"]});
+        let user = json!({"defaultTools":["Read", "+grep"]});
         let settings =
-            merged_settings(user.clone(), Some(json!({"defaultTools":["-read", "+ls"]})));
+            merged_settings(user.clone(), Some(json!({"defaultTools":["-Read", "+ls"]})));
         assert_eq!(
             settings.default_tools.unwrap(),
-            ["read", "+grep", "-read", "+ls"]
+            ["Read", "+grep", "-Read", "+ls"]
         );
-        let settings = merged_settings(user.clone(), Some(json!({"defaultTools":["bash"]})));
-        assert_eq!(settings.default_tools.unwrap(), ["bash"]);
+        let settings = merged_settings(user.clone(), Some(json!({"defaultTools":["Bash"]})));
+        assert_eq!(settings.default_tools.unwrap(), ["Bash"]);
         let settings = merged_settings(user, Some(json!({"defaultTools":[]})));
-        assert_eq!(settings.default_tools.unwrap(), ["read", "+grep"]);
+        assert_eq!(settings.default_tools.unwrap(), ["Read", "+grep"]);
         let settings = merged_settings(
             json!({"deviceId":"user-id"}),
             Some(json!({"deviceId":"project-id"})),
@@ -531,6 +618,7 @@ mod tests {
         assert_eq!(s.retry.max_retries, 3);
         assert_eq!(s.retry.max_agent_delay_ms, 60_000);
         assert_eq!(s.cache_warming, CacheWarmingMode::Streaming);
+        assert_eq!(s.mode, Mode::Advanced);
         assert!(!s.subagents.enabled);
         assert_eq!(s.steering_mode, QueueMode::OneAtATime);
         assert!(s.auto_recap_enabled());
@@ -644,6 +732,42 @@ mod tests {
             merged.platform.url.as_deref(),
             Some("http://localhost:8080")
         );
+    }
+
+    #[test]
+    fn the_mode_defaults_to_advanced_on_the_wire() {
+        assert_eq!(Settings::default().mode, Mode::Advanced);
+        let value = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(value["mode"], "advanced");
+
+        let loaded: Settings = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(loaded.mode, Mode::Advanced);
+        let loaded: Settings = serde_json::from_value(json!({"mode": "basic"})).unwrap();
+        assert_eq!(loaded.mode, Mode::Basic);
+        assert_eq!(serde_json::to_value(loaded).unwrap()["mode"], "basic");
+        assert_eq!(Mode::Basic.as_str(), "basic");
+        assert_eq!(Mode::Advanced.as_str(), "advanced");
+    }
+
+    #[test]
+    fn project_settings_cannot_change_the_mode() {
+        let basic = merged_settings(
+            json!({"mode": "basic"}),
+            Some(json!({"mode": "advanced", "theme": "light"})),
+        );
+        assert_eq!(basic.mode, Mode::Basic);
+        assert_eq!(basic.theme.as_deref(), Some("light"));
+
+        let advanced = merged_settings(json!({}), Some(json!({"mode": "basic"})));
+        assert_eq!(advanced.mode, Mode::Advanced);
+
+        // A value the project got wrong does not cost the user's settings.
+        let kept = merged_settings(
+            json!({"mode": "basic", "theme": "dark"}),
+            Some(json!({"mode": "expert"})),
+        );
+        assert_eq!(kept.mode, Mode::Basic);
+        assert_eq!(kept.theme.as_deref(), Some("dark"));
     }
 
     #[test]

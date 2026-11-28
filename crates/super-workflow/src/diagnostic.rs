@@ -28,7 +28,7 @@ impl Diagnostic {
 
     /// Render the error with the offending source line and a caret.
     ///
-    /// This block is what the `run_workflow` tool returns to the model when a
+    /// This block is what the `Workflow` tool returns to the model when a
     /// script does not parse, so it must name both the problem and a supported
     /// alternative.
     pub fn render(&self, source: &str) -> String {

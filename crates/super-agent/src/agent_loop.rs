@@ -243,6 +243,24 @@ async fn stream_assistant(
     cancel: CancellationToken,
     emit: &EventSink,
 ) -> AssistantMessage {
+    if cancel.is_cancelled() {
+        // A run cancelled while its tools ran asks the model nothing more:
+        // a provider's request could go out before it sees the cancellation.
+        let mut aborted =
+            AssistantMessage::empty(&config.model.api, &config.model.provider, &config.model.id);
+        aborted.stop_reason = StopReason::Aborted;
+        aborted.error_message = Some("Request aborted".into());
+        context
+            .messages
+            .push(AgentMessage::Assistant(aborted.clone()));
+        emit(AgentEvent::MessageStart {
+            message: AgentMessage::Assistant(aborted.clone()),
+        });
+        emit(AgentEvent::MessageEnd {
+            message: AgentMessage::Assistant(aborted.clone()),
+        });
+        return aborted;
+    }
     let transformed = match &config.transform_context {
         Some(transform) => Some(transform(context.messages.clone()).await),
         None => None,
@@ -390,14 +408,10 @@ async fn execute_tool_batch(
     cancel: CancellationToken,
     emit: &EventSink,
 ) -> ExecutedBatch {
-    let force_sequential = tool_calls.iter().any(|tc| {
-        context
-            .find_tool(&tc.name)
-            .is_some_and(|t| t.execution_mode() == ExecutionMode::Sequential)
-    });
-    let sequential = config.tool_execution == ExecutionMode::Sequential || force_sequential;
+    let all_sequential = config.tool_execution == ExecutionMode::Sequential;
 
-    // Preflight sequentially in source order.
+    // Preflight sequentially in source order. Once the run is cancelled, the
+    // calls left are not prepared; they are answered as aborted below.
     let mut prepared: Vec<PreparedToolCall> = Vec::new();
     for tc in tool_calls {
         emit(AgentEvent::ToolExecutionStart {
@@ -405,6 +419,10 @@ async fn execute_tool_batch(
             tool_name: tc.name.clone(),
             args: tc.arguments.clone(),
         });
+        if cancel.is_cancelled() {
+            prepared.push(PreparedToolCall::Immediate(cancelled_tool_call(tc.clone())));
+            continue;
+        }
         let outcome = prepare_tool_call(context, tc, config, &cancel).await;
         prepared.push(match outcome {
             Ok((tool, args)) => PreparedToolCall::Run {
@@ -414,36 +432,47 @@ async fn execute_tool_batch(
             },
             Err(finalized) => PreparedToolCall::Immediate(*finalized),
         });
-        if cancel.is_cancelled() {
-            break;
-        }
     }
 
+    // The calls run in the order of the answer: a run of calls whose tools
+    // may run at the same time runs together, and a call whose tool runs
+    // alone (`ExecutionMode::Sequential`: it changes files or the shell)
+    // waits for every call before it and runs before every call after it.
     let mut finalized: Vec<FinalizedCall> = Vec::new();
-    if sequential {
-        for p in prepared {
-            match p {
-                PreparedToolCall::Immediate(f) => {
-                    emit_execution_end(&f, emit);
-                    finalized.push(f);
-                }
-                PreparedToolCall::Run {
-                    tool,
-                    tool_call,
-                    args,
-                } => {
-                    let f =
-                        run_and_finalize(tool, tool_call, args, config, cancel.clone(), emit).await;
-                    emit_execution_end(&f, emit);
-                    finalized.push(f);
-                }
+    let mut together: Vec<PreparedToolCall> = Vec::new();
+    for p in prepared {
+        let alone = match &p {
+            PreparedToolCall::Run { tool, .. } => {
+                all_sequential || tool.execution_mode() == ExecutionMode::Sequential
             }
-            if cancel.is_cancelled() {
-                break;
-            }
+            PreparedToolCall::Immediate(_) => all_sequential,
+        };
+        if !alone {
+            together.push(p);
+            continue;
         }
-    } else {
-        finalized = execute_parallel_tools(prepared, config, cancel, emit).await;
+        if !together.is_empty() {
+            finalized.extend(
+                execute_parallel_tools(std::mem::take(&mut together), config, cancel.clone(), emit)
+                    .await,
+            );
+        }
+        let f = match p {
+            PreparedToolCall::Immediate(f) => f,
+            PreparedToolCall::Run { tool_call, .. } if cancel.is_cancelled() => {
+                cancelled_tool_call(tool_call)
+            }
+            PreparedToolCall::Run {
+                tool,
+                tool_call,
+                args,
+            } => run_and_finalize(tool, tool_call, args, config, cancel.clone(), emit).await,
+        };
+        emit_execution_end(&f, emit);
+        finalized.push(f);
+    }
+    if !together.is_empty() {
+        finalized.extend(execute_parallel_tools(together, config, cancel, emit).await);
     }
 
     let terminate = !finalized.is_empty() && finalized.iter().all(|f| f.result.terminate);
@@ -571,7 +600,7 @@ async fn execute_parallel_tools(
 fn cancelled_tool_call(tool_call: ToolCall) -> FinalizedCall {
     FinalizedCall {
         tool_call,
-        result: ToolResult::text("Operation aborted"),
+        result: ToolResult::text(crate::message::ABORTED_RESULT),
         is_error: true,
     }
 }

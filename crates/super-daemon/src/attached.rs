@@ -429,6 +429,15 @@ impl RemoteSession {
             self.sync_entries(client).await;
         }
         self.adopt_state(&state);
+        // The background tasks running there, for the view's task list; an
+        // older daemon without the command leaves the list empty.
+        if let Ok(Some(data)) = client.execute_ok(Command::GetTasks {}).await
+            && let Some(view) = self.view()
+        {
+            view.replace_remote_tasks(
+                serde_json::from_value(data["tasks"].clone()).unwrap_or_default(),
+            );
+        }
         // A turn in flight is picked up from its next event on.
         *self.turn.lock().unwrap() = TurnTracker::default();
         // A question asked before this view came is asked again here.
@@ -458,6 +467,7 @@ impl RemoteSession {
             .and_then(ThinkingLevel::parse);
         if let Some(view) = self.view() {
             view.adopt_remote_state(model, thinking);
+            view.adopt_remote_folder(state["worktree"]["path"].as_str().map(PathBuf::from));
         }
         self.running.store(
             state["isStreaming"].as_bool().unwrap_or(false),
@@ -698,6 +708,19 @@ impl RemoteSession {
                     data: event.get("data").cloned(),
                     own,
                 }));
+            }
+            "task_started" | "task_updated" | "task_ended" => {
+                if let (Some(view), Ok(task)) = (
+                    self.view(),
+                    serde_json::from_value::<super_coding::TaskInfo>(event["task"].clone()),
+                ) {
+                    view.absorb_task(task);
+                }
+            }
+            "worktree_changed" => {
+                if let Some(view) = self.view() {
+                    view.adopt_remote_folder(event["worktree"]["path"].as_str().map(PathBuf::from));
+                }
             }
             "bash_execution_update" if self.shell_running.load(Ordering::SeqCst) => {
                 self.notify(AttachedNotice::ShellOutput(text(&event, "delta")));
@@ -969,6 +992,28 @@ impl SessionBackend for RemoteSession {
     fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
+
+    fn stop_task(&self, task_id: &str) {
+        // Beside the ordered lane, as `abort`: a stop must not wait behind a
+        // compaction.
+        self.spawn_direct(Command::StopTask {
+            task_id: task_id.to_string(),
+        });
+    }
+
+    fn set_mode(&self, mode: super_coding::settings::Mode, subagents: bool, workflows: bool) {
+        self.send(Command::SetMode {
+            mode: Some(
+                match mode {
+                    super_coding::settings::Mode::Basic => "basic",
+                    super_coding::settings::Mode::Advanced => "advanced",
+                }
+                .to_string(),
+            ),
+            subagents: Some(subagents),
+            workflows: Some(workflows),
+        });
+    }
 }
 
 /// The `prompt` command for one message. A workflow turn the daemon cannot
@@ -1154,7 +1199,7 @@ mod tests {
         let tool_end = |id: &str| {
             agent(AgentEvent::ToolExecutionEnd {
                 tool_call_id: id.into(),
-                tool_name: "bash".into(),
+                tool_name: "Bash".into(),
                 result: Default::default(),
                 is_error: false,
             })
@@ -1176,7 +1221,7 @@ mod tests {
         assert!(
             turn.missing_starts(&agent(AgentEvent::ToolExecutionStart {
                 tool_call_id: "call_2".into(),
-                tool_name: "bash".into(),
+                tool_name: "Bash".into(),
                 args: Value::Null,
             }))
             .is_empty()

@@ -1,8 +1,21 @@
-//! Bounded loop and autoresearch jobs in persistent child sessions.
+//! Bounded loop and autoresearch jobs in persistent child sessions, and the
+//! self-paced loop that runs in the session itself.
+//!
+//! `/loop` with an interval, `/loop` in the basic mode and `/autoresearch`
+//! run their iterations back to back (or every interval) in a child session
+//! ([`IterativeRuntime::start`]). `/loop` without an interval in the advanced
+//! mode is self-paced ([`IterativeRuntime::start_self_paced`]): each round is
+//! a turn of the session itself, started with the loop's prompt
+//! ([`crate::notifications::loop_round`]), and the model decides with
+//! `ScheduleWakeup` when the next round comes or that the loop is over
+//! ([`crate::wakeup`]).
 
+use crate::agents::AgentOrigin;
 use crate::child_turn;
-use crate::session_runner::AgentSession;
-use crate::subagents::{AgentStatus, ForkTurns};
+use crate::child_turn::{AgentStatus, ForkTurns};
+use crate::notifications::Priority;
+use crate::session_runner::{AgentSession, SubagentSpec};
+use crate::wakeup::Decision;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -126,7 +139,10 @@ pub struct JobRecord {
     limit: Option<u32>,
     interval: Option<Duration>,
     session_id: String,
-    child: Arc<AgentSession>,
+    /// The child session the iterations run in, an agent of the parent of
+    /// the origin `job`; `None` for a self-paced loop, whose rounds are turns
+    /// of the session itself.
+    child: Option<child_turn::ChildAgent>,
     started: Instant,
     state: Mutex<JobState>,
     cancel: CancellationToken,
@@ -201,7 +217,9 @@ impl JobRecord {
             return;
         }
         self.cancel.cancel();
-        self.child.abort();
+        if let Some(child) = &self.child {
+            child.session.abort();
+        }
         self.wake.notify_waiters();
     }
 
@@ -216,6 +234,11 @@ impl JobRecord {
     fn set_status(&self, status: JobStatus) {
         self.state.lock().unwrap().status = status;
         self.signal();
+    }
+
+    /// Whether the rounds run in the session itself: a self-paced loop.
+    pub fn is_self_paced(&self) -> bool {
+        self.child.is_none()
     }
 
     async fn wait_until_ready(&self) -> bool {
@@ -278,14 +301,23 @@ impl IterativeRuntime {
         }
         let limit = limit.map(|limit| limit.clamp(1, MAX_ITERATIONS));
         let task_name = format!("{}_{}", kind.label(), id);
-        let child = parent.create_subagent_session(
+        let canonical_path = format!("/root/{task_name}");
+        let child = parent.create_subagent_session(SubagentSpec::new(
             &task_name,
-            &format!("/root/{task_name}"),
+            &canonical_path,
             ForkTurns::All,
-            None,
-            None,
-        )?;
-        let session_id = child.manager.lock().unwrap().session_id().to_string();
+            AgentOrigin::Job {
+                job_id: id,
+                job_kind: kind.label().to_string(),
+            },
+        ))?;
+        let session_id = child
+            .session
+            .manager
+            .lock()
+            .unwrap()
+            .session_id()
+            .to_string();
         let (version, _) = watch::channel(0);
         let record = Arc::new(JobRecord {
             id,
@@ -294,7 +326,7 @@ impl IterativeRuntime {
             limit,
             interval,
             session_id,
-            child,
+            child: Some(child),
             started: Instant::now(),
             state: Mutex::new(JobState {
                 status: JobStatus::Queued,
@@ -309,6 +341,121 @@ impl IterativeRuntime {
             parent: self.parent.clone(),
         });
 
+        self.remember(&record)?;
+        let runtime = self.clone();
+        let running = record.clone();
+        tokio::spawn(async move { runtime.run(running).await });
+        record.signal();
+        Ok(record)
+    }
+
+    /// Start a self-paced loop with `goal` in the session itself: round 1
+    /// starts at once (after the turn that runs, if one does), and every
+    /// further round when the wake-up the model scheduled is due. It ends
+    /// when the model stops it, when the session has nothing left to do and
+    /// no wake-up is pending, or after `limit` rounds (at most
+    /// [`MAX_ITERATIONS`], the default). A session runs one at a time.
+    pub fn start_self_paced(
+        self: &Arc<Self>,
+        goal: impl Into<String>,
+        limit: Option<u32>,
+    ) -> anyhow::Result<Arc<JobRecord>> {
+        let goal = goal.into();
+        if goal.trim().is_empty() {
+            anyhow::bail!("the job goal cannot be empty");
+        }
+        let parent = self
+            .parent
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("the parent session has closed"))?;
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let limit = limit.unwrap_or(MAX_ITERATIONS).clamp(1, MAX_ITERATIONS);
+        parent
+            .wakeups()
+            .begin_loop(id, limit, &goal)
+            .map_err(anyhow::Error::msg)?;
+        self.spawn_self_paced(&parent, id, goal, limit, Start::Round(1))
+    }
+
+    /// Start the self-paced loop the session stored again, when it was
+    /// loaded again ([`crate::wakeup::Wakeups::restore`]): with a new job
+    /// id, in the round it was in. The wake-up that would have continued
+    /// it does so when it is due (at once when its time has passed); a
+    /// loop cut off before its round scheduled one runs that round again.
+    pub(crate) fn resume_self_paced(
+        self: &Arc<Self>,
+        restored: crate::wakeup::RestoredLoop,
+    ) -> anyhow::Result<Arc<JobRecord>> {
+        let parent = self
+            .parent
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("the parent session has closed"))?;
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let limit = restored.max_rounds.clamp(1, MAX_ITERATIONS);
+        let round = restored.round.clamp(1, limit);
+        let waiting = parent
+            .wakeups()
+            .resume_loop(
+                id,
+                &crate::wakeup::RestoredLoop {
+                    round,
+                    max_rounds: limit,
+                    ..restored.clone()
+                },
+            )
+            .map_err(anyhow::Error::msg)?;
+        let start = if waiting {
+            Start::Waiting(round)
+        } else {
+            Start::Round(round)
+        };
+        self.spawn_self_paced(&parent, id, restored.goal, limit, start)
+    }
+
+    /// The job of a self-paced loop whose state the session's wake-ups
+    /// hold already, and its driver.
+    fn spawn_self_paced(
+        &self,
+        parent: &Arc<AgentSession>,
+        id: JobId,
+        goal: String,
+        limit: u32,
+        start: Start,
+    ) -> anyhow::Result<Arc<JobRecord>> {
+        let session_id = parent.manager.lock().unwrap().session_id().to_string();
+        let (version, _) = watch::channel(0);
+        let record = Arc::new(JobRecord {
+            id,
+            kind: JobKind::Loop,
+            goal,
+            limit: Some(limit),
+            interval: None,
+            session_id,
+            child: None,
+            started: Instant::now(),
+            state: Mutex::new(JobState {
+                status: JobStatus::Queued,
+                iteration: 0,
+                tokens: 0,
+                latest_result: None,
+                error: None,
+            }),
+            cancel: CancellationToken::new(),
+            wake: Notify::new(),
+            version,
+            parent: self.parent.clone(),
+        });
+        if let Err(error) = self.remember(&record) {
+            parent.wakeups().end_loop(id);
+            return Err(error);
+        }
+        let running = record.clone();
+        tokio::spawn(async move { run_self_paced(running, start).await });
+        record.signal();
+        Ok(record)
+    }
+
+    fn remember(&self, record: &Arc<JobRecord>) -> anyhow::Result<()> {
         let mut jobs = self
             .jobs
             .lock()
@@ -323,16 +470,18 @@ impl IterativeRuntime {
             };
             jobs.remove(position);
         }
-        drop(jobs);
-
-        let runtime = self.clone();
-        let running = record.clone();
-        tokio::spawn(async move { runtime.run(running).await });
-        record.signal();
-        Ok(record)
+        Ok(())
     }
 
     async fn run(self: Arc<Self>, job: Arc<JobRecord>) {
+        self.run_iterations(&job).await;
+        if let Some(child) = &job.child {
+            child.release();
+        }
+    }
+
+    /// The iterations of `job`, until it ends.
+    async fn run_iterations(&self, job: &Arc<JobRecord>) {
         let permit = tokio::select! {
             _ = job.cancel.cancelled() => None,
             permit = self.permits.clone().acquire_owned() => permit.ok(),
@@ -356,14 +505,20 @@ impl IterativeRuntime {
             job.state.lock().unwrap().iteration = iteration;
             job.signal();
 
-            let outcome = child_turn::run_child_turn(
-                &job.parent,
-                &job.child,
-                iteration_prompt(job.kind, &job.goal, iteration, job.limit),
-                Some(job.cancel.clone()),
-                None,
-            )
-            .await;
+            let Some(child) = &job.child else {
+                job.set_status(JobStatus::Failed);
+                return;
+            };
+            let outcome = child
+                .run(
+                    &job.parent,
+                    super_agent::AgentMessage::user(iteration_prompt(
+                        job.kind, &job.goal, iteration, job.limit,
+                    )),
+                    Some(job.cancel.clone()),
+                    None,
+                )
+                .await;
             {
                 let mut state = job.state.lock().unwrap();
                 state.tokens = state.tokens.saturating_add(outcome.usage.total_tokens);
@@ -442,6 +597,183 @@ impl IterativeRuntime {
                 job.stop();
             }
         }
+    }
+}
+
+/// Where the driver of a self-paced loop starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// With this round's turn: the first, or one that was cut off.
+    Round(u32),
+    /// In this round, whose turns ran already: a wake-up continues it.
+    Waiting(u32),
+}
+
+/// How a round of a self-paced loop ended.
+enum RoundEnd {
+    /// The wake-up came due: the next round starts.
+    Next,
+    /// The model ended the loop, or the round left nothing to do and no
+    /// wake-up pending.
+    Over,
+    /// The job was stopped, or the session went away.
+    Stopped,
+}
+
+/// The rounds of a self-paced loop: see [`IterativeRuntime::start_self_paced`].
+async fn run_self_paced(job: Arc<JobRecord>, start: Start) {
+    let Some(wakeups) = job.parent.upgrade().map(|session| session.wakeups()) else {
+        job.set_status(JobStatus::Stopped);
+        return;
+    };
+    let limit = job.limit.unwrap_or(MAX_ITERATIONS);
+    let mut changes = wakeups.subscribe();
+    let (mut round, mut waiting) = match start {
+        Start::Round(round) => (round.saturating_sub(1), false),
+        Start::Waiting(round) => (round, true),
+    };
+    let status = loop {
+        if !job.wait_until_ready().await {
+            break JobStatus::Stopped;
+        }
+        let Some(session) = job.parent.upgrade() else {
+            break JobStatus::Stopped;
+        };
+        // A loop loaded again in a round whose turns ran waits for the
+        // wake-up that continues it.
+        let resumed = std::mem::take(&mut waiting);
+        if !resumed {
+            round += 1;
+        }
+        {
+            let mut state = job.state.lock().unwrap();
+            state.status = JobStatus::Running;
+            state.iteration = round;
+        }
+        job.signal();
+        let tokens_before = session.totals().total_tokens;
+        let entries_before = session.manager.lock().unwrap().entries().len();
+        if !resumed {
+            let woken_by = wakeups.begin_round(job.id, round);
+            session.queue_entry(
+                crate::notifications::loop_round(
+                    job.id,
+                    &job.goal,
+                    round,
+                    limit,
+                    woken_by.as_ref(),
+                ),
+                Priority::Later,
+            );
+        }
+        drop(session);
+
+        let end = round_end(&job, &wakeups, &mut changes).await;
+        if let Some(session) = job.parent.upgrade() {
+            let (result, error) = round_result(&session, entries_before);
+            let mut state = job.state.lock().unwrap();
+            let spent = session.totals().total_tokens.saturating_sub(tokens_before);
+            state.tokens = state.tokens.saturating_add(spent);
+            if result.is_some() {
+                state.latest_result = result;
+            }
+            state.error = error;
+        }
+        job.signal();
+        match end {
+            RoundEnd::Next if round < limit => {}
+            RoundEnd::Next | RoundEnd::Over => {
+                let failed = job.state.lock().unwrap().error.is_some();
+                break if failed {
+                    JobStatus::Failed
+                } else {
+                    JobStatus::Completed
+                };
+            }
+            RoundEnd::Stopped => break JobStatus::Stopped,
+        }
+    };
+    wakeups.end_loop(job.id);
+    job.set_status(status);
+}
+
+/// Wait until the current round of `job` ends: its wake-up came due, the
+/// model stopped the loop, or the session has nothing left to do (no turn,
+/// no queued entry, no running task) while no wake-up continues the loop.
+/// Turns that happen meanwhile (the user's, a task's notice) belong to the
+/// round: a wake-up they schedule continues the loop too.
+async fn round_end(
+    job: &JobRecord,
+    wakeups: &crate::wakeup::Wakeups,
+    changes: &mut watch::Receiver<u64>,
+) -> RoundEnd {
+    let mut settled = false;
+    loop {
+        changes.borrow_and_update();
+        match wakeups.round_state(job.id) {
+            None => return RoundEnd::Stopped,
+            Some(state) if state.decision == Decision::Stop => return RoundEnd::Over,
+            Some(state) if state.decision == Decision::Continue && state.due => {
+                return RoundEnd::Next;
+            }
+            Some(state) if state.decision == Decision::Undecided && settled => {
+                return RoundEnd::Over;
+            }
+            Some(_) => {}
+        }
+        let waited = if settled { None } else { job.parent.upgrade() };
+        if !settled && waited.is_none() {
+            return RoundEnd::Stopped;
+        }
+        let settle = async {
+            match &waited {
+                Some(session) => session.wait_for_background_work().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = job.cancel.cancelled() => return RoundEnd::Stopped,
+            changed = changes.changed() => {
+                if changed.is_err() {
+                    return RoundEnd::Stopped;
+                }
+            }
+            _ = settle, if !settled => settled = true,
+        }
+    }
+}
+
+/// The answer the round's turns ended with, and their error if the last one
+/// failed: from the session's messages after the first `from` entries.
+fn round_result(session: &AgentSession, from: usize) -> (Option<String>, Option<String>) {
+    let manager = session.manager.lock().unwrap();
+    let last = manager
+        .entries()
+        .iter()
+        .skip(from)
+        .rev()
+        .find_map(|entry| match entry {
+            crate::session::entry::SessionEntry::Message {
+                message: super_agent::AgentMessage::Assistant(assistant),
+                ..
+            } => Some(assistant.clone()),
+            _ => None,
+        });
+    match last {
+        Some(assistant) if assistant.stop_reason == super_ai::StopReason::Error => (
+            None,
+            Some(
+                assistant
+                    .error_message
+                    .clone()
+                    .unwrap_or_else(|| "the model request failed".into()),
+            ),
+        ),
+        Some(assistant) => {
+            let text = assistant.text();
+            ((!text.trim().is_empty()).then_some(text), None)
+        }
+        None => (None, None),
     }
 }
 
@@ -569,6 +901,9 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         let messages = job
             .child
+            .as_ref()
+            .unwrap()
+            .session
             .manager
             .lock()
             .unwrap()

@@ -39,12 +39,17 @@ older daemon.
 | `~/.super/agent/logs/daemon.log` | Log, rotated at 5 MiB keeping `daemon.log.1`. `SUPER_LOG=daemon=debug` adds detail. Never contains tokens, prompts or record bodies. |
 | `~/.super/agent/sessions/` | The session files, shared with the terminal. |
 | `~/.super/agent/machine.json` | `{"machineId": "01J…", "name": "mbp", "platform": "macos"}`: which machine this is, created when the daemon or a signed-in `super` first starts and shared between them. `/remote name <name>` changes the name. When only `host.json`, the file of earlier versions, exists, its id is taken over once and `host.json` is left where it is. |
-| `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60, "attach": true}}`: minutes an idle, unattached session stays loaded (`0` keeps sessions loaded until stopped); whether `super` in a terminal attaches to the daemon when signed in. |
+| `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60, "attach": true}}`: minutes an idle, unattached session stays loaded (`0` keeps sessions loaded until stopped); whether `super` in a terminal attaches to the daemon when signed in. `mode` (`advanced` or `basic`, with the `subagents` and `workflows` switches) is read when the daemon creates or loads a session. A change of these three in `/settings` of an attached terminal reaches the session the terminal shows at once (the terminal sends `set_mode`), as it does for a session the terminal runs itself; the daemon's other sessions keep theirs until they are loaded again. |
+| `~/.super/agent/agents/`, `.super/agents/` | Agent type definition files, the project's only in a trusted project: read when the daemon creates or loads a session. |
 | `~/.config/systemd/user/super-daemon.service` | Linux: the unit `super install` writes (`$XDG_CONFIG_HOME/systemd/user` when that is set). |
 
 The daemon is started by launchd or systemd with a bare environment, so it
 reads the login shell's PATH once at start and uses it for every session's
-tools.
+tools. `Bash` and `Monitor` also start their shell from the user's profile
+(a login shell, or for Bash and `sh` the files a login shell reads), so a
+command reads the profile as it would in a terminal; the folders of
+the daemon's PATH come first again after the profile, and the profile's
+other folders follow them.
 
 ## On Linux: a systemd user service
 
@@ -127,6 +132,11 @@ the connection closes.
 
 `client` is `tui`, `cli`, `macos`, `ios` or `other`. `name` is what other
 clients see as the origin of your commands and approvals (`by: "Terminal"`).
+`taskControls: true` says that the client shows a stop control for each
+background task: its `abort` then cancels the turn only, and it stops a
+task with `stop_task`. A client that leaves it out also stops the session's
+background tasks with `abort` ([rpc.md](rpc.md#background-tasks)). The
+full-screen terminal says `true`, the line-based front end leaves it out.
 `protocolVersions` is `[min, max]`; the daemon answers with the highest
 version both sides speak. With no overlap the response fails with
 `"this SUPER daemon speaks protocol 3 to 4; this client speaks 2"` and
@@ -141,7 +151,10 @@ and its clients are updated together.
 A connection is attached to at most one session. After `attach`, session
 commands (`prompt`, `get_state`, `get_entries`, `answer_approval`, ...) go to
 that session unchanged and its events come back unchanged. A session command
-on an unattached connection fails with `not attached to a session`.
+on an unattached connection fails with `not attached to a session`. The
+daemon refuses `switch_session` and `new_session`, which would put another
+file, or none, under the hosted session: a client opens another session with
+`resume_session` or `attach` and starts one with `create_session`.
 Daemon-level commands work at any time; daemon-level events reach every
 connection.
 
@@ -157,7 +170,9 @@ connection.
 | `resume_session` | `sessionId` | `session`; loads a stored session |
 | `attach` | `sessionId` | `session`, `previousSessionId`; loads the session when stored, switches when already attached |
 | `detach` | | `sessionId` |
-| `stop_session` | `sessionId` | `sessionId`; aborts the turn and unloads, the file stays |
+| `stop_session` | `sessionId` | `sessionId`; aborts the turn and unloads, the file stays; a session in a worktree it made asks first (below) |
+| `subscribe_agent` | `agent` | `agent`, `sessionId`; from now on this connection gets the events of the attached session's agent at the path `agent` as `agent_event` lines (below) |
+| `unsubscribe_agent` | `agent` | `agent`, `subscribed`: whether its events were sent |
 | `shutdown` | | the daemon exits 0 |
 
 A session:
@@ -184,6 +199,32 @@ null for a stored session.
 | `session_ended` | `sessionId`, `reason` (`stopped`, `idle`, `shutdown`) | the session was unloaded; attached connections become unattached |
 | `daemon_shutdown` | `reason` | the daemon is about to exit |
 
+### An agent's events
+
+A connection attached to a session follows one of its agents live with
+`subscribe_agent`. `agent` is the agent's `path` as `get_agents` gives it:
+the agent's id, or the ids from the session down joined by `/` for an agent
+at any depth ([rpc.md](rpc.md#agents)); a stored agent is loaded for it.
+From then on each event of the agent's session reaches the connection as
+one line,
+
+```json
+{"type":"agent_event","agent":"a1b2c3d4e/a5f6g7h8i","event":{"type":"message_end","message":{…}}}
+```
+
+where `event` is exactly what the agent's session emits and what its nested
+`events` stream on the platform carries (`agent_start` … `agent_settled`),
+for every later run of the agent too. Only the connection that subscribed
+gets them, so a client that never subscribes sees nothing new. The
+subscription ends with `unsubscribe_agent`, `detach`, another `attach`, the
+session's end and the end of the connection. Subscribing on an unattached
+connection fails with `not attached to a session`, and to a path no agent
+has with the sentence `get_agent_entries` gives. Read the agent's
+transcript so far with `get_agent_entries`; the events come from the moment
+of the subscription. These are new commands, so the protocol version stays
+2. Over the platform the two commands answer `not available over the
+platform`: a remote client follows the agent's nested `events` stream.
+
 ## Lifecycle
 
 - `create_session` writes the session file (its header) at once, so a
@@ -193,19 +234,63 @@ null for a stored session.
 - A hosted session with no attached client, in state `idle`, with no command
   or event for `idleUnloadMinutes` is unloaded and reported as `ended`.
   `attach` or `resume_session` loads it again with its full history. A
-  `working` or `blocked` session is never unloaded.
+  `working` or `blocked` session is never unloaded, and neither is one with
+  a running background task, a pending wake-up or a task's notice that waits
+  for a turn. A notice that arrives while the session is idle starts a run
+  in the daemon, which every attached client sees like any other run.
 - While hosting a session the daemon holds `<file>.jsonl.lock` beside it and
   refuses a file another process holds (`session a1b2c3d4 is open in another
   process`). A `super` running the engine in-process (terminal, `-p`,
   `--mode json`, `--mode rpc`, `super acp`) holds the same lock on the file
   it writes, so the two never append to one file: it refuses to start on a
   file the daemon hosts, and the session picker, `switch_session` and ACP
-  `session/load` refuse to open one.
+  `session/load` refuse to open one. A session the daemon hosts takes no
+  `switch_session`, so it never opens a file another process holds.
 - `shutdown`, SIGTERM and SIGINT abort in-flight turns, unload every session
   and exit 0. After a restart nothing is hosted; sessions load lazily.
 - Workflow approvals are asked as `approval_request` events and answered with
   `answer_approval` from any attached client; `approval_resolved.by` names the
-  client's `hello.name`.
+  client's `hello.name`. A workflow the model starts then runs in the
+  daemon's session as a background task, so the daemon keeps the session
+  loaded until it ends; its script and journal are stored in the folder
+  beside the session's file (`<file without .jsonl>/workflows/`), the
+  journal call by call as the run goes, and a run the session started before
+  it was loaded again can be resumed from there. A run that a `shutdown` or
+  `stop_session` cut off is announced once, as stopped, when the daemon
+  loads the session again.
+- The daemon builds a session's skills with it, as the terminal does; in the
+  advanced mode the model loads them with `Skill`.
+- A wake-up the model schedules with `ScheduleWakeup` runs in the daemon's
+  session: it keeps the session loaded until it is due, then queues its
+  prompt, which starts a run that every attached client sees. It is stored
+  with the session, and so is a self-paced loop. When the daemon shuts down
+  while wake-ups are pending, it writes when each is due to
+  `daemon-wakeups.json` in the folder of sessions; the next daemon loads each
+  of those sessions at that time (at once when it has passed), and the
+  session's wake-up fires. A session a client loads again brings its
+  wake-up back too.
+- A session that moved into a worktree with `EnterWorktree` works there
+  until `ExitWorktree`. When a client stops it with `stop_session` while it
+  works in a worktree it made, the daemon first asks every client an
+  `approval_request` of kind `worktree` with the choices `keep` and
+  `remove`, and unloads the session once one answers or after a minute
+  without an answer, keeping the worktree then. A session unloaded while
+  idle, or by `shutdown`, keeps its worktree without asking, and works in it
+  again when the daemon loads it again: the worktree is stored with the
+  session. If its folder is gone by then, the session works in its own
+  folder and says so once (`worktree_changed` with `missing`).
+- The agents a hosted session starts run inside it, in the daemon, and are
+  stored in the folder beside its file (`<file without .jsonl>/agents/`).
+  They are not sessions of their own: `list_sessions`, `status`'s
+  `storedSessions`, `resume_session` and the platform's registry leave them
+  out. A session the daemon loads again rebuilds its agents from that
+  folder, so the model's `ListAgents` lists them and `SendMessage` resumes
+  one; a client lists them with `get_agents` and reads one's transcript with
+  `get_agent_entries` on the session ([rpc.md](rpc.md#agents)). The agents
+  of the session's workflow runs and the child sessions of its loop and
+  autoresearch jobs are stored, listed, read and mirrored the same way, with
+  an `origin` that names the run or the job. An agent that still ran when the
+  daemon stopped counts as `stopped`.
 
 ## The terminal
 
@@ -240,12 +325,21 @@ session becomes a view of the daemon's:
 - Prompts, steers, follow-ups, esc and ctrl+c (abort, with the queued text
   back in the editor), `/model`, `/thinking`, shift+tab, `/compact` and
   `/name` go to the daemon over the socket, in the order they were made.
+  Esc and ctrl+c cancel the turn only: the session's background tasks keep
+  running in the daemon. `/tasks` lists the running ones, as the daemon
+  reports them, and `x` there stops one (`stop_task`). The footer line
+  counts them and names the key that stops them all (`Ctrl+B` unless
+  `stopBackgroundTasks` is bound to another key), which sends `stop_task`
+  for each.
   The session's events come back and are rendered by the same code that
   renders an in-process run, so the footer, the context meter and the cost
-  follow what the daemon records.
-- `!command` runs in the daemon, in the session's directory with the
-  daemon's environment, which records it for the next model request;
-  `!!command` stays out of the context and runs in the terminal.
+  follow what the daemon records. After `EnterWorktree` the footer names the
+  worktree's branch, as it does in-process (`worktree_changed`, and
+  `get_state` for a terminal that attaches later).
+- `!command` runs in the daemon, in the session's directory, or in its
+  worktree while it works in one, with the daemon's environment, which
+  records it for the next model request; `!!command` stays out of the
+  context and runs in the terminal, in the same folder.
 - `/session` names the daemon's session file and `/remote` reports the
   attachment: the daemon, not the terminal, keeps the session visible in the
   apps.
@@ -267,15 +361,16 @@ Every terminal shows a command another client ran exactly as the same
 command typed there: a prompt that started a run is the user message, a
 queued one appears when the run takes it, `set_thinking_level` reads
 `thinking level set to low` as after `/thinking low`, `set_session_name` as
-after `/name`, `bash` as after `!`, `new_session` as after `/new`; model
+after `/name`, `bash` as after `!`; model
 changes, compactions and aborts show through their events, as typed ones do.
 The title a terminal generates from the first prompt goes to the daemon as
 `set_session_name` with `auto: true`; the other terminals take it as the
 title without a line, as a title generated in-process never shows one.
 The internal command name and the origin never appear in the transcript, so
 a resumed session, whose file records no origins, reads like the live one.
-An approval the daemon asks (a workflow's cost gate) opens as a picker in
-every attached terminal; the first answer wins, the daemon names the
+An approval the daemon asks (a workflow's cost gate, or the question whether
+to keep a session's worktree when a client stops the session) opens as a
+picker in every attached terminal; the first answer wins, the daemon names the
 answering client in `approval_resolved.by`, and every terminal closes its
 picker and shows the answer the same way (`workflow cancelled`). Esc on the
 picker answers `cancel`.
@@ -287,15 +382,25 @@ session again (a restarted daemon loads it from its file) and redraws the
 transcript from the daemon's entries. When no daemon comes back it offers to
 continue in this process: the TUI opens the session file itself, holds its
 lock as an in-process `super` does, and goes on from there. If another
-process holds the file by then, it says so instead. When another client
-stops the session, the next message loads it again.
+process holds the file by then, it says so instead. Quitting without taking
+the session in says that the daemon is gone and that `super -c` resumes the
+session. When another client stops the session, the next message loads it
+again.
 
 With piped input or output `super` uses a line-based front end instead: the
-reply streams as it arrives, every tool call is one line, an approval is
-asked as numbered choices and each line is sent as a prompt, or as a steer
-while the session works. It exits once the session settles after the last
-line; Ctrl+C aborts the turn, `/detach` and end of input detach, `/stop`
-stops the session, `/sessions` switches to another one (below).
+reply streams as it arrives, every tool call is one line named as the
+full-screen terminal names it (a file tool by its file, relative to the
+session's folder inside it, an `Agent` call by its description), a task's
+notice, a monitor's event, an agent's message, a wake-up and a loop's round
+are one line each (live and in the recent history it shows on attaching),
+an approval is asked as numbered choices (also one that was waiting when it
+attached) and each line is sent as a prompt,
+or as a steer while the session works. It exits once the session settles after the last
+line; Ctrl+C aborts the turn, and while no turn runs it stops the session's
+background tasks ("stopped N background tasks"), as this front end has no
+stop control for one task, and detaches when none runs. `/detach` and end of
+input detach, `/stop` stops the session, `/sessions` switches to another one
+(below).
 
 When no daemon answers and none can be started, `super` runs in-process as
 it always did (`--verbose` says why). When the daemon speaks another
@@ -362,13 +467,24 @@ running after the terminal closes. In order:
      provides the daemon and stops;
    - a socket named by `SUPER_DAEMON_SOCKET` is connected to, never started.
 3. It waits until the turn, queued messages, background requests that write
-   the session and open questions are done: a session never moves mid-turn.
-   `/remote cancel` keeps the session where it is.
+   the session, its background tasks, a self-paced loop and open questions
+   are done: a session never moves mid-turn. The line it shows meanwhile
+   says whether it waits for the turn, for the background tasks (which the
+   stop key stops) or for the rest. `/remote cancel` keeps the
+   session where it is. A pending wake-up does not hold it up: it comes along
+   in the session's file, and the terminal lets go of it.
 4. The terminal stops mirroring the session itself, lets go of the session
    file's lock, the daemon loads the session from its file
    (`resume_session`), and the terminal attaches to it. A new session with
    nothing written yet has no file; the daemon starts one in the same
    directory with the same model instead.
+
+What the session read comes along: the daemon's copy takes its record of
+reads back from the transcript, so its `Edit` and `Write` take a file the
+session read while nobody changed it since ([README](../README.md#file-tools)).
+The same holds whenever the daemon loads a session from its file. The folder
+a `cd` left the shell in stays behind: the daemon's first `Bash` command
+starts in the session folder ([README](../README.md#shell-tools)).
 
 On screen that is one line, `♦ session a1b2c3d4 now runs in the SUPER daemon
 (pid 4242) and shows up in the apps; this terminal is attached to it`, and the
@@ -554,12 +670,19 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
 
 - `sessions/{machineId}/{sessionId}/{events,entries,commands}`: every
   hosted session is mirrored exactly like a terminal session, from the
-  moment it loads until it unloads.
+  moment it loads until it unloads. Its agents are mirrored the same way to
+  streams nested under it,
+  `sessions/{machineId}/{sessionId}/agents/{agentId}/{events,entries,commands}`
+  (one level further for an agent's agent), from the moment an agent's
+  session is loaded: when it starts, or when a stored one is resumed or
+  read. An agent's `commands` stream answers reading commands only
+  ([rpc.md](rpc.md#agents-1)). The registry gets no record for an agent.
 - `machines/{machineId}/commands`: controllers append daemon-level commands
   here with the same headers as session commands (`t`, `from`, `name`,
   `exp`). `status`, `list_sessions`, `list_workspaces`, `list_directories`,
   `create_session`, `resume_session` and `stop_session` run exactly as over
-  the socket; `hello`, `attach`, `detach` and `shutdown` answer
+  the socket; `hello`, `attach`, `detach`, `subscribe_agent`,
+  `unsubscribe_agent` and `shutdown` answer
   `not available over the platform`. Expired commands are dropped and the
   cursor in `~/.super/agent/remote/cursors/` keeps a restarted daemon from
   running recent commands again.

@@ -161,6 +161,11 @@ pub enum DaemonCommand {
         name: Option<String>,
         version: String,
         protocol_versions: [u32; 2],
+        /// The client shows a stop control for each background task, so its
+        /// `abort` cancels the turn only. Without one, `abort` also stops the
+        /// session's background tasks.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        task_controls: bool,
     },
     Status {},
     #[serde(rename_all = "camelCase")]
@@ -198,6 +203,17 @@ pub enum DaemonCommand {
         session_id: String,
     },
     Shutdown {},
+    /// Send this connection the events of the attached session's agent at
+    /// `agent` (its path, as `get_agents` gives it) from now on, each as an
+    /// `agent_event` line, until `unsubscribe_agent`, `detach`, another
+    /// `attach` or the end of the connection.
+    SubscribeAgent {
+        agent: String,
+    },
+    /// Stop sending the events of the agent at `agent`.
+    UnsubscribeAgent {
+        agent: String,
+    },
 }
 
 impl DaemonCommand {
@@ -215,6 +231,8 @@ impl DaemonCommand {
             Self::Detach {} => "detach",
             Self::StopSession { .. } => "stop_session",
             Self::Shutdown {} => "shutdown",
+            Self::SubscribeAgent { .. } => "subscribe_agent",
+            Self::UnsubscribeAgent { .. } => "unsubscribe_agent",
         }
     }
 }
@@ -246,6 +264,24 @@ pub enum DaemonEvent {
     DaemonShutdown {
         reason: String,
     },
+}
+
+/// One event of the attached session's agent at `agent`, exactly as the
+/// agent's session emits it and as its nested `events` stream carries it,
+/// sent only to a connection that asked for it with `subscribe_agent`. On
+/// the socket: `{"type": "agent_event", "agent": "<path>", "event": {…}}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "agent_event")]
+pub struct AgentEvent {
+    pub agent: String,
+    pub event: Value,
+}
+
+impl AgentEvent {
+    /// One JSON line without the trailing newline.
+    pub fn to_line(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
 }
 
 impl DaemonEvent {
@@ -330,11 +366,28 @@ mod tests {
                 name: Some("Terminal".into()),
                 version: "0.0.38".into(),
                 protocol_versions: [2, 2],
+                task_controls: false,
             }
         );
         let encoded = serde_json::to_value(&request.command).unwrap();
         assert_eq!(encoded["type"], "hello");
         assert_eq!(encoded["protocolVersions"], json!([2, 2]));
+        assert!(encoded.get("taskControls").is_none());
+    }
+
+    #[test]
+    fn a_client_with_a_stop_control_per_task_says_so_in_hello() {
+        let line = r#"{"type":"hello","client":"macos","version":"0.2.15","protocolVersions":[2,2],"taskControls":true}"#;
+        let ClientLine::Daemon(request) = decode_client_line(line).expect("decodes") else {
+            panic!("hello is a daemon command");
+        };
+        assert!(matches!(
+            request.command,
+            DaemonCommand::Hello {
+                task_controls: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -354,6 +407,38 @@ mod tests {
         assert_eq!(value["machineName"], "mbp");
         assert!(value.get("hostId").is_none() && value.get("hostName").is_none());
         assert_eq!(serde_json::from_value::<HelloReply>(value).unwrap(), reply);
+    }
+
+    #[test]
+    fn an_agent_is_subscribed_by_its_path_and_its_events_come_wrapped() {
+        let line = r#"{"id":"3","type":"subscribe_agent","agent":"a1b2c3d4e/a5f6g7h8i"}"#;
+        let ClientLine::Daemon(request) = decode_client_line(line).expect("decodes") else {
+            panic!("subscribe_agent is a daemon command");
+        };
+        assert_eq!(
+            request.command,
+            DaemonCommand::SubscribeAgent {
+                agent: "a1b2c3d4e/a5f6g7h8i".into()
+            }
+        );
+        assert_eq!(request.command.name(), "subscribe_agent");
+        let ClientLine::Daemon(request) =
+            decode_client_line(r#"{"type":"unsubscribe_agent","agent":"a1b2c3d4e"}"#)
+                .expect("decodes")
+        else {
+            panic!("unsubscribe_agent is a daemon command");
+        };
+        assert_eq!(request.command.name(), "unsubscribe_agent");
+        let event = AgentEvent {
+            agent: "a1b2c3d4e".into(),
+            event: json!({"type": "agent_start"}),
+        };
+        let line = event.to_line();
+        assert_eq!(
+            serde_json::from_str::<Value>(&line).unwrap(),
+            json!({"type": "agent_event", "agent": "a1b2c3d4e", "event": {"type": "agent_start"}})
+        );
+        assert_eq!(serde_json::from_str::<AgentEvent>(&line).unwrap(), event);
     }
 
     #[test]

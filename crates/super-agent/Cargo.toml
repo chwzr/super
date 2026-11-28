@@ -20,10 +20,12 @@ native-tools = [
   "super-ai/native",
   "dep:base64",
   "dep:dirs",
+  "dep:image",
   "dep:libc",
   "dep:jsonschema",
   "dep:similar",
   "dep:tempfile",
+  "dep:xxhash-rust",
   "tokio/rt",
   "tokio/process",
   "tokio/io-util",
@@ -46,9 +48,11 @@ tokio-util = { version = "0.7", features = ["rt"] }
 
 base64 = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 similar = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+xxhash-rust = { workspace = true, optional = true }
 
 [dev-dependencies]
 super-bench.workspace = true

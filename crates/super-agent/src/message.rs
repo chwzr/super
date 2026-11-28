@@ -98,8 +98,15 @@ impl From<Message> for AgentMessage {
 
 /// Default conversion of harness messages to provider messages, matching
 /// pi's `convertToLlm`: harness roles become user messages with labeled
-/// text, UI-only content is dropped.
+/// text, UI-only content is dropped. A tool call without a result gets an
+/// aborted one, so the messages make a request a provider takes.
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
+    answer_cut_off_calls(convert_to_llm_as_is(messages))
+}
+
+/// [`convert_to_llm`] without the results it adds for tool calls that have
+/// none, for a check of the conversation as it is stored.
+pub fn convert_to_llm_as_is(messages: &[AgentMessage]) -> Vec<Message> {
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {
         match m {
@@ -149,6 +156,84 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
     out
 }
 
+/// The text of a tool call's result when the call did not run to its end:
+/// the run was cancelled, or the conversation has no result for the call.
+pub const ABORTED_RESULT: &str = "Operation aborted";
+
+/// Give every tool call without a result an aborted one, right after the
+/// results that follow its assistant message. A call has no result when the
+/// process that ran it ended before the result was stored (a stored
+/// transcript of a session or an agent that was cut off), and providers
+/// refuse a request with such a call. A result anywhere before the next
+/// assistant message counts, so nothing is answered twice.
+fn answer_cut_off_calls(messages: Vec<Message>) -> Vec<Message> {
+    let unanswered = |index: usize, assistant: &AssistantMessage| -> Calls {
+        let answered: std::collections::HashSet<&str> = messages[index + 1..]
+            .iter()
+            .take_while(|message| !matches!(message, Message::Assistant(_)))
+            .filter_map(|message| match message {
+                Message::ToolResult(result) => Some(result.tool_call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assistant
+            .tool_calls()
+            .filter(|call| !answered.contains(call.id.as_str()))
+            .map(|call| (call.id.clone(), call.name.clone()))
+            .collect()
+    };
+    let missing: Vec<(usize, Calls, TimestampMs)> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| match message {
+            Message::Assistant(assistant) => {
+                let calls = unanswered(index, assistant);
+                (!calls.is_empty()).then_some((index, calls, assistant.timestamp))
+            }
+            _ => None,
+        })
+        .collect();
+    if missing.is_empty() {
+        return messages;
+    }
+    let mut out = Vec::with_capacity(messages.len() + missing.len());
+    let mut pending: Calls = Vec::new();
+    let mut timestamp = 0;
+    let mut missing = missing.into_iter().peekable();
+    for (index, message) in messages.into_iter().enumerate() {
+        if !pending.is_empty() && !matches!(message, Message::ToolResult(_)) {
+            out.extend(cut_off_results(std::mem::take(&mut pending), timestamp));
+        }
+        out.push(message);
+        if let Some((_, calls, at)) = missing.next_if(|(at, _, _)| *at == index) {
+            pending = calls;
+            timestamp = at;
+        }
+    }
+    out.extend(cut_off_results(pending, timestamp));
+    out
+}
+
+/// Tool calls by id and tool name.
+type Calls = Vec<(String, String)>;
+
+fn cut_off_results(calls: Calls, timestamp: TimestampMs) -> Vec<Message> {
+    calls
+        .into_iter()
+        .map(|(tool_call_id, tool_name)| {
+            Message::ToolResult(ToolResultMessage {
+                tool_call_id,
+                tool_name,
+                content: vec![ContentBlock::text(ABORTED_RESULT)],
+                details: None,
+                usage: None,
+                is_error: true,
+                timestamp,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +281,101 @@ mod tests {
             }),
         ];
         assert_eq!(convert_to_llm(&messages).len(), 1);
+    }
+
+    fn calls(ids: &[&str]) -> AgentMessage {
+        let mut message = AssistantMessage::empty("api", "provider", "model");
+        message.content = ids
+            .iter()
+            .map(|id| {
+                ContentBlock::ToolCall(super_ai::ToolCall {
+                    id: id.to_string(),
+                    name: "Bash".into(),
+                    arguments: serde_json::json!({}),
+                    thought_signature: None,
+                })
+            })
+            .collect();
+        message.stop_reason = super_ai::StopReason::ToolUse;
+        AgentMessage::Assistant(message)
+    }
+
+    fn result(id: &str) -> AgentMessage {
+        AgentMessage::ToolResult(ToolResultMessage {
+            tool_call_id: id.into(),
+            tool_name: "Bash".into(),
+            content: vec![ContentBlock::text("done")],
+            details: None,
+            usage: None,
+            is_error: false,
+            timestamp: 0,
+        })
+    }
+
+    /// Each message as `role:id` (tool results) or its role.
+    fn shape(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .map(|message| match message {
+                Message::User(_) => "user".to_string(),
+                Message::Assistant(_) => "assistant".to_string(),
+                Message::ToolResult(result) if result.is_error => {
+                    format!("aborted:{}", result.tool_call_id)
+                }
+                Message::ToolResult(result) => format!("result:{}", result.tool_call_id),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tool_call_cut_off_without_a_result_gets_an_aborted_one_in_the_request() {
+        // An agent cut off while its call ran, then resumed with a message.
+        let messages = vec![
+            AgentMessage::user("go"),
+            calls(&["a", "b"]),
+            result("a"),
+            AgentMessage::user("go on"),
+            calls(&["c"]),
+        ];
+        let converted = convert_to_llm(&messages);
+        assert_eq!(
+            shape(&converted),
+            [
+                "user",
+                "assistant",
+                "result:a",
+                "aborted:b",
+                "user",
+                "assistant",
+                "aborted:c"
+            ]
+        );
+        let Message::ToolResult(aborted) = &converted[3] else {
+            unreachable!()
+        };
+        assert_eq!(aborted.tool_name, "Bash");
+        assert_eq!(aborted.content, vec![ContentBlock::text(ABORTED_RESULT)]);
+
+        // A conversation where every call has its result is sent as it is,
+        // also when something else came between a call and its result.
+        let whole = vec![
+            AgentMessage::user("go"),
+            calls(&["a"]),
+            AgentMessage::user("meanwhile"),
+            result("a"),
+            calls(&["b"]),
+            result("b"),
+        ];
+        assert_eq!(
+            shape(&convert_to_llm(&whole)),
+            [
+                "user",
+                "assistant",
+                "user",
+                "result:a",
+                "assistant",
+                "result:b"
+            ]
+        );
     }
 }

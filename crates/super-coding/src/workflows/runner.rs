@@ -1,32 +1,46 @@
 //! Running one workflow agent as a real SUPER child session.
 
-use crate::child_turn;
-use crate::session_runner::AgentSession;
-use crate::subagents::ForkTurns;
+use crate::agents::AgentOrigin;
+use crate::child_turn::{AgentStatus, ForkTurns};
+use crate::session_runner::{AgentSession, SubagentSpec};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
-use super_workflow::{AgentId, AgentOutcome, AgentRequest, AgentRunner};
+use super_workflow::{AgentId, AgentOutcome, AgentRequest, AgentRunner, JournalChange};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 /// Starts each workflow agent as a fresh child session of the parent.
 ///
-/// Workflow agents get their own concurrency budget rather than sharing the
-/// four permits the `spawn_agent` runtime uses: a fan-out wants up to sixteen
-/// at once and would otherwise starve behind hand-started children.
+/// Workflow agents get their own concurrency budget rather than counting
+/// against the agents the `Agent` tool starts: a fan-out wants up to sixteen
+/// at once and would otherwise starve behind hand-started children. Each one
+/// is an agent of the parent for storage and for clients, of the origin
+/// `workflow` with the run's id.
 pub(crate) struct SessionAgentRunner {
     parent: Weak<AgentSession>,
+    /// The id of the run whose agents this starts.
+    run_id: String,
     permits: Arc<Semaphore>,
     tokens: Mutex<HashMap<AgentId, u64>>,
+    /// The run's journal file, which every change of the journal is added
+    /// to as it is made ([`super::journal`]).
+    journal: Option<std::path::PathBuf>,
 }
 
 impl SessionAgentRunner {
-    pub(crate) fn new(parent: Weak<AgentSession>, concurrency: usize) -> SessionAgentRunner {
+    pub(crate) fn new(
+        parent: Weak<AgentSession>,
+        run_id: String,
+        concurrency: usize,
+        journal: Option<std::path::PathBuf>,
+    ) -> SessionAgentRunner {
         SessionAgentRunner {
             parent,
+            run_id,
             permits: Arc::new(Semaphore::new(concurrency.max(1))),
             tokens: Mutex::new(HashMap::new()),
+            journal,
         }
     }
 }
@@ -47,16 +61,28 @@ impl AgentRunner for SessionAgentRunner {
 
         let task_name = task_name_for(&request);
         let canonical_path = format!("/root/{task_name}");
-        let child = match parent.create_subagent_session(
-            &task_name,
-            &canonical_path,
-            // A workflow agent gets exactly the task the script wrote. Copying
-            // the parent conversation would defeat the point of keeping
-            // intermediate results out of that conversation.
-            ForkTurns::None,
-            request.model.as_deref(),
-            request.effort.as_deref(),
-        ) {
+        // Clients see it by the script's label, else by its task name.
+        let name = request
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .unwrap_or(&task_name);
+        let child = match parent.create_subagent_session(SubagentSpec {
+            model: request.model.as_deref(),
+            effort: request.effort.as_deref(),
+            ..SubagentSpec::new(
+                name,
+                &canonical_path,
+                // A workflow agent gets exactly the task the script wrote.
+                // Copying the parent conversation would defeat the point of
+                // keeping intermediate results out of that conversation.
+                ForkTurns::None,
+                AgentOrigin::Workflow {
+                    run_id: self.run_id.clone(),
+                },
+            )
+        }) {
             Ok(child) => child,
             Err(error) => return AgentOutcome::Failed(format!("{error:#}")),
         };
@@ -66,14 +92,14 @@ impl AgentRunner for SessionAgentRunner {
             None => request.prompt.clone(),
         };
 
-        let outcome = child_turn::run_child_turn(
-            &self.parent,
-            &child,
-            prompt,
-            Some(cancel.clone()),
-            request.timeout_ms,
-        )
-        .await;
+        let outcome = child
+            .run(
+                &self.parent,
+                super_agent::AgentMessage::user(prompt),
+                Some(cancel.clone()),
+                request.timeout_ms,
+            )
+            .await;
         if let Ok(mut tokens) = self.tokens.lock() {
             *tokens.entry(request.index).or_default() += outcome.usage.total_tokens;
         }
@@ -82,7 +108,7 @@ impl AgentRunner for SessionAgentRunner {
             return AgentOutcome::Stopped;
         }
         match outcome.status {
-            crate::subagents::AgentStatus::Completed => {
+            AgentStatus::Completed => {
                 let text = outcome.result.unwrap_or_default();
                 match &request.schema {
                     Some(schema) => match parse_structured(&text, schema) {
@@ -94,7 +120,7 @@ impl AgentRunner for SessionAgentRunner {
                     None => AgentOutcome::Done(Value::String(text)),
                 }
             }
-            crate::subagents::AgentStatus::Interrupted => AgentOutcome::Stopped,
+            AgentStatus::Interrupted => AgentOutcome::Stopped,
             _ => AgentOutcome::Failed(outcome.error.unwrap_or_else(|| "the agent failed".into())),
         }
     }
@@ -106,9 +132,19 @@ impl AgentRunner for SessionAgentRunner {
             .and_then(|tokens| tokens.get(&index).copied())
             .unwrap_or(0)
     }
+
+    /// Every finished agent call is on disk when it finishes, so a run cut
+    /// off by the end of the process can be resumed after a restart. A run
+    /// whose journal cannot be written keeps it in memory.
+    fn journal_changed(&self, change: JournalChange<'_>) {
+        if let Some(path) = &self.journal {
+            let _ = super::journal::append(path, change);
+        }
+    }
 }
 
-/// A task name for the child session, within the name rules `spawn_agent` uses.
+/// A task name for the child session: lower-case letters, digits and
+/// underscores, at most 64.
 fn task_name_for(request: &AgentRequest) -> String {
     let mut name = String::from("wf_");
     for character in request.phase.chars() {
@@ -188,9 +224,9 @@ mod tests {
 
     #[test]
     fn task_names_follow_the_subagent_naming_rules() {
-        // `spawn_agent` accepts 1 to 64 lower-case letters, digits, and
-        // underscores, and a workflow child must not be the thing that breaks
-        // that rule.
+        // A child's task name is 1 to 64 lower-case letters, digits, and
+        // underscores, the form the session files and the workflow view
+        // expect.
         for phase in ["Discover", "Audit files!", "Report / summary", ""] {
             let name = task_name_for(&request(phase, 7));
             assert!(!name.is_empty() && name.len() <= 64, "{name}");

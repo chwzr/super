@@ -50,24 +50,35 @@ pub fn options_from_args(args: &Args) -> Result<SessionOptions> {
         session_name: args.name.clone(),
         trust_project_files: args.approve && !args.no_approve,
         no_context_files: args.no_context_files,
+        // A file another process holds is refused before the session
+        // starts what it stored.
+        file_guard: Some(crate::setup::held_file_guard()),
+        // What the session stored starts once a client hears its events
+        // (`serve_stdio`, or the first WebSocket connection of
+        // `--rpc-listen`), so that a worktree gone since reaches it as
+        // `worktree_changed`.
+        defer_stored_work: true,
         ..Default::default()
     })
 }
 
 pub async fn run(args: &Args) -> Result<i32> {
-    let session = super_sdk::Session::create(options_from_args(args)?).await?;
+    let options = options_from_args(args)?;
+    for warning in options.tool_name_warnings() {
+        eprintln!("warning: {warning}");
+    }
+    let session = super_sdk::Session::create(options).await?;
     let _session_lock = crate::setup::keep_session_lock(session.agent_session())?;
     session.set_session_file_guard(Some(crate::setup::session_file_guard(
         session.agent_session(),
     )));
 
+    ask_before_workflows(&session);
+
     // A signed-in headless session is mirrored like a terminal one, so a
-    // desktop app can drive it locally while phones follow along. Only then
-    // do workflow approvals wait for an answer: a plain RPC client keeps the
-    // auto-approve behaviour it always had.
+    // desktop app can drive it locally while phones follow along.
     let settings = session.agent_session().settings();
     let remote = if crate::remote::wanted(args, &settings) {
-        super_sdk::install_workflow_approval_gate(&session);
         let (events, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -118,6 +129,7 @@ pub async fn run(args: &Args) -> Result<i32> {
         })
     });
 
+    let ending = session.clone();
     let serve = async {
         match &args.rpc_listen {
             Some(address) => {
@@ -143,6 +155,18 @@ pub async fn run(args: &Args) -> Result<i32> {
     }
     #[cfg(not(unix))]
     serve.await?;
+    // Nobody can be asked at the end here: a worktree the session made is
+    // kept, and the last line says where, as an event on standard output.
+    if let Some(entered) = super::print::kept_worktree(ending.agent_session()) {
+        match &args.rpc_listen {
+            None => println!("{}", super_sdk::events::worktree_kept(&entered)),
+            Some(_) => {
+                if let Some(note) = super::print::kept_worktree_note(ending.agent_session()) {
+                    eprintln!("{note}");
+                }
+            }
+        }
+    }
     if let Some(task) = presence {
         task.abort();
     }
@@ -150,6 +174,14 @@ pub async fn run(args: &Args) -> Result<i32> {
         control.stop().await;
     }
     Ok(0)
+}
+
+/// Ask the clients before a workflow runs, as the daemon and the terminal
+/// ask (`workflows.confirm`): an `approval_request` of kind `workflow`,
+/// answered with `answer_approval`. The `Workflow` tool is offered with every
+/// request, so a run must not start unasked.
+fn ask_before_workflows(session: &std::sync::Arc<super_sdk::Session>) {
+    super_sdk::install_workflow_approval_gate(session);
 }
 
 /// A publisher that outlives the borrow of the control.
@@ -165,11 +197,73 @@ mod tests {
     use super::*;
     use clap::Parser as _;
 
+    #[tokio::test]
+    async fn a_plain_rpc_session_asks_its_client_before_a_workflow_runs() {
+        let directory = tempfile::tempdir().unwrap();
+        let model = super_ai::Registry::from_builtin()
+            .all()
+            .first()
+            .cloned()
+            .expect("a builtin model");
+        let mut settings = super_coding::settings::Settings::default();
+        settings.subagents.enabled = true;
+        settings.workflows.enabled = true;
+        settings.workflows.confirm = true;
+        let session = super_sdk::Session::create(super_sdk::SessionOptions {
+            cwd: directory.path().into(),
+            model: Some(format!("{}/{}", model.provider, model.id)),
+            settings: Some(settings),
+            no_context_files: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        ask_before_workflows(&session);
+        let mut events = session.events();
+        let runtime = session.agent_session().workflows().expect("workflows");
+        let script = super_coding::workflows::Script::parse(
+            "export const meta = { name: 'probe', description: 'Probe' }\nreturn 1\n",
+        )
+        .unwrap();
+        let plan = super_coding::workflows::WorkflowPlan::from_script(&script);
+        let asking = tokio::spawn(async move { runtime.approve(plan).await });
+        let request = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .expect("the client is asked")
+                .expect("an event");
+            if event.0["type"] == "approval_request" {
+                break event.0;
+            }
+        };
+        assert_eq!(request["kind"], "workflow");
+        session
+            .answer_approval(request["approvalId"].as_str().unwrap(), "cancel", "local")
+            .unwrap();
+        assert_eq!(
+            asking.await.unwrap(),
+            super_coding::workflows::ApprovalDecision::Cancel
+        );
+    }
+
     #[test]
     fn no_session_means_nothing_is_written_to_disk() {
         let args = Args::parse_from(["super", "--mode", "rpc", "--no-session"]);
         let options = options_from_args(&args).expect("options");
         assert_eq!(options.session, SessionSource::InMemory);
+    }
+
+    /// Over stdio and over WebSocket alike, what the session stored waits
+    /// for a client to listen.
+    #[test]
+    fn stored_work_waits_for_a_client_also_with_rpc_listen() {
+        for args in [
+            vec!["super", "--mode", "rpc"],
+            vec!["super", "--mode", "rpc", "--rpc-listen", "127.0.0.1:0"],
+        ] {
+            let options = options_from_args(&Args::parse_from(&args)).expect("options");
+            assert!(options.defer_stored_work, "{args:?}");
+        }
     }
 
     #[test]
@@ -186,15 +280,15 @@ mod tests {
             "--mode",
             "rpc",
             "--tools",
-            "read,bash",
+            "Read,Bash",
             "--exclude-tools",
-            "bash",
+            "Bash",
         ]);
         let options = options_from_args(&args).expect("options");
         assert_eq!(
             options.tools.as_deref(),
-            Some(&["read".to_string(), "bash".to_string()][..])
+            Some(&["Read".to_string(), "Bash".to_string()][..])
         );
-        assert_eq!(options.exclude_tools, ["bash"]);
+        assert_eq!(options.exclude_tools, ["Bash"]);
     }
 }

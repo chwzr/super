@@ -98,6 +98,13 @@ pub async fn run(
         .with_context(|| format!("chmod {}", config.paths.socket.display()))?;
 
     let host = host::SessionHost::new(config.host.clone());
+    let waiting = host.resume_wakeups();
+    if waiting > 0 {
+        log::info(
+            "daemon",
+            format!("{waiting} session(s) load again when their wake-ups are due"),
+        );
+    }
     let info = DaemonInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         machine_id: config.machine_id.clone(),

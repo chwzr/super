@@ -2,6 +2,12 @@
 //! entries out to the `entries` stream, RPC commands in from the `commands`
 //! stream.
 //!
+//! The session's agents are mirrored the same way, each to streams nested
+//! under the session's ([`SessionStreams::agent`]), from the moment the
+//! agent's session is loaded: when the agent starts, or when its stored
+//! session is loaded to resume it or to be read. An agent's own agents nest
+//! one level further.
+//!
 //! The transport never blocks the session. Events are queued, batched with a
 //! short linger, and appended in order. While the platform is unreachable the
 //! queue is bounded: streaming deltas are dropped first, finished messages
@@ -14,7 +20,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use super_sdk::protocol::{Command, decode_request};
-use super_sdk::{Response, Session};
+use super_sdk::{AgentChange, EventStream, Response, Session};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -32,12 +38,27 @@ pub struct SessionStreams {
 
 impl SessionStreams {
     pub fn new(machine_id: &str, session_id: &str) -> Self {
-        let base = format!("sessions/{machine_id}/{session_id}");
+        Self::at(&format!("sessions/{machine_id}/{session_id}"))
+    }
+
+    fn at(base: &str) -> Self {
         Self {
             events: format!("{base}/events"),
             entries: format!("{base}/entries"),
             commands: format!("{base}/commands"),
         }
+    }
+
+    /// Where the session's streams live, before `/events`.
+    pub fn base(&self) -> &str {
+        self.events.strip_suffix("/events").unwrap_or(&self.events)
+    }
+
+    /// The streams of the agent `agent_id` this session started, nested
+    /// under the session's: `sessions/<machine>/<session>/agents/<agent>/…`,
+    /// and one level further for an agent of an agent.
+    pub fn agent(&self, agent_id: &str) -> Self {
+        Self::at(&format!("{}/agents/{agent_id}", self.base()))
     }
 }
 
@@ -118,10 +139,14 @@ enum Outgoing {
     SyncEntries,
 }
 
+/// The mirrors of a session's agents, by agent id.
+type AgentMirrors = Arc<std::sync::Mutex<std::collections::BTreeMap<String, SessionTransport>>>;
+
 pub struct SessionTransport {
     status: watch::Receiver<RemoteStatus>,
     cancel: CancellationToken,
     flush_done: Option<tokio::task::JoinHandle<()>>,
+    agents: AgentMirrors,
 }
 
 impl SessionTransport {
@@ -132,17 +157,46 @@ impl SessionTransport {
         options: TransportOptions,
         notices: NoticeSink,
     ) -> Self {
+        let events = session.events();
+        Self::start_with(client, session, events, streams, options, notices)
+    }
+
+    /// [`start`](Self::start) with the session's events subscribed already.
+    fn start_with(
+        client: Arc<S2Client>,
+        session: Arc<Session>,
+        events: EventStream,
+        streams: SessionStreams,
+        options: TransportOptions,
+        notices: NoticeSink,
+    ) -> Self {
         let cancel = CancellationToken::new();
         let (status_tx, status_rx) = watch::channel(RemoteStatus::Starting);
         let (queue_tx, queue_rx) = mpsc::unbounded_channel::<Outgoing>();
 
         // Events out.
         let pump = Pump {
-            session: session.clone(),
+            events,
             queue: queue_tx.clone(),
             cancel: cancel.clone(),
         };
         tokio::spawn(pump.run());
+
+        // The agents' mirrors, nested.
+        let agents: AgentMirrors = Arc::default();
+        let (loaded, changes) = session.subscribe_agents();
+        let follower = AgentFollower {
+            client: client.clone(),
+            streams: streams.clone(),
+            options: options.clone(),
+            mirrors: agents.clone(),
+            cancel: cancel.clone(),
+        };
+        for (id, agent) in loaded {
+            let events = agent.events();
+            follower.mirror(id, agent, events);
+        }
+        tokio::spawn(follower.run(changes));
 
         // Commands in.
         let tailer = Tailer {
@@ -182,7 +236,14 @@ impl SessionTransport {
             status: status_rx,
             cancel,
             flush_done: Some(flush_done),
+            agents,
         }
+    }
+
+    /// The streams of the agents mirrored so far, by agent id; each has the
+    /// mirrors of its own agents in turn.
+    pub fn agent_ids(&self) -> Vec<String> {
+        self.agents.lock().unwrap().keys().cloned().collect()
     }
 
     pub fn status(&self) -> RemoteStatus {
@@ -193,12 +254,80 @@ impl SessionTransport {
         self.status.clone()
     }
 
-    /// Stop tailing, flush what is queued (for a bounded time), and end.
-    pub async fn stop(mut self) {
-        self.cancel.cancel();
-        if let Some(task) = self.flush_done.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    /// Stop tailing, flush what is queued (for a bounded time), and end;
+    /// the agents' mirrors too.
+    pub fn stop(mut self) -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(async move {
+            self.cancel.cancel();
+            let agents: Vec<SessionTransport> = std::mem::take(&mut *self.agents.lock().unwrap())
+                .into_values()
+                .collect();
+            futures::future::join_all(agents.into_iter().map(SessionTransport::stop)).await;
+            if let Some(task) = self.flush_done.take() {
+                let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+            }
+        })
+    }
+}
+
+/// Starts and stops the mirrors of a session's agents as their sessions
+/// are loaded and forgotten.
+struct AgentFollower {
+    client: Arc<S2Client>,
+    streams: SessionStreams,
+    options: TransportOptions,
+    mirrors: AgentMirrors,
+    cancel: CancellationToken,
+}
+
+impl AgentFollower {
+    async fn run(self, mut changes: mpsc::UnboundedReceiver<AgentChange>) {
+        loop {
+            let change = tokio::select! {
+                _ = self.cancel.cancelled() => break,
+                change = changes.recv() => change,
+            };
+            match change {
+                None => break,
+                Some(AgentChange::Loaded {
+                    id,
+                    session,
+                    events,
+                }) => self.mirror(id, session, events),
+                Some(AgentChange::Reset) => {
+                    let gone: Vec<SessionTransport> =
+                        std::mem::take(&mut *self.mirrors.lock().unwrap())
+                            .into_values()
+                            .collect();
+                    for mirror in gone {
+                        tokio::spawn(mirror.stop());
+                    }
+                }
+            }
         }
+    }
+
+    /// Mirror the agent `id` to its nested streams, unless it is already.
+    /// Its notices, as those of a session nobody looks at, are logged only.
+    fn mirror(&self, id: String, session: Arc<Session>, events: EventStream) {
+        if self.cancel.is_cancelled() {
+            return;
+        }
+        let mut mirrors = self.mirrors.lock().unwrap();
+        if mirrors.contains_key(&id) {
+            return;
+        }
+        let streams = self.streams.agent(&id);
+        crate::log::line(format!("mirroring agent {}", streams.base()));
+        let mirror = SessionTransport::start_with(
+            self.client.clone(),
+            session,
+            events,
+            streams,
+            self.options.clone(),
+            Arc::new(|notice| crate::log::line(format!("agent mirror: {notice:?}"))),
+        );
+        mirrors.insert(id, mirror);
     }
 }
 
@@ -250,14 +379,14 @@ fn publish_status(status: &watch::Sender<RemoteStatus>, link: &LinkState, notice
 // ---------------------------------------------------------------------------
 
 struct Pump {
-    session: Arc<Session>,
+    events: EventStream,
     queue: mpsc::UnboundedSender<Outgoing>,
     cancel: CancellationToken,
 }
 
 impl Pump {
     async fn run(self) {
-        let mut events = self.session.events();
+        let mut events = self.events;
         loop {
             let event = tokio::select! {
                 _ = self.cancel.cancelled() => break,
@@ -863,6 +992,36 @@ mod tests {
         assert_eq!(streams.events, "sessions/01H/a1b2/events");
         assert_eq!(streams.entries, "sessions/01H/a1b2/entries");
         assert_eq!(streams.commands, "sessions/01H/a1b2/commands");
+        assert_eq!(streams.base(), "sessions/01H/a1b2");
+    }
+
+    #[test]
+    fn an_agents_streams_nest_under_its_parents() {
+        let session = SessionStreams::new("01H", "a1b2");
+        let agent = session.agent("a12345678");
+        assert_eq!(agent.events, "sessions/01H/a1b2/agents/a12345678/events");
+        assert_eq!(agent.entries, "sessions/01H/a1b2/agents/a12345678/entries");
+        assert_eq!(
+            agent.commands,
+            "sessions/01H/a1b2/agents/a12345678/commands"
+        );
+        let inner = agent.agent("a87654321");
+        assert_eq!(
+            inner.events,
+            "sessions/01H/a1b2/agents/a12345678/agents/a87654321/events"
+        );
+        assert_eq!(
+            inner.entries,
+            "sessions/01H/a1b2/agents/a12345678/agents/a87654321/entries"
+        );
+        assert_eq!(
+            inner.commands,
+            "sessions/01H/a1b2/agents/a12345678/agents/a87654321/commands"
+        );
+        assert_eq!(
+            inner.base(),
+            "sessions/01H/a1b2/agents/a12345678/agents/a87654321"
+        );
     }
 
     #[test]

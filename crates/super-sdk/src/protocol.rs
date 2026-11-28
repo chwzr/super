@@ -148,6 +148,19 @@ pub enum Command {
     SetAutoRetry {
         enabled: bool,
     },
+    /// Set the session's `mode` (`basic` or `advanced`) and its Subagents
+    /// and Dynamic workflows switches, each only when given, for this
+    /// session from now on; answers with all three. With none given it only
+    /// reads them. The user's settings file is not changed.
+    #[serde(rename_all = "camelCase")]
+    SetMode {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagents: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workflows: Option<bool>,
+    },
 
     // --- direct shell ---
     #[serde(rename_all = "camelCase")]
@@ -158,6 +171,34 @@ pub enum Command {
 
     // --- tools ---
     GetTools {},
+
+    // --- background tasks ---
+    /// The session's background tasks, oldest first.
+    GetTasks {},
+    /// Stop one running background task, by id or by name.
+    #[serde(rename_all = "camelCase")]
+    StopTask {
+        task_id: String,
+    },
+
+    // --- agents ---
+    /// The agents the session started with the `Agent` tool, oldest first,
+    /// those of an earlier run of the session included. With `agent`, the
+    /// agents that agent started: an agent id, or ids separated by `/` for
+    /// an agent of an agent.
+    #[serde(rename_all = "camelCase")]
+    GetAgents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
+    /// The entries of an agent's session, its transcript, like `get_entries`
+    /// answers for the session. `agent` is as for `get_agents`.
+    #[serde(rename_all = "camelCase")]
+    GetAgentEntries {
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<String>,
+    },
 
     // --- session files ---
     #[serde(rename_all = "camelCase")]
@@ -188,6 +229,18 @@ pub enum Command {
 
     // --- liveness ---
     Ping {},
+
+    // --- the client ---
+    /// What a direct client (`--mode rpc`, an embedder) says about itself,
+    /// best as its first command. `taskControls: true` means it shows a stop
+    /// control for each background task, so its `abort` cancels the turn
+    /// only; without it `abort` also stops the background tasks. A daemon
+    /// client says this in `hello` instead.
+    #[serde(rename_all = "camelCase")]
+    Initialize {
+        #[serde(default)]
+        task_controls: bool,
+    },
 }
 
 impl Command {
@@ -217,9 +270,14 @@ impl Command {
             Command::Compact { .. } => "compact",
             Command::SetAutoCompaction { .. } => "set_auto_compaction",
             Command::SetAutoRetry { .. } => "set_auto_retry",
+            Command::SetMode { .. } => "set_mode",
             Command::Bash { .. } => "bash",
             Command::AbortBash {} => "abort_bash",
             Command::GetTools {} => "get_tools",
+            Command::GetTasks {} => "get_tasks",
+            Command::StopTask { .. } => "stop_task",
+            Command::GetAgents { .. } => "get_agents",
+            Command::GetAgentEntries { .. } => "get_agent_entries",
             Command::ExportHtml { .. } => "export_html",
             Command::SwitchSession { .. } => "switch_session",
             Command::Fork { .. } => "fork",
@@ -227,7 +285,17 @@ impl Command {
             Command::GetApprovals {} => "get_approvals",
             Command::AnswerApproval { .. } => "answer_approval",
             Command::Ping {} => "ping",
+            Command::Initialize { .. } => "initialize",
         }
+    }
+}
+
+impl Command {
+    /// Whether the command only reads: every `get_` command and `ping`. An
+    /// agent's session, which runs only as its parent says, answers these
+    /// and refuses the others.
+    pub fn only_reads(&self) -> bool {
+        self.name().starts_with("get_") || matches!(self, Command::Ping {})
     }
 }
 
@@ -389,9 +457,63 @@ pub fn decode_request(line: &str) -> Result<Request, ProtocolError> {
     })
 }
 
+/// The response to `line`, which could not be run as a command (`error`):
+/// with the line's `id`, so that a client waiting for that id gets an
+/// answer, and with its `type` as the command when the line is a command
+/// this build knows whose fields do not fit, such as one without a field it
+/// needs. A line that is no JSON object, or whose `type` is missing or
+/// unknown, has the command `parse`.
+pub fn parse_failure(line: &str, error: &ProtocolError) -> Response {
+    let value = serde_json::from_str::<Value>(line).ok();
+    let field = |name: &str| {
+        value
+            .as_ref()
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let command = match error {
+        ProtocolError::Json(_) => field("type"),
+        ProtocolError::MissingType | ProtocolError::UnknownCommand(_) => None,
+    };
+    Response::err(command.unwrap_or_else(|| "parse".into()), error).with_id(field("id"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_that_does_not_fit_its_command_is_answered_with_its_id() {
+        let answer = |line: &str| {
+            let error = decode_request(line).unwrap_err();
+            serde_json::to_value(parse_failure(line, &error)).unwrap()
+        };
+        let missing = answer(r#"{"id":"e1","type":"get_agent_entries"}"#);
+        assert_eq!(missing["id"], "e1");
+        assert_eq!(missing["command"], "get_agent_entries");
+        assert_eq!(missing["success"], false);
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap()
+                .contains("missing field `agent`"),
+            "{missing}"
+        );
+        let wrong = answer(r#"{"id":"e3","type":"get_agents","agent":7}"#);
+        assert_eq!(
+            (wrong["id"].as_str(), wrong["command"].as_str()),
+            (Some("e3"), Some("get_agents"))
+        );
+        let unknown = answer(r#"{"id":"e4","type":"teleport"}"#);
+        assert_eq!(
+            (unknown["id"].as_str(), unknown["command"].as_str()),
+            (Some("e4"), Some("parse"))
+        );
+        let broken = answer("{not json");
+        assert_eq!(broken["command"], "parse");
+        assert!(broken.get("id").is_none());
+    }
 
     #[test]
     fn command_tags_are_snake_case() {
@@ -419,6 +541,24 @@ mod tests {
                 streaming_behavior: Some(StreamingBehavior::Steer),
             }
         );
+    }
+
+    #[test]
+    fn the_agent_commands_name_an_agent_by_its_path() {
+        let request =
+            decode_request(r#"{"type":"get_agent_entries","agent":"a1/a2","since":"e1"}"#).unwrap();
+        assert_eq!(
+            request.command,
+            Command::GetAgentEntries {
+                agent: "a1/a2".into(),
+                since: Some("e1".into()),
+            }
+        );
+        assert!(request.command.only_reads());
+        let request = decode_request(r#"{"type":"get_agents"}"#).unwrap();
+        assert_eq!(request.command, Command::GetAgents { agent: None });
+        assert!(Command::Ping {}.only_reads());
+        assert!(!Command::Abort {}.only_reads());
     }
 
     #[test]

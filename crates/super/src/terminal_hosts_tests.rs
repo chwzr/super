@@ -101,7 +101,7 @@ async fn native_hosts_deliver_state_resume_notifications_and_cleanup() {
         "--api-key",
         "private-key",
         "--tools",
-        "read,bash",
+        "Read,Bash",
         "--system-prompt",
         "literal $(echo unsafe) and `echo unsafe`",
         "private-prompt",

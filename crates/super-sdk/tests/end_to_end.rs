@@ -28,10 +28,23 @@ async fn session_with(
         models_file: Some(provider.catalog_path()),
         thinking_level: Some(ThinkingLevel::Off),
         settings: Some(super_coding::Settings::default()),
+        // An allowlist names every tool it offers: the four default tools
+        // and the six that come with them in the advanced mode.
         tools: Some(
-            ["read", "write", "edit", "bash"]
-                .map(str::to_string)
-                .to_vec(),
+            [
+                "Read",
+                "Write",
+                "Edit",
+                "Bash",
+                "Monitor",
+                "TaskStop",
+                "Skill",
+                "ScheduleWakeup",
+                "EnterWorktree",
+                "ExitWorktree",
+            ]
+            .map(str::to_string)
+            .to_vec(),
         ),
         // Project files in a temporary directory are ours, but leaving trust
         // off and selecting tools keeps the test independent of local files.
@@ -91,8 +104,11 @@ async fn a_scripted_model_writes_a_real_file_through_the_write_tool() {
         turns: vec![
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
-                name: "write".into(),
-                arguments: json!({"path": "hello.txt", "content": "hello from super\n"}),
+                name: "Write".into(),
+                arguments: json!({
+                    "file_path": directory.path().join("hello.txt"),
+                    "content": "hello from super\n",
+                }),
             }],
             vec![MockTurn::Text("Done.".into())],
         ],
@@ -107,7 +123,7 @@ async fn a_scripted_model_writes_a_real_file_through_the_write_tool() {
 
     // The tool really ran: the file exists with the requested contents.
     let written = std::fs::read_to_string(directory.path().join("hello.txt"))
-        .expect("the write tool created hello.txt");
+        .expect("the Write tool created hello.txt");
     assert_eq!(written, "hello from super\n");
 
     let events = wait_for(&events, "agent_settled").await;
@@ -124,7 +140,7 @@ async fn a_scripted_model_writes_a_real_file_through_the_write_tool() {
         .iter()
         .find(|event| event["type"] == "tool_execution_start")
         .expect("a tool started");
-    assert_eq!(tool_start["toolName"], "write");
+    assert_eq!(tool_start["toolName"], "Write");
     let tool_end = events
         .iter()
         .find(|event| event["type"] == "tool_execution_end")
@@ -157,8 +173,9 @@ async fn prompting_while_streaming_requires_an_explicit_behavior() {
         turns: vec![
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
-                name: "bash".into(),
-                arguments: json!({"command": "sleep 1"}),
+                name: "Bash".into(),
+                // A lone sleep is refused in the foreground.
+                arguments: json!({"command": "sleep 1; echo slept"}),
             }],
             vec![MockTurn::Text("Finished.".into())],
         ],
@@ -200,6 +217,60 @@ async fn prompting_while_streaming_requires_an_explicit_behavior() {
 
     session.abort();
     session.wait_idle().await;
+}
+
+/// After `EnterWorktree` a client's `bash` command runs in the worktree, on
+/// its branch, as the session's own `Bash` does.
+#[tokio::test]
+async fn a_direct_bash_command_runs_in_the_worktree_the_session_works_in() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = directory.path().canonicalize().unwrap();
+    let git = |arguments: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?}");
+    };
+    git(&["init", "--quiet", "-b", "main"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("README"), "hello\n").unwrap();
+    git(&["add", "README"]);
+    git(&["commit", "--quiet", "-m", "first"]);
+    let script = MockScript {
+        turns: vec![
+            vec![MockTurn::ToolCall {
+                id: "call_1".into(),
+                name: "EnterWorktree".into(),
+                arguments: json!({"name": "bangwt"}),
+            }],
+            vec![MockTurn::Text("in it".into())],
+        ],
+    };
+    let (_provider, session) = session_with(&root, script).await;
+    session.prompt("enter").await.unwrap();
+    // Git Bash's `pwd -W` names the folder as Windows does.
+    let pwd = if cfg!(windows) { "pwd -W" } else { "pwd -P" };
+    let response = session
+        .execute(Command::Bash {
+            command: format!("{pwd}; git branch --show-current"),
+        })
+        .await;
+    assert!(response.success, "{response:?}");
+    let output = response.data.unwrap()["output"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (folder, branch) = output.split_once('\n').unwrap();
+    assert_eq!(
+        std::fs::canonicalize(folder).unwrap(),
+        root.join(".super/worktrees/bangwt").canonicalize().unwrap()
+    );
+    assert_eq!(branch, "worktree-bangwt\n");
 }
 
 #[tokio::test]
@@ -256,7 +327,22 @@ async fn the_dispatcher_answers_state_and_model_questions() {
     assert_eq!(state["isStreaming"], false);
     assert_eq!(state["thinkingLevel"], "off");
     let tools = state["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 4, "the four default tools: {tools:?}");
+    assert_eq!(
+        tools,
+        &[
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Monitor",
+            "TaskStop",
+            "Skill",
+            "ScheduleWakeup",
+            "EnterWorktree",
+            "ExitWorktree"
+        ],
+        "the four default tools, and the six that come with them in the advanced mode"
+    );
 
     let models = session
         .execute(Command::GetAvailableModels {
@@ -391,6 +477,65 @@ async fn a_session_file_guard_can_refuse_switch_session() {
     assert_eq!(session.state().session_id, other_id);
 }
 
+/// `switch_session` and `new_session` while a turn runs end the turn first:
+/// nothing of it is written into the conversation the session moves to.
+#[tokio::test]
+async fn switching_conversations_during_a_turn_ends_the_turn_first() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    // Each turn is aborted during its command, so it makes one request.
+    let long = || {
+        vec![MockTurn::ToolCall {
+            id: "call_0".into(),
+            name: "Bash".into(),
+            arguments: json!({"command": "sleep 3; echo LONG-DONE"}),
+        }]
+    };
+    let script = MockScript {
+        turns: vec![
+            long(),
+            long(),
+            vec![MockTurn::Text("A-TURN-FINAL-ANSWER".into())],
+        ],
+    };
+    let (_provider, session) = session_with(directory.path(), script).await;
+    let mut other =
+        super_coding::SessionManager::create(directory.path(), Some(directory.path().join("s")))
+            .expect("another session");
+    other.append_session_info("other").expect("written");
+    let other_file = other.session_file().expect("a file").to_path_buf();
+    let before = std::fs::read_to_string(&other_file).unwrap();
+    drop(other);
+
+    for command in [
+        Command::SwitchSession {
+            session_path: other_file.display().to_string(),
+        },
+        Command::NewSession {},
+    ] {
+        let collected = collect_events(&session);
+        let running = session.clone();
+        tokio::spawn(async move { running.prompt("go").await });
+        wait_for(&collected, "tool_execution_start").await;
+        let response = session.execute(command).await;
+        assert!(response.success, "{response:?}");
+        assert!(!session.state().is_streaming);
+        // The rest of the turn, its result and its last answer, went nowhere
+        // near the conversation the session is in now.
+        let messages = serde_json::to_string(&session.messages()).unwrap();
+        assert!(!messages.contains("LONG-DONE"), "{messages}");
+        assert!(!messages.contains("A-TURN-FINAL-ANSWER"), "{messages}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !serde_json::to_string(&session.messages())
+                .unwrap()
+                .contains("call_0")
+        );
+        if session.state().session_file.as_deref() == Some(other_file.as_path()) {
+            assert_eq!(std::fs::read_to_string(&other_file).unwrap(), before);
+        }
+    }
+}
+
 #[tokio::test]
 async fn commands_from_another_surface_are_announced_to_every_client() {
     let directory = tempfile::tempdir().expect("temp dir");
@@ -511,4 +656,69 @@ async fn a_prompt_from_another_surface_is_announced_before_its_run() {
         notice,
         super_sdk::SessionNotice::Applied { origin, success: true, .. } if origin == "iPhone"
     )));
+}
+
+#[tokio::test]
+async fn set_mode_changes_the_sessions_mode_and_switches_and_builds_its_prompt_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_provider, session) = session_with(directory.path(), MockScript::text("hi")).await;
+    let state = session.execute(Command::GetState {}).await.data.unwrap();
+    assert_eq!(state["mode"], "advanced");
+    let advanced = super_agent::placeholder::prompt_todo("SystemPrompt.advanced");
+    assert!(session.agent_session().system_prompt().contains(&advanced));
+
+    let response = session
+        .execute(Command::SetMode {
+            mode: Some("basic".into()),
+            subagents: Some(true),
+            workflows: None,
+        })
+        .await;
+    assert!(response.success, "{:?}", response.error);
+    let answer = response.data.unwrap();
+    assert_eq!(answer["mode"], "basic");
+    assert_eq!(answer["subagents"], true);
+    let state = session.execute(Command::GetState {}).await.data.unwrap();
+    assert_eq!(state["mode"], "basic");
+    assert_eq!(state["subagents"], true);
+    assert_eq!(state["workflows"], answer["workflows"]);
+    assert_eq!(
+        state["tools"],
+        serde_json::json!(["Read", "Write", "Edit", "Bash"])
+    );
+    assert!(!session.agent_session().system_prompt().contains(&advanced));
+
+    // With nothing given it only reads; a mode it does not know is refused.
+    let read = session
+        .execute(Command::SetMode {
+            mode: None,
+            subagents: None,
+            workflows: None,
+        })
+        .await
+        .data
+        .unwrap();
+    assert_eq!(read, answer);
+    let refused = session
+        .execute(Command::SetMode {
+            mode: Some("expert".into()),
+            subagents: None,
+            workflows: None,
+        })
+        .await;
+    assert!(!refused.success);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("mode 'expert' is not basic or advanced.")
+    );
+
+    session
+        .execute(Command::SetMode {
+            mode: Some("advanced".into()),
+            subagents: None,
+            workflows: Some(false),
+        })
+        .await;
+    assert!(session.agent_session().system_prompt().contains(&advanced));
+    assert!(!session.agent_session().settings().workflows.enabled);
 }

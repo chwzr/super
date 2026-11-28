@@ -10,7 +10,7 @@ from super_sdk import Session
 
 
 async def main() -> None:
-    async with await Session.create(tools=['read', 'bash']) as session:
+    async with await Session.create(tools=['Read', 'Bash']) as session:
         events = session.events()
         session.prompt_detached('List the files here')
         async for event in events:

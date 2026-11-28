@@ -15,9 +15,10 @@ use crate::events::{
 use crate::options::{SessionOptions, UnknownModel};
 use crate::protocol::{Command, Event, ImageInput, QueueMode, Response, StreamingBehavior};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 use super_agent::{AgentMessage, BashExecutionMessage};
 use super_ai::auth::super_platform;
@@ -240,6 +241,113 @@ pub struct Session {
     approvals: Approvals,
     observer: Mutex<Option<SessionObserver>>,
     file_guard: Mutex<Option<SessionFileGuard>>,
+    /// What `initialize` said about stop controls, per origin; `None` is a
+    /// direct client.
+    task_controls: Mutex<HashMap<Option<String>, bool>>,
+    /// The loaded sessions of this session's agents, by agent id, and who
+    /// hears of changes to them.
+    agents: Mutex<AgentViewList>,
+    /// This is the view of an agent's session, which answers reading
+    /// commands only.
+    agent_view: bool,
+}
+
+#[derive(Default)]
+struct AgentViewList {
+    views: BTreeMap<String, Arc<Session>>,
+    subscribers: Vec<tokio::sync::mpsc::UnboundedSender<AgentChange>>,
+}
+
+impl AgentViewList {
+    fn tell(&mut self, change: impl Fn() -> AgentChange) {
+        self.subscribers
+            .retain(|subscriber| subscriber.send(change()).is_ok());
+    }
+}
+
+/// A change to the agent sessions of a [`Session`], as
+/// [`Session::subscribe_agents`] reports it.
+pub enum AgentChange {
+    /// The session of the agent `id` was loaded: when the agent started, or
+    /// when its stored session was loaded to resume it or to be read.
+    /// `events` is subscribed from that moment, before the agent's run
+    /// starts, so it misses nothing of the run.
+    Loaded {
+        id: String,
+        session: Arc<Session>,
+        events: EventStream,
+    },
+    /// The session moved to another conversation and forgot its agents.
+    Reset,
+}
+
+/// How many events a subscriber to an agent's session may fall behind.
+const AGENT_EVENT_CAPACITY: usize = 1024;
+
+/// Why an agent's session refused a command.
+pub const AGENT_VIEW_REFUSAL: &str = "An agent's session takes reading commands only; send this command to the session that started the agent.";
+
+/// Wraps each agent session of one [`Session`] as a [`Session`] of its own,
+/// so that clients and mirrors reach it the way they reach the session.
+struct AgentViews {
+    session: Weak<Session>,
+}
+
+impl super_coding::agents::AgentObserver for AgentViews {
+    fn agent_session(&self, agent_id: &str, child: &Arc<AgentSession>) {
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let mut list = session.agents.lock().unwrap();
+        if list
+            .views
+            .get(agent_id)
+            .is_some_and(|view| Arc::ptr_eq(&view.inner, child))
+        {
+            return;
+        }
+        let (sink, events) = mirrored_sink(AGENT_EVENT_CAPACITY, None);
+        child.forward_events(Some(sink));
+        let cwd = child.manager.lock().unwrap().cwd().to_path_buf();
+        let view = Session::wrap_agent(child.clone(), cwd, events);
+        list.views.insert(agent_id.to_string(), view.clone());
+        list.tell(|| AgentChange::Loaded {
+            id: agent_id.to_string(),
+            session: view.clone(),
+            events: view.events(),
+        });
+    }
+
+    fn agent_settled(&self, agent_id: &str) {
+        let view = self
+            .session
+            .upgrade()
+            .and_then(|session| session.agents.lock().unwrap().views.get(agent_id).cloned());
+        if let Some(view) = view {
+            view.emit(agent_settled());
+        }
+    }
+
+    fn agents_reset(&self) {
+        if let Some(session) = self.session.upgrade() {
+            let mut list = session.agents.lock().unwrap();
+            list.views.clear();
+            list.tell(|| AgentChange::Reset);
+        }
+    }
+}
+
+/// Who sent a command, as far as the session needs to know.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommandSender {
+    /// The name the sending surface gave itself (a daemon client's
+    /// `hello.name`, the device a platform command came from); `None` for a
+    /// direct client.
+    pub origin: Option<String>,
+    /// The sender shows a stop control for each background task, so its
+    /// `abort` cancels the turn only. A sender without one also stops the
+    /// background tasks with `abort`: it has no other way to stop them.
+    pub task_controls: bool,
 }
 
 /// Build the event sink a harness session needs so that every event is also
@@ -279,15 +387,13 @@ pub fn install_workflow_approval_gate(session: &Arc<Session>) {
         .set_workflow_approver(Arc::new(move |plan| {
             let sdk = sdk.clone();
             Box::pin(async move {
-                let (_, answer) = sdk.open_approval(ApprovalRequest {
-                    kind: crate::approvals::ApprovalKind::Workflow,
-                    title: format!("Run workflow {}?", plan.name),
-                    detail: Some(plan.agent_estimate()),
-                    choices: vec![
-                        crate::approvals::ApprovalChoice::new("approve", "Run it"),
-                        crate::approvals::ApprovalChoice::new("cancel", "Cancel"),
-                    ],
-                });
+                let (id, answer) = sdk.open_approval(crate::approvals::workflow_request(&plan));
+                // The call may stop waiting first (its turn was stopped, or
+                // the session's runs were): the question is withdrawn then.
+                let _withdraw = WithdrawUnanswered {
+                    session: sdk.clone(),
+                    id,
+                };
                 match answer.await {
                     Ok(answer) if answer.choice == "approve" => {
                         super_coding::workflows::ApprovalDecision::Approve
@@ -298,13 +404,35 @@ pub fn install_workflow_approval_gate(session: &Arc<Session>) {
         }));
 }
 
+/// A question that is answered `cancel` by `local` when the one who asked
+/// stops waiting for it before anyone answered, so that every surface
+/// closes it and nobody can answer it later.
+struct WithdrawUnanswered {
+    session: Arc<Session>,
+    id: String,
+}
+
+impl Drop for WithdrawUnanswered {
+    fn drop(&mut self) {
+        let open = self
+            .session
+            .approvals
+            .list()
+            .iter()
+            .any(|(id, _)| *id == self.id);
+        if open {
+            let _ = self.session.answer_approval(&self.id, "cancel", "local");
+        }
+    }
+}
+
 /// Fluent construction of a [`Session`].
 ///
 /// ```no_run
 /// # async fn example() -> anyhow::Result<()> {
 /// let session = super_sdk::Session::builder()
 ///     .cwd(".")
-///     .tools(["read", "bash"])
+///     .tools(["Read", "Bash"])
 ///     .build()
 ///     .await?;
 /// session.prompt("List the files here").await?;
@@ -452,12 +580,21 @@ impl Session {
             }
             built => built?,
         };
-        Ok(Self::wrap(
-            built.session,
-            options.cwd.clone(),
-            sender,
-            Some(catalog),
-        ))
+        let session =
+            Self::wrap_deferred(built.session, options.cwd.clone(), sender, Some(catalog));
+        if !options.defer_stored_work {
+            session.resume_stored_work();
+        }
+        Ok(session)
+    }
+
+    /// Start what the session stored: a worktree whose folder is gone is
+    /// announced (`worktree_changed` with `missing`), a wake-up that is due
+    /// fires, its self-paced loop goes on, cut-off workflow runs are
+    /// announced. [`Session::create`] does it unless
+    /// [`SessionOptions::defer_stored_work`] is set; later calls do nothing.
+    pub fn resume_stored_work(&self) {
+        self.inner.resume_stored_work();
     }
 
     /// Wrap a harness session that something else built and drives, such as
@@ -479,7 +616,45 @@ impl Session {
         events: broadcast::Sender<Event>,
         catalog: Option<Catalog>,
     ) -> Arc<Session> {
-        Arc::new(Session {
+        let session = Self::wrap_deferred(inner, cwd, events, catalog);
+        // What the session stored starts now that its turns run here: a
+        // wake-up that is due, its self-paced loop, the notices of workflow
+        // runs that were cut off.
+        session.resume_stored_work();
+        session
+    }
+
+    /// [`wrap`](Self::wrap) without starting what the session stored.
+    fn wrap_deferred(
+        inner: Arc<AgentSession>,
+        cwd: PathBuf,
+        events: broadcast::Sender<Event>,
+        catalog: Option<Catalog>,
+    ) -> Arc<Session> {
+        let session = Self::build(inner, cwd, events, catalog, false);
+        session.install_turn_starter();
+        session
+    }
+
+    /// The view of an agent's session: its events and entries reach clients
+    /// as a session's do, its own agents are views in turn, and it answers
+    /// reading commands only, because the agent runs as its parent says.
+    fn wrap_agent(
+        inner: Arc<AgentSession>,
+        cwd: PathBuf,
+        events: broadcast::Sender<Event>,
+    ) -> Arc<Session> {
+        Self::build(inner, cwd, events, None, true)
+    }
+
+    fn build(
+        inner: Arc<AgentSession>,
+        cwd: PathBuf,
+        events: broadcast::Sender<Event>,
+        catalog: Option<Catalog>,
+        agent_view: bool,
+    ) -> Arc<Session> {
+        let session = Arc::new(Session {
             inner,
             catalog,
             events,
@@ -491,7 +666,123 @@ impl Session {
             approvals: Approvals::default(),
             observer: Mutex::new(None),
             file_guard: Mutex::new(None),
-        })
+            task_controls: Mutex::new(HashMap::new()),
+            agents: Mutex::new(AgentViewList::default()),
+            agent_view,
+        });
+        session.inner.set_agent_observer(Some(Arc::new(AgentViews {
+            session: Arc::downgrade(&session),
+        })));
+        session
+    }
+
+    /// The loaded sessions of this session's agents, by agent id, oldest
+    /// first: an agent's session is loaded when the agent starts, and a
+    /// stored one when it is resumed or read. Each is a view that answers
+    /// reading commands only ([`Session::is_agent_view`]); its events are
+    /// the agent's, and its own agents are listed the same way.
+    pub fn agent_sessions(&self) -> Vec<(String, Arc<Session>)> {
+        let views = self.agents.lock().unwrap().views.clone();
+        self.in_agent_order(views)
+    }
+
+    /// The view of the agent at `path`: an agent id of this session, or ids
+    /// separated by `/` for an agent of an agent, as `get_agents` gives it.
+    /// A stored agent is loaded on the way, so that its view exists. Fails
+    /// with the sentence of `get_agent_entries` when no agent has the path.
+    pub fn agent_view(&self, path: &str) -> anyhow::Result<Arc<Session>> {
+        use anyhow::Context as _;
+        // Says what is wrong with the path, and loads what is stored.
+        self.inner.agent_at(path)?;
+        let mut owner = self.inner.clone();
+        let mut view: Option<Arc<Session>> = None;
+        for segment in path.split('/').map(str::trim).filter(|id| !id.is_empty()) {
+            let session = owner
+                .agent_registry()
+                .context("This session has no agents.")?
+                .session_of(segment)?;
+            let views = match &view {
+                None => &self.agents,
+                Some(parent) => &parent.agents,
+            };
+            let found = views
+                .lock()
+                .unwrap()
+                .views
+                .values()
+                .find(|known| Arc::ptr_eq(&known.inner, &session))
+                .cloned();
+            view = Some(found.with_context(|| format!("Agent {segment} is not loaded."))?);
+            owner = session;
+        }
+        view.context("Give the id of an agent of this session.")
+    }
+
+    /// The loaded agent sessions as [`Session::agent_sessions`] lists them,
+    /// and a receiver of every change after that: a session that is loaded
+    /// (with its events from that moment) and the agents being forgotten.
+    /// Nothing falls between the list and the first change.
+    pub fn subscribe_agents(
+        &self,
+    ) -> (
+        Vec<(String, Arc<Session>)>,
+        tokio::sync::mpsc::UnboundedReceiver<AgentChange>,
+    ) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let views = {
+            let mut list = self.agents.lock().unwrap();
+            list.subscribers.push(sender);
+            list.views.clone()
+        };
+        (self.in_agent_order(views), receiver)
+    }
+
+    /// `views` in the order the agents were started.
+    fn in_agent_order(&self, views: BTreeMap<String, Arc<Session>>) -> Vec<(String, Arc<Session>)> {
+        let mut sessions: Vec<(String, Arc<Session>)> = views.into_iter().collect();
+        let order: Vec<String> = self
+            .inner
+            .agent_registry()
+            .map(|registry| registry.list().into_iter().map(|agent| agent.id).collect())
+            .unwrap_or_default();
+        sessions.sort_by_key(|(id, _)| order.iter().position(|known| known == id));
+        sessions
+    }
+
+    /// Whether this is the view of an agent's session, which answers
+    /// reading commands only.
+    pub fn is_agent_view(&self) -> bool {
+        self.agent_view
+    }
+
+    /// Run the turns the harness session starts on its own (a background
+    /// task's notice arrived while it was idle) the way a prompt runs: one
+    /// at a time with the prompts, waited for by `wait_idle`, and followed
+    /// by `agent_settled`.
+    fn install_turn_starter(self: &Arc<Self>) {
+        let sdk = Arc::downgrade(self);
+        self.inner.set_turn_starter(Some(Arc::new(move |turn| {
+            let sdk = sdk.clone();
+            tokio::spawn(async move {
+                let Some(session) = sdk.upgrade() else {
+                    turn.await;
+                    return;
+                };
+                let guard = session.run_lock.clone().lock_owned().await;
+                let claimed = session
+                    .running
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok();
+                let ran = turn.await;
+                if claimed {
+                    session.running.store(false, Ordering::SeqCst);
+                }
+                drop(guard);
+                if ran {
+                    session.emit(agent_settled());
+                }
+            });
+        })));
     }
 
     /// Tell clients the agent is idle after a run that another surface drove.
@@ -549,6 +840,48 @@ impl Session {
     /// Drop an approval nobody can answer any more.
     pub fn close_approval(&self, id: &str) {
         self.approvals.close(id);
+    }
+
+    /// For a session that ends in a worktree it made with `EnterWorktree`:
+    /// ask every surface whether to keep or remove it
+    /// ([`crate::approvals::worktree_exit_request`]), wait at most `wait` for
+    /// an answer, and do what was chosen. Without an answer the worktree is
+    /// kept, and the question is answered `keep` so every surface closes it.
+    /// `remove` stops the session's background tasks first and removes the
+    /// worktree with its branch and its changes. Returns what was done, as
+    /// `ExitWorktree` says it; `None` when the session is in no worktree it
+    /// made.
+    pub async fn settle_worktree(&self, wait: std::time::Duration) -> Option<String> {
+        let entered = self.inner.worktree().filter(|entered| entered.created)?;
+        let (id, answer) = self.open_approval(crate::approvals::worktree_exit_request(&entered));
+        let choice = match tokio::time::timeout(wait, answer).await {
+            Ok(Ok(answer)) => answer.choice,
+            _ => {
+                if self
+                    .answer_approval(&id, crate::approvals::WORKTREE_KEEP, "local")
+                    .is_err()
+                {
+                    self.close_approval(&id);
+                }
+                crate::approvals::WORKTREE_KEEP.to_string()
+            }
+        };
+        let action = if choice == crate::approvals::WORKTREE_REMOVE {
+            self.inner.stop_background_tasks();
+            super_coding::tools::worktree::ExitAction::Remove
+        } else {
+            super_coding::tools::worktree::ExitAction::Keep
+        };
+        let session = self.inner.clone();
+        let exited = tokio::task::spawn_blocking(move || {
+            super_coding::tools::worktree::exit_worktree(&session, action, true)
+        })
+        .await
+        .ok()?;
+        Some(match exited {
+            Ok(exited) => exited.message,
+            Err(error) => error,
+        })
     }
 
     /// Subscribe to the event stream. Each subscriber gets every event emitted
@@ -663,11 +996,63 @@ impl Session {
         Ok(())
     }
 
-    /// Cancel the current run and any running direct shell command.
+    /// Cancel the current run and any running direct shell command. Unless
+    /// this embedder said it shows a stop control for each background task
+    /// ([`Session::set_task_controls`]), the background tasks stop too.
     pub fn abort(&self) {
+        self.interrupt(!self.has_task_controls(None));
+    }
+
+    /// Say whether this embedder (a direct client) shows a stop control for
+    /// each background task, as the `initialize` command does. With one,
+    /// [`Session::abort`] cancels the turn only.
+    pub fn set_task_controls(&self, task_controls: bool) {
+        self.task_controls
+            .lock()
+            .unwrap()
+            .insert(None, task_controls);
+    }
+
+    /// The session's background tasks, oldest first.
+    pub fn tasks(&self) -> Vec<super_coding::TaskInfo> {
+        self.inner.tasks()
+    }
+
+    /// Stop one running background task, by id or by name.
+    pub fn stop_task(&self, id_or_name: &str) -> Result<super_coding::TaskInfo, SdkError> {
+        self.inner
+            .stop_task(id_or_name)
+            .map_err(|error| SdkError::Command(error.to_string()))
+    }
+
+    fn has_task_controls(&self, origin: Option<&str>) -> bool {
+        self.task_controls
+            .lock()
+            .unwrap()
+            .get(&origin.map(str::to_string))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Cancel the turn and a direct shell command; with `stop_tasks` the
+    /// background tasks as well.
+    fn interrupt(&self, stop_tasks: bool) {
         self.inner.abort();
         if let Some(cancel) = self.bash_cancel.lock().unwrap().take() {
             cancel.cancel();
+        }
+        if stop_tasks {
+            self.inner.stop_background_tasks();
+        }
+    }
+
+    /// Before another conversation takes this one's place: abort the turn
+    /// that runs, if one does, and wait until it has ended, so that what is
+    /// left of it is written into this conversation, not the next one.
+    async fn end_turn_before_leaving(&self) {
+        if self.inner.is_running() || self.running.load(Ordering::SeqCst) {
+            self.interrupt(false);
+            self.wait_idle().await;
         }
     }
 
@@ -797,7 +1182,7 @@ impl Session {
         });
         let result = crate::shell::run(
             command,
-            &self.cwd,
+            &self.inner.working_folder(),
             settings.shell_path.as_deref(),
             settings.shell_command_prefix.as_deref(),
             cancel.clone(),
@@ -828,10 +1213,13 @@ impl Session {
         }
     }
 
-    /// Release the event channel. Subscribers see their streams end.
+    /// Release the event channel. Subscribers see their streams end. The
+    /// turn and every background task stop.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
-        self.abort();
+        // What the stop leaves unfinished was cut off by the session's end.
+        self.inner.set_closing();
+        self.interrupt(true);
     }
 
     // ----------------------------------------------------------------
@@ -869,7 +1257,35 @@ impl Session {
         id: Option<String>,
         origin: Option<String>,
     ) -> Response {
+        self.execute_by(
+            command,
+            id,
+            CommandSender {
+                origin,
+                task_controls: false,
+            },
+        )
+        .await
+    }
+
+    /// Execute a command for `sender`. A sender shows a stop control for
+    /// each background task when it says so here (a daemon client in its
+    /// `hello`) or in an earlier `initialize`.
+    pub async fn execute_by(
+        self: &Arc<Self>,
+        command: Command,
+        id: Option<String>,
+        sender: CommandSender,
+    ) -> Response {
+        let CommandSender {
+            origin,
+            task_controls,
+        } = sender;
+        let task_controls = task_controls || self.has_task_controls(origin.as_deref());
         let name = command.name();
+        if self.agent_view && !command.only_reads() {
+            return Response::err(name, AGENT_VIEW_REFUSAL).with_id(id);
+        }
         if let Some(origin) = &origin {
             let input = match &command {
                 Command::Prompt { message, .. } => Some(("prompt", message.clone())),
@@ -931,6 +1347,18 @@ impl Session {
                 .answer_approval(&approval_id, &choice, &by)
                 .map(|()| None)
                 .map_err(SdkErrorText::from),
+            Command::Initialize { task_controls } => {
+                self.task_controls
+                    .lock()
+                    .unwrap()
+                    .insert(origin.clone(), task_controls);
+                Ok(None)
+            }
+            Command::Abort {} => {
+                self.interrupt(!task_controls);
+                self.wait_idle().await;
+                Ok(None)
+            }
             other => self.execute_inner(other).await,
         };
         if let Some((origin, command)) = announced {
@@ -1011,10 +1439,9 @@ impl Session {
                 self.inner.queue_follow_up(user_message(&args));
                 Ok(Some(json!({"disposition": "queued"})))
             }
-            Command::Abort {} => {
-                self.abort();
-                self.wait_idle().await;
-                Ok(None)
+            // Handled in `execute_by`, where the sender is known.
+            Command::Abort {} | Command::Initialize { .. } => {
+                Err(SdkErrorText("unreachable".into()))
             }
             Command::ClearQueue {} => {
                 let reclaimed: Vec<String> = self
@@ -1028,6 +1455,7 @@ impl Session {
                 Ok(Some(json!({"messages": reclaimed})))
             }
             Command::NewSession {} => {
+                self.end_turn_before_leaving().await;
                 let manager = super_coding::SessionManager::in_memory(&self.cwd);
                 self.inner.replace_manager(manager);
                 Ok(Some(json!({"cancelled": false})))
@@ -1035,7 +1463,14 @@ impl Session {
             Command::GetState {} => {
                 let state = self.state();
                 let settings = self.inner.settings();
+                let cwd = self.inner.manager.lock().unwrap().cwd().to_path_buf();
                 Ok(Some(json!({
+                    "cwd": cwd,
+                    "worktree": self
+                        .inner
+                        .worktree()
+                        .as_ref()
+                        .map(crate::events::worktree_json),
                     "model": state.model,
                     "thinkingLevel": state.thinking_level,
                     "isStreaming": state.is_streaming,
@@ -1048,28 +1483,49 @@ impl Session {
                     "followUpMode": queue_mode_name(settings.follow_up_mode),
                     "autoCompactionEnabled": settings.compaction.enabled,
                     "autoRetryEnabled": settings.retry.enabled,
+                    "mode": settings.mode,
+                    "subagents": settings.subagents.enabled,
+                    "workflows": settings.workflows.enabled,
                 })))
             }
             Command::GetMessages {} => Ok(Some(json!({"messages": self.messages()}))),
             Command::GetEntries { since } => {
                 let manager = self.inner.manager.lock().unwrap();
-                let entries = manager.entries();
-                let selected: Vec<&super_coding::SessionEntry> = match &since {
-                    None => entries.iter().collect(),
-                    Some(cursor) => {
-                        let position = entries
-                            .iter()
-                            .position(|entry| entry.id() == cursor)
-                            .ok_or_else(|| {
-                                SdkErrorText(format!("no entry matches cursor '{cursor}'"))
-                            })?;
-                        entries[position + 1..].iter().collect()
-                    }
+                entries_since(&manager, since.as_deref()).map(Some)
+            }
+            Command::GetAgents { agent } => {
+                let (owner, prefix) = match &agent {
+                    Some(path) => (
+                        self.inner
+                            .agent_at(path)
+                            .map_err(|error| SdkErrorText(format!("{error:#}")))?,
+                        format!("{}/", path.trim_matches('/')),
+                    ),
+                    None => (self.inner.clone(), String::new()),
                 };
-                Ok(Some(json!({
-                    "entries": selected,
-                    "leafId": manager.leaf_id(),
-                })))
+                let agents: Vec<Value> = owner
+                    .agent_registry()
+                    .map(|registry| registry.list())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|info| {
+                        let mut value = serde_json::to_value(&info).unwrap_or(Value::Null);
+                        value["path"] = Value::String(format!("{prefix}{}", info.id));
+                        value
+                    })
+                    .collect();
+                Ok(Some(json!({"agents": agents})))
+            }
+            Command::GetAgentEntries { agent, since } => {
+                let child = self
+                    .inner
+                    .agent_at(&agent)
+                    .map_err(|error| SdkErrorText(format!("{error:#}")))?;
+                let manager = child.manager.lock().unwrap();
+                let mut data = entries_since(&manager, since.as_deref())?;
+                data["sessionId"] = Value::String(manager.session_id().to_string());
+                data["sessionFile"] = json!(manager.session_file());
+                Ok(Some(data))
             }
             Command::GetTree {} => {
                 let manager = self.inner.manager.lock().unwrap();
@@ -1177,6 +1633,30 @@ impl Session {
                 self.inner.update_settings(settings);
                 Ok(None)
             }
+            Command::SetMode {
+                mode,
+                subagents,
+                workflows,
+            } => {
+                let mut settings = self.inner.settings();
+                if let Some(mode) = mode {
+                    settings.mode = serde_json::from_value(json!(mode)).map_err(|_| {
+                        SdkErrorText(format!("mode '{mode}' is not basic or advanced."))
+                    })?;
+                }
+                if let Some(enabled) = subagents {
+                    settings.subagents.enabled = enabled;
+                }
+                if let Some(enabled) = workflows {
+                    settings.workflows.enabled = enabled;
+                }
+                self.inner.update_settings(settings.clone());
+                Ok(Some(json!({
+                    "mode": settings.mode,
+                    "subagents": settings.subagents.enabled,
+                    "workflows": settings.workflows.enabled,
+                })))
+            }
             // `execute_with_id` handles this before entering this match so
             // streamed output can carry the request correlation id.
             Command::Bash { .. } => unreachable!("bash is handled by execute_with_id"),
@@ -1192,6 +1672,14 @@ impl Session {
                     .map(|name| json!({"name": name}))
                     .collect();
                 Ok(Some(json!({"tools": tools})))
+            }
+            Command::GetTasks {} => Ok(Some(json!({"tasks": self.inner.tasks()}))),
+            Command::StopTask { task_id } => {
+                let task = self
+                    .inner
+                    .stop_task(&task_id)
+                    .map_err(|error| SdkErrorText(error.to_string()))?;
+                Ok(Some(json!({"task": task})))
             }
             Command::ExportHtml { output_path } => {
                 let path = output_path.map(PathBuf::from).unwrap_or_else(|| {
@@ -1212,6 +1700,9 @@ impl Session {
                 if let Some(guard) = guard {
                     guard(path).map_err(SdkErrorText)?;
                 }
+                super_coding::SessionManager::refuse_agent_session(path)
+                    .map_err(|error| SdkErrorText(format!("{error:#}")))?;
+                self.end_turn_before_leaving().await;
                 let manager = super_coding::SessionManager::open(path)
                     .map_err(|error| SdkErrorText(format!("{error:#}")))?;
                 self.inner.replace_manager(manager);
@@ -1353,6 +1844,29 @@ impl Session {
             },
         })
     }
+}
+
+/// The entries of `manager` after the entry `since` (all without it), and
+/// the leaf, as `get_entries` answers.
+fn entries_since(
+    manager: &super_coding::SessionManager,
+    since: Option<&str>,
+) -> Result<Value, SdkErrorText> {
+    let entries = manager.entries();
+    let selected: Vec<&super_coding::SessionEntry> = match since {
+        None => entries.iter().collect(),
+        Some(cursor) => {
+            let position = entries
+                .iter()
+                .position(|entry| entry.id() == cursor)
+                .ok_or_else(|| SdkErrorText(format!("no entry matches cursor '{cursor}'")))?;
+            entries[position + 1..].iter().collect()
+        }
+    };
+    Ok(json!({
+        "entries": selected,
+        "leafId": manager.leaf_id(),
+    }))
 }
 
 /// A plain error message. `execute_inner` uses it so every failure path becomes

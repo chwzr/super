@@ -21,6 +21,17 @@ use super_sdk::{
 };
 use tokio::sync::broadcast;
 
+/// How long a session a client stops waits for an answer to the question
+/// whether to keep or remove the worktree it works in.
+pub const WORKTREE_QUESTION_WAIT: Duration = Duration::from_secs(60);
+
+/// The file in the folder of sessions in which the daemon keeps, from its
+/// shutdown to its next start, when the wake-ups of the sessions it hosted
+/// are due: `{"<session id>": <due, ms since the epoch>}`. The next daemon
+/// loads each session again at that time, and the session's own stored
+/// wake-up then fires.
+pub const WAKEUPS_FILE: &str = "daemon-wakeups.json";
+
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub session_dir: PathBuf,
@@ -99,6 +110,9 @@ pub struct SessionHost {
     config: HostConfig,
     hosted: Mutex<BTreeMap<String, Arc<Hosted>>>,
     events: broadcast::Sender<DaemonEvent>,
+    /// Sessions this daemon loads again when their wake-up is due, by id:
+    /// those a daemon before it unloaded at its shutdown.
+    due: Mutex<BTreeMap<String, i64>>,
 }
 
 impl SessionHost {
@@ -108,7 +122,46 @@ impl SessionHost {
             config,
             hosted: Mutex::new(BTreeMap::new()),
             events,
+            due: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Load again, each at its time, the sessions whose wake-ups were
+    /// pending when the daemon before this one shut down
+    /// ([`WAKEUPS_FILE`]). Returns how many are waiting.
+    pub fn resume_wakeups(self: &Arc<Self>) -> usize {
+        let path = self.config.session_dir.join(WAKEUPS_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return 0;
+        };
+        let _ = std::fs::remove_file(&path);
+        let due: BTreeMap<String, i64> = serde_json::from_str(&text).unwrap_or_default();
+        let count = due.len();
+        for (session_id, due_at) in due {
+            self.due.lock().unwrap().insert(session_id.clone(), due_at);
+            let host = Arc::downgrade(self);
+            tokio::spawn(async move {
+                let wait = due_at.saturating_sub(super_ai::now_ms()).max(0) as u64;
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+                let Some(host) = host.upgrade() else {
+                    return;
+                };
+                if host.due.lock().unwrap().remove(&session_id).is_none() {
+                    return;
+                }
+                match host.load(&session_id).await {
+                    Ok(_) => log::info(
+                        "host",
+                        format!("loaded session {session_id} for its wake-up"),
+                    ),
+                    Err(error) => log::info(
+                        "host",
+                        format!("could not load session {session_id} for its wake-up: {error}"),
+                    ),
+                }
+            });
+        }
+        count
     }
 
     pub fn config(&self) -> &HostConfig {
@@ -168,6 +221,7 @@ impl SessionHost {
             no_context_files: self.config.no_context_files,
             ..Default::default()
         };
+        let warnings = options.tool_name_warnings();
         let session = Session::create(options)
             .await
             .map_err(|error| HostError::Startup(anyhow::Error::new(error)))?;
@@ -195,6 +249,7 @@ impl SessionHost {
         }
         let hosted = self.install(session, request.cwd, file, lock);
         log::info("host", format!("created session {session_id}"));
+        log_warnings(&session_id, &warnings);
         self.announce(DaemonEvent::SessionCreated {
             session: self.summary(&hosted),
         });
@@ -238,10 +293,12 @@ impl SessionHost {
             no_context_files: self.config.no_context_files,
             ..Default::default()
         };
+        let warnings = options.tool_name_warnings();
         let session = Session::create(options)
             .await
             .map_err(|error| HostError::Startup(anyhow::Error::new(error)))?;
         let opened_id = session.state().session_id;
+        log_warnings(&opened_id, &warnings);
         if !opened_id.starts_with(session_id) {
             return Err(HostError::Invalid(format!(
                 "session {session_id} resolved to {opened_id}"
@@ -319,8 +376,20 @@ impl SessionHost {
         });
     }
 
-    /// Abort the running turn, unload the session, keep its file.
+    /// Abort the running turn, unload the session, keep its file. A session
+    /// a client stops while it works in a worktree it made asks its clients
+    /// first whether to keep or remove the worktree, for at most
+    /// [`WORKTREE_QUESTION_WAIT`]; without an answer, and when the session
+    /// is unloaded while idle or with the daemon, the worktree is kept.
     pub async fn stop(&self, session_id: &str, reason: EndReason) -> Result<(), HostError> {
+        if reason == EndReason::Stopped {
+            let asking = self.hosted.lock().unwrap().get(session_id).cloned();
+            if let Some(hosted) = asking
+                && let Some(done) = hosted.session.settle_worktree(WORKTREE_QUESTION_WAIT).await
+            {
+                log::info("host", format!("session {session_id}: {done}"));
+            }
+        }
         let hosted = self
             .hosted
             .lock()
@@ -343,6 +412,25 @@ impl SessionHost {
     }
 
     pub async fn shutdown(&self) {
+        // The next daemon loads the sessions whose wake-ups are pending.
+        let mut due = self.due.lock().unwrap().clone();
+        for (id, hosted) in self.hosted.lock().unwrap().iter() {
+            if let Some(wakeup) = hosted.session.agent_session().wakeups().pending() {
+                due.insert(id.clone(), wakeup.due_at);
+            }
+        }
+        let path = self.config.session_dir.join(WAKEUPS_FILE);
+        if due.is_empty() {
+            let _ = std::fs::remove_file(&path);
+        } else if let Ok(text) = serde_json::to_string(&due) {
+            let _ = std::fs::create_dir_all(&self.config.session_dir);
+            if let Err(error) = std::fs::write(&path, text) {
+                log::info(
+                    "host",
+                    format!("could not write {}: {error}", path.display()),
+                );
+            }
+        }
         let ids: Vec<String> = self.hosted.lock().unwrap().keys().cloned().collect();
         for id in ids {
             let _ = self.stop(&id, EndReason::Shutdown).await;
@@ -350,7 +438,9 @@ impl SessionHost {
     }
 
     /// Unload hosted sessions that are idle, unattached and quiet for longer
-    /// than the configured timeout. Returns how many were unloaded.
+    /// than the configured timeout. A session with a running background
+    /// task, a pending wake-up or a queued notice stays. Returns how many
+    /// were unloaded.
     pub async fn sweep_idle(&self) -> usize {
         if self.config.idle_unload.is_zero() {
             return 0;
@@ -364,6 +454,7 @@ impl SessionHost {
                 hosted.attached() == 0
                     && hosted.state().0 == SessionState::Idle
                     && hosted.idle_for() >= self.config.idle_unload
+                    && !hosted.session.agent_session().has_background_work()
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -595,6 +686,13 @@ async fn track_state(
     }
 }
 
+/// The warnings of [`SessionOptions::tool_name_warnings`] for a session the
+/// daemon starts, in its log: the daemon has no terminal to print them on.
+fn log_warnings(session_id: &str, warnings: &[String]) {
+    for warning in warnings {
+        log::warn("host", format!("session {session_id}: {warning}"));
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,6 +879,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sessions_agents_are_not_listed_and_a_loaded_session_knows_them() {
+        let fixture = fixture(Duration::ZERO).await;
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        hosted.session.prompt("start").await.expect("prompt");
+        let id = hosted.session_id.clone();
+        let file = hosted.file.clone();
+        drop(hosted);
+        fixture
+            .host
+            .stop(&id, EndReason::Stopped)
+            .await
+            .expect("stop");
+        // An agent of the session, stored as the session stores its agents.
+        let parent = SessionManager::open(&file).unwrap();
+        let mut agent = parent
+            .create_child_named(Some("a1b2c3d4e"), &fixture.dir.path().join("work"))
+            .unwrap();
+        agent
+            .append_message(super_sdk::AgentMessage::user("check the tests"))
+            .unwrap();
+        agent
+            .append_custom(
+                super_coding::session::manager::SUBAGENT_ENTRY,
+                Some(json!({"agentId": "a1b2c3d4e", "taskName": "Check", "agentType": "Explore"})),
+            )
+            .unwrap();
+        agent
+            .append_custom(
+                super_coding::agents::AGENT_RUN_ENTRY,
+                Some(json!({"status": "completed", "background": true})),
+            )
+            .unwrap();
+        drop((parent, agent));
+
+        let listed = fixture.host.list(None).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, id);
+        assert!(matches!(
+            fixture.host.load("a1b2c3d4e").await,
+            Err(HostError::Unknown(_))
+        ));
+        let loaded = fixture.host.load(&id).await.expect("load");
+        let agents = loaded
+            .session
+            .execute(super_sdk::protocol::Command::GetAgents { agent: None })
+            .await;
+        assert!(agents.success, "{:?}", agents.error);
+        let agents = agents.data.unwrap()["agents"].clone();
+        assert_eq!(agents[0]["id"], "a1b2c3d4e");
+        assert_eq!(agents[0]["name"], "Check");
+        assert_eq!(agents[0]["type"], "Explore");
+        assert_eq!(agents[0]["status"], "completed");
+        assert_eq!(fixture.host.list(None).await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn the_sweep_unloads_idle_sessions_nobody_watches() {
         let fixture = fixture(Duration::from_millis(10)).await;
         let hosted = fixture
@@ -800,6 +958,246 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(fixture.host.sweep_idle().await, 1);
         assert_eq!(fixture.host.hosted_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_sweep_keeps_a_session_with_background_work() {
+        let fixture = fixture(Duration::from_millis(10)).await;
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        let tasks = hosted.session.agent_session().background_tasks();
+        let task = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Shell,
+                "sleep 60",
+            ))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            fixture.host.sweep_idle().await,
+            0,
+            "a running task keeps the session"
+        );
+        let wake_up = tasks.hold();
+        // Ends without a notice, so no turn starts.
+        drop(task);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            fixture.host.sweep_idle().await,
+            0,
+            "a pending wake-up keeps it too"
+        );
+        drop(wake_up);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.host.sweep_idle().await, 1);
+    }
+
+    #[tokio::test]
+    async fn the_sweep_keeps_a_session_whose_wake_up_is_pending() {
+        let fixture = fixture(Duration::from_millis(10)).await;
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        let wakeups = hosted.session.agent_session().wakeups();
+        wakeups
+            .schedule(super_coding::wakeup::WakeupRequest {
+                delay_seconds: 600.0,
+                prompt: Some("look again".into()),
+                ..Default::default()
+            })
+            .expect("scheduled");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            fixture.host.sweep_idle().await,
+            0,
+            "a pending wake-up keeps the session"
+        );
+        wakeups.stop();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.host.sweep_idle().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_wake_up_is_pending_at_shutdown_is_loaded_again_when_it_is_due() {
+        let fixture = fixture(Duration::ZERO).await;
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        hosted.session.prompt("hi").await.expect("prompt");
+        hosted
+            .session
+            .agent_session()
+            .wakeups()
+            .schedule(super_coding::wakeup::WakeupRequest {
+                delay_seconds: 600.0,
+                prompt: Some("look again".into()),
+                ..Default::default()
+            })
+            .expect("scheduled");
+        let id = hosted.session_id.clone();
+        drop(hosted);
+        fixture.host.shutdown().await;
+        assert_eq!(fixture.host.hosted_count(), 0);
+        let path = fixture.dir.path().join("sessions").join(WAKEUPS_FILE);
+        let due: BTreeMap<String, i64> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(due[&id] > super_ai::now_ms() + 500_000, "{due:?}");
+
+        // The next daemon loads it at that time; here the time has come.
+        std::fs::write(&path, json!({ id.clone(): super_ai::now_ms() }).to_string()).unwrap();
+        let next = SessionHost::new(fixture.host.config().clone());
+        assert_eq!(next.resume_wakeups(), 1);
+        assert!(!path.exists(), "taken");
+        for _ in 0..500 {
+            if next.get(&id).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let loaded = next.get(&id).expect("loaded for its wake-up");
+        let wakeup = loaded
+            .session
+            .agent_session()
+            .wakeups()
+            .pending()
+            .expect("its wake-up is pending again");
+        assert_eq!(wakeup.prompt.as_deref(), Some("look again"));
+
+        // A wake-up that is not due yet when this daemon shuts down too is
+        // kept for the one after it.
+        let other = SessionHost::new(fixture.host.config().clone());
+        std::fs::write(
+            &path,
+            json!({"later": super_ai::now_ms() + 600_000}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(other.resume_wakeups(), 1);
+        other.shutdown().await;
+        let due: BTreeMap<String, i64> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(due.contains_key("later"));
+        assert_eq!(
+            SessionHost::new(fixture.host.config().clone()).resume_wakeups(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    fn git(directory: &Path, arguments: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(arguments)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .expect("git runs")
+            .status;
+        assert!(status.success(), "git {arguments:?}");
+    }
+
+    /// Make `root` a repository with one commit, and move `hosted` into a
+    /// new worktree `name` of it, as `EnterWorktree` does.
+    #[cfg(unix)]
+    fn enter_worktree(hosted: &Hosted, root: &Path, name: &str) -> PathBuf {
+        if !root.join(".git").exists() {
+            for arguments in [
+                vec!["init", "--quiet", "-b", "main"],
+                vec!["config", "user.name", "Test"],
+                vec!["config", "user.email", "test@example.com"],
+                vec!["config", "commit.gpgsign", "false"],
+            ] {
+                git(root, &arguments);
+            }
+            std::fs::write(root.join("README"), "hello\n").unwrap();
+            git(root, &["add", "README"]);
+            git(root, &["commit", "--quiet", "-m", "first"]);
+        }
+        let worktree = super_coding::worktree::create(root, name, None).unwrap();
+        let path = worktree.path.clone();
+        hosted
+            .session
+            .agent_session()
+            .enter_worktree(super_coding::EnteredWorktree {
+                worktree,
+                created: true,
+                original: root.to_path_buf(),
+                entered_at: 0,
+            });
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_session_stopped_in_its_worktree_asks_its_clients_and_an_idle_one_keeps_it() {
+        let fixture = fixture(Duration::from_millis(10)).await;
+        let root = fixture.dir.path().join("work").canonicalize().unwrap();
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        let path = enter_worktree(&hosted, &root, "stopped");
+        let mut events = hosted.session.events();
+        let id = hosted.session_id.clone();
+        let host = fixture.host.clone();
+        let stopping = tokio::spawn(async move { host.stop(&id, EndReason::Stopped).await });
+        let question = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.expect("open");
+                if event.0["type"] == "approval_request" {
+                    return event.0;
+                }
+            }
+        })
+        .await
+        .expect("the question is asked");
+        assert_eq!(question["kind"], "worktree");
+        assert_eq!(fixture.host.hosted_count(), 1, "still loaded while it asks");
+        hosted
+            .session
+            .answer_approval(question["approvalId"].as_str().unwrap(), "remove", "Mac")
+            .unwrap();
+        stopping.await.unwrap().expect("stopped");
+        assert!(!path.exists());
+        assert_eq!(fixture.host.hosted_count(), 0);
+        drop(hosted);
+
+        // Unloaded while idle, nobody is asked and the worktree stays.
+        let idle = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        let path = enter_worktree(&idle, &root, "idle");
+        let mut events = idle.session.events();
+        let id = idle.session_id.clone();
+        drop(idle);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.host.sweep_idle().await, 1);
+        assert!(path.exists());
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(50), events.recv()).await
+        {
+            assert_ne!(event.0["type"], "approval_request");
+        }
+        // The idle unload did not end the session: loaded again, it works in
+        // its worktree.
+        let again = fixture.host.load(&id).await.expect("load");
+        let entered = again
+            .session
+            .agent_session()
+            .worktree()
+            .expect("in its worktree again");
+        assert_eq!(entered.worktree.path, path);
+        assert_eq!(again.session.agent_session().working_folder(), path);
     }
 
     #[tokio::test]

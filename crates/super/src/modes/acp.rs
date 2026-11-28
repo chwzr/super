@@ -7,13 +7,15 @@ use agent_client_protocol::schema::v1::{
     ContentChunk, DeleteSessionRequest, DeleteSessionResponse, Diff, EmbeddedResourceResource,
     Implementation, InitializeRequest, InitializeResponse, ListSessionsRequest,
     ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
-    NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
-    ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities, SessionCloseCapabilities,
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
-    SessionDeleteCapabilities, SessionId, SessionInfo, SessionListCapabilities,
-    SessionNotification, SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, StopReason, TextContent, ToolCall, ToolCallContent,
-    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities,
+    SessionCloseCapabilities, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionDeleteCapabilities, SessionId, SessionInfo,
+    SessionListCapabilities, SessionNotification, SessionResumeCapabilities, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason, TextContent,
+    ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Responder, Stdio};
 use anyhow::Result;
@@ -52,9 +54,140 @@ struct ActiveSession {
     _session_lock: super_daemon::session_lock::SessionLockKeeper,
 }
 
+impl ActiveSession {
+    /// Let the session start turns of its own while no prompt runs, for a
+    /// notice, a monitor event, a message from an agent or a wake-up, as
+    /// every other host does: each such turn runs here, one at a time with
+    /// the prompts, and reaches the client as `session/update` notifications
+    /// of the session `id`, like a prompt's.
+    fn start_idle_turns(self: &Arc<Self>, id: SessionId, connection: ConnectionTo<Client>) {
+        self.ask_before_workflows(id.clone(), connection.clone());
+        let session = Arc::downgrade(self);
+        self.agent.set_turn_starter(Some(Arc::new(move |turn| {
+            let Some(session) = session.upgrade() else {
+                return;
+            };
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
+            let id = id.clone();
+            let connection = connection.clone();
+            runtime.spawn(async move {
+                let _guard = session.prompt.lock().await;
+                if session.closed.load(Ordering::Acquire) {
+                    return;
+                }
+                let mut receiver = session.events.lock().await;
+                tokio::pin!(turn);
+                let mut snapshots = HashMap::new();
+                let mut stop_reason = StopReason::EndTurn;
+                let mut error = None;
+                loop {
+                    tokio::select! {
+                        _ = &mut turn => {
+                            while let Ok(event) = receiver.try_recv() {
+                                let _ = forward_event(
+                                    event,
+                                    &id,
+                                    &session.cwd,
+                                    &connection,
+                                    &mut snapshots,
+                                    &mut stop_reason,
+                                    &mut error,
+                                );
+                            }
+                            break;
+                        }
+                        event = receiver.recv() => {
+                            let Some(event) = event else { break };
+                            let _ = forward_event(
+                                event,
+                                &id,
+                                &session.cwd,
+                                &connection,
+                                &mut snapshots,
+                                &mut stop_reason,
+                                &mut error,
+                            );
+                        }
+                    }
+                }
+            });
+        })));
+    }
+}
+
+impl ActiveSession {
+    /// Ask the client before a workflow runs while `workflows.confirm` is
+    /// on, with `session/request_permission`, as the other hosts ask theirs:
+    /// the run waits for the answer, and anything but the allow option, an
+    /// error included, cancels it.
+    fn ask_before_workflows(&self, id: SessionId, connection: ConnectionTo<Client>) {
+        let asked = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        self.agent.set_workflow_approver(Arc::new(move |plan| {
+            let connection = connection.clone();
+            let id = id.clone();
+            let number = asked.fetch_add(1, Ordering::Relaxed) + 1;
+            Box::pin(async move {
+                let request = workflow_permission(id, number, &plan);
+                match connection.send_request(request).block_task().await {
+                    Ok(response) => match response.outcome {
+                        RequestPermissionOutcome::Selected(selected)
+                            if &*selected.option_id.0 == "approve" =>
+                        {
+                            super_coding::workflows::ApprovalDecision::Approve
+                        }
+                        _ => super_coding::workflows::ApprovalDecision::Cancel,
+                    },
+                    Err(_) => super_coding::workflows::ApprovalDecision::Cancel,
+                }
+            })
+        }));
+    }
+}
+
+/// The `session/request_permission` request before the workflow run `plan`
+/// of the session `id`: the same question and choices as `--mode rpc` and
+/// the daemon put to their clients, under a tool call id of its own.
+fn workflow_permission(
+    id: SessionId,
+    number: u64,
+    plan: &super_coding::workflows::WorkflowPlan,
+) -> RequestPermissionRequest {
+    let question = super_sdk::workflow_request(plan);
+    let fields = ToolCallUpdateFields::new()
+        .title(question.title)
+        .kind(ToolKind::Execute)
+        .status(ToolCallStatus::Pending)
+        .raw_input(serde_json::json!({"name": plan.name, "agents": question.detail}));
+    let options = question
+        .choices
+        .into_iter()
+        .map(|choice| {
+            let kind = if choice.id == "approve" {
+                PermissionOptionKind::AllowOnce
+            } else {
+                PermissionOptionKind::RejectOnce
+            };
+            PermissionOption::new(choice.id, choice.label, kind)
+        })
+        .collect();
+    RequestPermissionRequest::new(
+        id,
+        ToolCallUpdate::new(format!("workflow-question-{number}"), fields),
+        options,
+    )
+}
+
 impl Drop for ActiveSession {
     fn drop(&mut self) {
         self.agent.abort();
+        self.agent.set_closing();
+        self.agent.stop_background_tasks();
+        // Nobody can be asked here: a worktree the session made is kept.
+        if let Some(note) = super::print::kept_worktree_note(&self.agent) {
+            eprintln!("{note}");
+        }
     }
 }
 
@@ -103,7 +236,7 @@ impl SuperAcpAgent {
                     tool_name,
                     args,
                 } = agent_event.as_ref()
-                && matches!(tool_name.as_str(), "edit" | "write")
+                && matches!(tool_name.as_str(), "Edit" | "Write")
                 && let Some(path) = tool_path(args, &snapshot_cwd)
             {
                 let old_text = std::fs::read_to_string(&path).ok();
@@ -119,7 +252,14 @@ impl SuperAcpAgent {
         options.cwd = cwd.clone();
         options.session = source;
         options.mcp_servers = acp_mcp_servers(mcp_servers)?;
+        for warning in options.tool_name_warnings() {
+            eprintln!("warning: {warning}");
+        }
         let built = options.build(sink).map_err(internal_error)?;
+        // Until the client has the session, it starts no turn of its own;
+        // then `start_idle_turns` lets it (the new, load and resume
+        // handlers call it once they answered).
+        built.session.set_turn_starter(Some(Arc::new(|_turn| {})));
         let session_lock = match crate::setup::keep_session_lock(&built.session) {
             Ok(lock) => lock,
             Err(error) => {
@@ -127,6 +267,10 @@ impl SuperAcpAgent {
                 return Err(agent_client_protocol::Error::invalid_params().data(error.to_string()));
             }
         };
+        // What a loaded session stored (a wake-up, the notice of a workflow
+        // run that was cut off) waits for the next prompt or the next turn
+        // the session starts.
+        built.session.resume_stored_work();
         let id = SessionId::new(
             built
                 .session
@@ -489,7 +633,7 @@ impl ConnectTo<Client> for SuperAcpAgent {
             .on_receive_request(
                 {
                     let agent = self.clone();
-                    async move |request: NewSessionRequest, responder, _connection| match agent
+                    async move |request: NewSessionRequest, responder, connection| match agent
                         .build_session(
                             request.cwd,
                             if agent.options.session == SessionSource::InMemory {
@@ -499,10 +643,14 @@ impl ConnectTo<Client> for SuperAcpAgent {
                             },
                             request.mcp_servers,
                         ) {
-                        Ok((id, session)) => responder.respond(
-                            NewSessionResponse::new(id)
-                                .config_options(session_config_options(&session.agent)),
-                        ),
+                        Ok((id, session)) => {
+                            let answered = responder.respond(
+                                NewSessionResponse::new(id.clone())
+                                    .config_options(session_config_options(&session.agent)),
+                            );
+                            session.start_idle_turns(id, connection);
+                            answered
+                        }
                         Err(error) => responder.respond_with_error(error),
                     }
                 },
@@ -521,10 +669,12 @@ impl ConnectTo<Client> for SuperAcpAgent {
                             Err(error) => return responder.respond_with_error(error),
                         };
                         replay_history(&request.session_id, &session.agent, &connection)?;
-                        responder.respond(
+                        let answered = responder.respond(
                             LoadSessionResponse::new()
                                 .config_options(session_config_options(&session.agent)),
-                        )
+                        );
+                        session.start_idle_turns(request.session_id, connection);
+                        answered
                     }
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -532,13 +682,17 @@ impl ConnectTo<Client> for SuperAcpAgent {
             .on_receive_request(
                 {
                     let agent = self.clone();
-                    async move |request: ResumeSessionRequest, responder, _connection| match agent
+                    async move |request: ResumeSessionRequest, responder, connection| match agent
                         .open_session(&request.session_id, request.cwd, request.mcp_servers)
                     {
-                        Ok(session) => responder.respond(
-                            ResumeSessionResponse::new()
-                                .config_options(session_config_options(&session.agent)),
-                        ),
+                        Ok(session) => {
+                            let answered = responder.respond(
+                                ResumeSessionResponse::new()
+                                    .config_options(session_config_options(&session.agent)),
+                            );
+                            session.start_idle_turns(request.session_id, connection);
+                            answered
+                        }
                         Err(error) => responder.respond_with_error(error),
                     }
                 },
@@ -614,6 +768,8 @@ impl ConnectTo<Client> for SuperAcpAgent {
                         if let Ok(session) = agent.session(&notification.session_id) {
                             session.cancelled.store(true, Ordering::Release);
                             session.agent.abort();
+                            // An ACP client has no stop control per task.
+                            session.agent.stop_background_tasks();
                         }
                         Ok(())
                     }
@@ -1008,10 +1164,10 @@ fn tool_content(result: &ToolResult, diff: Option<Diff>) -> Vec<ToolCallContent>
 
 fn tool_kind(name: &str) -> ToolKind {
     match name {
-        "read" | "ls" => ToolKind::Read,
-        "write" | "edit" => ToolKind::Edit,
+        "Read" | "ls" => ToolKind::Read,
+        "Write" | "Edit" => ToolKind::Edit,
         "grep" | "find" => ToolKind::Search,
-        "bash" => ToolKind::Execute,
+        "Bash" | "Monitor" => ToolKind::Execute,
         "mcp" => ToolKind::Fetch,
         _ => ToolKind::Other,
     }
@@ -1019,10 +1175,10 @@ fn tool_kind(name: &str) -> ToolKind {
 
 fn tool_title(name: &str) -> String {
     match name {
-        "read" => "Read file",
-        "write" => "Write file",
-        "edit" => "Edit file",
-        "bash" => "Run command",
+        "Read" => "Read file",
+        "Write" => "Write file",
+        "Edit" => "Edit file",
+        "Bash" => "Run command",
         "grep" => "Search text",
         "find" => "Find files",
         "ls" => "List directory",
@@ -1032,9 +1188,13 @@ fn tool_title(name: &str) -> String {
     .to_string()
 }
 
+/// The file a tool call works on: `file_path` for the file tools, `path`
+/// for the search tools and for sessions stored before the file tools took
+/// `file_path`.
 fn tool_path(args: &Value, cwd: &Path) -> Option<PathBuf> {
     let path = args
-        .get("path")
+        .get("file_path")
+        .or_else(|| args.get("path"))
         .or_else(|| args.get("filePath"))
         .and_then(Value::as_str)?;
     let path = PathBuf::from(path);
@@ -1104,9 +1264,12 @@ mod tests {
         let locations = tool_locations(&json!({"path": "src/main.rs"}), &cwd);
         assert!(locations[0].path.is_absolute());
         assert_eq!(locations[0].path, cwd.join("src/main.rs"));
-        assert_eq!(tool_kind("read"), ToolKind::Read);
-        assert_eq!(tool_kind("edit"), ToolKind::Edit);
-        assert_eq!(tool_kind("bash"), ToolKind::Execute);
+        let file = cwd.join("src/lib.rs");
+        let locations = tool_locations(&json!({"file_path": file}), &cwd);
+        assert_eq!(locations[0].path, file);
+        assert_eq!(tool_kind("Read"), ToolKind::Read);
+        assert_eq!(tool_kind("Edit"), ToolKind::Edit);
+        assert_eq!(tool_kind("Bash"), ToolKind::Execute);
     }
 
     #[test]
@@ -1344,8 +1507,9 @@ mod tests {
                 turns: vec![
                     vec![MockTurn::ToolCall {
                         id: "slow".into(),
-                        name: "bash".into(),
-                        arguments: json!({"command": "sleep 5"}),
+                        name: "Bash".into(),
+                        // A lone sleep is refused in the foreground.
+                        arguments: json!({"command": "sleep 5; echo slept"}),
                     }],
                     vec![MockTurn::Text("should not finish".into())],
                 ],
@@ -1752,6 +1916,190 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_entry_queued_while_idle_starts_a_turn_whose_reply_reaches_the_client() {
+        let directory = tempfile::tempdir().unwrap();
+        let provider =
+            MockProvider::start(directory.path(), MockScript::text("reply to the notice"))
+                .await
+                .unwrap();
+        let agent = SuperAcpAgent::new(SessionOptions {
+            model: Some("mock/mock-1".into()),
+            models_file: Some(provider.catalog_path()),
+            settings: Some(super_coding::Settings::default()),
+            session: SessionSource::InMemory,
+            no_context_files: true,
+            ..Default::default()
+        });
+        let sessions = agent.sessions.clone();
+        let cwd = directory.path().to_path_buf();
+        let updates: Arc<Mutex<Vec<SessionUpdate>>> = Default::default();
+        let sink = updates.clone();
+
+        Client
+            .builder()
+            .on_receive_notification(
+                async move |notification: SessionNotification, _connection| {
+                    sink.lock().unwrap().push(notification.update);
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let created = connection
+                    .send_request(NewSessionRequest::new(&cwd))
+                    .block_task()
+                    .await?;
+                // Background work queues an entry while no prompt runs.
+                let server = sessions
+                    .lock()
+                    .unwrap()
+                    .get(&created.session_id)
+                    .cloned()
+                    .unwrap();
+                server.agent.queue_entry(
+                    AgentMessage::user("a task ended"),
+                    super_coding::notifications::Priority::Next,
+                );
+                let reply = || {
+                    updates
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|update| match update {
+                            SessionUpdate::AgentMessageChunk(ContentChunk {
+                                content: ContentBlock::Text(text),
+                                ..
+                            }) => Some(text.text.clone()),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                };
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while reply() != "reply to the notice" {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "no reply without a prompt: {:?}",
+                        reply()
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    /// With `workflows.confirm` on the client is asked before a run starts,
+    /// and a run it does not allow never starts.
+    #[tokio::test]
+    async fn the_client_is_asked_before_a_workflow_runs() {
+        let directory = tempfile::tempdir().unwrap();
+        let provider = MockProvider::start(
+            directory.path(),
+            MockScript {
+                turns: vec![
+                    vec![MockTurn::ToolCall {
+                        id: "wf-1".into(),
+                        name: "Workflow".into(),
+                        arguments: json!({
+                            "script": "export const meta = { name: 'asked', description: 'Asked' }\nreturn 1\n",
+                        }),
+                    }],
+                    vec![MockTurn::Text("done".into())],
+                ],
+            },
+        )
+        .await
+        .unwrap();
+        let mut settings = super_coding::Settings::default();
+        settings.subagents.enabled = true;
+        settings.workflows.enabled = true;
+        settings.workflows.confirm = true;
+        let agent = SuperAcpAgent::new(SessionOptions {
+            model: Some("mock/mock-1".into()),
+            models_file: Some(provider.catalog_path()),
+            settings: Some(settings),
+            session: SessionSource::InMemory,
+            no_context_files: true,
+            ..Default::default()
+        });
+        let sessions = agent.sessions.clone();
+        let cwd = directory.path().to_path_buf();
+        let asked: Arc<Mutex<Vec<RequestPermissionRequest>>> = Default::default();
+        let record = asked.clone();
+
+        Client
+            .builder()
+            .on_receive_request(
+                async move |request: RequestPermissionRequest, responder, _connection| {
+                    record.lock().unwrap().push(request);
+                    responder.respond(
+                        agent_client_protocol::schema::v1::RequestPermissionResponse::new(
+                            RequestPermissionOutcome::Selected(
+                                agent_client_protocol::schema::v1::SelectedPermissionOutcome::new(
+                                    "cancel",
+                                ),
+                            ),
+                        ),
+                    )
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let created = connection
+                    .send_request(NewSessionRequest::new(&cwd))
+                    .block_task()
+                    .await?;
+                connection
+                    .send_request(PromptRequest::new(
+                        created.session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new("run a workflow"))],
+                    ))
+                    .block_task()
+                    .await?;
+                let asked = asked.lock().unwrap();
+                assert_eq!(asked.len(), 1);
+                assert_eq!(
+                    asked[0].tool_call.fields.title.as_deref(),
+                    Some("Run workflow asked?")
+                );
+                let options: Vec<&str> = asked[0]
+                    .options
+                    .iter()
+                    .map(|option| &*option.option_id.0)
+                    .collect();
+                assert_eq!(options, ["approve", "cancel"]);
+                let kinds: Vec<PermissionOptionKind> =
+                    asked[0].options.iter().map(|option| option.kind).collect();
+                assert_eq!(
+                    kinds,
+                    [
+                        PermissionOptionKind::AllowOnce,
+                        PermissionOptionKind::RejectOnce
+                    ]
+                );
+                let server = sessions
+                    .lock()
+                    .unwrap()
+                    .get(&created.session_id)
+                    .cloned()
+                    .unwrap();
+                assert!(server.agent.tasks().is_empty(), "no run started");
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn tool_execution_streams_status_location_and_structured_diff() {
         let directory = tempfile::tempdir().unwrap();
         let provider = MockProvider::start(
@@ -1760,8 +2108,11 @@ mod tests {
                 turns: vec![
                     vec![MockTurn::ToolCall {
                         id: "write-1".into(),
-                        name: "write".into(),
-                        arguments: json!({"path": "created.txt", "content": "from ACP\n"}),
+                        name: "Write".into(),
+                        arguments: json!({
+                            "file_path": directory.path().join("created.txt"),
+                            "content": "from ACP\n",
+                        }),
                     }],
                     vec![MockTurn::Text("done".into())],
                 ],

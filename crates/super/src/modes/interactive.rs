@@ -8,6 +8,7 @@ use crate::remote::{RemoteControl, RemoteEvent};
 use crate::session_sources::{self, SessionRecord, SessionSource};
 use crate::setup::{Startup, build_startup, reload_runtime};
 use crate::slash_commands;
+use crate::task_ui::{self, TaskView, TaskViewAction};
 use crate::workflow_ui::{self, ViewAction, WorkflowView};
 use anyhow::{Context as _, Result};
 use std::collections::HashSet;
@@ -19,7 +20,9 @@ use std::time::{Duration, Instant};
 use super_agent::{AgentEvent, AgentMessage};
 use super_ai::{AssistantEvent, ContentBlock, StopReason, ThinkingLevel, Transport};
 use super_coding::session_runner::{PromptMode, SessionEvent};
-use super_coding::settings::{CompactionMode, MermaidRendering, QueueMode, ReasoningEffortMode};
+use super_coding::settings::{
+    CompactionMode, MermaidRendering, Mode, QueueMode, ReasoningEffortMode,
+};
 use super_coding::workflows::workflow_trigger;
 use super_remote::{RemoteNotice, SessionState};
 use super_sdk::{ApprovalChoice, ApprovalKind, ApprovalRequest, SessionNotice};
@@ -47,6 +50,8 @@ enum Cell {
     AssistantFinal(String),
     Thinking(String),
     ToolCall {
+        /// The id of the call, which its updates and its result name.
+        id: String,
         title: String,
         output: String,
         is_error: bool,
@@ -127,6 +132,8 @@ struct App {
     workflow_view: Option<WorkflowView>,
     /// The open `/jobs` loop and autoresearch view, if any.
     job_view: Option<JobView>,
+    /// The open `/tasks` view of the background tasks, if any.
+    task_view: Option<TaskView>,
     /// Bumped whenever a workflow run changes, so the frame is marked dirty.
     workflow_version: u64,
     /// Runtime-verified workflow results waiting for the end of this turn.
@@ -142,6 +149,14 @@ struct App {
     remote_signed_in: bool,
     /// The picker question remote controllers may answer too.
     open_approval: Option<OpenApproval>,
+    /// The question whether to keep or remove the worktree the session works
+    /// in was answered: quitting goes ahead.
+    worktree_settled: bool,
+    /// A remote controller answered the question at quitting; the terminal
+    /// quits.
+    quit_requested: bool,
+    /// What leaving the worktree did, printed once the terminal is restored.
+    exit_note: Option<String>,
     /// What the session state last sent to the registry was built from.
     remote_record_key: Option<RemoteRecordKey>,
     /// Flags and settings allow mirroring; a sign-in turns it on.
@@ -233,6 +248,8 @@ enum PickerKind {
     WorkflowRuns(Vec<super_coding::workflows::RunId>),
     /// Pick where to save a run's script.
     WorkflowSaveLocation(super_coding::workflows::RunId),
+    /// Keep or remove the worktree the session works in, before quitting.
+    WorktreeExit,
     /// A question of the SUPER daemon, or what to do once it is gone.
     #[cfg(unix)]
     Attached(attached::AttachedPicker),
@@ -627,6 +644,14 @@ impl App {
             return lines;
         }
 
+        if let Some(view) = &mut self.task_view {
+            lines.push(String::new());
+            lines.extend(view.render(width, &self.theme, session));
+            lines.push(String::new());
+            lines.extend(self.footer(width, session));
+            return lines;
+        }
+
         if self.cell_render_cache.len() < self.cells.len() {
             self.cell_render_cache
                 .resize_with(self.cells.len(), || None);
@@ -701,6 +726,7 @@ impl App {
                     output,
                     is_error,
                     done,
+                    ..
                 } => {
                     let marker = if !*done {
                         self.theme.fg("warning", "●")
@@ -813,6 +839,14 @@ impl App {
             && runtime.active_count() > 0
         {
             lines.push(job_ui::progress_line(&runtime, &self.theme, width));
+        }
+        if let Some(line) = task_ui::progress_line(
+            session,
+            &self.theme,
+            width,
+            self.keybindings.key_for(Action::StopBackgroundTasks),
+        ) {
+            lines.push(line);
         }
         if let Some(recap) = &self.recap {
             lines.push(self.theme.fg("muted", &format!("※ recap: {recap}")));
@@ -1051,6 +1085,7 @@ fn cell_render_key(
             output,
             is_error,
             done,
+            ..
         } => {
             title.hash(&mut hasher);
             output.hash(&mut hasher);
@@ -1120,8 +1155,8 @@ fn read_git_branch(cwd: &Path) -> Option<String> {
 }
 
 fn refresh_git_branch(app: &mut App, session: &Arc<super_coding::AgentSession>) {
-    let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
-    app.git_branch = read_git_branch(&cwd);
+    // In a worktree the footer shows the worktree's branch.
+    app.git_branch = read_git_branch(&session.working_folder());
 }
 
 fn mermaid_mode(setting: MermaidRendering) -> MermaidMode {
@@ -1172,7 +1207,13 @@ fn note_user_activity(app: &mut App) {
     }
 }
 
-fn tool_title(name: &str, args: &serde_json::Value) -> String {
+/// The line a tool call shows: its name and what it works on. A file tool's
+/// absolute `file_path` is shown relative to the session's folder `cwd`
+/// when it is inside it; `path` is what the search tools (and sessions
+/// stored before the file tools took `file_path`) name.
+/// The line a tool call is shown by: the tool's name and what it works on.
+/// The line front end of `super attach` shows calls by it too.
+pub(crate) fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
     if name == "mcp"
         && args["action"] == "call"
         && let (Some(server), Some(tool)) = (args["server"].as_str(), args["name"].as_str())
@@ -1181,10 +1222,35 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
     {
         return format!("mcp {server}.{tool}");
     }
-    let detail = args["path"]
-        .as_str()
+    if name == "ScheduleWakeup" {
+        return schedule_wakeup_title(args);
+    }
+    let file = args["file_path"].as_str().map(|path| {
+        Path::new(path)
+            .strip_prefix(cwd)
+            .ok()
+            .map(|inside| inside.display().to_string())
+            .filter(|inside| !inside.is_empty())
+            .unwrap_or_else(|| path.to_string())
+    });
+    let detail = file
+        .as_deref()
+        .or_else(|| args["path"].as_str())
         .or_else(|| args["pattern"].as_str())
         .or_else(|| args["command"].as_str())
+        .or_else(|| args["ws"]["url"].as_str())
+        .or_else(|| args["task_id"].as_str())
+        .or_else(|| args["shell_id"].as_str())
+        .or_else(|| args["to"].as_str())
+        .or_else(|| args["description"].as_str())
+        .or_else(|| args["skill"].as_str())
+        .or_else(|| args["name"].as_str())
+        .or_else(|| args["scriptPath"].as_str())
+        .or_else(|| {
+            (name == "ExitWorktree")
+                .then(|| args["action"].as_str())
+                .flatten()
+        })
         .unwrap_or("");
     let detail = detail.replace('\n', " ");
     let detail: String = detail.chars().take(80).collect();
@@ -1193,6 +1259,29 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
     } else {
         format!("{name} {detail}")
     }
+}
+
+/// "ScheduleWakeup 300s · <reason>", "ScheduleWakeup stop · <reason>", with
+/// "· noop" for a wake-up the model marked as a quiet one.
+fn schedule_wakeup_title(args: &serde_json::Value) -> String {
+    let mut title = String::from("ScheduleWakeup");
+    if args["stop"].as_bool() == Some(true) {
+        title.push_str(" stop");
+    } else if let Some(seconds) = args["delaySeconds"].as_f64() {
+        title.push_str(&format!(" {seconds}s"));
+    }
+    if let Some(reason) = args["reason"]
+        .as_str()
+        .map(|reason| reason.replace('\n', " "))
+        .filter(|reason| !reason.trim().is_empty())
+    {
+        let reason: String = reason.chars().take(80).collect();
+        title.push_str(&format!(" · {reason}"));
+    }
+    if args["noop"].as_bool() == Some(true) {
+        title.push_str(" · noop");
+    }
+    title
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1424,6 +1513,7 @@ async fn run_with_hosts(
         needs_login,
         theme,
         themes,
+        warnings,
     } = startup;
     // One writer per session file: a SUPER daemon must not host this one.
     // `/remote` lets go of it when it hands the session to the daemon.
@@ -1563,6 +1653,7 @@ async fn run_with_hosts(
         webmcp_manager: webmcp_manager(&settings.webmcp),
         workflow_view: None,
         job_view: None,
+        task_view: None,
         workflow_version: 0,
         workflow_outcomes: Vec::new(),
         pending_account_add: None,
@@ -1570,6 +1661,9 @@ async fn run_with_hosts(
         remote: None,
         remote_signed_in: false,
         open_approval: None,
+        worktree_settled: false,
+        quit_requested: false,
+        exit_note: None,
         remote_record_key: None,
         remote_allowed: false,
         command_tx: None,
@@ -1595,6 +1689,7 @@ async fn run_with_hosts(
             "No credentials yet. Type /login to sign in.".into(),
         ));
     }
+    show_warnings(&mut app, warnings);
     update_thinking_border(&mut app, session.thinking_level());
     refresh_git_branch(&mut app, &session);
 
@@ -1629,6 +1724,8 @@ async fn run_with_hosts(
     if crate::remote::wanted(args, &resources.settings) && !is_attached(&app) {
         start_remote(&mut app, &session, &resources.settings, &command_tx);
     }
+
+    open_at_start(&mut app, &session, args);
 
     // Kick off initial message if provided.
     if let Some(message) = initial_message {
@@ -1826,7 +1923,9 @@ async fn run_with_hosts(
                     && task.is_finished()
                 {
                     running_task = None;
-                    app.working = false;
+                    // A turn the session started itself (a task's notice)
+                    // may have taken over from the prompt that just ended.
+                    app.working = session.is_running();
                     if let Some(sdk) = &app.sdk {
                         sdk.notify_settled();
                     }
@@ -1852,6 +1951,10 @@ async fn run_with_hosts(
                 for _ in 1..MAX_READY_EVENTS_PER_TICK {
                     let Ok(event) = command_rx.try_recv() else { break };
                     handle_command_event(&mut app, event, &mut resources, &mut file_search, &session);
+                }
+                // A remote controller answered the question before quitting.
+                if app.quit_requested {
+                    break 'main;
                 }
                 dirty = true;
             }
@@ -1880,7 +1983,11 @@ async fn run_with_hosts(
                     update_thinking_border(&mut app, session.thinking_level());
                     match flow {
                         Flow::Continue => {}
-                        Flow::Quit => break 'main,
+                        Flow::Quit => {
+                            if !ask_before_quitting(&mut app, &session) {
+                                break 'main;
+                            }
+                        }
                     }
                 }
                 close_dismissed_approval(&mut app);
@@ -1927,6 +2034,14 @@ async fn run_with_hosts(
         attached::finish(attached).await;
         return Ok(0);
     }
+    if let Some(note) = app.exit_note.take() {
+        println!("{note}");
+    }
+    // Background tasks end with the process that runs them: a workflow
+    // that runs now was cut off, and is announced when the session is
+    // opened again.
+    session.set_closing();
+    session.stop_background_tasks();
     if let Some(remote) = app.remote.take() {
         // Flush what is queued and announce the end; bounded, never hangs.
         remote.stop().await;
@@ -1954,6 +2069,7 @@ fn terminal_host_state(
     let blocked = match app.picker.as_ref().map(|picker| &picker.kind) {
         Some(PickerKind::WorkflowApproval(..)) => Some("Workflow approval required"),
         Some(PickerKind::Trust) => Some("Project trust decision required"),
+        Some(PickerKind::WorktreeExit) => Some("Worktree decision required"),
         _ if app.secret_prompt.is_some() => Some("Login input required"),
         _ => None,
     };
@@ -2076,6 +2192,13 @@ fn handle_session_event(
                 _ => {}
             },
             AgentEvent::MessageEnd {
+                message: message @ AgentMessage::Custom(_),
+            } => {
+                if let Some(line) = task_ui::background_line(&message) {
+                    app.cells.push(Cell::Notice(line));
+                }
+            }
+            AgentEvent::MessageEnd {
                 message: AgentMessage::Assistant(a),
             } => {
                 if a.stop_reason == StopReason::Error {
@@ -2093,47 +2216,55 @@ fn handle_session_event(
                 }
             }
             AgentEvent::ToolExecutionStart {
-                tool_name, args, ..
+                tool_call_id,
+                tool_name,
+                args,
             } => {
+                // A terminal that attached during the call shows it from the
+                // history already; what follows goes under that line.
+                if !tool_call_id.is_empty()
+                    && running_tool_call(&mut app.cells, &tool_call_id).is_some()
+                {
+                    return;
+                }
+                let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
                 app.cells.push(Cell::ToolCall {
-                    title: tool_title(&tool_name, &args),
+                    id: tool_call_id,
+                    title: tool_title(&tool_name, &args, &cwd),
                     output: String::new(),
                     is_error: false,
                     done: false,
                 });
             }
-            AgentEvent::ToolExecutionUpdate { partial, .. } => {
-                if let Some(Cell::ToolCall { output, .. }) = app
-                    .cells
-                    .iter_mut()
-                    .rev()
-                    .find(|c| matches!(c, Cell::ToolCall { done: false, .. }))
+            AgentEvent::ToolExecutionUpdate {
+                tool_call_id,
+                partial,
+                ..
+            } => {
+                if let Some(Cell::ToolCall { output, .. }) =
+                    running_tool_call(&mut app.cells, &tool_call_id)
                 {
                     *output = partial.output_text();
                 }
             }
             AgentEvent::ToolExecutionEnd {
+                tool_call_id,
                 tool_name,
                 result,
                 is_error,
-                ..
             } => {
                 if let Some(Cell::ToolCall {
                     output,
                     is_error: err_slot,
                     done,
                     ..
-                }) = app
-                    .cells
-                    .iter_mut()
-                    .rev()
-                    .find(|c| matches!(c, Cell::ToolCall { done: false, .. }))
+                }) = running_tool_call(&mut app.cells, &tool_call_id)
                 {
-                    *output = result.output_text();
+                    *output = shown_output(&tool_name, &result.content, Some(&result.details));
                     *err_slot = is_error;
                     *done = true;
                 }
-                if matches!(tool_name.as_str(), "write" | "edit" | "bash") {
+                if matches!(tool_name.as_str(), "Write" | "Edit" | "Bash") {
                     reset_file_search(app, file_search);
                     file_search.refresh_all();
                     refresh_git_branch(app, session);
@@ -2220,6 +2351,21 @@ fn handle_session_event(
                 .push(format!("verified workflow{run} `{name}` {result}"));
         }
         SessionEvent::Iterative { .. } => {}
+        // The footer and `/tasks` read the session's tasks when they draw.
+        SessionEvent::TaskStarted(_)
+        | SessionEvent::TaskUpdated(_)
+        | SessionEvent::TaskEnded(_) => {}
+        SessionEvent::WorktreeChanged {
+            folder, missing, ..
+        } => {
+            // The worktree the session worked in was gone when it was
+            // loaded: said once, as it happens.
+            if let Some(missing) = missing {
+                app.cells
+                    .push(Cell::Notice(task_ui::worktree_gone_line(&missing, &folder)));
+            }
+            refresh_git_branch(app, session);
+        }
         SessionEvent::AccountSwitched(switch) => {
             app.cells.push(Cell::Notice(format!(
                 "{}: {} hit its rate limit (ready again in {}); switched to account {}/{} ({})",
@@ -3599,7 +3745,8 @@ fn voice_input(
             || app.secret_prompt.is_some()
             || app.btw_panel.is_some()
             || app.workflow_view.is_some()
-            || app.job_view.is_some())
+            || app.job_view.is_some()
+            || app.task_view.is_some())
     {
         return false;
     }
@@ -3727,6 +3874,8 @@ fn handle_input(
                     let run = view.run.id;
                     open_workflow_save_picker(app, run);
                 }
+                // As `/tasks` and the stop key stop it: no notice.
+                ViewAction::StopRun => session.stop_workflow_run(&view.run),
             }
         }
         return Flow::Continue;
@@ -3741,6 +3890,15 @@ fn handle_input(
         return Flow::Continue;
     }
 
+    if let Some(view) = &mut app.task_view {
+        if let InputEvent::Key(key) = event
+            && view.handle_key(key, session) == TaskViewAction::Close
+        {
+            app.task_view = None;
+        }
+        return Flow::Continue;
+    }
+
     if sessions_ui::is_open(&app.sessions) {
         if let InputEvent::Key(key) = event {
             sessions_ui::handle_key(app, session, key, command_tx);
@@ -3751,7 +3909,12 @@ fn handle_input(
     // Picker input intercepts everything.
     if app.picker.is_some() {
         if let InputEvent::Key(key) = event {
-            return handle_picker_key(app, session, key, resources, command_tx);
+            let mode = session.mode();
+            let flow = handle_picker_key(app, session, key, resources, command_tx);
+            if session.mode() != mode {
+                rebuild_system_prompt(session, args, resources);
+            }
+            return flow;
         }
         return Flow::Continue;
     }
@@ -3857,7 +4020,22 @@ fn handle_input(
         }
         app.escape_armed = false;
 
-        match app.keybindings.action_for(key) {
+        let actions = app.keybindings.actions_for(key);
+        if actions.contains(&Action::StopBackgroundTasks) {
+            if let Some(count) = task_ui::stop_all(session) {
+                app.cells.push(Cell::Notice(task_ui::stopped_line(count)));
+                return Flow::Continue;
+            }
+            if actions.len() == 1 {
+                // The key of its own does nothing while no task runs.
+                return Flow::Continue;
+            }
+        }
+        let action = actions
+            .iter()
+            .copied()
+            .find(|action| !action.is_conditional());
+        match action {
             Some(Action::Newline) => {
                 app.editor.newline();
                 app.command_menu = None;
@@ -4606,7 +4784,8 @@ fn start_shell_passthrough(
     if !exclude && attached::shell(app, &command, command_tx) {
         return;
     }
-    let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
+    // In a worktree the command runs there, as the session's Bash does.
+    let cwd = session.working_folder();
     let settings = session.settings();
     let shell = settings
         .shell_path
@@ -4880,6 +5059,87 @@ fn open_model_picker(
     });
 }
 
+/// What the transcript shows under a tool call of `tool_name` whose result
+/// is `content` with `details`: the text the model gets, except where that
+/// is made for the model. A waited `Agent` shows the child's report without
+/// the block of its id and usage, `ListAgents` one line per agent in place
+/// of its JSON, and `Skill` the skill's text without the lines around it.
+pub(crate) fn shown_output(
+    tool_name: &str,
+    content: &[super_ai::ContentBlock],
+    details: Option<&serde_json::Value>,
+) -> String {
+    let texts: Vec<&str> = content
+        .iter()
+        .filter_map(|block| match block {
+            super_ai::ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    match tool_name {
+        // A waited agent's report, or a forked skill's, without the block of
+        // its id and usage that the model gets.
+        "Agent" | "Skill" if texts.len() == 2 && texts[1].starts_with("<agent-result>") => {
+            texts[0].to_string()
+        }
+        "ListAgents" => match details
+            .and_then(|details| details.get("agents"))
+            .and_then(serde_json::Value::as_array)
+        {
+            Some(agents) => agents
+                .iter()
+                .map(|agent| {
+                    let field = |name: &str| agent[name].as_str().unwrap_or_default().to_string();
+                    format!(
+                        "{} · {} · {} · {}",
+                        field("name"),
+                        field("id"),
+                        field("type"),
+                        field("status")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            None => texts.join("\n"),
+        },
+        "Skill" => {
+            let text = texts.join("\n");
+            match (text.find("<content>\n"), text.rfind("\n</content>")) {
+                (Some(start), Some(end)) if start + "<content>\n".len() <= end => {
+                    text[start + "<content>\n".len()..end].to_string()
+                }
+                _ => text,
+            }
+        }
+        _ => texts.join("\n"),
+    }
+}
+
+/// The startup warnings about tool names ([`crate::setup::tool_name_warnings`])
+/// as lines of the transcript: the other modes print them on standard
+/// error, which the full-screen terminal would draw over.
+fn show_warnings(app: &mut App, warnings: Vec<String>) {
+    for warning in warnings {
+        app.cells.push(Cell::Notice(format!("warning: {warning}")));
+    }
+}
+
+/// The `/hotkeys` text. The keys that stop the background tasks and copy
+/// the last response are the ones bound to them, since they can move.
+fn hotkeys_text(keybindings: &Keybindings) -> String {
+    let stop = keybindings
+        .key_for(Action::StopBackgroundTasks)
+        .map(|key| format!(" · {} stop background tasks while they run", key.label()))
+        .unwrap_or_default();
+    let copy = keybindings
+        .key_for(Action::CopyLastResponse)
+        .map(|key| format!("{} copy · ", key.label()))
+        .unwrap_or_default();
+    format!(
+        "Input\n  Enter send · Shift+Enter or Alt+Enter newline · Ctrl+W delete previous word · / commands and skills · $ skills · @ files · ! shell · !! shell outside context\nModels and effort\n  Shift+Tab effort · Ctrl+L select model · Ctrl+P next model · Ctrl+Shift+P previous model\nSession\n  Ctrl+D exit · Esc cancel · Ctrl+C interrupt or clear · double Esc tree{stop}\nDisplay and queues\n  Ctrl+O tools · Ctrl+T thinking · {copy}Ctrl+Enter follow-up · Alt+Up dequeue\nWorkflows\n  /workflow <prompt> runs one task as a workflow · /workflows browses runs\n  arrows select · Enter open · Esc back · j/k scroll · f filter · p pause · x stop · r restart · s save"
+    )
+}
+
 fn save_default_hint(keybindings: &Keybindings) -> String {
     match keybindings.key_for(Action::SaveDefault) {
         Some(key) => format!("{key} or shift+enter"),
@@ -5036,6 +5296,14 @@ fn reopen_scoped_models_picker(
 fn account_allows_model(model: &super_ai::Model, copilot_models: Option<&[String]>) -> bool {
     model.provider != "github-copilot"
         || copilot_models.is_none_or(|ids| ids.iter().any(|id| id == &model.id))
+}
+
+/// What the terminal opens before its first frame: `--resume` opens the
+/// session browser, as `/resume` does.
+fn open_at_start(app: &mut App, session: &Arc<super_coding::AgentSession>, args: &Args) {
+    if args.resume {
+        open_session_picker(app, session, false);
+    }
 }
 
 fn open_session_picker(app: &mut App, session: &Arc<super_coding::AgentSession>, global: bool) {
@@ -5445,12 +5713,26 @@ fn settings_picker(
             value: 12,
         },
         SelectItem {
+            label: "Mode".into(),
+            detail: Some(
+                match settings.mode {
+                    Mode::Basic => "Basic",
+                    Mode::Advanced => "Advanced",
+                }
+                .into(),
+            ),
+            value: 17,
+        },
+        SelectItem {
             label: "Subagents".into(),
             detail: Some(
-                if settings.subagents.enabled {
+                if !settings.subagents.enabled {
+                    "off"
+                } else if settings.mode.is_advanced() {
                     "on"
                 } else {
-                    "off"
+                    // The basic mode ignores the switch.
+                    "on (needs Advanced mode)"
                 }
                 .into(),
             ),
@@ -5460,10 +5742,12 @@ fn settings_picker(
             label: "Dynamic workflows".into(),
             detail: Some(if !settings.subagents.enabled {
                 "off (needs subagents)".into()
-            } else if settings.workflows.enabled {
+            } else if !settings.workflows.enabled {
+                "off".into()
+            } else if settings.mode.is_advanced() {
                 format!("on · {} size", settings.workflows.size.as_str())
             } else {
-                "off".into()
+                "on (needs Advanced mode)".into()
             }),
             value: 14,
         },
@@ -5511,6 +5795,15 @@ fn reopen_settings_picker(
     app.picker = Some(picker);
 }
 
+/// Why dynamic workflows cannot run in this session, and how to change that.
+fn workflows_unavailable_notice(session: &super_coding::AgentSession) -> String {
+    if session.mode().is_advanced() {
+        "dynamic workflows need subagents. Open /settings and turn Subagents on".into()
+    } else {
+        "dynamic workflows need Advanced mode. Open /settings and set Mode to Advanced".into()
+    }
+}
+
 /// Run a workflow that is already written and saved on disk.
 ///
 /// The script says what to do, so this needs no model turn: it parses the file,
@@ -5524,9 +5817,8 @@ fn start_saved_workflow(
     command_tx: &mpsc::UnboundedSender<CommandEvent>,
 ) {
     let Some(runtime) = session.workflows().filter(|_| session.workflows_enabled()) else {
-        app.cells.push(Cell::Notice(
-            "dynamic workflows need subagents. Open /settings and turn Subagents on".into(),
-        ));
+        app.cells
+            .push(Cell::Notice(workflows_unavailable_notice(session)));
         return;
     };
     let source = match std::fs::read_to_string(&path) {
@@ -5668,7 +5960,12 @@ fn start_or_open_job(
         ));
         return;
     };
-    match runtime.start(kind, request.goal, request.limit, request.interval) {
+    let started = if self_paced(kind, &request, session.mode()) {
+        runtime.start_self_paced(request.goal, request.limit)
+    } else {
+        runtime.start(kind, request.goal, request.limit, request.interval)
+    };
+    match started {
         Ok(job) => {
             let snapshot = job.snapshot();
             let schedule = match (snapshot.limit, snapshot.interval) {
@@ -5700,6 +5997,20 @@ struct JobRequest {
     goal: String,
     limit: Option<u32>,
     interval: Option<Duration>,
+}
+
+/// Whether a job runs as a self-paced loop in the session itself: `/loop`
+/// without an interval in the advanced mode, where the model schedules each
+/// round with `ScheduleWakeup`. `--iterations` caps its rounds. Everything
+/// else runs in a child session as before.
+fn self_paced(
+    kind: super_coding::iterative::JobKind,
+    request: &JobRequest,
+    mode: super_coding::settings::Mode,
+) -> bool {
+    kind == super_coding::iterative::JobKind::Loop
+        && request.interval.is_none()
+        && mode.is_advanced()
 }
 
 fn parse_job_request(
@@ -5996,6 +6307,10 @@ fn resolve_remote_approval(
                     progress_view: true,
                 },
             );
+        }
+        (Some(ApprovalKind::Worktree), PickerKind::WorktreeExit) => {
+            settle_worktree_at_quit(app, session, choice);
+            app.quit_requested = true;
         }
         (Some(ApprovalKind::Trust), PickerKind::Trust) => {
             let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
@@ -6955,6 +7270,7 @@ fn handle_picker_key(
         let mut picker = app.picker.take().expect("picker is present");
         let value = picker.list.current().map(|item| item.value);
         let filter = std::mem::take(&mut picker.list.filter);
+        let quits = matches!(picker.kind, PickerKind::WorktreeExit) && value.is_some();
         if let Some(value) = value {
             apply_picker_selection(
                 app,
@@ -6969,7 +7285,7 @@ fn handle_picker_key(
                 command_tx,
             );
         }
-        return Flow::Continue;
+        return if quits { Flow::Quit } else { Flow::Continue };
     }
     match key.key {
         Key::Escape => {
@@ -7299,11 +7615,88 @@ fn apply_picker_selection(
                 value: suggested,
             });
         }
+        PickerKind::WorktreeExit => {
+            let choice = if value == 1 {
+                super_sdk::WORKTREE_REMOVE
+            } else {
+                super_sdk::WORKTREE_KEEP
+            };
+            answer_approval_locally(app, choice);
+            settle_worktree_at_quit(app, session, choice);
+        }
         #[cfg(unix)]
         PickerKind::Attached(picker) => {
             attached::apply_picker(app, session, picker, value, resources, command_tx)
         }
     }
+}
+
+/// Before the terminal quits: a session in a worktree it made with
+/// `EnterWorktree` asks whether to keep or remove it, as a picker that
+/// remote controllers see and may answer too. Returns whether the question
+/// is open, so quitting waits for its answer.
+/// The line of the running tool call `id`: the calls of one answer run at
+/// the same time, so each update and result goes to the call it names. A
+/// call without an id goes to the latest running one.
+fn running_tool_call<'a>(cells: &'a mut [Cell], id: &str) -> Option<&'a mut Cell> {
+    let named = cells.iter().rposition(
+        |cell| matches!(cell, Cell::ToolCall { id: known, done: false, .. } if known == id),
+    );
+    let position = match named {
+        Some(position) => position,
+        None if id.is_empty() => cells
+            .iter()
+            .rposition(|cell| matches!(cell, Cell::ToolCall { done: false, .. }))?,
+        None => return None,
+    };
+    cells.get_mut(position)
+}
+
+fn ask_before_quitting(app: &mut App, session: &super_coding::AgentSession) -> bool {
+    if is_attached(app) || app.worktree_settled {
+        return false;
+    }
+    let Some(entered) = session.worktree().filter(|entered| entered.created) else {
+        return false;
+    };
+    let request = super_sdk::worktree_exit_request(&entered);
+    // Each choice names the worktree it keeps or removes.
+    let items = request
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(value, choice)| SelectItem {
+            label: choice.label.clone(),
+            detail: choice.detail.clone().or_else(|| request.detail.clone()),
+            value,
+        })
+        .collect();
+    app.picker = Some(Picker {
+        kind: PickerKind::WorktreeExit,
+        list: SelectList::new(request.title.clone(), items, app.theme.clone()),
+    });
+    if app.open_approval.is_none() {
+        register_approval(app, request);
+    }
+    true
+}
+
+/// Do what the question before quitting chose; quitting goes ahead. `remove`
+/// stops the background tasks first and removes the worktree with whatever
+/// is in it.
+fn settle_worktree_at_quit(app: &mut App, session: &super_coding::AgentSession, choice: &str) {
+    use super_coding::tools::worktree::{ExitAction, exit_worktree};
+    let action = if choice == super_sdk::WORKTREE_REMOVE {
+        session.stop_background_tasks();
+        ExitAction::Remove
+    } else {
+        ExitAction::Keep
+    };
+    app.exit_note = Some(match exit_worktree(session, action, true) {
+        Ok(exited) => exited.message,
+        Err(error) => error,
+    });
+    app.worktree_settled = true;
 }
 
 fn keep_default_model_in_scope(
@@ -7495,6 +7888,12 @@ fn apply_settings_selection(
             };
             resources.settings.reasoning_effort.mode = mode;
         }
+        17 => {
+            resources.settings.mode = match resources.settings.mode {
+                Mode::Basic => Mode::Advanced,
+                Mode::Advanced => Mode::Basic,
+            };
+        }
         _ => return,
     }
     save_interactive_settings(app, session, resources);
@@ -7577,6 +7976,11 @@ fn session_cells(session: &Arc<super_coding::AgentSession>) -> Vec<Cell> {
                     output: bash.output.clone(),
                     exclude_from_context: bash.exclude_from_context,
                 }),
+                AgentMessage::Custom(_) => {
+                    if let Some(line) = task_ui::background_line(message) {
+                        cells.push(Cell::Notice(line));
+                    }
+                }
                 _ => {}
             }
         }
@@ -8179,9 +8583,7 @@ fn run_slash_command(
     match name {
         "quit" | "exit" => return Flow::Quit,
         "help" | "hotkeys" => {
-            app.cells.push(Cell::Notice(
-                "Input\n  Enter send · Shift+Enter or Alt+Enter newline · Ctrl+W delete previous word · / commands and skills · $ skills · @ files · ! shell · !! shell outside context\nModels and effort\n  Shift+Tab effort · Ctrl+L select model · Ctrl+P next model · Ctrl+Shift+P previous model\nSession\n  Ctrl+D exit · Esc cancel · Ctrl+C interrupt or clear · double Esc tree\nDisplay and queues\n  Ctrl+O tools · Ctrl+T thinking · Ctrl+X copy · Ctrl+Enter follow-up · Alt+Up dequeue\nWorkflows\n  /workflow <prompt> runs one task as a workflow · /workflows browses runs\n  arrows select · Enter open · Esc back · j/k scroll · f filter · p pause · x stop · r restart · s save".into(),
-            ));
+            app.cells.push(Cell::Notice(hotkeys_text(&app.keybindings)));
         }
         "model" => {
             if rest.is_empty()
@@ -8430,9 +8832,8 @@ fn run_slash_command(
         },
         "workflow" => {
             if !session.workflows_enabled() {
-                app.cells.push(Cell::Notice(
-                    "dynamic workflows need subagents. Open /settings and turn Subagents on".into(),
-                ));
+                app.cells
+                    .push(Cell::Notice(workflows_unavailable_notice(session)));
             } else if rest.is_empty() {
                 app.cells
                     .push(Cell::Notice("usage: /workflow <prompt>".into()));
@@ -8459,6 +8860,7 @@ fn run_slash_command(
             &rest,
         ),
         "jobs" => open_job_view(app, session),
+        "tasks" => app.task_view = Some(TaskView::default()),
         "tree" => open_tree_picker(app, session),
         "fork" => open_fork_picker(app, session),
         "clone" => {
@@ -9023,6 +9425,31 @@ fn discover_saved_workflows(
     super_coding::workflows::discover(&cwd, trusted)
 }
 
+/// Build the system prompt again after the user changed the mode in
+/// `/settings`, so that the next request starts from the prompt of that mode.
+/// The tools follow the mode by themselves.
+fn rebuild_system_prompt(
+    session: &Arc<super_coding::AgentSession>,
+    args: &Args,
+    resources: &InteractiveResources,
+) {
+    let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
+    let context = if args.no_context_files {
+        Vec::new()
+    } else {
+        super_coding::context_files::discover(&cwd)
+    };
+    let prompt = crate::setup::system_prompt(
+        args,
+        &cwd,
+        &session.settings(),
+        &session.available_tool_names(),
+        &context,
+        &resources.skills,
+    );
+    session.set_system_prompt(prompt);
+}
+
 fn reload_interactive(
     app: &mut App,
     session: &Arc<super_coding::AgentSession>,
@@ -9059,6 +9486,8 @@ fn reload_interactive(
     app.webmcp_manager = webmcp_manager(&reloaded.settings.webmcp);
     resources.settings = reloaded.settings.clone();
     session.reload_runtime(reloaded.settings, reloaded.system_prompt, reloaded.tools);
+    session.set_agent_resources(reloaded.agent_resources);
+    session.set_tool_selection(reloaded.tool_selection);
     resources.saved_workflows = discover_saved_workflows(session);
     resources.themes = reloaded.themes;
 
@@ -9145,6 +9574,7 @@ mod tests {
             webmcp_manager: webmcp_manager(&Default::default()),
             workflow_view: None,
             job_view: None,
+            task_view: None,
             workflow_version: 0,
             workflow_outcomes: Vec::new(),
             pending_account_add: None,
@@ -9152,6 +9582,9 @@ mod tests {
             remote: None,
             remote_signed_in: false,
             open_approval: None,
+            worktree_settled: false,
+            quit_requested: false,
+            exit_note: None,
             remote_record_key: None,
             remote_allowed: false,
             command_tx: None,
@@ -9200,6 +9633,31 @@ mod tests {
             None,
             Arc::new(|_| {}),
         )
+    }
+
+    /// `super -r` opens the session browser at the start, as `/resume`
+    /// does; without it nothing opens.
+    #[test]
+    fn the_resume_option_opens_the_session_browser_at_the_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let sessions = directory.path().join("sessions");
+        for text in ["FIRST-SESSION", "SECOND-SESSION"] {
+            let mut stored =
+                super_coding::SessionManager::create(directory.path(), Some(sessions.clone()))
+                    .unwrap();
+            stored.append_message(AgentMessage::user(text)).unwrap();
+        }
+        let session = test_session(
+            super_coding::SessionManager::create(directory.path(), Some(sessions)).unwrap(),
+        );
+        let mut app = test_app();
+        open_at_start(&mut app, &session, &Args::parse_from(["super"]));
+        assert!(app.picker.is_none());
+        open_at_start(&mut app, &session, &Args::parse_from(["super", "-r"]));
+        match app.picker.as_ref().map(|picker| &picker.kind) {
+            Some(PickerKind::Session(listings, false)) => assert!(listings.len() >= 2),
+            _ => panic!("no session browser"),
+        }
     }
 
     pub(super) fn test_resources() -> InteractiveResources {
@@ -9254,6 +9712,306 @@ mod tests {
             .append_message(AgentMessage::Assistant(answer))
             .unwrap();
         test_session(manager)
+    }
+
+    #[test]
+    fn a_task_notice_shows_as_a_notice_live_and_after_a_resume() {
+        use crate::terminal_hosts::State;
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut search = FileSearchService::new(tx);
+        let tasks = session.background_tasks();
+        let handle = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Shell,
+                "npm test",
+            ))
+            .unwrap();
+        // The session is idle while only its tasks run, as in the daemon,
+        // but it does not move to the daemon from under them.
+        assert_eq!(terminal_host_state(&app, &session), State::Idle);
+        assert!(remote_handover::busy(&app, &session));
+        let id = handle.id().to_string();
+        drop(handle);
+        assert!(!remote_handover::busy(&app, &session));
+        // A pending wake-up comes along to the daemon, which finds it in the
+        // session's file; the terminal lets go of it first.
+        let wakeups = session.wakeups();
+        wakeups
+            .schedule(super_coding::wakeup::WakeupRequest {
+                delay_seconds: 600.0,
+                prompt: Some("look again".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(session.has_background_work());
+        assert!(!remote_handover::busy(&app, &session));
+        let parked = wakeups.park().expect("the pending wake-up");
+        assert_eq!(wakeups.pending(), None);
+        assert!(!session.has_background_work());
+        wakeups.unpark(parked.clone());
+        assert_eq!(wakeups.pending(), Some(parked));
+        wakeups.stop();
+
+        let mut task = tasks.find(&id).unwrap();
+        task.status = super_coding::TaskStatus::Completed;
+        let notice = super_coding::task_notification(
+            &task,
+            &super_coding::TaskOutcome::completed("npm test ended"),
+        );
+        handle_session_event(
+            &mut app,
+            SessionEvent::Agent(Box::new(AgentEvent::MessageEnd {
+                message: notice.clone(),
+            })),
+            &mut search,
+            &session,
+        );
+        let line = format!("task {id} completed · npm test");
+        assert!(matches!(app.cells.last(), Some(Cell::Notice(shown)) if *shown == line));
+        // Not as something the user typed.
+        assert!(!app.cells.iter().any(|cell| matches!(cell, Cell::User(_))));
+
+        session
+            .manager
+            .lock()
+            .unwrap()
+            .append_message(notice)
+            .unwrap();
+        assert!(matches!(
+            session_cells(&session).as_slice(),
+            [Cell::Notice(shown)] if *shown == line
+        ));
+    }
+
+    /// A waited agent's line shows its report, and `ListAgents` a line per
+    /// agent, not the text made for the model.
+    /// While `/remote` waits for background tasks and no turn runs, its line
+    /// says it waits for them, not for a turn.
+    #[test]
+    fn the_remote_line_says_what_the_move_waits_for() {
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        assert!(remote_handover::ready_line(&app, &session).contains("once its work here is done"));
+        // A request that writes the session is no turn.
+        app.title_generation_pending = true;
+        assert!(remote_handover::ready_line(&app, &session).contains("once its work here is done"));
+        app.title_generation_pending = false;
+        app.working = true;
+        assert!(remote_handover::ready_line(&app, &session).contains("once the turn is over"));
+        app.working = false;
+        let _task = session
+            .background_tasks()
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Shell,
+                "sleep 20",
+            ))
+            .unwrap();
+        assert_eq!(
+            remote_handover::ready_line(&app, &session),
+            "♦ the SUPER daemon is ready; this session moves there once its background tasks have ended · /remote cancel keeps it here"
+        );
+    }
+
+    #[test]
+    fn a_loaded_skill_reads_as_its_text() {
+        let loaded = super_coding::skills::skill_text(
+            "Skill.loaded",
+            "workflow-authoring",
+            None,
+            "# Writing a dynamic workflow\nStep one.",
+            None,
+        );
+        assert_eq!(
+            shown_output("Skill", &[super_ai::ContentBlock::text(loaded)], None),
+            "# Writing a dynamic workflow\nStep one."
+        );
+        // A skill that ran in an agent shows the agent's report, without
+        // the block of its id and usage.
+        assert_eq!(
+            shown_output("Skill", &[super_ai::ContentBlock::text("REPORT")], None),
+            "REPORT"
+        );
+        let forked = [
+            super_ai::ContentBlock::text("FORKY-REPORT line one\nline two"),
+            super_ai::ContentBlock::text(
+                "<agent-result>\n<agent-id>af2pfq19y</agent-id>\n<usage><subagent_tokens>0</subagent_tokens></usage>\n</agent-result>",
+            ),
+        ];
+        assert_eq!(
+            shown_output("Skill", &forked, None),
+            "FORKY-REPORT line one\nline two"
+        );
+    }
+
+    #[test]
+    fn agent_results_read_as_a_report_and_a_list() {
+        let report = [
+            super_ai::ContentBlock::text("CHILD-REPORT"),
+            super_ai::ContentBlock::text(
+                "<agent-result>\n<agent-id>az8ppyms5</agent-id>\n<usage></usage>\n</agent-result>",
+            ),
+        ];
+        assert_eq!(shown_output("Agent", &report, None), "CHILD-REPORT");
+        let listing = serde_json::json!({"agents": [
+            {"name": "Helper X", "id": "a1b2c3d4e", "type": "general-purpose", "status": "running"},
+            {"name": "Checker", "id": "a5f6g7h8i", "type": "checker", "status": "completed"},
+        ]});
+        let content = [super_ai::ContentBlock::text(listing.to_string())];
+        assert_eq!(
+            shown_output("ListAgents", &content, Some(&listing)),
+            "Helper X · a1b2c3d4e · general-purpose · running\nChecker · a5f6g7h8i · checker · completed"
+        );
+        // Every other tool shows what the model gets.
+        let plain = [
+            super_ai::ContentBlock::text("one"),
+            super_ai::ContentBlock::text("two"),
+        ];
+        assert_eq!(shown_output("Bash", &plain, None), "one\ntwo");
+    }
+
+    /// A terminal that attached during a call shows it from the history
+    /// as running; the start the view makes up for it, without arguments,
+    /// adds no second line, and its end goes under the line it has.
+    #[test]
+    fn a_call_shown_from_the_history_gets_no_second_line() {
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        app.cells.push(Cell::ToolCall {
+            id: "call_r".into(),
+            title: "Read r.txt".into(),
+            output: String::new(),
+            is_error: false,
+            done: false,
+        });
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut search = FileSearchService::new(tx);
+        for event in [
+            AgentEvent::ToolExecutionStart {
+                tool_call_id: "call_r".into(),
+                tool_name: "Read".into(),
+                args: serde_json::Value::Null,
+            },
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id: "call_r".into(),
+                tool_name: "Read".into(),
+                result: super_agent::ToolResult::text("1\tREAD-ME"),
+                is_error: false,
+            },
+        ] {
+            handle_session_event(
+                &mut app,
+                SessionEvent::Agent(Box::new(event)),
+                &mut search,
+                &session,
+            );
+        }
+        let calls: Vec<(&str, &str, bool)> = app
+            .cells
+            .iter()
+            .filter_map(|cell| match cell {
+                Cell::ToolCall {
+                    title,
+                    output,
+                    done,
+                    ..
+                } => Some((title.as_str(), output.as_str(), *done)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, [("Read r.txt", "1\tREAD-ME", true)]);
+    }
+
+    #[test]
+    fn each_tool_result_goes_to_the_call_it_belongs_to() {
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut search = FileSearchService::new(tx);
+        let mut send = |event: AgentEvent| {
+            handle_session_event(
+                &mut app,
+                SessionEvent::Agent(Box::new(event)),
+                &mut search,
+                &session,
+            );
+        };
+        for (id, command) in [("call_a", "echo one"), ("call_b", "sleep 1; echo two")] {
+            send(AgentEvent::ToolExecutionStart {
+                tool_call_id: id.into(),
+                tool_name: "Bash".into(),
+                args: serde_json::json!({"command": command}),
+            });
+        }
+        // The second call's output and the first call's result come first.
+        send(AgentEvent::ToolExecutionUpdate {
+            tool_call_id: "call_b".into(),
+            tool_name: "Bash".into(),
+            args: serde_json::json!({}),
+            partial: super_agent::ToolResult::text("tw"),
+        });
+        send(AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call_a".into(),
+            tool_name: "Bash".into(),
+            result: super_agent::ToolResult::text("one"),
+            is_error: false,
+        });
+        let shown = |app: &App| -> Vec<(String, String, bool)> {
+            app.cells
+                .iter()
+                .filter_map(|cell| match cell {
+                    Cell::ToolCall {
+                        title,
+                        output,
+                        done,
+                        ..
+                    } => Some((title.clone(), output.clone(), *done)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            shown(&app),
+            [
+                ("Bash echo one".to_string(), "one".to_string(), true),
+                (
+                    "Bash sleep 1; echo two".to_string(),
+                    "tw".to_string(),
+                    false
+                ),
+            ]
+        );
+        let mut send = |event: AgentEvent| {
+            handle_session_event(
+                &mut app,
+                SessionEvent::Agent(Box::new(event)),
+                &mut search,
+                &session,
+            );
+        };
+        send(AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call_b".into(),
+            tool_name: "Bash".into(),
+            result: super_agent::ToolResult::text("two"),
+            is_error: false,
+        });
+        assert_eq!(
+            shown(&app)[1],
+            (
+                "Bash sleep 1; echo two".to_string(),
+                "two".to_string(),
+                true
+            )
+        );
     }
 
     #[test]
@@ -9477,26 +10235,516 @@ mod tests {
         assert!(app.workflow_view.is_none());
     }
 
+    /// `/hotkeys` names the key copying is bound to, as it does for the key
+    /// that stops the background tasks.
+    #[test]
+    fn the_key_help_names_the_bound_copy_key() {
+        let mut keybindings = Keybindings::default();
+        assert!(hotkeys_text(&keybindings).contains("Ctrl+X copy"));
+        keybindings.bind(KeyEvent::ctrl('y'), Action::CopyLastResponse);
+        let text = hotkeys_text(&keybindings);
+        assert!(text.contains("Ctrl+Y copy"), "{text}");
+        assert!(!text.contains("Ctrl+X copy"), "{text}");
+        assert!(text.contains("Ctrl+B stop background tasks"), "{text}");
+    }
+
+    /// The warnings about tool names reach the transcript, where the
+    /// full-screen terminal would draw over standard error.
+    #[test]
+    fn startup_warnings_are_lines_of_the_transcript() {
+        let mut app = test_app();
+        show_warnings(
+            &mut app,
+            vec!["unknown tool names ignored: read (use Read)".into()],
+        );
+        assert!(matches!(
+            app.cells.last(),
+            Some(Cell::Notice(text)) if text == "warning: unknown tool names ignored: read (use Read)"
+        ));
+    }
+
+    /// A user's `!command` runs where the session's `Bash` runs: in the
+    /// worktree the session entered.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_bang_command_runs_in_the_worktree_the_session_works_in() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().canonicalize().unwrap();
+        let worktree = root.join(".super/worktrees/bangwt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let session = test_session(super_coding::SessionManager::in_memory(&root));
+        session.enter_worktree(super_coding::EnteredWorktree {
+            worktree: super_coding::worktree::Worktree {
+                path: worktree.clone(),
+                branch: "worktree-bangwt".into(),
+                base: String::new(),
+                project: root.clone(),
+            },
+            created: true,
+            original: root.clone(),
+            entered_at: 0,
+        });
+        let mut app = test_app();
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        start_shell_passthrough(&mut app, &session, "pwd -P".into(), &command_tx);
+        let result = loop {
+            match command_rx.recv().await.expect("the command ends") {
+                CommandEvent::ShellFinished(result) => break result.expect("it ran"),
+                _ => continue,
+            }
+        };
+        assert_eq!(result.output.trim_end(), worktree.display().to_string());
+    }
+
+    #[test]
+    fn the_stop_key_stops_every_background_task_and_leaves_copying_to_its_own_key() {
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        let args = Args::parse_from(["super"]);
+        let mut resources = test_resources();
+        let mut running_task = None;
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
+        let mut file_search = FileSearchService::new(file_tx);
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let mut press = |app: &mut App, key: KeyEvent| {
+            handle_input(
+                app,
+                &session,
+                &InputEvent::Key(key),
+                &args,
+                &mut resources,
+                &mut running_task,
+                &mut file_search,
+                &command_tx,
+            )
+        };
+        let last_notice = |app: &App| match app.cells.last() {
+            Some(Cell::Notice(text)) => text.clone(),
+            _ => panic!("the last cell is no notice"),
+        };
+
+        // Nothing runs: Ctrl+B does nothing, and Ctrl+X copies the last
+        // response as it always did.
+        app.editor.set_text("draft");
+        let cells = app.cells.len();
+        assert!(matches!(
+            press(&mut app, KeyEvent::ctrl('b')),
+            Flow::Continue
+        ));
+        assert_eq!(app.cells.len(), cells);
+        assert_eq!(app.editor.text(), "draft");
+        press(&mut app, KeyEvent::ctrl('x'));
+        assert_eq!(last_notice(&app), "nothing to copy");
+
+        let tasks = session.background_tasks();
+        let command = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Shell,
+                "npm test",
+            ))
+            .unwrap();
+        let agent = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Agent,
+                "review the diff",
+            ))
+            .unwrap();
+        let footer = |app: &App| {
+            task_ui::progress_line(
+                &session,
+                &app.theme,
+                80,
+                app.keybindings.key_for(Action::StopBackgroundTasks),
+            )
+            .map(|line| super_tui::text::strip_ansi(&line))
+        };
+        assert_eq!(
+            footer(&app).unwrap(),
+            "● 2 background tasks running · Ctrl+B to stop"
+        );
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+B stop background tasks"));
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+X copy"));
+
+        // Ctrl+X copies while tasks run, too, and stops none of them.
+        press(&mut app, KeyEvent::ctrl('x'));
+        assert_eq!(last_notice(&app), "nothing to copy");
+        assert!(!command.is_stopped() && !agent.is_stopped());
+
+        // One press of Ctrl+B stops them all and says how many.
+        press(&mut app, KeyEvent::ctrl('b'));
+        assert!(command.is_stopped() && agent.is_stopped());
+        assert_eq!(last_notice(&app), "stopped 2 background tasks");
+        assert_eq!(footer(&app), None);
+
+        // Bound to the key that copies, it stops the tasks while any run
+        // and leaves the key to copying otherwise; the footer and the help
+        // name that key.
+        app.keybindings
+            .bind(KeyEvent::ctrl('x'), Action::StopBackgroundTasks);
+        let monitor = tasks
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Monitor,
+                "watch the log",
+            ))
+            .unwrap();
+        assert_eq!(
+            footer(&app).unwrap(),
+            "● 1 background task running · Ctrl+X to stop"
+        );
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+X stop background tasks"));
+        press(&mut app, KeyEvent::ctrl('b'));
+        assert!(!monitor.is_stopped());
+        press(&mut app, KeyEvent::ctrl('x'));
+        assert!(monitor.is_stopped());
+        assert_eq!(last_notice(&app), "stopped 1 background task");
+        press(&mut app, KeyEvent::ctrl('x'));
+        assert_eq!(last_notice(&app), "nothing to copy");
+    }
+
+    /// A repository with one commit, for a session that enters a worktree.
+    #[cfg(unix)]
+    fn git_repository() -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let git = |arguments: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "git {arguments:?}");
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("README"), "hello\n").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "--quiet", "-m", "first"]);
+        (directory, root)
+    }
+
+    #[cfg(unix)]
+    fn enter_worktree(session: &super_coding::AgentSession, root: &Path, name: &str) -> PathBuf {
+        let worktree = super_coding::worktree::create(root, name, None).unwrap();
+        let path = worktree.path.clone();
+        session.enter_worktree(super_coding::EnteredWorktree {
+            worktree,
+            created: true,
+            original: root.to_path_buf(),
+            entered_at: 0,
+        });
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn quitting_in_a_worktree_asks_first_to_keep_or_remove_it() {
+        let (_directory, root) = git_repository();
+        let session = test_session(super_coding::SessionManager::in_memory(&root));
+        let mut app = test_app();
+        let (_, events) = super_sdk::mirrored_sink(64, None);
+        let sdk = super_sdk::Session::attach(session.clone(), root.clone(), events);
+        app.sdk = Some(sdk.clone());
+        assert!(
+            !ask_before_quitting(&mut app, &session),
+            "in no worktree it quits at once"
+        );
+
+        let path = enter_worktree(&session, &root, "quit");
+        let args = Args::parse_from(["super"]);
+        let mut resources = test_resources();
+        let mut running_task = None;
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
+        let mut file_search = FileSearchService::new(file_tx);
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let mut key = |app: &mut App, key: KeyEvent| {
+            handle_input(
+                app,
+                &session,
+                &InputEvent::Key(key),
+                &args,
+                &mut resources,
+                &mut running_task,
+                &mut file_search,
+                &command_tx,
+            )
+        };
+        let open_questions = || async {
+            sdk.execute(super_sdk::Command::GetApprovals {})
+                .await
+                .data
+                .unwrap()["approvals"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+
+        assert!(ask_before_quitting(&mut app, &session));
+        let picker = app.picker.as_ref().unwrap();
+        assert!(matches!(picker.kind, PickerKind::WorktreeExit));
+        assert_eq!(
+            picker.list.title,
+            super_agent::placeholder::prompt_todo("Worktree.exit_question")
+        );
+        // Each row names the worktree.
+        let folder = session
+            .worktree()
+            .unwrap()
+            .worktree
+            .path
+            .display()
+            .to_string();
+        let rows: Vec<(String, Option<String>)> = picker
+            .list
+            .items
+            .iter()
+            .map(|item| (item.label.clone(), item.detail.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("keep".to_string(), Some(folder.clone())),
+                ("remove".to_string(), Some(folder))
+            ]
+        );
+        assert_eq!(
+            terminal_host_state(&app, &session),
+            crate::terminal_hosts::State::Blocked("Worktree decision required")
+        );
+        // The apps see the same question.
+        let questions = open_questions().await;
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0]["kind"], "worktree");
+        assert_eq!(questions[0]["choices"][1]["label"], "remove");
+
+        // Escape stays in the session and withdraws the question.
+        let flow = key(
+            &mut app,
+            KeyEvent {
+                key: Key::Escape,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(flow, Flow::Continue));
+        close_dismissed_approval(&mut app);
+        assert!(app.picker.is_none());
+        assert!(open_questions().await.is_empty());
+        assert!(path.exists());
+
+        // remove, chosen here: the worktree goes and the terminal quits.
+        assert!(ask_before_quitting(&mut app, &session));
+        key(
+            &mut app,
+            KeyEvent {
+                key: Key::Down,
+                ..Default::default()
+            },
+        );
+        let flow = key(
+            &mut app,
+            KeyEvent {
+                key: Key::Enter,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(flow, Flow::Quit));
+        assert!(!path.exists());
+        assert!(
+            app.exit_note.as_deref().unwrap().contains("are removed"),
+            "{:?}",
+            app.exit_note
+        );
+        assert!(open_questions().await.is_empty());
+        assert!(!ask_before_quitting(&mut app, &session));
+
+        // keep, chosen in an app: the terminal quits and the worktree stays.
+        app.worktree_settled = false;
+        let path = enter_worktree(&session, &root, "kept");
+        assert!(ask_before_quitting(&mut app, &session));
+        let id = app.open_approval.as_ref().unwrap().id.clone();
+        resolve_remote_approval(&mut app, &session, &id, "keep");
+        assert!(app.quit_requested);
+        assert!(path.exists());
+        assert_eq!(session.worktree(), None);
+        assert!(app.exit_note.as_deref().unwrap().contains("are kept"));
+    }
+
     #[test]
     fn mcp_tool_title_names_server_and_tool() {
+        let cwd = Path::new("/work");
         assert_eq!(
             tool_title(
                 "mcp",
-                &serde_json::json!({"action": "call", "server": "linkup", "name": "linkup-search"})
+                &serde_json::json!({"action": "call", "server": "linkup", "name": "linkup-search"}),
+                cwd
             ),
             "mcp linkup.linkup-search"
         );
         assert_eq!(
-            tool_title("mcp", &serde_json::json!({"action": "list"})),
+            tool_title("mcp", &serde_json::json!({"action": "list"}), cwd),
             "mcp"
         );
         assert_eq!(
-            tool_title("mcp", &serde_json::json!({"action": "call"})),
+            tool_title("mcp", &serde_json::json!({"action": "call"}), cwd),
             "mcp"
         );
+    }
+
+    #[test]
+    fn file_tool_titles_show_file_path_inside_the_session_folder() {
+        let cwd = Path::new("/work");
         assert_eq!(
-            tool_title("read", &serde_json::json!({"path": "file.rs"})),
+            tool_title(
+                "Read",
+                &serde_json::json!({"file_path": "/work/src/main.rs"}),
+                cwd
+            ),
+            "Read src/main.rs"
+        );
+        assert_eq!(
+            tool_title(
+                "Edit",
+                &serde_json::json!({"file_path": "/etc/hosts", "old_string": "a", "new_string": "b"}),
+                cwd
+            ),
+            "Edit /etc/hosts"
+        );
+        // Search tools and sessions stored with the old parameter name.
+        assert_eq!(
+            tool_title("grep", &serde_json::json!({"path": "src"}), cwd),
+            "grep src"
+        );
+        assert_eq!(
+            tool_title("read", &serde_json::json!({"path": "file.rs"}), cwd),
             "read file.rs"
+        );
+    }
+
+    #[test]
+    fn monitor_and_task_stop_titles_name_their_source_and_task() {
+        let cwd = Path::new("/work");
+        assert_eq!(
+            tool_title(
+                "Monitor",
+                &serde_json::json!({"description": "Watch", "timeout_ms": 1000, "command": "tail -f log"}),
+                cwd
+            ),
+            "Monitor tail -f log"
+        );
+        assert_eq!(
+            tool_title(
+                "Monitor",
+                &serde_json::json!({"description": "Watch", "timeout_ms": 1000, "ws": {"url": "ws://localhost:8080"}}),
+                cwd
+            ),
+            "Monitor ws://localhost:8080"
+        );
+        assert_eq!(
+            tool_title(
+                "TaskStop",
+                &serde_json::json!({"task_id": "b12345678"}),
+                cwd
+            ),
+            "TaskStop b12345678"
+        );
+        assert_eq!(
+            tool_title(
+                "TaskStop",
+                &serde_json::json!({"shell_id": "b12345678"}),
+                cwd
+            ),
+            "TaskStop b12345678"
+        );
+        assert_eq!(
+            tool_title(
+                "Agent",
+                &serde_json::json!({"description": "Review the diff", "prompt": "Look at it"}),
+                cwd
+            ),
+            "Agent Review the diff"
+        );
+        assert_eq!(
+            tool_title(
+                "SendMessage",
+                &serde_json::json!({"to": "a12345678", "message": "go on"}),
+                cwd
+            ),
+            "SendMessage a12345678"
+        );
+        assert_eq!(
+            tool_title("ListAgents", &serde_json::json!({}), cwd),
+            "ListAgents"
+        );
+        assert_eq!(
+            tool_title(
+                "Skill",
+                &serde_json::json!({"skill": "review", "args": "src/a.rs"}),
+                cwd
+            ),
+            "Skill review"
+        );
+        assert_eq!(
+            tool_title(
+                "Workflow",
+                &serde_json::json!({"name": "audit-routes"}),
+                cwd
+            ),
+            "Workflow audit-routes"
+        );
+        assert_eq!(
+            tool_title(
+                "Workflow",
+                &serde_json::json!({"scriptPath": "/s/wf_abcdefgh.js", "resumeFromRunId": "wf_abcdefgh"}),
+                cwd
+            ),
+            "Workflow /s/wf_abcdefgh.js"
+        );
+        assert_eq!(
+            tool_title(
+                "ScheduleWakeup",
+                &serde_json::json!({"delaySeconds": 300, "reason": "CI\nruns", "prompt": "check"}),
+                cwd
+            ),
+            "ScheduleWakeup 300s · CI runs"
+        );
+        assert_eq!(
+            tool_title(
+                "ScheduleWakeup",
+                &serde_json::json!({"delaySeconds": 60, "noop": true}),
+                cwd
+            ),
+            "ScheduleWakeup 60s · noop"
+        );
+        assert_eq!(
+            tool_title(
+                "ScheduleWakeup",
+                &serde_json::json!({"stop": true, "reason": "done"}),
+                cwd
+            ),
+            "ScheduleWakeup stop · done"
+        );
+        assert_eq!(
+            tool_title("EnterWorktree", &serde_json::json!({"name": "fix"}), cwd),
+            "EnterWorktree fix"
+        );
+        assert_eq!(
+            tool_title("EnterWorktree", &serde_json::json!({}), cwd),
+            "EnterWorktree"
+        );
+        assert_eq!(
+            tool_title(
+                "ExitWorktree",
+                &serde_json::json!({"action": "remove", "discard_changes": true}),
+                cwd
+            ),
+            "ExitWorktree remove"
         );
     }
 
@@ -9504,6 +10752,7 @@ mod tests {
     fn ctrl_r_expands_collapsed_tool_output() {
         let mut app = test_app();
         app.cells.push(Cell::ToolCall {
+            id: "call_1".into(),
             title: "mcp".into(),
             output: (1..=9)
                 .map(|line| format!("line {line}"))
@@ -10182,6 +11431,79 @@ mod tests {
         let picker = app.picker.as_mut().unwrap();
         assert_eq!(picker.list.current().map(|item| item.value), Some(13));
         assert_eq!(picker.list.current().unwrap().detail.as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn settings_picker_shows_the_mode_next_to_the_switches_it_overrides() {
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        let mut app = test_app();
+        let mut resources = test_resources();
+        let detail = |app: &mut App, value: usize| {
+            let picker = app.picker.as_mut().expect("settings picker");
+            assert!(picker.list.select_value(value));
+            let item = picker.list.current().unwrap();
+            (item.label.clone(), item.detail.clone().unwrap_or_default())
+        };
+
+        open_settings_picker(&mut app, &session, &resources);
+        assert_eq!(detail(&mut app, 17), ("Mode".into(), "Advanced".into()));
+        let labels: Vec<String> = app
+            .picker
+            .as_ref()
+            .unwrap()
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.clone())
+            .collect();
+        let mode = labels.iter().position(|label| label == "Mode").unwrap();
+        assert_eq!(labels[mode + 1], "Subagents");
+        assert_eq!(labels[mode + 2], "Dynamic workflows");
+
+        resources.settings.mode = Mode::Basic;
+        resources.settings.subagents.enabled = true;
+        reopen_settings_picker(&mut app, &session, &resources, String::new(), 17);
+        assert_eq!(detail(&mut app, 17), ("Mode".into(), "Basic".into()));
+        assert_eq!(detail(&mut app, 13).1, "on (needs Advanced mode)");
+        assert_eq!(detail(&mut app, 14).1, "on (needs Advanced mode)");
+
+        resources.settings.mode = Mode::Advanced;
+        reopen_settings_picker(&mut app, &session, &resources, String::new(), 17);
+        assert_eq!(detail(&mut app, 13).1, "on");
+        assert_eq!(detail(&mut app, 14).1, "on · medium size");
+    }
+
+    #[test]
+    fn a_new_mode_brings_the_system_prompt_of_that_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let session = test_session(super_coding::SessionManager::in_memory(directory.path()));
+        let args = Args::parse_from(["super", "--no-context-files"]);
+        let resources = test_resources();
+        // A `SYSTEM.md` of the user's replaces the body in both modes.
+        let replaced = super_coding::context_files::system_prompt_files(directory.path())
+            .replace
+            .is_some();
+        let placeholder = super_agent::placeholder::prompt_todo("SystemPrompt.advanced");
+        for mode in [Mode::Basic, Mode::Advanced] {
+            let mut settings = session.settings();
+            settings.mode = mode;
+            session.update_settings(settings);
+            rebuild_system_prompt(&session, &args, &resources);
+            let prompt = session.system_prompt();
+            assert!(prompt.ends_with(&format!(
+                "Current working directory: {}",
+                directory.path().display().to_string().replace('\\', "/")
+            )));
+            if !replaced {
+                assert_eq!(prompt.starts_with(&placeholder), mode == Mode::Advanced);
+                assert_eq!(
+                    prompt.contains("expert coding assistant"),
+                    mode == Mode::Basic
+                );
+            }
+        }
     }
 
     #[test]
@@ -11278,6 +12600,77 @@ mod tests {
         assert!(parse_job_request(JobKind::Autoresearch, "15m fix it").is_err());
         assert!(parse_job_request(JobKind::Loop, "0s fix it").is_err());
         assert!(parse_job_request(JobKind::Loop, "2h30wat fix it").is_err());
+    }
+
+    #[test]
+    fn only_a_loop_without_an_interval_in_the_advanced_mode_is_self_paced() {
+        use super_coding::iterative::JobKind;
+        use super_coding::settings::Mode;
+
+        let request = |kind, arguments| parse_job_request(kind, arguments).unwrap();
+        let plain = request(JobKind::Loop, "fix the parser");
+        let capped = request(JobKind::Loop, "fix the parser --iterations 7");
+        let every = request(JobKind::Loop, "15m fix the parser");
+        let research = request(JobKind::Autoresearch, "make it faster");
+        assert!(self_paced(JobKind::Loop, &plain, Mode::Advanced));
+        assert!(self_paced(JobKind::Loop, &capped, Mode::Advanced));
+        // With an interval, in the basic mode and for autoresearch it stays
+        // the loop in a new session.
+        assert!(!self_paced(JobKind::Loop, &every, Mode::Advanced));
+        assert!(!self_paced(JobKind::Loop, &plain, Mode::Basic));
+        assert!(!self_paced(JobKind::Loop, &capped, Mode::Basic));
+        assert!(!self_paced(
+            JobKind::Autoresearch,
+            &research,
+            Mode::Advanced
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_loop_command_starts_a_self_paced_loop_in_the_advanced_mode_only() {
+        use super_coding::iterative::JobKind;
+
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        // Every request is answered at once, so no turn reaches a provider.
+        session.set_stream_fn(Some(Arc::new(|_, _, _| {
+            let mut message = super_ai::AssistantMessage::empty("fake", "fake", "fake");
+            message
+                .content
+                .push(ContentBlock::text("done [goal-complete]"));
+            message.stop_reason = StopReason::Stop;
+            let (sink, stream) = super_ai::EventStream::channel();
+            sink.send(super_ai::AssistantEvent::Start {
+                partial: message.clone(),
+            });
+            sink.done(message);
+            stream
+        })));
+        start_or_open_job(&mut app, &session, JobKind::Loop, "tidy the docs");
+        let runtime = session.iterative_jobs().unwrap();
+        let job = runtime.latest().unwrap();
+        assert!(job.is_self_paced());
+        assert_eq!(job.snapshot().limit, Some(100));
+        let Some(Cell::Notice(notice)) = app.cells.last() else {
+            panic!("expected a notice");
+        };
+        let notice = notice.clone();
+        assert!(
+            notice.starts_with("started loop job #1 in session ")
+                && notice.ends_with(" · up to 100 iterations · /jobs opens the job view"),
+            "{notice}"
+        );
+        job.stop();
+
+        let mut basic = session.settings();
+        basic.mode = super_coding::settings::Mode::Basic;
+        session.update_settings(basic);
+        start_or_open_job(&mut app, &session, JobKind::Loop, "tidy the docs");
+        let child_loop = runtime.latest().unwrap();
+        assert!(!child_loop.is_self_paced());
+        child_loop.stop();
     }
 
     #[cfg(unix)]

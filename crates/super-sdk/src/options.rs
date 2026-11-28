@@ -18,7 +18,7 @@ use super_ai::{Model, Registry, ThinkingLevel};
 use super_coding::session::manager::{SessionManager, default_session_dir};
 use super_coding::session_runner::{AgentSession, SessionEventSink};
 use super_coding::settings::Settings;
-use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt};
+use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt, prompt_context};
 use super_coding::{context_files, trust};
 
 /// Where the session's history comes from and whether it is written to disk.
@@ -91,6 +91,17 @@ pub struct SessionOptions {
     pub event_capacity: usize,
     /// Replace the provider transport. Used by tests and custom transports.
     pub stream_fn: Option<StreamFn>,
+    /// Checked with the session's file before the session is built from
+    /// it: an `Err` refuses the file, for example one another process
+    /// holds, before anything of the session (its stored wake-up, the
+    /// workflow runs it announces) touches it.
+    pub file_guard: Option<crate::session::SessionFileGuard>,
+    /// Leave what the session stored (a worktree whose folder is gone, a
+    /// wake-up that is due, the notices of cut-off workflow runs) until
+    /// [`Session::resume_stored_work`](crate::Session::resume_stored_work),
+    /// so that a host can listen to the session's events first. The RPC
+    /// servers call it once they listen.
+    pub defer_stored_work: bool,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -114,6 +125,8 @@ impl std::fmt::Debug for SessionOptions {
             .field("no_context_files", &self.no_context_files)
             .field("event_capacity", &self.event_capacity)
             .field("stream_fn", &self.stream_fn.is_some())
+            .field("file_guard", &self.file_guard.is_some())
+            .field("defer_stored_work", &self.defer_stored_work)
             .finish()
     }
 }
@@ -142,6 +155,8 @@ impl Default for SessionOptions {
             no_context_files: false,
             event_capacity: 1024,
             stream_fn: None,
+            file_guard: None,
+            defer_stored_work: false,
         }
     }
 }
@@ -165,16 +180,7 @@ impl SessionOptions {
         std::fs::create_dir_all(&cwd)
             .with_context(|| format!("create working directory {}", cwd.display()))?;
 
-        let trusted = self.trust_project_files
-            || trust::resolve_non_interactive(
-                &cwd,
-                None,
-                Settings::load(&cwd, false).default_project_trust,
-            );
-        let settings = match &self.settings {
-            Some(settings) => settings.clone(),
-            None => Settings::load(&cwd, trusted),
-        };
+        let (settings, trusted) = self.settings_and_trust();
 
         let registry = Registry::load(self.models_file.as_deref());
         let (model, pattern_thinking) = self.resolve_model(&registry, &settings)?;
@@ -216,14 +222,50 @@ impl SessionOptions {
             (None, Some(value)) => Some(value.clone()),
             (None, None) => None,
         };
-        let system_prompt = build_system_prompt(&SystemPromptOptions {
+        let prompt_options = SystemPromptOptions {
+            mode: settings.mode,
             custom_prompt: custom.as_deref(),
             append: append.as_deref(),
             selected_tools: &tool_names,
             cwd: &cwd.display().to_string(),
             context_files: &context,
             skills: &skills,
-        });
+        };
+        let system_prompt = build_system_prompt(&prompt_options);
+        // The same prompt for another mode, when a client changes it.
+        let prompt_builder: super_coding::PromptBuilder = {
+            let custom = custom.clone();
+            let append = append.clone();
+            let tool_names = tool_names.clone();
+            let cwd = cwd.display().to_string();
+            let context = context.clone();
+            let skills = skills.clone();
+            std::sync::Arc::new(move |mode| {
+                build_system_prompt(&SystemPromptOptions {
+                    mode,
+                    custom_prompt: custom.as_deref(),
+                    append: append.as_deref(),
+                    selected_tools: &tool_names,
+                    cwd: &cwd,
+                    context_files: &context,
+                    skills: &skills,
+                })
+            })
+        };
+        // Agents run in the advanced mode, which lists the skills for the
+        // `Skill` tool on each request: their context has no list of its own.
+        let agent_resources = super_coding::agents::AgentResources {
+            definitions: super_coding::agents::discover(&cwd, trusted),
+            prompt_context: Some(prompt_context(&SystemPromptOptions {
+                skills: &[],
+                ..prompt_options
+            })),
+            skills: skills.clone(),
+            project: Some(super_coding::agents::ProjectFolder {
+                folder: cwd.clone(),
+                trusted,
+            }),
+        };
 
         let mut tools = build_tools(&tool_names, &cwd, &settings, mcp.as_ref());
         tools.extend(self.custom_tools.iter().cloned());
@@ -231,6 +273,9 @@ impl SessionOptions {
         all_names.dedup();
 
         let mut manager = self.open_manager(&cwd, &settings)?;
+        if let (Some(guard), Some(file)) = (&self.file_guard, manager.session_file()) {
+            guard(file).map_err(anyhow::Error::msg)?;
+        }
         if let Some(name) = &self.session_name {
             manager.append_session_info(name)?;
         }
@@ -254,6 +299,11 @@ impl SessionOptions {
             .api_key
             .clone()
             .map(|key| (model.provider.clone(), key));
+        let tool_selection = crate::tools::tool_selection(
+            self.tools.as_deref(),
+            &self.exclude_tools,
+            settings.default_tools.as_deref(),
+        );
         let session = AgentSession::new_with_subagents_allowed(
             manager,
             tools,
@@ -266,13 +316,51 @@ impl SessionOptions {
             sink,
             !self.no_tools,
         );
+        session.set_agent_resources(agent_resources);
+        session.set_tool_selection(tool_selection);
         session.set_stream_fn(self.stream_fn.clone());
+        session.set_prompt_builder(Some(prompt_builder));
 
         Ok(BuiltSession {
             session,
             model,
             tool_names: all_names,
         })
+    }
+
+    /// The settings the session is built with, and whether the project's
+    /// files are trusted.
+    fn settings_and_trust(&self) -> (Settings, bool) {
+        let trusted = self.trust_project_files
+            || trust::resolve_non_interactive(
+                &self.cwd,
+                None,
+                Settings::load(&self.cwd, false).default_project_trust,
+            );
+        let settings = match &self.settings {
+            Some(settings) => settings.clone(),
+            None => Settings::load(&self.cwd, trusted),
+        };
+        (settings, trusted)
+    }
+
+    /// What a host tells the user when it starts this session, one line
+    /// each: the names of no tool in [`tools`](Self::tools),
+    /// [`exclude_tools`](Self::exclude_tools), the settings' `defaultTools`
+    /// and the `tools` of the agent types of the session's folders
+    /// ([`crate::tools::tool_name_warnings`]). The session leaves such names
+    /// out without a word.
+    pub fn tool_name_warnings(&self) -> Vec<String> {
+        if self.no_tools {
+            return Vec::new();
+        }
+        let (settings, trusted) = self.settings_and_trust();
+        crate::tools::tool_name_warnings(
+            self.tools.as_deref(),
+            &self.exclude_tools,
+            settings.default_tools.as_deref(),
+            &super_coding::agents::discover(&self.cwd, trusted),
+        )
     }
 
     fn load_mcp(
@@ -365,8 +453,14 @@ impl SessionOptions {
             }
             SessionSource::Create => SessionManager::create(cwd, Some(dir))?,
             SessionSource::ContinueRecent => SessionManager::continue_recent(cwd, Some(dir))?,
-            SessionSource::Open(path) => SessionManager::open(path)?,
-            SessionSource::Fork(path) => SessionManager::fork_from(path, cwd, Some(dir))?,
+            SessionSource::Open(path) => {
+                SessionManager::refuse_agent_session(path)?;
+                SessionManager::open(path)?
+            }
+            SessionSource::Fork(path) => {
+                SessionManager::refuse_agent_session(path)?;
+                SessionManager::fork_from(path, cwd, Some(dir))?
+            }
         })
     }
 }
@@ -374,6 +468,48 @@ impl SessionOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host that builds sessions from options, `--mode rpc` and the
+    /// daemon, gets the same warnings as the terminal: names of no tool in
+    /// the selection and in the project's agent types.
+    #[test]
+    fn the_warnings_name_the_tools_a_session_and_its_agent_types_leave_out() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".super/agents")).unwrap();
+        std::fs::write(
+            dir.path().join(".super/agents/checker.md"),
+            "---\nname: checker\ntools: read, bash\n---\nCheck.\n",
+        )
+        .unwrap();
+        let options = SessionOptions {
+            cwd: dir.path().to_path_buf(),
+            exclude_tools: vec!["write".into()],
+            settings: Some(Settings {
+                default_tools: Some(vec!["read".into(), "Bash".into()]),
+                ..Default::default()
+            }),
+            trust_project_files: true,
+            ..Default::default()
+        };
+        let warnings = options.tool_name_warnings();
+        assert!(
+            warnings
+                .contains(&"unknown tool names ignored: write (use Write), read (use Read)".into()),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.contains(
+                &"unknown tool names in agent type checker ignored: read (use Read), bash (use Bash)"
+                    .into()
+            ),
+            "{warnings:?}"
+        );
+        let options = SessionOptions {
+            no_tools: true,
+            ..options
+        };
+        assert!(options.tool_name_warnings().is_empty());
+    }
 
     #[test]
     fn the_default_session_writes_nothing_to_disk() {
@@ -398,6 +534,50 @@ mod tests {
         let restored = options.open_manager(cwd, &Settings::default()).unwrap();
         assert_eq!(restored.build_session_context().messages.len(), 1);
         assert!(!restored.is_persisted());
+    }
+
+    #[test]
+    fn a_file_guard_refuses_a_stored_session_before_anything_is_built_from_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut manager =
+            SessionManager::create(directory.path(), Some(directory.path().join("s"))).unwrap();
+        manager
+            .append_message(super_agent::AgentMessage::user("hi"))
+            .unwrap();
+        let file = manager.session_file().unwrap().to_path_buf();
+        let before = std::fs::read_to_string(&file).unwrap();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        // A named model, so that the test needs no credential to get there.
+        let model = Registry::from_builtin()
+            .all()
+            .first()
+            .cloned()
+            .expect("a builtin model");
+        let options = SessionOptions {
+            cwd: directory.path().into(),
+            model: Some(format!("{}/{}", model.provider, model.id)),
+            settings: Some(Settings::default()),
+            session: SessionSource::Open(file.clone()),
+            file_guard: Some(Arc::new(move |path: &Path| {
+                seen.lock().unwrap().push(path.to_path_buf());
+                Err("session a1b2 is open in another SUPER process".to_string())
+            })),
+            ..Default::default()
+        };
+        let error = match options.build(Arc::new(|_| {})) {
+            Ok(_) => panic!("the guard refuses the file"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "session a1b2 is open in another SUPER process"
+        );
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            std::slice::from_ref(&file)
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
     }
 
     #[test]
@@ -448,6 +628,46 @@ mod tests {
     }
 
     #[test]
+    fn the_mode_setting_picks_the_body_of_the_system_prompt() {
+        let directory = tempfile::tempdir().unwrap();
+        let model = Registry::from_builtin()
+            .all()
+            .first()
+            .cloned()
+            .expect("a builtin model");
+        // A `SYSTEM.md` of the user's replaces the body in both modes.
+        let replaced = context_files::system_prompt_files(directory.path())
+            .replace
+            .is_some();
+        let placeholder = super_agent::placeholder::prompt_todo("SystemPrompt.advanced");
+        for mode in [
+            super_coding::settings::Mode::Basic,
+            super_coding::settings::Mode::Advanced,
+        ] {
+            let settings = Settings {
+                mode,
+                ..Settings::default()
+            };
+            let options = SessionOptions {
+                cwd: directory.path().to_path_buf(),
+                model: Some(format!("{}/{}", model.provider, model.id)),
+                settings: Some(settings),
+                no_context_files: true,
+                ..Default::default()
+            };
+            let built = options.build(Arc::new(|_| {})).unwrap();
+            assert_eq!(built.session.mode(), mode);
+            assert_eq!(built.tool_names, ["Read", "Write", "Edit", "Bash"]);
+            if !replaced {
+                assert_eq!(
+                    built.session.system_prompt().starts_with(&placeholder),
+                    mode.is_advanced()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn session_mcp_servers_enable_the_mcp_tool_without_writing_configuration() {
         let directory = tempfile::tempdir().unwrap();
         let mut options = SessionOptions {
@@ -473,7 +693,7 @@ mod tests {
         assert!(!directory.path().join(".mcp.json").exists());
         for defaults in [
             vec![],
-            vec!["read".into()],
+            vec!["Read".into()],
             vec!["-mcp".into()],
             vec!["+mcp".into()],
         ] {

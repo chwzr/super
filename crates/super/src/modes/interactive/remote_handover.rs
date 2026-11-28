@@ -221,9 +221,7 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
             app.command_status = None;
             app.command_cancel = None;
             if busy(app, session) {
-                show(app, Cell::Notice(
-                    "♦ the SUPER daemon is ready; this session moves there once the turn is over · /remote cancel keeps it here".into(),
-                ));
+                show(app, Cell::Notice(ready_line(app, session)));
             }
         }
         Progress::Failed(error) => {
@@ -239,17 +237,44 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
     }
 }
 
+/// The line that says the daemon is ready while the hand-over waits, and
+/// for what: the turn, the session's background tasks, or the rest of its
+/// work ([`busy`]).
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(super) fn ready_line(app: &App, session: &AgentSession) -> String {
+    // Only a turn is a turn: a workflow run is a background task, and a
+    // self-paced loop that waits or a request that writes the session is
+    // the rest of its work.
+    let turn = app.working || app.compacting || session.is_running();
+    let until = if turn {
+        "once the turn is over"
+    } else if session.background_tasks().has_running() {
+        "once its background tasks have ended"
+    } else {
+        "once its work here is done"
+    };
+    format!(
+        "♦ the SUPER daemon is ready; this session moves there {until} · /remote cancel keeps it here"
+    )
+}
+
 /// A turn, a queued message, a background request that writes the session,
-/// or a question on screen: the hand-over waits for all of them.
+/// a background task (it would not come along), a self-paced loop, or a
+/// question on screen: the hand-over waits for all of them. A pending
+/// wake-up comes along: the daemon finds it in the session's file.
 pub(super) fn busy(app: &App, session: &AgentSession) -> bool {
     !matches!(
         terminal_host_state(app, session),
         crate::terminal_hosts::State::Idle
-    ) || app.picker.is_some()
+    ) || session.background_tasks().has_running()
+        || session.has_queued_entries()
+        || session.wakeups().running_loop().is_some()
+        || app.picker.is_some()
         || app.secret_prompt.is_some()
         || app.btw_panel.is_some()
         || app.workflow_view.is_some()
         || app.job_view.is_some()
+        || app.task_view.is_some()
 }
 
 /// Whether the daemon is ready and nothing runs, so the hand-over can finish.
@@ -348,6 +373,9 @@ pub(super) async fn finish(
     app.remote_record_key = None;
     // Only daemon-level news queued up while waiting; none of it is ours.
     while events.try_recv().is_ok() {}
+    // The daemon brings the wake-up back from the session's file; it must
+    // not come due here as well.
+    let parked = session.wakeups().park();
     match handover::hand_over(&client, &target, lock, session).await {
         Ok(attached) => {
             show(
@@ -367,6 +395,9 @@ pub(super) async fn finish(
             }))
         }
         Err(handover::Failure::StaysHere(error)) => {
+            if let Some(wakeup) = parked {
+                session.wakeups().unpark(wakeup);
+            }
             if mirrored {
                 super::start_remote(app, session, &resources.settings, command_tx);
             }

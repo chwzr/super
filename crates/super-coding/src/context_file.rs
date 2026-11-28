@@ -116,7 +116,7 @@ impl ContextFile {
 fn validate_messages(messages: &[AgentMessage]) -> Result<()> {
     let mut pending: HashMap<&str, &str> = HashMap::new();
     let mut used: HashSet<&str> = HashSet::new();
-    let messages = super_agent::convert_to_llm(messages);
+    let messages = super_agent::convert_to_llm_as_is(messages);
     for message in &messages {
         match message {
             // Not a match guard: a matching result must consume this arm so it
@@ -161,14 +161,14 @@ mod tests {
         let mut call = AssistantMessage::empty("test", "test", "test");
         call.content.push(ContentBlock::ToolCall(ToolCall {
             id: "call_1".into(),
-            name: "read".into(),
+            name: "Read".into(),
             arguments: serde_json::json!({"path": "test"}),
             thought_signature: None,
         }));
         let call = AgentMessage::Assistant(call);
         let result = AgentMessage::ToolResult(ToolResultMessage {
             tool_call_id: "call_1".into(),
-            tool_name: "read".into(),
+            tool_name: "Read".into(),
             content: vec![ContentBlock::text("output")],
             details: None,
             usage: None,
@@ -177,7 +177,7 @@ mod tests {
         });
         let mut wrong_name = result.clone();
         if let AgentMessage::ToolResult(result) = &mut wrong_name {
-            result.tool_name = "write".into();
+            result.tool_name = "Write".into();
         }
         let invalid = vec![
             "{".to_string(),

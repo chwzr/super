@@ -1,13 +1,20 @@
 //! Agent Skills (agentskills.io style): Markdown files with YAML frontmatter,
-//! discovered from user/project locations, surfaced in the system prompt and
-//! through `$name` or `/name` input tokens. The older `/skill:name` form is
-//! also accepted.
+//! discovered from user/project locations, and called by the user through
+//! `$name` or `/name` input tokens. The older `/skill:name` form is also
+//! accepted.
+//!
+//! How the model reaches them depends on the mode. In the basic mode the
+//! system prompt lists each skill with its file, and the model reads the file
+//! ([`format_skills_for_prompt`]). In the advanced mode the session lists
+//! them without their files ([`skill_list_section`]) and the model loads one
+//! with the `Skill` tool ([`load`]), which can also run it in an agent of its
+//! own when its frontmatter asks for that ([`SkillRun`]).
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -114,15 +121,57 @@ pub fn split_frontmatter(text: &str) -> (Option<&str>, &str) {
     (None, text)
 }
 
+/// The YAML of a frontmatter. A value written without quotes that YAML does
+/// not take as it stands, such as `description: Reviews code: read only`,
+/// is read as the text it is: when the whole does not parse, each
+/// `key: value` line whose value holds `: ` before any comment is read
+/// again with that part quoted. A comment stays a comment, on that line and
+/// on every other. `None` when even that is not YAML.
+pub fn frontmatter_value(frontmatter: &str) -> Option<serde_yaml::Value> {
+    if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) {
+        return Some(value);
+    }
+    let quoted: Vec<String> = frontmatter
+        .lines()
+        .map(|line| {
+            let Some((key, value)) = line.split_once(": ") else {
+                return line.to_string();
+            };
+            let plain_key = !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            let value = value.trim();
+            // As in YAML, a `#` after a space starts a comment, unless it
+            // comes right after a colon, as in `Tags: #one`, which YAML
+            // cannot read either: then it is part of the text.
+            let (text, comment) = match value.find(" #") {
+                Some(at) if !value[..at].ends_with(':') => (value[..at].trim_end(), &value[at..]),
+                _ => (value, ""),
+            };
+            let structured = text.starts_with(['"', '\'', '[', '{', '|', '>', '&', '*', '!']);
+            if plain_key && text.contains(": ") && !structured {
+                let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("{key}: \"{escaped}\"{comment}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    serde_yaml::from_str(&quoted.join("\n")).ok()
+}
+
+/// A skill's file; `None` when it cannot be read or its frontmatter is not
+/// YAML ([`frontmatter_value`]), so that a skill whose frontmatter keeps it
+/// from the model is never offered to it.
 fn parse_skill(path: &Path) -> Option<Skill> {
     let text = std::fs::read_to_string(path).ok()?;
     let (frontmatter, _body) = split_frontmatter(&text);
     let mut name = None;
     let mut description = None;
     let mut disable_model_invocation = false;
-    if let Some(fm) = frontmatter
-        && let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(fm)
-    {
+    if let Some(fm) = frontmatter {
+        let value = frontmatter_value(fm)?;
         name = value["name"].as_str().map(String::from);
         description = value["description"].as_str().map(String::from);
         disable_model_invocation = value["disable-model-invocation"].as_bool().unwrap_or(false);
@@ -209,7 +258,7 @@ fn escape_xml(value: &str) -> String {
 }
 
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
-    format_skills_for_prompt_with_tool(skills, "read")
+    format_skills_for_prompt_with_tool(skills, "Read")
 }
 
 pub fn format_skills_for_prompt_with_tool(skills: &[Skill], tool: &str) -> String {
@@ -237,6 +286,133 @@ pub fn format_skills_for_prompt_with_tool(skills: &[Skill], tool: &str) -> Strin
         out.push_str("  </skill>\n");
     }
     out.push_str("</available_skills>");
+    out
+}
+
+/// A skill as the advanced mode lists it to the model: no file, since the
+/// model loads it with the `Skill` tool by its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+}
+
+/// The list of skills the advanced mode puts after the system prompt while
+/// the session offers the `Skill` tool: the placeholder `Skill.list`, then
+/// one entry per skill. Empty when there is no skill.
+pub fn skill_list_section(skills: &[SkillSummary]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut out = super_agent::placeholder::prompt_todo("Skill.list");
+    out.push_str("\n<available_skills>\n");
+    for skill in skills {
+        out.push_str("  <skill>\n");
+        out.push_str(&format!("    <name>{}</name>\n", escape_xml(&skill.name)));
+        out.push_str(&format!(
+            "    <description>{}</description>\n",
+            escape_xml(&skill.description)
+        ));
+        out.push_str("  </skill>\n");
+    }
+    out.push_str("</available_skills>");
+    out
+}
+
+/// How a skill runs in an agent of its own instead of in the turn that
+/// loads it. A skill asks for this with `context: fork` in its frontmatter;
+/// `agent` names the agent type (`general-purpose` when it is missing),
+/// `model` and `effort` choose the agent's model and thinking level as the
+/// `Agent` tool's parameters of those names do, and `background: true` runs
+/// the agent in the background instead of waiting for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillRun {
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub background: bool,
+}
+
+/// A skill file as the `Skill` tool loads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedSkill {
+    /// The text after the frontmatter.
+    pub body: String,
+    /// Set when the skill runs in an agent of its own.
+    pub run: Option<SkillRun>,
+}
+
+/// Read a skill's file: its body, and whether its frontmatter asks for an
+/// agent of its own.
+pub fn load(skill: &Skill) -> Result<LoadedSkill> {
+    let text = std::fs::read_to_string(&skill.file_path).with_context(|| {
+        format!(
+            "Could not read the skill {} at {}",
+            skill.name,
+            skill.file_path.display()
+        )
+    })?;
+    Ok(parse_loaded(&text))
+}
+
+fn parse_loaded(text: &str) -> LoadedSkill {
+    let (frontmatter, body) = split_frontmatter(text);
+    let value = frontmatter
+        .and_then(frontmatter_value)
+        .unwrap_or(serde_yaml::Value::Null);
+    let text_of = |key: &str| {
+        value[key]
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(String::from)
+    };
+    let run = (value["context"].as_str().map(str::trim) == Some("fork")).then(|| SkillRun {
+        agent: text_of("agent"),
+        model: text_of("model"),
+        effort: text_of("effort"),
+        background: value["background"].as_bool().unwrap_or(false),
+    });
+    LoadedSkill {
+        body: body.to_string(),
+        run,
+    }
+}
+
+/// The text the `Skill` tool hands over for a skill: the placeholder
+/// `header` (`Skill.loaded` for the turn that loads it, `Skill.agent_prompt`
+/// for an agent that runs it), then a block with the skill's name, its file
+/// when it has one, and its body. Every `$ARGUMENTS` in the body becomes
+/// `args`; when the body has none, `args` goes into the block as its own
+/// element.
+pub fn skill_text(
+    header: &str,
+    name: &str,
+    file: Option<&Path>,
+    body: &str,
+    args: Option<&str>,
+) -> String {
+    let args = args.map(str::trim).filter(|args| !args.is_empty());
+    let (body, separate) = match args {
+        Some(args) if body.contains("$ARGUMENTS") => (body.replace("$ARGUMENTS", args), None),
+        Some(args) => (body.to_string(), Some(args)),
+        None => (body.to_string(), None),
+    };
+    let mut out = super_agent::placeholder::prompt_todo(header);
+    out.push_str("\n<skill>\n");
+    out.push_str(&format!("<name>{}</name>\n", escape_xml(name)));
+    if let Some(file) = file {
+        out.push_str(&format!(
+            "<path>{}</path>\n",
+            escape_xml(&file.display().to_string())
+        ));
+    }
+    if let Some(args) = separate {
+        out.push_str(&format!("<arguments>{}</arguments>\n", escape_xml(args)));
+    }
+    out.push_str("<content>\n");
+    out.push_str(body.trim_matches('\n'));
+    out.push_str("\n</content>\n</skill>");
     out
 }
 
@@ -281,6 +457,67 @@ mod tests {
             .find(|skill| skill.name == "pdf-tools")
             .unwrap();
         assert_eq!(loaded.file_path, root.join("pdf-tools/SKILL.md"));
+    }
+
+    /// A skill whose description has `: ` in it keeps its other fields,
+    /// such as the one that keeps it from the model; one whose frontmatter
+    /// is no YAML is left out.
+    #[test]
+    fn a_skill_with_a_colon_in_a_value_keeps_its_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("mine.md"),
+            "---\ndescription: Deploys: only by hand\ndisable-model-invocation: true\n---\nGo",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("broken.md"),
+            "---\ndescription: [never closed\n---\nGo",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        scan_dir(root, true, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].name, "mine");
+        assert_eq!(out[0].description, "Deploys: only by hand");
+        assert!(out[0].disable_model_invocation);
+        let loaded =
+            parse_loaded("---\ncontext: fork\nagent: Explore\ndescription: a: b\n---\nBody");
+        assert_eq!(loaded.run.unwrap().agent.as_deref(), Some("Explore"));
+    }
+
+    /// A comment at the end of a line stays a comment when another line's
+    /// value has a colon: the flag that keeps a skill from the model holds,
+    /// and so do `context` and `background`.
+    #[test]
+    fn a_comment_stays_a_comment_beside_a_value_with_a_colon() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("mine.md"),
+            "---\nname: mine\ndisable-model-invocation: true # only I start it\ndescription: Deploys: production # the real one\n---\nGo",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        scan_dir(root, true, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].disable_model_invocation);
+        assert_eq!(out[0].description, "Deploys: production");
+        // A `#` right after a colon is text.
+        std::fs::write(
+            root.join("mine.md"),
+            "---\nname: mine\ndescription: Tags: #one\n---\nGo",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        scan_dir(root, true, &mut out);
+        assert_eq!(out[0].description, "Tags: #one");
+        let loaded = parse_loaded(
+            "---\ncontext: fork # its own agent\nbackground: true # do not wait\ndescription: a: b\n---\nBody",
+        );
+        let run = loaded.run.expect("a forked skill");
+        assert!(run.background);
     }
 
     #[test]
@@ -344,6 +581,90 @@ mod tests {
         assert_eq!(expanded.matches("Review instructions").count(), 1);
         assert_eq!(expanded.matches("Test instructions").count(), 1);
         assert!(expanded.ends_with("<user_request>\ninspect it\n</user_request>"));
+    }
+
+    #[test]
+    fn the_advanced_list_names_skills_without_their_files() {
+        let list = skill_list_section(&[
+            SkillSummary {
+                name: "review".into(),
+                description: "Review <staged> changes".into(),
+            },
+            SkillSummary {
+                name: "tests".into(),
+                description: "Write tests".into(),
+            },
+        ]);
+        let placeholder = super_agent::placeholder::prompt_todo("Skill.list");
+        assert_eq!(
+            list,
+            format!(
+                "{placeholder}\n<available_skills>\n  <skill>\n    <name>review</name>\n    <description>Review &lt;staged&gt; changes</description>\n  </skill>\n  <skill>\n    <name>tests</name>\n    <description>Write tests</description>\n  </skill>\n</available_skills>"
+            )
+        );
+        assert!(!list.contains("<location>"));
+        assert!(skill_list_section(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_frontmatter_says_whether_a_skill_runs_in_an_agent() {
+        let inline = parse_loaded("---\nname: x\ndescription: y\n---\nDo the thing.\n");
+        assert_eq!(inline.body, "Do the thing.\n");
+        assert_eq!(inline.run, None);
+
+        let forked = parse_loaded("---\nname: x\ncontext: fork\n---\nDo it.");
+        assert_eq!(forked.run, Some(SkillRun::default()));
+
+        let background = parse_loaded(
+            "---\nname: x\ncontext: fork\nagent: Explore\nmodel: mock-1\neffort: low\nbackground: true\n---\nLook.",
+        );
+        assert_eq!(
+            background.run,
+            Some(SkillRun {
+                agent: Some("Explore".into()),
+                model: Some("mock-1".into()),
+                effort: Some("low".into()),
+                background: true,
+            })
+        );
+        // `background` alone asks for nothing: only `context: fork` does.
+        assert_eq!(parse_loaded("---\nbackground: true\n---\nx").run, None);
+        assert_eq!(parse_loaded("No frontmatter at all.").run, None);
+    }
+
+    #[test]
+    fn the_arguments_replace_their_marker_or_go_into_the_block() {
+        let header = super_agent::placeholder::prompt_todo("Skill.loaded");
+        let file = Path::new("/skills/review/SKILL.md");
+        assert_eq!(
+            skill_text(
+                "Skill.loaded",
+                "review",
+                Some(file),
+                "Review $ARGUMENTS now.\n",
+                Some("src/a.rs")
+            ),
+            format!(
+                "{header}\n<skill>\n<name>review</name>\n<path>/skills/review/SKILL.md</path>\n<content>\nReview src/a.rs now.\n</content>\n</skill>"
+            )
+        );
+        assert_eq!(
+            skill_text("Skill.loaded", "review", None, "Review.", Some("a & b")),
+            format!(
+                "{header}\n<skill>\n<name>review</name>\n<arguments>a &amp; b</arguments>\n<content>\nReview.\n</content>\n</skill>"
+            )
+        );
+        // Without arguments the marker stays as the skill wrote it.
+        assert!(
+            skill_text(
+                "Skill.loaded",
+                "review",
+                None,
+                "Use $ARGUMENTS.",
+                Some("  ")
+            )
+            .contains("Use $ARGUMENTS.")
+        );
     }
 
     #[test]

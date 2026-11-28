@@ -19,6 +19,12 @@ impl AgentTool for FindTool {
         "find"
     }
 
+    fn in_directory(&self, cwd: &std::path::Path) -> Option<super_agent::DynTool> {
+        Some(std::sync::Arc::new(FindTool {
+            cwd: cwd.to_path_buf(),
+        }))
+    }
+
     fn description(&self) -> String {
         "Find files by glob pattern. Respects .gitignore. Returns paths relative to the search directory.".to_string()
     }

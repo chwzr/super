@@ -247,8 +247,28 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
             _ => None,
         })
         .collect();
+    // The calls of the last answer of a turn in flight that have no result
+    // yet are still running: their output and end stream in, under them.
+    let in_flight = session
+        .is_running()
+        .then(|| {
+            entries.iter().rposition(|entry| {
+                matches!(
+                    entry,
+                    super_coding::SessionEntry::Message {
+                        message: AgentMessage::Assistant(_),
+                        ..
+                    }
+                )
+            })
+        })
+        .flatten();
     let mut cells = Vec::new();
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        let entry = *entry;
+        if let Some(line) = crate::task_ui::state_line(entry, manager.cwd()) {
+            cells.push(Cell::Notice(line));
+        }
         match entry {
             super_coding::SessionEntry::Message { message, .. } => match message {
                 AgentMessage::User(user) => {
@@ -281,24 +301,19 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
                         if let ContentBlock::ToolCall(call) = block {
                             let result = results.get(call.id.as_str());
                             cells.push(Cell::ToolCall {
-                                title: tool_title(&call.name, &call.arguments),
+                                id: call.id.clone(),
+                                title: tool_title(&call.name, &call.arguments, manager.cwd()),
                                 output: result
                                     .map(|result| {
-                                        result
-                                            .content
-                                            .iter()
-                                            .filter_map(|block| match block {
-                                                ContentBlock::Text { text, .. } => {
-                                                    Some(text.as_str())
-                                                }
-                                                _ => None,
-                                            })
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
+                                        super::shown_output(
+                                            &call.name,
+                                            &result.content,
+                                            result.details.as_ref(),
+                                        )
                                     })
                                     .unwrap_or_default(),
                                 is_error: result.is_some_and(|result| result.is_error),
-                                done: true,
+                                done: result.is_some() || in_flight != Some(index),
                             });
                         }
                     }
@@ -308,6 +323,11 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
                     output: bash.output.clone(),
                     exclude_from_context: bash.exclude_from_context,
                 }),
+                AgentMessage::Custom(_) => {
+                    if let Some(line) = crate::task_ui::background_line(message) {
+                        cells.push(Cell::Notice(line));
+                    }
+                }
                 _ => {}
             },
             super_coding::SessionEntry::Compaction { tokens_before, .. } => cells.push(
@@ -869,12 +889,31 @@ pub(super) async fn detach(attached: Attached) {
 /// Leave: detach, say where the session went.
 pub(super) async fn finish(attached: Attached) {
     let summary = attached.remote.session();
+    let connected = attached.remote.is_connected() && !attached.lost;
     attached.remote.detach().await;
-    println!(
-        "detached from session {}; it keeps running in the SUPER daemon",
-        short_id(&summary.session_id)
-    );
-    println!("`super` here attaches again");
+    for line in exit_lines(&summary.session_id, connected) {
+        println!("{line}");
+    }
+}
+
+/// What the terminal says about the session when it leaves: that it keeps
+/// running in the daemon, or, with the daemon gone, that nothing runs it
+/// and how to open it again.
+fn exit_lines(session_id: &str, connected: bool) -> Vec<String> {
+    if connected {
+        vec![
+            format!(
+                "detached from session {}; it keeps running in the SUPER daemon",
+                short_id(session_id)
+            ),
+            "`super` here attaches again".to_string(),
+        ]
+    } else {
+        vec![format!(
+            "the SUPER daemon is gone, so session {} does not run; `super -c` resumes it",
+            short_id(session_id)
+        )]
+    }
 }
 
 fn short_id(session_id: &str) -> &str {
@@ -885,6 +924,21 @@ fn short_id(session_id: &str) -> &str {
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn the_exit_line_says_the_session_runs_on_only_while_the_daemon_is_there() {
+        assert_eq!(
+            exit_lines("25ed5436-0000", true),
+            [
+                "detached from session 25ed5436; it keeps running in the SUPER daemon",
+                "`super` here attaches again"
+            ]
+        );
+        assert_eq!(
+            exit_lines("25ed5436-0000", false),
+            ["the SUPER daemon is gone, so session 25ed5436 does not run; `super -c` resumes it"]
+        );
+    }
 
     fn test_session() -> Arc<super_coding::AgentSession> {
         let registry = super_ai::Registry::from_builtin();
@@ -924,53 +978,58 @@ mod tests {
 
     #[test]
     fn the_transcript_shows_tool_calls_with_their_results() {
-        let session = test_session();
-        {
-            let mut manager = session.manager.lock().unwrap();
-            manager
-                .append_message(AgentMessage::user("list it"))
-                .unwrap();
-            let mut assistant = super_ai::AssistantMessage::empty("api", "mock", "mock-1");
-            assistant.content = vec![
-                ContentBlock::text("Looking."),
-                ContentBlock::ToolCall(super_ai::ToolCall {
-                    id: "call_1".into(),
-                    name: "bash".into(),
-                    arguments: serde_json::json!({"command": "ls"}),
-                    thought_signature: None,
-                }),
-            ];
-            manager
-                .append_message(AgentMessage::Assistant(assistant))
-                .unwrap();
-            manager
-                .append_message(AgentMessage::ToolResult(super_ai::ToolResultMessage {
-                    tool_call_id: "call_1".into(),
-                    tool_name: "bash".into(),
-                    content: vec![ContentBlock::text("a.rs")],
-                    details: None,
-                    usage: None,
-                    is_error: false,
-                    timestamp: 0,
-                }))
-                .unwrap();
-        }
-        let cells = transcript_cells(&session);
-        assert!(matches!(&cells[0], Cell::User(text) if text == "list it"));
-        assert!(matches!(&cells[1], Cell::AssistantFinal(text) if text == "Looking."));
-        match &cells[2] {
-            Cell::ToolCall {
-                title,
-                output,
-                done,
-                is_error,
-            } => {
-                assert_eq!(title, "bash ls");
-                assert_eq!(output, "a.rs");
-                assert!(*done && !*is_error);
+        // A session stored before the tools were renamed names the call `bash`;
+        // it still opens and shows.
+        for name in ["Bash", "bash"] {
+            let session = test_session();
+            {
+                let mut manager = session.manager.lock().unwrap();
+                manager
+                    .append_message(AgentMessage::user("list it"))
+                    .unwrap();
+                let mut assistant = super_ai::AssistantMessage::empty("api", "mock", "mock-1");
+                assistant.content = vec![
+                    ContentBlock::text("Looking."),
+                    ContentBlock::ToolCall(super_ai::ToolCall {
+                        id: "call_1".into(),
+                        name: name.into(),
+                        arguments: serde_json::json!({"command": "ls"}),
+                        thought_signature: None,
+                    }),
+                ];
+                manager
+                    .append_message(AgentMessage::Assistant(assistant))
+                    .unwrap();
+                manager
+                    .append_message(AgentMessage::ToolResult(super_ai::ToolResultMessage {
+                        tool_call_id: "call_1".into(),
+                        tool_name: name.into(),
+                        content: vec![ContentBlock::text("a.rs")],
+                        details: None,
+                        usage: None,
+                        is_error: false,
+                        timestamp: 0,
+                    }))
+                    .unwrap();
             }
-            _ => panic!("a tool call"),
+            let cells = transcript_cells(&session);
+            assert!(matches!(&cells[0], Cell::User(text) if text == "list it"));
+            assert!(matches!(&cells[1], Cell::AssistantFinal(text) if text == "Looking."));
+            match &cells[2] {
+                Cell::ToolCall {
+                    title,
+                    output,
+                    done,
+                    is_error,
+                    ..
+                } => {
+                    assert_eq!(title, &format!("{name} ls"));
+                    assert_eq!(output, "a.rs");
+                    assert!(*done && !*is_error);
+                }
+                _ => panic!("a tool call"),
+            }
+            assert_eq!(cells.len(), 3);
         }
-        assert_eq!(cells.len(), 3);
     }
 }
