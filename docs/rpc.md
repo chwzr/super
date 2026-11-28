@@ -111,7 +111,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### Tools and shell
 
-- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`, and with the Subagents switch on `Agent`, `SendMessage`, `ListAgents` and `TaskStop` are there. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Monitor` or `TaskStop` tools.
+- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`, `Skill` comes with `Read` or `Bash`, with the Subagents switch on `Agent`, `SendMessage`, `ListAgents` and `TaskStop` are there, and with the Dynamic workflows switch on too, `Workflow` and `Skill`. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Skill`, `Monitor` or `TaskStop` tools.
 - `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
 
@@ -230,6 +230,17 @@ the user typed. It is part of the session history, so `get_entries` and
 `get_messages` return it too. A task stopped with `stop_task`, with `abort`
 or by the model gets no notice: it ends with `task_ended` and
 `status: "stopped"`.
+
+A `Workflow` call starts its run as a task of kind `workflow` whose id is the
+run's id (`wf_` and eight letters or digits) and whose `name` is the
+workflow's while no other running task has it; its notice's `result` is the
+workflow's answer. The call's result has `details.runId`, `details.name`,
+`details.scriptPath` (where the run's script was saved, or `null`) and
+`details.resumedFrom` (the run whose finished agent calls it replays, or
+`null`). The question before a run starts is the `approval_request` of kind
+`workflow` above. A skill that runs in an agent of its own is a `Skill` call
+whose result has `details.skill` and `details.agent`, and in the background
+a task of kind `agent`.
 
 A monitor (`kind: "monitor"`) also reaches the agent while it runs: each of
 its events is a `custom` message with `customType: "monitor_event"`, queued

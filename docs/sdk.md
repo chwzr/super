@@ -276,15 +276,45 @@ and `AgentSession::agent_type_list` their names and descriptions. An agent's
 session knows who started it from `AgentSession::agent_link`.
 
 An agent's system prompt is its type's instructions followed by the part of
-the session's prompt after its body: the appended text, the project context,
-the skills and the working directory. `SessionOptions` hands a session that
-part and the types of the definition files. An embedder that builds its own
+the session's prompt after its body: the appended text, the project context
+and the working directory. `SessionOptions` hands a session that part, the
+types of the definition files and the skills. An embedder that builds its own
 `AgentSession` does so with
 `AgentSession::set_agent_resources(AgentResources { definitions,
-prompt_context })`, using `super_coding::agents::discover(cwd, trusted)` and
-`super_coding::system_prompt::prompt_context`; without it an agent's prompt
-ends with the working directory only, and only the built-in types exist. A
-message between agents is a `super_coding::agent_message`.
+prompt_context, skills })`, using `super_coding::agents::discover(cwd,
+trusted)`, `super_coding::system_prompt::prompt_context` (with no skills) and
+`super_coding::skills::discover`; without it an agent's prompt ends with the
+working directory only, only the built-in types exist, and the `Skill` tool
+has only the built-in skills. A message between agents is a
+`super_coding::agent_message`.
+
+## Skills and workflows
+
+In the advanced mode a session with `Read` or `Bash`, or with the workflow
+tool, has the `Skill` tool. It loads the skills of
+`AgentResources::skills` by name, and the built-in skill
+`workflow-authoring`, the guide to writing a workflow script, while dynamic
+workflows are on. The session lists them after the system prompt on each
+request (`super_coding::skills::skill_list_section`), and
+`super_coding::system_prompt::prompt_context` leaves the list out in the
+advanced mode; the basic mode keeps the list with the skills' files in the
+system prompt and offers no `Skill` tool. A skill with `context: fork` in
+its frontmatter runs in an agent of the session's `AgentRegistry`, waited for
+or, with `background: true`, as a background task of kind `agent`.
+
+While `subagents.enabled` and `workflows.enabled` are on in the advanced
+mode, the main session offers `Workflow` with every request. A run is a
+background task of kind `workflow` whose id is the run's id (`wf_` and eight
+letters or digits, `RunRecord::run_id`); it ends with a notice, and
+`Session::stop_task` stops it. `WorkflowRuntime::prepare` saves every run's
+script in the session's folder of workflows
+(`super_coding::session::manager::workflows_dir`, `<file without
+.jsonl>/workflows/<run id>.js`; `<temp>/super-workflows/<session id>/` for a
+session in memory), and `WorkflowRuntime::run` saves its journal of finished
+agent calls beside it when it ends (`<run id>.journal.json`).
+`WorkflowRuntime::journal_for(run_id)` reads it back for a run that resumes
+another. The approver installed with `AgentSession::set_workflow_approver`
+still answers before a run starts.
 
 An agent's session is stored like the session itself, in the folder beside
 the session's file (`<file without .jsonl>/agents/<agent id>.jsonl`,

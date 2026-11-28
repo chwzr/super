@@ -215,7 +215,13 @@ null for a stored session.
   and exit 0. After a restart nothing is hosted; sessions load lazily.
 - Workflow approvals are asked as `approval_request` events and answered with
   `answer_approval` from any attached client; `approval_resolved.by` names the
-  client's `hello.name`.
+  client's `hello.name`. A workflow the model starts then runs in the
+  daemon's session as a background task, so the daemon keeps the session
+  loaded until it ends; its script and journal are stored in the folder
+  beside the session's file (`<file without .jsonl>/workflows/`), and a run
+  the session started before it was loaded again can be resumed from there.
+- The daemon builds a session's skills with it, as the terminal does; in the
+  advanced mode the model loads them with `Skill`.
 - The agents a hosted session starts run inside it, in the daemon, and are
   stored in the folder beside its file (`<file without .jsonl>/agents/`).
   They are not sessions of their own: `list_sessions`, `status`'s

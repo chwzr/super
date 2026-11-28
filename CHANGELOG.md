@@ -107,8 +107,46 @@
   registry from the stored agents, `super_coding::worktree` makes, checks
   and removes worktrees, `AgentTool::in_directory` copies a tool to another
   folder, and `SessionStreams::agent` names an agent's streams.
+- `Skill` in the advanced mode: the model loads a skill by its name, and the
+  skill's text comes back into the turn; `args` fills in `$ARGUMENTS`. The
+  skills are listed without their files. A skill with `context: fork` in its
+  frontmatter runs in an agent of its own, of the type `agent` names, waited
+  for or, with `background: true`, in the background with a notice when it
+  ends. The basic mode lists the skills with their files and the model reads
+  them with `Read`, as before.
+- `Workflow` takes `scriptPath` to run a script from a file, `name` alone to
+  run a saved workflow from `.super/workflows/` or
+  `~/.super/agent/workflows/`, `args` for the script's `args`, and
+  `resumeFromRunId` to replay the finished agent calls of an earlier run up
+  to the first one whose prompt changed. Every run saves its script and,
+  when it ends, its journal of finished agent calls in the session's folder
+  of workflows, so a run can be resumed after the session was opened again.
+- Rust SDK: `AgentResources::skills`, `super_coding::skills::{skill_list_section,
+  load, skill_text}`, `RunRecord::run_id` and `script_path`,
+  `WorkflowRuntime::find`, `journal_for` and `directory`,
+  `super_coding::session::manager::workflows_dir` and
+  `super_workflow::Journal::completed`.
 
 ### Changed
+
+- `run_workflow` is now `Workflow`. It is offered with every request while
+  the Subagents and Dynamic workflows switches are on in the advanced mode,
+  not only on a turn that asks for a workflow. A run starts in the
+  background as a task of kind `workflow` with the run's id, the call
+  returns at once, and a notice brings the workflow's answer when it ends;
+  `TaskStop` and `/tasks` stop it, and `Esc` no longer does. The question
+  before a run stays. A turn that asks for a workflow still says so to the
+  model. The guide to writing a script is no longer added to the prompt on
+  such turns: it is the built-in skill `workflow-authoring`, loaded with
+  `Skill`. The descriptions of `Workflow` and `Skill` and their parameters,
+  and the fixed text around a loaded skill and the list of skills, are
+  placeholders until their text is written.
+- The note on a stopped workflow no longer promises that relaunching the
+  same script reuses its results: it names the run's id for
+  `resumeFromRunId`, which does.
+- In the advanced mode the system prompt no longer lists the skills with
+  their files; the list comes with the `Skill` tool. An agent's system prompt
+  repeats no list of skills either.
 
 - The six earlier agent tools, `spawn_agent`, `send_message`,
   `followup_task`, `wait_agent`, `list_agents` and `interrupt_agent`, are

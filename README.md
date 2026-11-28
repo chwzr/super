@@ -319,9 +319,56 @@ use a workflow to compare the provider adapters
 Run `/workflows` to inspect, pause, resume, stop, restart, or save a workflow.
 A saved workflow becomes a reusable slash command after `/reload`.
 
+While `Subagents` and `Dynamic workflows` are on in the advanced mode, the
+main agent has the `Workflow` tool on every request. The guide to writing a
+script is the built-in skill `workflow-authoring`, which the agent loads with
+`Skill`; see [Skills](#skills). SUPER still asks before a run starts while
+`workflows.confirm` is on.
+
+- A run starts in the background and the call returns at once with the run's
+  id, `wf_` and eight letters or digits. The run is a background task with
+  that id: `/tasks` and `TaskStop` stop it, and when it ends its answer
+  reaches the agent in a notice, which starts a new turn if the agent is
+  idle. `Esc` stops the turn, not the run.
+- The script comes from `script`, from a file with `scriptPath`, or, with
+  `name` alone, from a saved workflow in `.super/workflows/` of a trusted
+  project or in `~/.super/agent/workflows/`. Along with `script`, `name` only
+  names the run. `args` reaches the script as `args`. `description` and
+  `title` are accepted and not used.
+- Every run saves its script in the session's folder, as
+  `<session file without .jsonl>/workflows/<run id>.js`, and the call names
+  the file, so a later call can run it again with `scriptPath`. When a run
+  ends, its finished agent calls are kept next to it in
+  `<run id>.journal.json`.
+- `resumeFromRunId` starts a run that replays the finished agent calls of an
+  earlier run of the session, also one from before the session was opened
+  again, up to the first call whose prompt changed; from there the agents run
+  again. A run that is still running cannot be resumed.
+
 One workflow can start up to 1,000 agents, with 16 active at once. Workflow
 scripts cannot read files, use the network, load modules, or start processes.
 Only their child agents use SUPER tools.
+
+### Skills
+
+A skill is a Markdown file with instructions for one kind of task. SUPER
+finds skills in `~/.super/agent/skills/`, in `~/.agents/skills/`, and, in a
+trusted project, in `.super/skills/` and `.agents/skills/`. You call one
+with `/name` at the start of a prompt or `$name` anywhere in it; its text goes
+into that prompt.
+
+- In the basic mode the system prompt lists each skill with its file, and the
+  agent reads the file with `Read`, as before.
+- In the advanced mode the agent has the `Skill` tool, alongside `Read` or
+  `Bash`. The skills are listed without their files, and `Skill` loads one by
+  its name; `args` fills in `$ARGUMENTS` in the skill's text. A skill whose
+  frontmatter has `disable-model-invocation: true` is yours to call only.
+- A skill with `context: fork` in its frontmatter runs in an agent of its own
+  instead, named after the skill; `agent` chooses the agent type
+  (`general-purpose` by default), and `model` and `effort` work as for
+  `Agent`. The call waits for the agent's report, or, with `background: true`,
+  returns at once with the agent's name and id, and a notice brings the report
+  when it ends. Such a skill needs `Subagents` on.
 
 ## Models and integrations
 
@@ -859,9 +906,11 @@ measured yet.
 | Job detail view            | Long goal and result  |  46.595 us |
 
 The workflow interpreter used 2.185 us per agent call. Arming a workflow added
-651 ns to request preparation and kept the total below 1 us. Loop and
-autoresearch jobs sleep between model turns and update the TUI through small
-events.
+651 ns to request preparation and kept the total below 1 us; that was measured
+when arming added the workflow tool and its guide. The tool and the list of
+skills are now part of every request while dynamic workflows are on, which has
+not been measured yet. Loop and autoresearch jobs sleep between model turns
+and update the TUI through small events.
 
 ### TUI rendering and resize
 
@@ -1041,11 +1090,12 @@ your user settings.
 
 - `advanced`, the default, offers every tool. The `Subagents` and `Dynamic
   workflows` switches decide whether the agent tools and the workflow tool are
-  among them.
+  among them. Skills are loaded with the `Skill` tool.
 - `basic` offers only the core tools `Read`, `Write`, `Edit`, and `Bash`, and
   whichever of `grep`, `find`, `ls`, `mcp`, and `webmcp` you configured, with
-  the simple system prompt. Subagents and dynamic workflows are off in this
-  mode, whatever their switches say.
+  the simple system prompt, which lists the skills with their files.
+  Subagents and dynamic workflows are off in this mode, whatever their
+  switches say.
 
 A change in `/settings` applies to the next request. Only your user settings
 decide the mode; a project's settings cannot change it.
