@@ -1201,6 +1201,9 @@ fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
     {
         return format!("mcp {server}.{tool}");
     }
+    if name == "ScheduleWakeup" {
+        return schedule_wakeup_title(args);
+    }
     let file = args["file_path"].as_str().map(|path| {
         Path::new(path)
             .strip_prefix(cwd)
@@ -1222,6 +1225,11 @@ fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
         .or_else(|| args["skill"].as_str())
         .or_else(|| args["name"].as_str())
         .or_else(|| args["scriptPath"].as_str())
+        .or_else(|| {
+            (name == "ExitWorktree")
+                .then(|| args["action"].as_str())
+                .flatten()
+        })
         .unwrap_or("");
     let detail = detail.replace('\n', " ");
     let detail: String = detail.chars().take(80).collect();
@@ -1230,6 +1238,29 @@ fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
     } else {
         format!("{name} {detail}")
     }
+}
+
+/// "ScheduleWakeup 300s · <reason>", "ScheduleWakeup stop · <reason>", with
+/// "· noop" for a wake-up the model marked as a quiet one.
+fn schedule_wakeup_title(args: &serde_json::Value) -> String {
+    let mut title = String::from("ScheduleWakeup");
+    if args["stop"].as_bool() == Some(true) {
+        title.push_str(" stop");
+    } else if let Some(seconds) = args["delaySeconds"].as_f64() {
+        title.push_str(&format!(" {seconds}s"));
+    }
+    if let Some(reason) = args["reason"]
+        .as_str()
+        .map(|reason| reason.replace('\n', " "))
+        .filter(|reason| !reason.trim().is_empty())
+    {
+        let reason: String = reason.chars().take(80).collect();
+        title.push_str(&format!(" · {reason}"));
+    }
+    if args["noop"].as_bool() == Some(true) {
+        title.push_str(" · noop");
+    }
+    title
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5761,7 +5792,12 @@ fn start_or_open_job(
         ));
         return;
     };
-    match runtime.start(kind, request.goal, request.limit, request.interval) {
+    let started = if self_paced(kind, &request, session.mode()) {
+        runtime.start_self_paced(request.goal, request.limit)
+    } else {
+        runtime.start(kind, request.goal, request.limit, request.interval)
+    };
+    match started {
         Ok(job) => {
             let snapshot = job.snapshot();
             let schedule = match (snapshot.limit, snapshot.interval) {
@@ -5793,6 +5829,20 @@ struct JobRequest {
     goal: String,
     limit: Option<u32>,
     interval: Option<Duration>,
+}
+
+/// Whether a job runs as a self-paced loop in the session itself: `/loop`
+/// without an interval in the advanced mode, where the model schedules each
+/// round with `ScheduleWakeup`. `--iterations` caps its rounds. Everything
+/// else runs in a child session as before.
+fn self_paced(
+    kind: super_coding::iterative::JobKind,
+    request: &JobRequest,
+    mode: super_coding::settings::Mode,
+) -> bool {
+    kind == super_coding::iterative::JobKind::Loop
+        && request.interval.is_none()
+        && mode.is_advanced()
 }
 
 fn parse_job_request(
@@ -9793,6 +9843,46 @@ mod tests {
             ),
             "Workflow /s/wf_abcdefgh.js"
         );
+        assert_eq!(
+            tool_title(
+                "ScheduleWakeup",
+                &serde_json::json!({"delaySeconds": 300, "reason": "CI\nruns", "prompt": "check"}),
+                cwd
+            ),
+            "ScheduleWakeup 300s · CI runs"
+        );
+        assert_eq!(
+            tool_title(
+                "ScheduleWakeup",
+                &serde_json::json!({"delaySeconds": 60, "noop": true}),
+                cwd
+            ),
+            "ScheduleWakeup 60s · noop"
+        );
+        assert_eq!(
+            tool_title(
+                "ScheduleWakeup",
+                &serde_json::json!({"stop": true, "reason": "done"}),
+                cwd
+            ),
+            "ScheduleWakeup stop · done"
+        );
+        assert_eq!(
+            tool_title("EnterWorktree", &serde_json::json!({"name": "fix"}), cwd),
+            "EnterWorktree fix"
+        );
+        assert_eq!(
+            tool_title("EnterWorktree", &serde_json::json!({}), cwd),
+            "EnterWorktree"
+        );
+        assert_eq!(
+            tool_title(
+                "ExitWorktree",
+                &serde_json::json!({"action": "remove", "discard_changes": true}),
+                cwd
+            ),
+            "ExitWorktree remove"
+        );
     }
 
     #[test]
@@ -11646,6 +11736,77 @@ mod tests {
         assert!(parse_job_request(JobKind::Autoresearch, "15m fix it").is_err());
         assert!(parse_job_request(JobKind::Loop, "0s fix it").is_err());
         assert!(parse_job_request(JobKind::Loop, "2h30wat fix it").is_err());
+    }
+
+    #[test]
+    fn only_a_loop_without_an_interval_in_the_advanced_mode_is_self_paced() {
+        use super_coding::iterative::JobKind;
+        use super_coding::settings::Mode;
+
+        let request = |kind, arguments| parse_job_request(kind, arguments).unwrap();
+        let plain = request(JobKind::Loop, "fix the parser");
+        let capped = request(JobKind::Loop, "fix the parser --iterations 7");
+        let every = request(JobKind::Loop, "15m fix the parser");
+        let research = request(JobKind::Autoresearch, "make it faster");
+        assert!(self_paced(JobKind::Loop, &plain, Mode::Advanced));
+        assert!(self_paced(JobKind::Loop, &capped, Mode::Advanced));
+        // With an interval, in the basic mode and for autoresearch it stays
+        // the loop in a new session.
+        assert!(!self_paced(JobKind::Loop, &every, Mode::Advanced));
+        assert!(!self_paced(JobKind::Loop, &plain, Mode::Basic));
+        assert!(!self_paced(JobKind::Loop, &capped, Mode::Basic));
+        assert!(!self_paced(
+            JobKind::Autoresearch,
+            &research,
+            Mode::Advanced
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_loop_command_starts_a_self_paced_loop_in_the_advanced_mode_only() {
+        use super_coding::iterative::JobKind;
+
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        // Every request is answered at once, so no turn reaches a provider.
+        session.set_stream_fn(Some(Arc::new(|_, _, _| {
+            let mut message = super_ai::AssistantMessage::empty("fake", "fake", "fake");
+            message
+                .content
+                .push(ContentBlock::text("done [goal-complete]"));
+            message.stop_reason = StopReason::Stop;
+            let (sink, stream) = super_ai::EventStream::channel();
+            sink.send(super_ai::AssistantEvent::Start {
+                partial: message.clone(),
+            });
+            sink.done(message);
+            stream
+        })));
+        start_or_open_job(&mut app, &session, JobKind::Loop, "tidy the docs");
+        let runtime = session.iterative_jobs().unwrap();
+        let job = runtime.latest().unwrap();
+        assert!(job.is_self_paced());
+        assert_eq!(job.snapshot().limit, Some(100));
+        let Some(Cell::Notice(notice)) = app.cells.last() else {
+            panic!("expected a notice");
+        };
+        let notice = notice.clone();
+        assert!(
+            notice.starts_with("started loop job #1 in session ")
+                && notice.ends_with(" · up to 100 iterations · /jobs opens the job view"),
+            "{notice}"
+        );
+        job.stop();
+
+        let mut basic = session.settings();
+        basic.mode = super_coding::settings::Mode::Basic;
+        session.update_settings(basic);
+        start_or_open_job(&mut app, &session, JobKind::Loop, "tidy the docs");
+        let child_loop = runtime.latest().unwrap();
+        assert!(!child_loop.is_self_paced());
+        child_loop.stop();
     }
 
     #[cfg(unix)]

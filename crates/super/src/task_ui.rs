@@ -146,15 +146,66 @@ pub(crate) fn message_line(from: &str, summary: Option<&str>, message: &str) -> 
     format!("message from {from} · {text}")
 }
 
+/// The first line of `text`, at most 100 characters.
+fn first_line(text: &str) -> String {
+    text.lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(100)
+        .collect()
+}
+
+/// The transcript line for a wake-up that came due: its reason, else the
+/// first line of the prompt it brings back.
+pub(crate) fn wakeup_line(wakeup: &super_coding::WakeupInfo) -> String {
+    let shown = wakeup
+        .reason
+        .as_deref()
+        .or(wakeup.prompt.as_deref())
+        .unwrap_or_default();
+    let mut line = format!("wake-up · {}", first_line(shown));
+    if wakeup.noop {
+        line.push_str(" · noop");
+    }
+    line
+}
+
+/// The transcript line for a round of a self-paced loop: which round, and
+/// the reason of the wake-up that started it, else the loop's prompt.
+pub(crate) fn round_line(
+    round: u32,
+    max_rounds: u32,
+    prompt: &str,
+    woken_by: Option<&super_coding::WakeupInfo>,
+) -> String {
+    let shown = woken_by
+        .and_then(|wakeup| wakeup.reason.as_deref())
+        .unwrap_or(prompt);
+    let mut line = format!("loop round {round}/{max_rounds} · {}", first_line(shown));
+    if woken_by.is_some_and(|wakeup| wakeup.noop) {
+        line.push_str(" · noop");
+    }
+    line
+}
+
 /// The transcript line for a custom message that reached the agent from
-/// outside a tool call: a task's notice, a monitor's event or a message of
-/// an agent; `None` for any other message.
+/// outside a tool call: a task's notice, a monitor's event, a message of
+/// an agent, a wake-up or a loop's round; `None` for any other message.
 pub(crate) fn background_line(message: &super_agent::AgentMessage) -> Option<String> {
     if let Some(task) = super_coding::notifications::notified_task(message) {
         return Some(notice_line(&task));
     }
     if let Some((from, summary, text)) = super_coding::notifications::sent_message(message) {
         return Some(message_line(&from, summary.as_deref(), &text));
+    }
+    if let Some(wakeup) = super_coding::notifications::woken(message) {
+        return Some(wakeup_line(&wakeup));
+    }
+    if let Some((round, max_rounds, prompt, woken_by)) =
+        super_coding::notifications::looped(message)
+    {
+        return Some(round_line(round, max_rounds, &prompt, woken_by.as_ref()));
     }
     super_coding::notifications::monitored_event(message)
         .map(|(task, event)| event_line(&task, &event))
@@ -277,6 +328,45 @@ mod tests {
         assert_eq!(
             background_line(&summarized).unwrap(),
             "message from a1234abcd · progress"
+        );
+    }
+
+    #[test]
+    fn wake_ups_and_loop_rounds_have_a_transcript_line_with_their_reason() {
+        let mut wakeup = super_coding::WakeupInfo {
+            id: 1,
+            delay_seconds: 300,
+            due_at: 0,
+            reason: Some("CI runs for five minutes".into()),
+            noop: false,
+            prompt: Some("check CI\nand report".into()),
+            job: None,
+            round: None,
+        };
+        let message = super_coding::notifications::wakeup_message(&wakeup);
+        assert_eq!(
+            background_line(&message).unwrap(),
+            "wake-up · CI runs for five minutes"
+        );
+        wakeup.reason = None;
+        wakeup.noop = true;
+        let message = super_coding::notifications::wakeup_message(&wakeup);
+        assert_eq!(
+            background_line(&message).unwrap(),
+            "wake-up · check CI · noop"
+        );
+
+        let first = super_coding::notifications::loop_round(1, "tidy the docs", 1, 100, None);
+        assert_eq!(
+            background_line(&first).unwrap(),
+            "loop round 1/100 · tidy the docs"
+        );
+        wakeup.reason = Some("nothing changed".into());
+        let next =
+            super_coding::notifications::loop_round(1, "tidy the docs", 2, 100, Some(&wakeup));
+        assert_eq!(
+            background_line(&next).unwrap(),
+            "loop round 2/100 · nothing changed · noop"
         );
     }
 }

@@ -148,7 +148,7 @@ pub(crate) const SUPER_SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand::new("workflows", "Browse and manage workflow runs", None),
     SlashCommand::new(
         "loop",
-        "Run a goal loop in a new session",
+        "Run a goal loop",
         Some("[interval] <goal> [--iterations N]"),
     ),
     SlashCommand::new(
