@@ -31,6 +31,18 @@ pub fn cwd_slug(cwd: &Path) -> String {
     format!("-{s}-")
 }
 
+/// The folder that holds the stored sessions of the children the session
+/// stored in `session_file` started: `<file without .jsonl>/agents`. A
+/// child's own children are in its folder in the same way, so the folders
+/// nest like the agents do.
+pub fn agents_dir(session_file: &Path) -> PathBuf {
+    session_file.with_extension("").join("agents")
+}
+
+/// `customType` of the entry that makes a session a child of another: what
+/// the child is for, and who started it.
+pub const SUBAGENT_ENTRY: &str = "subagent";
+
 pub fn default_session_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -186,16 +198,56 @@ impl SessionManager {
         }
     }
 
-    /// Create a child session in the same working directory and session store.
+    /// Create a child session in the same working directory, stored in this
+    /// session's folder of agents under its own id.
     pub fn create_child(&self) -> Result<Self> {
-        let mut manager = self.create_sibling()?;
+        self.create_child_named(None, &self.cwd.clone())
+    }
+
+    /// Create a child session working in `cwd`. A stored session keeps its
+    /// children in its folder of agents ([`agents_dir`]), as
+    /// `<name>.jsonl`, or under the child's own id when `name` is `None`;
+    /// the listings of stored sessions never reach into it. A child of an
+    /// in-memory session is in memory too.
+    pub fn create_child_named(&self, name: Option<&str>, cwd: &Path) -> Result<Self> {
+        let mut manager = Self::in_memory(cwd);
+        manager.session_dir = self.session_dir.clone();
         manager.header.parent_session = Some(
             self.file
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| format!("session:{}", self.header.id)),
         );
+        if let Some(file) = &self.file {
+            let name = match name {
+                Some(name) => name.to_string(),
+                None => manager.header.id.clone(),
+            };
+            if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+                anyhow::bail!("'{name}' cannot name a child session file");
+            }
+            manager.file = Some(agents_dir(file).join(format!("{name}.jsonl")));
+        }
         Ok(manager)
+    }
+
+    /// The stored sessions of the children this session started, from its
+    /// folder of agents, in no particular order. Empty for an in-memory
+    /// session.
+    pub fn stored_children(&self) -> Vec<PathBuf> {
+        let Some(file) = &self.file else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(agents_dir(file)) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension().and_then(|e| e.to_str()) == Some("jsonl") && path.is_file()
+            })
+            .collect()
     }
 
     /// Fork: copy the source session's entries into a new file for `cwd`.
@@ -295,7 +347,10 @@ impl SessionManager {
         }
     }
 
-    /// Cheap listing: header + scan for name/first user message.
+    /// Cheap listing: header + scan for name/first user message. A child
+    /// session is no session of its own and is not listed: one stored next
+    /// to the sessions, as children were before they had a folder of their
+    /// own, is known by its `subagent` entry.
     fn peek(path: &Path) -> Option<SessionListing> {
         let mut reader = BufReader::new(File::open(path).ok()?);
         let header = Self::read_header(&mut reader)?;
@@ -312,6 +367,13 @@ impl SessionManager {
                 continue;
             }
             entry_count += 1;
+            if line.contains("\"subagent\"")
+                && let Ok(v) = serde_json::from_str::<Value>(&line)
+                && v["type"] == "custom"
+                && v["customType"] == SUBAGENT_ENTRY
+            {
+                return None;
+            }
             if name.is_none()
                 && line.contains("\"session_info\"")
                 && let Ok(v) = serde_json::from_str::<Value>(&line)
@@ -1510,6 +1572,102 @@ mod tests {
             reopened.header().parent_session.as_deref(),
             Some(parent_file.as_str())
         );
+    }
+
+    #[test]
+    fn child_sessions_nest_in_their_parents_folder_and_are_not_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("project");
+        let sessions = dir.path().join("sessions");
+        let mut parent = SessionManager::create(&cwd, Some(sessions.clone())).unwrap();
+        parent
+            .append_message(AgentMessage::user("main work"))
+            .unwrap();
+        let parent_file = parent.session_file().unwrap().to_path_buf();
+
+        let mut child = parent.create_child_named(Some("a1b2c3d4e"), &cwd).unwrap();
+        child
+            .append_message(AgentMessage::user("child work"))
+            .unwrap();
+        child.append_custom(SUBAGENT_ENTRY, None).unwrap();
+        let child_file = child.session_file().unwrap().to_path_buf();
+        assert_eq!(child_file, agents_dir(&parent_file).join("a1b2c3d4e.jsonl"));
+        assert_eq!(
+            child_file,
+            parent_file
+                .with_extension("")
+                .join("agents/a1b2c3d4e.jsonl")
+        );
+        // A child's children nest one folder further, in a folder of their
+        // own working directory if they have one.
+        let elsewhere = dir.path().join("worktree");
+        let mut grandchild = child
+            .create_child_named(Some("a9z8y7x6w"), &elsewhere)
+            .unwrap();
+        grandchild
+            .append_message(AgentMessage::user("deeper"))
+            .unwrap();
+        assert_eq!(
+            grandchild.session_file().unwrap(),
+            child_file.with_extension("").join("agents/a9z8y7x6w.jsonl")
+        );
+        assert_eq!(grandchild.cwd(), elsewhere);
+        assert_eq!(grandchild.header().cwd, elsewhere.display().to_string());
+        // A child named by nobody is stored under its own id.
+        let mut unnamed = parent.create_child().unwrap();
+        unnamed
+            .append_message(AgentMessage::user("workflow work"))
+            .unwrap();
+        assert_eq!(
+            unnamed.session_file().unwrap(),
+            agents_dir(&parent_file).join(format!("{}.jsonl", unnamed.session_id()))
+        );
+        // A child stored next to the sessions, as before the folders.
+        let mut flat = SessionManager::create(&cwd, Some(sessions.clone())).unwrap();
+        flat.append_message(AgentMessage::user("old child"))
+            .unwrap();
+        flat.append_custom(SUBAGENT_ENTRY, Some(serde_json::json!({"taskName": "x"})))
+            .unwrap();
+        assert_eq!(flat.session_file().unwrap().parent(), parent_file.parent());
+
+        let listed = SessionManager::list(&cwd, &sessions).unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].id, parent.session_id());
+        let everywhere = SessionManager::list_all(&sessions).unwrap();
+        assert_eq!(everywhere.len(), 1, "{everywhere:?}");
+        assert_eq!(everywhere[0].id, parent.session_id());
+        // Nor is a nested child found by its id.
+        assert_eq!(
+            SessionManager::find_by_id(&sessions, child.session_id()).unwrap(),
+            None
+        );
+        let mut children = parent.stored_children();
+        children.sort();
+        let mut expected = vec![
+            child_file.clone(),
+            unnamed.session_file().unwrap().to_path_buf(),
+        ];
+        expected.sort();
+        assert_eq!(children, expected);
+        assert_eq!(
+            child.stored_children(),
+            [grandchild.session_file().unwrap()]
+        );
+        // A reopened child is the same session in the same place.
+        let reopened = SessionManager::open(&child_file).unwrap();
+        assert_eq!(reopened.session_id(), child.session_id());
+        assert_eq!(reopened.stored_children().len(), 1);
+        // An in-memory session has no stored children, and its children are
+        // in memory.
+        let memory = SessionManager::in_memory(&cwd);
+        assert!(memory.stored_children().is_empty());
+        assert!(
+            !memory
+                .create_child_named(Some("a1"), &cwd)
+                .unwrap()
+                .is_persisted()
+        );
+        assert!(parent.create_child_named(Some("../up"), &cwd).is_err());
     }
 
     #[test]
