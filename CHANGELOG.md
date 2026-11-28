@@ -505,6 +505,8 @@
   next request: its system prompt and tools, and a tool the change took away
   no longer runs. They changed only with the next run, so an agent could
   still start in a session set to `basic`.
+- `/hotkeys` names the key that copies the last response as it is bound
+  (`copyLastResponse` in `keybindings.json`); it always said `Ctrl+X`.
 - The terminal's question at quitting in a worktree names the worktree's
   folder beside `keep` and `remove`.
 - When one answer makes several tool calls, the full-screen terminal shows

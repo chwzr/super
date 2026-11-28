@@ -5056,15 +5056,19 @@ fn show_warnings(app: &mut App, warnings: Vec<String>) {
     }
 }
 
-/// The `/hotkeys` text. The key that stops the background tasks is the one
-/// bound to it, since its line in the footer names that key too.
+/// The `/hotkeys` text. The keys that stop the background tasks and copy
+/// the last response are the ones bound to them, since they can move.
 fn hotkeys_text(keybindings: &Keybindings) -> String {
     let stop = keybindings
         .key_for(Action::StopBackgroundTasks)
         .map(|key| format!(" · {} stop background tasks while they run", key.label()))
         .unwrap_or_default();
+    let copy = keybindings
+        .key_for(Action::CopyLastResponse)
+        .map(|key| format!("{} copy · ", key.label()))
+        .unwrap_or_default();
     format!(
-        "Input\n  Enter send · Shift+Enter or Alt+Enter newline · Ctrl+W delete previous word · / commands and skills · $ skills · @ files · ! shell · !! shell outside context\nModels and effort\n  Shift+Tab effort · Ctrl+L select model · Ctrl+P next model · Ctrl+Shift+P previous model\nSession\n  Ctrl+D exit · Esc cancel · Ctrl+C interrupt or clear · double Esc tree{stop}\nDisplay and queues\n  Ctrl+O tools · Ctrl+T thinking · Ctrl+X copy · Ctrl+Enter follow-up · Alt+Up dequeue\nWorkflows\n  /workflow <prompt> runs one task as a workflow · /workflows browses runs\n  arrows select · Enter open · Esc back · j/k scroll · f filter · p pause · x stop · r restart · s save"
+        "Input\n  Enter send · Shift+Enter or Alt+Enter newline · Ctrl+W delete previous word · / commands and skills · $ skills · @ files · ! shell · !! shell outside context\nModels and effort\n  Shift+Tab effort · Ctrl+L select model · Ctrl+P next model · Ctrl+Shift+P previous model\nSession\n  Ctrl+D exit · Esc cancel · Ctrl+C interrupt or clear · double Esc tree{stop}\nDisplay and queues\n  Ctrl+O tools · Ctrl+T thinking · {copy}Ctrl+Enter follow-up · Alt+Up dequeue\nWorkflows\n  /workflow <prompt> runs one task as a workflow · /workflows browses runs\n  arrows select · Enter open · Esc back · j/k scroll · f filter · p pause · x stop · r restart · s save"
     )
 }
 
@@ -9988,6 +9992,19 @@ mod tests {
         assert!(app.workflow_view.is_none());
     }
 
+    /// `/hotkeys` names the key copying is bound to, as it does for the key
+    /// that stops the background tasks.
+    #[test]
+    fn the_key_help_names_the_bound_copy_key() {
+        let mut keybindings = Keybindings::default();
+        assert!(hotkeys_text(&keybindings).contains("Ctrl+X copy"));
+        keybindings.bind(KeyEvent::ctrl('y'), Action::CopyLastResponse);
+        let text = hotkeys_text(&keybindings);
+        assert!(text.contains("Ctrl+Y copy"), "{text}");
+        assert!(!text.contains("Ctrl+X copy"), "{text}");
+        assert!(text.contains("Ctrl+X stop background tasks"), "{text}");
+    }
+
     /// The warnings about tool names reach the transcript, where the
     /// full-screen terminal would draw over standard error.
     #[test]
@@ -10093,6 +10110,7 @@ mod tests {
             "● 1 background task running · Ctrl+B to stop"
         );
         assert!(hotkeys_text(&app.keybindings).contains("Ctrl+B stop background tasks"));
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+X copy"));
         press(&mut app, KeyEvent::ctrl('x'));
         assert!(!monitor.is_stopped());
         assert_eq!(last_notice(&app), "nothing to copy");
