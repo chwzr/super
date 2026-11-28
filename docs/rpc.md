@@ -95,6 +95,11 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 - `set_session_name` with `name`, and `auto: true` for a title a client generated from the first prompt rather than a name someone typed (front ends take it as the title without showing a rename).
 - `new_session`: replace active history with an empty in-memory session.
 - `switch_session` with `sessionPath`.
+  Both abort a turn that runs and answer once it has ended, so that what is
+  left of it is written into the conversation it belongs to, as `abort`
+  without task controls does for the turn; the conversation's workflow runs
+  are stopped, and each run's end is stored in the conversation it started
+  in.
 - `fork` with `entryId`: move to the selected point and return editable user text.
 - `get_fork_messages`: user entries available for branching.
 - `export_html`, optional `outputPath`: writes an HTML transcript and returns its path.

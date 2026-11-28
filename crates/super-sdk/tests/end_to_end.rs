@@ -423,6 +423,65 @@ async fn a_session_file_guard_can_refuse_switch_session() {
     assert_eq!(session.state().session_id, other_id);
 }
 
+/// `switch_session` and `new_session` while a turn runs end the turn first:
+/// nothing of it is written into the conversation the session moves to.
+#[tokio::test]
+async fn switching_conversations_during_a_turn_ends_the_turn_first() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    // Each turn is aborted during its command, so it makes one request.
+    let long = || {
+        vec![MockTurn::ToolCall {
+            id: "call_0".into(),
+            name: "Bash".into(),
+            arguments: json!({"command": "sleep 3; echo LONG-DONE"}),
+        }]
+    };
+    let script = MockScript {
+        turns: vec![
+            long(),
+            long(),
+            vec![MockTurn::Text("A-TURN-FINAL-ANSWER".into())],
+        ],
+    };
+    let (_provider, session) = session_with(directory.path(), script).await;
+    let mut other =
+        super_coding::SessionManager::create(directory.path(), Some(directory.path().join("s")))
+            .expect("another session");
+    other.append_session_info("other").expect("written");
+    let other_file = other.session_file().expect("a file").to_path_buf();
+    let before = std::fs::read_to_string(&other_file).unwrap();
+    drop(other);
+
+    for command in [
+        Command::SwitchSession {
+            session_path: other_file.display().to_string(),
+        },
+        Command::NewSession {},
+    ] {
+        let collected = collect_events(&session);
+        let running = session.clone();
+        tokio::spawn(async move { running.prompt("go").await });
+        wait_for(&collected, "tool_execution_start").await;
+        let response = session.execute(command).await;
+        assert!(response.success, "{response:?}");
+        assert!(!session.state().is_streaming);
+        // The rest of the turn, its result and its last answer, went nowhere
+        // near the conversation the session is in now.
+        let messages = serde_json::to_string(&session.messages()).unwrap();
+        assert!(!messages.contains("LONG-DONE"), "{messages}");
+        assert!(!messages.contains("A-TURN-FINAL-ANSWER"), "{messages}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !serde_json::to_string(&session.messages())
+                .unwrap()
+                .contains("call_0")
+        );
+        if session.state().session_file.as_deref() == Some(other_file.as_path()) {
+            assert_eq!(std::fs::read_to_string(&other_file).unwrap(), before);
+        }
+    }
+}
+
 #[tokio::test]
 async fn commands_from_another_surface_are_announced_to_every_client() {
     let directory = tempfile::tempdir().expect("temp dir");

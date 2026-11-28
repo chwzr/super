@@ -1054,6 +1054,16 @@ impl Session {
         }
     }
 
+    /// Before another conversation takes this one's place: abort the turn
+    /// that runs, if one does, and wait until it has ended, so that what is
+    /// left of it is written into this conversation, not the next one.
+    async fn end_turn_before_leaving(&self) {
+        if self.inner.is_running() || self.running.load(Ordering::SeqCst) {
+            self.interrupt(false);
+            self.wait_idle().await;
+        }
+    }
+
     /// Resolve once no prompt run is in flight.
     pub async fn wait_idle(&self) {
         let _guard = self.run_lock.lock().await;
@@ -1453,6 +1463,7 @@ impl Session {
                 Ok(Some(json!({"messages": reclaimed})))
             }
             Command::NewSession {} => {
+                self.end_turn_before_leaving().await;
                 let manager = super_coding::SessionManager::in_memory(&self.cwd);
                 self.inner.replace_manager(manager);
                 Ok(Some(json!({"cancelled": false})))
@@ -1699,6 +1710,7 @@ impl Session {
                 }
                 super_coding::SessionManager::refuse_agent_session(path)
                     .map_err(|error| SdkErrorText(format!("{error:#}")))?;
+                self.end_turn_before_leaving().await;
                 let manager = super_coding::SessionManager::open(path)
                     .map_err(|error| SdkErrorText(format!("{error:#}")))?;
                 self.inner.replace_manager(manager);

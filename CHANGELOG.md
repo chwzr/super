@@ -420,6 +420,16 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- `switch_session` and `new_session` over RPC abort a turn that runs and
+  answer once it has ended. The rest of the turn, its tool results and its
+  last answer, was written into the conversation the session moved to, so
+  that conversation's next request carried a tool result without its call.
+- A workflow run that still works when the conversation changes
+  (`switch_session`, `new_session`, `/new`, `/resume`) stores its end in the
+  conversation it started in. Its end went into the new conversation, a
+  conversation of its own for `/new`, and the conversation it started in
+  announced it as cut off by the end of its process when it was opened
+  again.
 - With `worktree.baseRef` `fresh`, a fetch of an `origin` that does not
   answer is stopped at its 30-second limit with the transport it started
   (`git remote-http`, `ssh`). Only `git` itself was killed, and every
