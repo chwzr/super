@@ -440,6 +440,27 @@ impl AgentRegistry {
         Ok(record.info(self.owner.upgrade().as_deref()))
     }
 
+    /// Wait, for at most `limit` or until `cancel` fires, until the run of
+    /// the agent `id`, whose task was just stopped, has closed, so that a
+    /// message sent next resumes the agent instead of finding it stopping.
+    pub(crate) async fn wait_until_stopped(
+        &self,
+        id: &str,
+        limit: std::time::Duration,
+        cancel: &CancellationToken,
+    ) {
+        let Ok(record) = self.resolve(id, |_| true) else {
+            return;
+        };
+        let deadline = tokio::time::Instant::now() + limit;
+        while record.is_running() && tokio::time::Instant::now() < deadline {
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+                _ = cancel.cancelled() => return,
+            }
+        }
+    }
+
     /// The session of the agent with this id or name, built from its stored
     /// session if it was not yet.
     pub fn session_of(&self, id_or_name: &str) -> anyhow::Result<Arc<AgentSession>> {

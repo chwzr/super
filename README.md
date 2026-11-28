@@ -1305,7 +1305,9 @@ In the advanced mode two tools come with `Bash`:
   agent's name is the `description` its call gave it; a name several running
   tasks share is refused, and the running one is stopped when a task that
   ended has the same name. It does not touch `/loop` and `/autoresearch`
-  jobs.
+  jobs. For an agent it answers once the agent's run has stopped (it waits
+  up to ten seconds), so a `SendMessage` after it in the same answer
+  resumes the agent.
 
 ### Wake-ups and worktrees
 

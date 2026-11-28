@@ -1570,6 +1570,71 @@ async fn the_agent_tools_of_one_answer_take_effect_in_its_order() {
     session.stop_background_tasks();
 }
 
+/// A `TaskStop` of an agent and a `SendMessage` to it in one answer: the
+/// agent is stopped when `TaskStop` answers, and the message resumes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_after_a_stop_in_one_answer_resumes_the_stopped_agent() {
+    let mut answer = tool_call("t1", "TaskStop", json!({"task_id": "X"}));
+    answer
+        .content
+        .push(super_ai::ContentBlock::ToolCall(super_ai::ToolCall {
+            id: "s1".into(),
+            name: "SendMessage".into(),
+            arguments: json!({"to": "X", "message": "NEW-ORDERS"}),
+            thought_signature: None,
+        }));
+    let fixture = fixture(vec![
+        (
+            "main",
+            vec![
+                Some(tool_call(
+                    "a1",
+                    "Agent",
+                    json!({"description": "X", "prompt": "x task", "run_in_background": true}),
+                )),
+                Some(tool_call("g1", "Gate", json!({}))),
+                Some(answer),
+                Some(text("done")),
+            ],
+        ),
+        ("x task", vec![None, Some(text("x resumed"))]),
+    ]);
+    let session = fixture.session.clone();
+    let turn = tokio::spawn(async move { session.prompt(vec![AgentMessage::user("main")]).await });
+    let seen = fixture.seen.clone();
+    eventually("X asks", || seen.count("x task") == 1).await;
+    let entered = fixture.entered.clone();
+    eventually("the main turn waits", || entered.load(Ordering::SeqCst)).await;
+    fixture.gate.notify_one();
+    turn.await.unwrap();
+    let results: HashMap<String, (bool, String)> = fixture.seen.of("main")[3]
+        .context
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolResult(result) => Some((
+                result.tool_call_id.clone(),
+                (result.is_error, texts(result).join("\n")),
+            )),
+            _ => None,
+        })
+        .collect();
+    for id in ["t1", "s1"] {
+        assert!(!results[id].0, "{id}: {}", results[id].1);
+    }
+    let seen = fixture.seen.clone();
+    eventually("X is resumed", || seen.count("x task") == 2).await;
+    assert!(
+        fixture.seen.of("x task")[1]
+            .context
+            .messages
+            .iter()
+            .filter_map(user_text)
+            .any(|text| text.contains("NEW-ORDERS"))
+    );
+    fixture.session.stop_background_tasks();
+}
+
 #[test]
 fn the_agent_tools_have_the_interface_schemas_and_placeholder_descriptions() {
     let tools = agent_tools(std::sync::Weak::new());

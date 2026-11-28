@@ -10,6 +10,9 @@ use super_agent::placeholder;
 use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
 use tokio_util::sync::CancellationToken;
 
+/// How long `TaskStop` waits for a stopped agent's run to close.
+const AGENT_STOP_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub struct TaskStopTool {
     session: Weak<AgentSession>,
 }
@@ -61,7 +64,7 @@ impl AgentTool for TaskStopTool {
         &self,
         _tool_call_id: &str,
         args: Value,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
         _on_update: Option<ToolUpdateSink>,
     ) -> anyhow::Result<ToolResult> {
         // `shell_id` is the old name of `task_id`.
@@ -78,6 +81,16 @@ impl AgentTool for TaskStopTool {
         let task = session
             .stop_task(target)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
+        // A stopped agent's run closes a moment later: wait for it, so that
+        // the agent is stopped when the result says so and a message sent
+        // after this call resumes it.
+        if task.kind == crate::tasks::TaskKind::Agent
+            && let Some(registry) = session.agent_registry()
+        {
+            registry
+                .wait_until_stopped(&task.id, AGENT_STOP_LIMIT, &cancel)
+                .await;
+        }
         Ok(ToolResult {
             content: vec![super_ai::ContentBlock::text(format!(
                 "Stopped the {} task {} ({}).",

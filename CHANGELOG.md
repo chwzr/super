@@ -420,6 +420,11 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- `TaskStop` of an agent answers once the agent's run has stopped, so a
+  `SendMessage` to it after the `TaskStop` in the same answer resumes it.
+  The message was refused every time with "Agent … is stopping; send the
+  message again once it has stopped.", and nothing told the model when to
+  send it again.
 - An agent type or a skill whose frontmatter has a value with `: ` in it,
   such as `description: Reviews code: read only`, keeps its `tools`,
   `model`, `effort`, description and `disable-model-invocation`: the value
