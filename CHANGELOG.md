@@ -299,6 +299,13 @@
   placeholders until their text is written.
 - Gemini requests leave `exclusiveMinimum` and `exclusiveMaximum` out of tool
   schemas, which its API does not accept.
+- `Edit` finds `old_string` when it differs from the file only in its quotes:
+  when it is not in the file as given, curly single and double quotes count
+  as their straight forms, in the file and in `old_string`. The text that is
+  in the file is replaced, and where it has curly quotes the straight quotes
+  of `new_string` are written curly in the same style: an apostrophe inside
+  a word as a right single quote, a quote at the start or after a space as
+  an opening one. Text that is in the file as given is replaced as before.
 - Gemini requests give every schema in a tool's parameters a type, which its
   API requires: a parameter that takes any value, such as `Workflow`'s
   `args`, is sent as a string, so a session with dynamic workflows on works

@@ -1179,7 +1179,10 @@ absolute `file_path`; a relative path is refused.
   Every other file, notebooks and PDFs among them, is read as text.
 - `Edit` replaces `old_string` with `new_string`, one replacement per call;
   `replace_all` replaces every occurrence. It keeps a file's byte-order mark
-  and Windows line endings.
+  and Windows line endings. When `old_string` is not in the file as given,
+  curly quotes count as straight ones on both sides; the text that is in the
+  file is replaced, and where it has curly quotes the straight quotes of
+  `new_string` are written curly in the same style.
 - `Write` writes `content` to a file and creates missing folders.
 
 A session remembers what it read. `Edit` and `Write` refuse a file the

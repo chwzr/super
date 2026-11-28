@@ -8,7 +8,10 @@
 //!   not changed on disk since; the session's own Edit and Write keep that
 //!   record current;
 //! - `old_string` occurs exactly once, or `replace_all` replaces every
-//!   occurrence;
+//!   occurrence; when it does not occur as given, curly quotes count as
+//!   their straight forms, in the file and in `old_string`, and what is
+//!   replaced is the text that is in the file, with the straight quotes of
+//!   `new_string` written in the file's curly style;
 //! - an empty `old_string` creates a file that does not exist yet, or fills
 //!   an empty one.
 
@@ -60,8 +63,87 @@ fn detect_line_ending(text: &str) -> LineEnding {
     }
 }
 
+/// The straight form of a curly quote; any other character as it is.
+fn straight(c: char) -> char {
+    match c {
+        '\u{2018}' | '\u{2019}' => '\'',
+        '\u{201C}' | '\u{201D}' => '"',
+        other => other,
+    }
+}
+
+/// Where `old` occurs in `content` with curly quotes counted as straight
+/// ones, on both sides: the byte ranges of `content` it covers, without
+/// overlaps, from the start.
+fn quote_blind_matches(content: &str, old: &str) -> Vec<std::ops::Range<usize>> {
+    let straight_content: String = content.chars().map(straight).collect();
+    let straight_old: String = old.chars().map(straight).collect();
+    // Each character keeps its place: the n-th character of one is the
+    // n-th of the other, so a match is mapped back by character counts.
+    let mut original: Vec<usize> = content.char_indices().map(|(at, _)| at).collect();
+    original.push(content.len());
+    let straightened: Vec<usize> = straight_content.char_indices().map(|(at, _)| at).collect();
+    let length = straight_old.chars().count();
+    straight_content
+        .match_indices(&straight_old)
+        .filter_map(|(at, _)| {
+            let first = straightened.binary_search(&at).ok()?;
+            Some(original[first]..original[first + length])
+        })
+        .collect()
+}
+
+/// `new` written in the quote style of `found`, the text it replaces: where
+/// `found` has curly double or single quotes, the straight ones of that kind
+/// in `new` become curly. An apostrophe inside a word becomes a right single
+/// quote; a quote at the start or after a space or an opening bracket
+/// becomes an opening one, any other a closing one.
+fn in_quote_style(found: &str, new: &str) -> String {
+    let double = found.contains(['\u{201C}', '\u{201D}']);
+    let single = found.contains(['\u{2018}', '\u{2019}']);
+    if !double && !single {
+        return new.to_string();
+    }
+    let chars: Vec<char> = new.chars().collect();
+    let opens = |index: usize| {
+        index == 0 || {
+            let before = chars[index - 1];
+            before.is_whitespace() || matches!(before, '(' | '[' | '{')
+        }
+    };
+    chars
+        .iter()
+        .enumerate()
+        .map(|(index, &c)| match c {
+            '"' if double => {
+                if opens(index) {
+                    '\u{201C}'
+                } else {
+                    '\u{201D}'
+                }
+            }
+            '\'' if single => {
+                let in_word = index > 0
+                    && chars[index - 1].is_alphanumeric()
+                    && chars
+                        .get(index + 1)
+                        .is_some_and(|after| after.is_alphanumeric());
+                if !in_word && opens(index) {
+                    '\u{2018}'
+                } else {
+                    '\u{2019}'
+                }
+            }
+            other => other,
+        })
+        .collect()
+}
+
 /// Replace `old` in `content`: its one occurrence, or every one with
-/// `replace_all`. Returns the new content and how many were replaced.
+/// `replace_all`. When `old` does not occur as given, it is looked for with
+/// curly quotes counted as straight ones, and each place found is replaced
+/// by `new` in that place's quote style. Returns the new content and how
+/// many were replaced.
 fn replace(
     path: &Path,
     content: &str,
@@ -71,6 +153,10 @@ fn replace(
 ) -> anyhow::Result<(String, usize)> {
     let count = content.matches(old).count();
     if count == 0 {
+        let found = quote_blind_matches(content, old);
+        if !found.is_empty() {
+            return replace_ranges(path, content, old, new, replace_all, &found);
+        }
         anyhow::bail!(
             "old_string was not found in {}; give the text exactly as it is in the file, without the line numbers Read adds.\nold_string:\n{old}",
             path.display()
@@ -87,6 +173,34 @@ fn replace(
     } else {
         content.replacen(old, new, 1)
     };
+    Ok((replaced, count))
+}
+
+/// Replace the places `found` of `content`, which `old` matched with its
+/// quotes counted as straight ones, by `new` in each place's quote style.
+fn replace_ranges(
+    path: &Path,
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+    found: &[std::ops::Range<usize>],
+) -> anyhow::Result<(String, usize)> {
+    let count = found.len();
+    if count > 1 && !replace_all {
+        anyhow::bail!(
+            "old_string occurs {count} times in {}; give more of the surrounding text so it occurs once, or set replace_all to replace every occurrence.\nold_string:\n{old}",
+            path.display()
+        );
+    }
+    let mut replaced = String::with_capacity(content.len() + new.len() * count);
+    let mut end = 0;
+    for range in found {
+        replaced.push_str(&content[end..range.start]);
+        replaced.push_str(&in_quote_style(&content[range.clone()], new));
+        end = range.end;
+    }
+    replaced.push_str(&content[end..]);
     Ok((replaced, count))
 }
 
@@ -406,6 +520,123 @@ mod tests {
         assert!(diff.contains("-beta\n+BETA"), "{diff}");
         assert!(diff.contains("a/f.txt"), "{diff}");
         assert_eq!(result.details["firstChangedLine"], 2);
+    }
+
+    #[tokio::test]
+    async fn straight_quotes_find_curly_ones_and_new_text_takes_the_files_style() {
+        let files = Files::new();
+        // Curly double quotes in the file, straight ones in old_string: the
+        // text in the file is replaced, and the new quotes are curled.
+        let path = files.create(
+            "story.md",
+            "She said \u{201C}hello\u{201D} and left.\nThe end.\n",
+        );
+        files.read(json!({"file_path": path})).await;
+        let result = files
+            .edit(json!({
+                "file_path": path,
+                "old_string": "said \"hello\" and",
+                "new_string": "said \"goodbye\" and",
+            }))
+            .await
+            .unwrap();
+        assert!(result.output_text().contains("Replaced 1 occurrence"));
+        assert_eq!(
+            files.content("story.md"),
+            "She said \u{201C}goodbye\u{201D} and left.\nThe end.\n"
+        );
+
+        // Curly single quotes: an apostrophe in a word is a right single
+        // quote, a quote after a space an opening one, else a closing one.
+        let path = files.create("note.md", "It\u{2019}s \u{2018}fine\u{2019} here.\n");
+        files.read(json!({"file_path": path})).await;
+        files
+            .edit(json!({
+                "file_path": path,
+                "old_string": "It's 'fine' here.",
+                "new_string": "'Tis what it's, 'really' it.",
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            files.content("note.md"),
+            "\u{2018}Tis what it\u{2019}s, \u{2018}really\u{2019} it.\n"
+        );
+
+        // Curly quotes in old_string find straight ones in the file, and a
+        // file without curly quotes keeps new_string as it is.
+        let path = files.create("code.rs", "let s = \"it's\";\n");
+        files.read(json!({"file_path": path})).await;
+        files
+            .edit(json!({
+                "file_path": path,
+                "old_string": "\u{201C}it\u{2019}s\u{201D}",
+                "new_string": "\"it's done\"",
+            }))
+            .await
+            .unwrap();
+        assert_eq!(files.content("code.rs"), "let s = \"it's done\";\n");
+    }
+
+    #[tokio::test]
+    async fn quote_blind_matches_count_like_exact_ones_and_exact_matches_win() {
+        let files = Files::new();
+        let path = files.create("twice.md", "\u{201C}a\u{201D} then \u{201C}a\u{201D}\n");
+        files.read(json!({"file_path": path})).await;
+        let error = files
+            .edit(json!({"file_path": path, "old_string": "\"a\"", "new_string": "\"b\""}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("occurs 2 times"), "{error}");
+        let result = files
+            .edit(json!({"file_path": path, "old_string": "\"a\"", "new_string": "\"b\"", "replace_all": true}))
+            .await
+            .unwrap();
+        assert!(result.output_text().contains("Replaced 2 occurrences"));
+        assert_eq!(
+            files.content("twice.md"),
+            "\u{201C}b\u{201D} then \u{201C}b\u{201D}\n"
+        );
+
+        // A text that is in the file as given is replaced as given, even
+        // where the file also has a curly form of it, and nothing is curled.
+        let path = files.create("both.md", "\"x\" and \u{201C}x\u{201D}\n");
+        files.read(json!({"file_path": path})).await;
+        files
+            .edit(json!({"file_path": path, "old_string": "\"x\"", "new_string": "\"y\""}))
+            .await
+            .unwrap();
+        assert_eq!(files.content("both.md"), "\"y\" and \u{201C}x\u{201D}\n");
+
+        // Text that differs in more than its quotes is still not found.
+        let error = files
+            .edit(json!({"file_path": path, "old_string": "\"z\"", "new_string": "\"w\""}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("old_string was not found"), "{error}");
+    }
+
+    #[test]
+    fn the_quote_style_follows_the_replaced_text() {
+        assert_eq!(in_quote_style("plain", "say \"hi\""), "say \"hi\"");
+        // Only the kind of quote the file curls is curled.
+        assert_eq!(
+            in_quote_style("\u{201C}x\u{201D}", "\"it's\" (\"no\")"),
+            "\u{201C}it's\u{201D} (\u{201C}no\u{201D})"
+        );
+        assert_eq!(
+            in_quote_style("don\u{2019}t", "won't \"x\" 'y'"),
+            "won\u{2019}t \"x\" \u{2018}y\u{2019}"
+        );
+        // Ranges map back over characters of different widths.
+        let content = "\u{00e9}\u{201C}a\u{201D} \u{201C}a\u{201D}";
+        let found = quote_blind_matches(content, "\"a\"");
+        assert_eq!(found.len(), 2);
+        for range in found {
+            assert_eq!(&content[range], "\u{201C}a\u{201D}");
+        }
     }
 
     #[tokio::test]
