@@ -364,6 +364,9 @@ loaded again works in it again while its folder exists. When the folder is
 gone, the session works in its own folder, stores that, and says so once:
 `worktree_changed` then also carries `missing`, the worktree's folder, and
 the stored entry has `missing` too, which the terminal shows as a line.
+`--mode rpc` does this, and starts a stored wake-up that is due, once its
+client listens: over standard input at once, with `--rpc-listen` when the
+first WebSocket client has connected.
 
 A session that ends in a worktree it made asks its clients whether to keep
 or remove it, with an `approval_request` of kind `worktree` (above). Answer

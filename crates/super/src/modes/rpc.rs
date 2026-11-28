@@ -53,10 +53,11 @@ pub fn options_from_args(args: &Args) -> Result<SessionOptions> {
         // A file another process holds is refused before the session
         // starts what it stored.
         file_guard: Some(crate::setup::held_file_guard()),
-        // Over stdio what the session stored starts once the client hears
-        // its events (`serve_stdio`), so that a worktree gone since reaches
-        // it as `worktree_changed`.
-        defer_stored_work: args.rpc_listen.is_none(),
+        // What the session stored starts once a client hears its events
+        // (`serve_stdio`, or the first WebSocket connection of
+        // `--rpc-listen`), so that a worktree gone since reaches it as
+        // `worktree_changed`.
+        defer_stored_work: true,
         ..Default::default()
     })
 }
@@ -250,6 +251,19 @@ mod tests {
         let args = Args::parse_from(["super", "--mode", "rpc", "--no-session"]);
         let options = options_from_args(&args).expect("options");
         assert_eq!(options.session, SessionSource::InMemory);
+    }
+
+    /// Over stdio and over WebSocket alike, what the session stored waits
+    /// for a client to listen.
+    #[test]
+    fn stored_work_waits_for_a_client_also_with_rpc_listen() {
+        for args in [
+            vec!["super", "--mode", "rpc"],
+            vec!["super", "--mode", "rpc", "--rpc-listen", "127.0.0.1:0"],
+        ] {
+            let options = options_from_args(&Args::parse_from(&args)).expect("options");
+            assert!(options.defer_stored_work, "{args:?}");
+        }
     }
 
     #[test]
