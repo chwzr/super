@@ -111,6 +111,24 @@ pub fn tool_name_warnings(
     )
 }
 
+/// [`tool_name_warnings`] for a front end that builds no session of its
+/// own, such as the line front end attached to the daemon: the settings and
+/// agent types of `cwd`, with the project's when it is trusted.
+pub fn tool_name_warnings_in(args: &Args, cwd: &std::path::Path) -> Vec<String> {
+    let cli_trust = if args.approve {
+        Some(true)
+    } else if args.no_approve {
+        Some(false)
+    } else {
+        None
+    };
+    let bootstrap = Settings::load(cwd, false);
+    let trusted = trust::resolve_non_interactive(cwd, cli_trust, bootstrap.default_project_trust);
+    let settings = Settings::load(cwd, trusted);
+    let types = super_coding::agents::types::discover(cwd, trusted);
+    tool_name_warnings(args, &settings, &types)
+}
+
 /// Which of the tools a session adds itself `--tools`, `--exclude-tools` and
 /// the `-Name` entries of `defaultTools` let through.
 fn tool_selection(args: &Args, settings: &Settings) -> super_coding::ToolSelection {

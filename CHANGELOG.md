@@ -420,6 +420,10 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- The line front end of `super attach` (piped `super` with the daemon)
+  names the tool names of `--tools`, `--exclude-tools`, `defaultTools` and
+  the agent types that no tool has, on standard error, as every other way
+  to start a session does; only the daemon's log had them.
 - The line front end of `super attach` shows a question that was waiting
   when it attached, with its numbered choices, so a number answers it. It
   showed nothing, and the number went to the session as a queued steer.

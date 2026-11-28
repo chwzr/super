@@ -220,6 +220,10 @@ pub async fn try_run(args: &Args) -> Result<Outcome> {
             info,
         })));
     }
+    // Tool names that are no tool's, as every other way to start says.
+    for warning in crate::setup::tool_name_warnings_in(args, &cwd) {
+        eprintln!("warning: {warning}");
+    }
     let input: Input = Box::new(tokio::io::BufReader::new(tokio::io::stdin()));
     run(
         Link::local(client, events),

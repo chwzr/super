@@ -268,3 +268,47 @@ async fn ctrl_c_in_the_line_front_end_stops_the_background_tasks_while_idle() {
     assert!(String::from_utf8_lossy(&stopped.stdout).contains("stopped"));
     let _ = tokio::time::timeout(Duration::from_secs(20), daemon.wait()).await;
 }
+
+/// The line front end names the tool names of the settings that no tool
+/// has, on standard error, as every other way to start a session does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_line_front_end_names_tool_names_no_tool_has() {
+    let sandbox = Sandbox::new();
+    std::fs::write(
+        sandbox.path("client-home/.super/agent/settings.json"),
+        r#"{"defaultTools":["read","bash","Edit"]}"#,
+    )
+    .unwrap();
+    let provider = MockProvider::start(sandbox.path("mock"), MockScript::text("Answer one."))
+        .await
+        .expect("mock provider");
+    let socket = sandbox.socket();
+    let mut daemon = sandbox.command(
+        "daemon-home",
+        &["daemon", "run", "--socket", socket.to_str().unwrap()],
+    );
+    daemon
+        .env("SUPER_MODELS_FILE", provider.catalog_path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut daemon = daemon.spawn().expect("spawn the daemon");
+    wait_for(&socket).await;
+
+    let attached = output(
+        sandbox.command("client-home", &["--model", "mock/mock-1"]),
+        "hi\n",
+    )
+    .await;
+    let stdout = String::from_utf8_lossy(&attached.stdout);
+    let stderr = String::from_utf8_lossy(&attached.stderr);
+    assert_eq!(attached.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("attached to session"), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("warning: unknown tool names ignored: read (use Read), bash (use Bash)"),
+        "{stderr}"
+    );
+
+    let stopped = output(sandbox.command("client-home", &["daemon", "stop"]), "").await;
+    assert!(String::from_utf8_lossy(&stopped.stdout).contains("stopped"));
+    let _ = tokio::time::timeout(Duration::from_secs(20), daemon.wait()).await;
+}
