@@ -259,6 +259,10 @@ pub struct BackgroundTasks {
     session: Weak<AgentSession>,
     records: Mutex<Vec<Arc<TaskRecord>>>,
     holds: Arc<AtomicUsize>,
+    /// Tasks between their end and the queueing of their notice: still
+    /// running for [`AgentSession::wait_for_background_work`], so a waiter
+    /// never sees neither the task nor its notice.
+    ending: AtomicUsize,
 }
 
 impl BackgroundTasks {
@@ -267,21 +271,27 @@ impl BackgroundTasks {
             session,
             records: Mutex::new(Vec::new()),
             holds: Arc::new(AtomicUsize::new(0)),
+            ending: AtomicUsize::new(0),
         })
     }
 
     /// Register a running task. The caller keeps the handle and ends the
-    /// task with [`TaskHandle::finish`].
+    /// task with [`TaskHandle::finish`]. An id given in the spec may be the
+    /// id of a task that ended: the new run replaces that record, so an
+    /// agent that is resumed keeps its id.
     pub fn register(self: &Arc<Self>, spec: TaskSpec) -> Result<TaskHandle, TaskRegisterError> {
         let info = {
             let mut records = self.records.lock().unwrap();
             let id = match spec.id {
                 Some(id) => {
-                    if records
+                    if let Some(position) = records
                         .iter()
-                        .any(|record| record.info.lock().unwrap().id == id)
+                        .position(|record| record.info.lock().unwrap().id == id)
                     {
-                        return Err(TaskRegisterError::DuplicateId(id));
+                        if records[position].info.lock().unwrap().status.is_running() {
+                            return Err(TaskRegisterError::DuplicateId(id));
+                        }
+                        records.remove(position);
                     }
                     id
                 }
@@ -354,12 +364,15 @@ impl BackgroundTasks {
             .collect()
     }
 
+    /// Whether a task runs, or one ended and its notice is not queued yet.
     pub fn has_running(&self) -> bool {
-        self.records
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|record| record.info.lock().unwrap().status.is_running())
+        self.ending.load(Ordering::SeqCst) > 0
+            || self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|record| record.info.lock().unwrap().status.is_running())
     }
 
     /// The task with this id, else the newest task with this name.
@@ -509,6 +522,16 @@ impl BackgroundTasks {
         let Some(record) = self.record(id) else {
             return false;
         };
+        self.ending.fetch_add(1, Ordering::SeqCst);
+        let queued = self.end(&record, outcome);
+        self.ending.fetch_sub(1, Ordering::SeqCst);
+        if let Some(session) = self.session.upgrade() {
+            session.note_activity();
+        }
+        queued
+    }
+
+    fn end(&self, record: &TaskRecord, outcome: Option<TaskOutcome>) -> bool {
         let ended = {
             let mut info = record.info.lock().unwrap();
             if !info.status.is_running() {

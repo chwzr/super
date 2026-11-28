@@ -1254,9 +1254,12 @@ impl AgentSession {
         let mut activity = self.activity.subscribe();
         loop {
             activity.borrow_and_update();
-            let idle = !*self.running.lock().unwrap()
-                && !self.background_tasks().has_running()
-                && !self.has_queued_entries();
+            // In the order work moves through: a task counts as running
+            // until its notice is queued, and a queued entry until the run
+            // that takes it holds the running flag.
+            let idle = !self.background_tasks().has_running()
+                && !self.has_queued_entries()
+                && !*self.running.lock().unwrap();
             if idle {
                 return;
             }
