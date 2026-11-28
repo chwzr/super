@@ -439,6 +439,8 @@
   as the daemon and the terminal do. A plain RPC session started every run
   without asking, which mattered once `Workflow` was offered with every
   request.
+- The terminal's question at quitting in a worktree names the worktree's
+  folder beside `keep` and `remove`.
 
 ## 0.0.42 - 2026-11-27
 

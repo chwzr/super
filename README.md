@@ -1306,8 +1306,8 @@ or `Bash`. A subagent has none of them.
 ```
 
 When you quit the terminal while the session works in a worktree it made,
-SUPER asks whether to keep or remove the worktree; `Esc` goes back to the
-session. Remote controllers see the same question and may answer it. A
+SUPER asks whether to keep or remove the worktree, and each choice names its
+folder; `Esc` goes back to the session. Remote controllers see the same question and may answer it. A
 session stopped from an app or with `stop_session` asks its clients the same
 way and keeps the worktree when nobody answers within a minute. A session
 the daemon unloads while idle, `super -p`, `--mode json`, `--mode rpc` and

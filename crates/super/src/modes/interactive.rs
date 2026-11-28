@@ -7548,13 +7548,14 @@ fn ask_before_quitting(app: &mut App, session: &super_coding::AgentSession) -> b
         return false;
     };
     let request = super_sdk::worktree_exit_request(&entered);
+    // Each choice names the worktree it keeps or removes.
     let items = request
         .choices
         .iter()
         .enumerate()
         .map(|(value, choice)| SelectItem {
             label: choice.label.clone(),
-            detail: None,
+            detail: choice.detail.clone().or_else(|| request.detail.clone()),
             value,
         })
         .collect();
@@ -10057,6 +10058,27 @@ mod tests {
         assert_eq!(
             picker.list.title,
             super_agent::placeholder::prompt_todo("Worktree.exit_question")
+        );
+        // Each row names the worktree.
+        let folder = session
+            .worktree()
+            .unwrap()
+            .worktree
+            .path
+            .display()
+            .to_string();
+        let rows: Vec<(String, Option<String>)> = picker
+            .list
+            .items
+            .iter()
+            .map(|item| (item.label.clone(), item.detail.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("keep".to_string(), Some(folder.clone())),
+                ("remove".to_string(), Some(folder))
+            ]
         );
         assert_eq!(
             terminal_host_state(&app, &session),
