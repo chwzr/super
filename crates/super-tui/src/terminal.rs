@@ -5,8 +5,11 @@ use crossterm::terminal;
 use std::io::Write;
 
 const ENTER_SEQUENCE: &[u8] = b"\x1b[?2004h\x1b[>3u\x1b[1 q\x1b[?25l";
+/// Ends with a new line and an erase to the end of the screen: what the
+/// terminal prints after it starts on a clean line, not over the footer of
+/// the last frame below the editor.
 const RESTORE_SEQUENCE: &[u8] =
-    b"\x1b]9;4;0;0\x1b\\\x1b]0;\x07\x1b[?2004l\x1b[<1u\x1b[0 q\x1b[?25h\x1b[0m\r\n";
+    b"\x1b]9;4;0;0\x1b\\\x1b]0;\x07\x1b[?2004l\x1b[<1u\x1b[0 q\x1b[?25h\x1b[0m\r\n\x1b[J";
 const TITLE_PREFIX: &[u8] = b"\x1b]0;\xe2\x9a\xa1 ";
 const TITLE_SUFFIX: &[u8] = b"\x07";
 const WORKING_TITLE_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -289,7 +292,7 @@ mod tests {
         write_control_sequence(&mut restored, RESTORE_SEQUENCE).unwrap();
         assert_eq!(
             restored,
-            b"\x1b]9;4;0;0\x1b\\\x1b]0;\x07\x1b[?2004l\x1b[<1u\x1b[0 q\x1b[?25h\x1b[0m\r\n"
+            b"\x1b]9;4;0;0\x1b\\\x1b]0;\x07\x1b[?2004l\x1b[<1u\x1b[0 q\x1b[?25h\x1b[0m\r\n\x1b[J"
         );
     }
 
