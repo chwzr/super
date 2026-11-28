@@ -88,13 +88,14 @@ pub fn record(manager: &mut SessionManager, custom_type: &str, data: Value) {
 
 /// Rebuild what a session loaded again had read, from its transcript, into
 /// `files`: the last read of each file that a `Read`, `Edit` or `Write`
-/// result of the session carries, with the modification time and size the
-/// file had then. So the model need not read again a file nobody changed,
+/// result on the session's active branch carries, with the modification
+/// time and size the file had then. A read on another branch of the file,
+/// one the session moved away from, does not count. So the model need not read again a file nobody changed,
 /// and `Edit` and `Write` refuse one that changed since as changed on disk,
 /// as in a session that kept running. Returns how many files it counted.
 pub fn rebuild_reads(manager: &SessionManager, files: &super_agent::FileStates) -> usize {
     let mut reads: Vec<(std::path::PathBuf, super_agent::FileRead)> = Vec::new();
-    for entry in manager.entries() {
+    for entry in manager.branch_entries(None) {
         let SessionEntry::Message {
             message: super_agent::AgentMessage::ToolResult(result),
             ..

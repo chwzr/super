@@ -1610,6 +1610,11 @@ impl AgentSession {
             }
             false
         };
+        // The record of reads follows the branch: a file read only on the
+        // branch left behind is not read on this one.
+        let files = self.file_state();
+        files.clear();
+        crate::stored_state::rebuild_reads(&manager, &files);
 
         Ok(TreeNavigationOutcome {
             editor_text,

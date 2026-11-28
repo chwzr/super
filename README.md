@@ -1202,13 +1202,17 @@ absolute `file_path`; a relative path is refused.
 A session remembers what it read. `Edit` and `Write` refuse a file the
 session has not read, and one that changed on disk since it was read, so the
 agent reads it again first; for `Write` over an existing file only a read of
-the whole file counts. The session's own edits keep this record current. A
-new file needs no read. A subagent keeps its own record, a fork starts with a
-copy of its parent's, and a new conversation starts with an empty one. A
-session opened again (`super -c`, `--session`, the daemon) takes the record
-back from its transcript: each file it read, or changed itself, counts as
-read while its modification time and size on disk are what they were then,
-and one that changed since is refused as changed on disk.
+the whole file counts, also when a read of a part of the file came after
+it while the file did not change. The session's own edits keep this record
+current. A new file needs no read. A subagent keeps its own record, a fork
+starts with a copy of its parent's, and a new conversation starts with an
+empty one. A session opened again (`super -c`, `--session`, the daemon)
+takes the record back from its transcript: each file it read, or changed
+itself, counts as read while its modification time and size on disk are what
+they were then, and one that changed since is refused as changed on disk.
+Moving back in the conversation (`/tree`, `fork` over RPC) does the same with
+the branch it moves to, so what was read only on the branch it left counts
+no more.
 
 When one answer makes several calls, `Edit`, `Write` and `Bash` each run
 alone, in their place: the calls before one have ended when it starts, and

@@ -401,6 +401,13 @@
 - A session opened again refuses a file it had read and that changed on disk
   since with the same words as a session that kept running, "has changed on
   disk since it was read", where it said the file had not been read yet.
+- After moving back in the conversation with `/tree` or `fork` over RPC,
+  `Edit` and `Write` refuse a file that was read only on the branch left
+  behind, also when the session is opened again; they took it as read,
+  though the conversation the model gets has no such read.
+- A read of the whole file and a read of a part of it in one answer leave
+  the whole read in the record, whichever ends last, so a `Write` after them
+  no longer succeeds in one run and is refused in the next.
 - A name in `--tools`, `--exclude-tools` or `defaultTools` that no tool has,
   such as `read` from an earlier version, is named in a warning on standard
   error when SUPER starts, with the tool's name in its new case (`read (use

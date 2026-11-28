@@ -650,4 +650,80 @@ mod reads {
         .await
         .unwrap();
     }
+    /// Moving back to before a read, as `fork` over RPC and `/tree` do,
+    /// leaves the read out of the record, in the session and when it is
+    /// loaded again: the conversation the model gets has no such read.
+    #[tokio::test]
+    async fn a_read_on_a_branch_the_session_moved_away_from_does_not_count() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.txt"), "alpha\n").unwrap();
+        let a = root.join("a.txt").display().to_string();
+        // Every request of the session is in the lane of its first prompt.
+        let (stream, _) = lanes(vec![(
+            "first",
+            vec![
+                Some(text("one")),
+                Some(tool_call("r1", "Read", json!({"file_path": a}))),
+                Some(text("read")),
+                Some(text("three")),
+            ],
+        )]);
+        let session = session_of(
+            SessionManager::create(&root, Some(root.join("sessions"))).unwrap(),
+            &root,
+            quiet_settings(),
+            &Events::default(),
+            Some(stream),
+        );
+        session.prompt(vec![AgentMessage::user("first")]).await;
+        session.prompt(vec![AgentMessage::user("read")]).await;
+        assert!(
+            session
+                .file_state()
+                .get(&key(&root.join("a.txt")))
+                .is_some()
+        );
+        let read_prompt = session
+            .manager
+            .lock()
+            .unwrap()
+            .entries()
+            .iter()
+            .find(|entry| {
+                matches!(
+                    entry,
+                    crate::session::entry::SessionEntry::Message {
+                        message: AgentMessage::User(user),
+                        ..
+                    } if user.content.as_text() == "read"
+                )
+            })
+            .map(|entry| entry.id().to_string())
+            .unwrap();
+        session
+            .navigate_tree(&read_prompt, false, None, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(
+            session
+                .file_state()
+                .get(&key(&root.join("a.txt")))
+                .is_none()
+        );
+        let refused = call(
+            tool(&session, "Edit").as_ref(),
+            json!({"file_path": a, "old_string": "alpha", "new_string": "omega"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.contains("has not been read yet"), "{refused}");
+
+        // The new branch goes on, and the session is loaded again.
+        session.prompt(vec![AgentMessage::user("after")]).await;
+        let stored = file_of(&session);
+        drop(session);
+        let again = loaded(&stored, &root, &Events::default(), None);
+        assert!(again.file_state().get(&key(&root.join("a.txt"))).is_none());
+    }
 }
