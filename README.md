@@ -1354,8 +1354,10 @@ or `Bash`. A subagent has none of them.
 `EnterWorktree` and for subagents with `isolation` set to `worktree`:
 
 - `fresh`, the default, starts from the default branch of the `origin`
-  remote, which SUPER fetches first for at most 30 seconds. A repository
-  without such a branch starts from `HEAD`.
+  remote, which SUPER fetches first for at most 30 seconds; at that limit
+  the fetch is stopped with everything it started, such as `git
+  remote-http` or `ssh`. A repository without such a branch starts from
+  `HEAD`.
 - `head` starts from `HEAD`, the state your folder is in.
 
 ```json

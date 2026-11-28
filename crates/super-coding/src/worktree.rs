@@ -235,6 +235,13 @@ fn remote_default_branch(top: &Path) -> Option<String> {
 /// asking for credentials and for at most [`FETCH_LIMIT`]; a failure is
 /// ignored.
 async fn fetch(top: &Path, branch: &str) {
+    fetch_within(top, branch, FETCH_LIMIT).await;
+}
+
+/// [`fetch`] for at most `limit`. git runs in a process group of its own,
+/// which is killed at the limit, so that the transport it started (`git
+/// remote-http`, `ssh`) ends with it.
+async fn fetch_within(top: &Path, branch: &str, limit: std::time::Duration) {
     let mut command = tokio::process::Command::new("git");
     command
         .arg("-C")
@@ -250,11 +257,18 @@ async fn fetch(top: &Path, branch: &str) {
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
-        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let _ = tokio::time::timeout(FETCH_LIMIT, command.status()).await;
+        .stderr(std::process::Stdio::null());
+    let Ok(mut process) = super_agent::tools::shell::ShellProcess::spawn(command) else {
+        return;
+    };
+    if tokio::time::timeout(limit, process.child.wait())
+        .await
+        .is_err()
+    {
+        process.kill();
+        let _ = process.child.wait().await;
+    }
 }
 
 /// The top of the working tree `folder` is in.
@@ -499,6 +513,39 @@ pub(crate) mod tests {
 
     pub(crate) fn branches(root: &Path) -> String {
         git(root, &["branch", "--list"]).unwrap()
+    }
+
+    /// A fetch from an origin that accepts the connection and never
+    /// answers ends at its limit, and leaves no process of the transport
+    /// git started behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fetch_that_hangs_leaves_no_transport_running_after_its_limit() {
+        let directory = repository();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let held = std::thread::spawn(move || {
+            let (connection, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            drop(connection);
+        });
+        let url = format!("http://127.0.0.1:{port}/repo.git");
+        git(directory.path(), &["remote", "add", REMOTE, &url]).unwrap();
+        let started = std::time::Instant::now();
+        fetch_within(directory.path(), "main", std::time::Duration::from_secs(1)).await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let processes = std::process::Command::new("ps")
+            .args(["-A", "-o", "pid=,command="])
+            .output()
+            .unwrap();
+        let left: Vec<String> = String::from_utf8_lossy(&processes.stdout)
+            .lines()
+            .filter(|line| line.contains(&url))
+            .map(str::to_string)
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        held.join().unwrap();
     }
 
     /// Run git in `root` for a test.

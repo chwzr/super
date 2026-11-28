@@ -420,6 +420,10 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- With `worktree.baseRef` `fresh`, a fetch of an `origin` that does not
+  answer is stopped at its 30-second limit with the transport it started
+  (`git remote-http`, `ssh`). Only `git` itself was killed, and every
+  `EnterWorktree` or isolated agent left a `git remote-http` process behind.
 - `EnterWorktree` in a session that works in a linked worktree makes its
   worktree in the main working tree's `.super/worktrees/`, as an agent's
   worktree is, starting from the linked worktree's `HEAD` with
