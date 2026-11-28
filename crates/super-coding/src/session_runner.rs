@@ -3651,11 +3651,29 @@ fn drain_queue(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> V
         .collect()
 }
 
+/// What the next step takes of `queue`. `mode` paces what the user queued:
+/// one message a step with `OneAtATime`. The entries the session queued
+/// itself (notices, monitor events, messages from agents) are not paced:
+/// every one that waits goes with the step, in its place in the queue.
 fn drain_entries(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> Vec<QueuedPrompt> {
     let mut q = queue.lock().unwrap();
     match mode {
         QueueMode::All => q.drain(..).collect(),
-        QueueMode::OneAtATime => q.pop_front().into_iter().collect(),
+        QueueMode::OneAtATime => {
+            let mut taken = Vec::new();
+            let mut typed = false;
+            let mut kept = VecDeque::new();
+            for prompt in q.drain(..) {
+                if prompt.starts_turn || !typed {
+                    typed |= !prompt.starts_turn;
+                    taken.push(prompt);
+                } else {
+                    kept.push_back(prompt);
+                }
+            }
+            *q = kept;
+            taken
+        }
     }
 }
 
@@ -3674,8 +3692,8 @@ fn queued_mode(queue: &Arc<Mutex<VecDeque<QueuedPrompt>>>, mode: QueueMode) -> O
                 .or_else(|| (!typed.is_empty()).then_some(PromptMode::Ordinary))
         }
         QueueMode::OneAtATime => queue
-            .front()
-            .filter(|prompt| !prompt.starts_turn)
+            .iter()
+            .find(|prompt| !prompt.starts_turn)
             .map(|prompt| prompt.mode),
     }
 }
@@ -4606,6 +4624,61 @@ mod ephemeral_tests {
             Some(PromptMode::Ordinary)
         );
         assert_eq!(drain_queue(&queue, QueueMode::OneAtATime).len(), 1);
+        assert_eq!(
+            queued_mode(&queue, QueueMode::OneAtATime),
+            Some(PromptMode::Workflow)
+        );
+    }
+
+    #[test]
+    fn every_waiting_entry_of_the_session_goes_with_a_one_at_a_time_step() {
+        let entry = |text: &str, starts_turn: bool| QueuedPrompt {
+            message: AgentMessage::user(text),
+            mode: if text.starts_with("workflow") {
+                PromptMode::Workflow
+            } else {
+                PromptMode::Ordinary
+            },
+            starts_turn,
+        };
+        let queue = Arc::new(Mutex::new(VecDeque::from([
+            entry("notice 1", true),
+            entry("typed 1", false),
+            entry("notice 2", true),
+            entry("workflow 2", false),
+            entry("notice 3", true),
+        ])));
+        let texts = |messages: Vec<AgentMessage>| -> Vec<String> {
+            messages
+                .iter()
+                .map(|message| match message {
+                    AgentMessage::User(user) => user.content.as_text(),
+                    _ => String::new(),
+                })
+                .collect()
+        };
+
+        // The user's messages come one a step; the session's own entries
+        // all go with the next step.
+        assert_eq!(
+            texts(drain_queue(&queue, QueueMode::OneAtATime)),
+            ["notice 1", "typed 1", "notice 2", "notice 3"]
+        );
+        assert_eq!(
+            queued_mode(&queue, QueueMode::OneAtATime),
+            Some(PromptMode::Workflow)
+        );
+        assert_eq!(
+            texts(drain_queue(&queue, QueueMode::OneAtATime)),
+            ["workflow 2"]
+        );
+        assert!(queue.lock().unwrap().is_empty());
+
+        // A notice queued before a user's message does not hide its mode.
+        queue
+            .lock()
+            .unwrap()
+            .extend([entry("notice 4", true), entry("workflow 3", false)]);
         assert_eq!(
             queued_mode(&queue, QueueMode::OneAtATime),
             Some(PromptMode::Workflow)

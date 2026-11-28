@@ -372,6 +372,12 @@
   call. A session or an agent cut off that way, for example by the end of
   `super -p` or of `--mode rpc`, can be resumed without the provider refusing
   the request.
+- Notices, monitor events and messages from agents that wait together reach
+  the agent together, in one step or one new turn. With the default steering
+  mode, `one-at-a-time`, they came one a step, so the second of two commands
+  that ended during a long command was told one tool round later, and three
+  that ended while the agent was idle cost three model requests. The steering
+  and follow-up modes pace only the messages the user queued.
 
 ## 0.0.42 - 2026-11-27
 

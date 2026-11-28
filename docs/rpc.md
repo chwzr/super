@@ -244,7 +244,10 @@ started it), `outputFile` (its full output or transcript), `progress` and
 When a task ends by itself, the session queues a notice for the agent. While
 the agent is idle the notice starts a new run: `agent_start`, the notice's
 `message_start` and `message_end`, the reply, `agent_settled`. While it works
-the notice arrives at its next step, between two tool rounds. The notice is
+the notice arrives at its next step, between two tool rounds. Notices that
+wait together arrive together, in one run or one step; `one-at-a-time` of
+`set_steering_mode` and `set_follow_up_mode` paces only what a client queued
+with `steer` and `follow_up`. The notice is
 a message with `role: "custom"` and `customType: "task_notification"`; its
 `details` carry the `task` and the `outcome` (`status`, `summary` and, when
 there is one, `result` and `usage`). Show it as a notice, not as something
