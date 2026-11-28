@@ -362,7 +362,23 @@ async fn an_agents_events_entries_and_commands_flow_through_streams_under_its_pa
         models_file: Some(provider.catalog_path()),
         thinking_level: Some(ThinkingLevel::Off),
         settings: Some(settings),
-        tools: Some(vec!["Read".into()]),
+        // An allowlist names the agent tools too.
+        tools: Some(
+            [
+                "Read",
+                "Agent",
+                "SendMessage",
+                "ListAgents",
+                "TaskStop",
+                "Workflow",
+                "Skill",
+                "ScheduleWakeup",
+                "EnterWorktree",
+                "ExitWorktree",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+        ),
         trust_project_files: false,
         no_context_files: true,
         ..Default::default()

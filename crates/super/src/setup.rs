@@ -41,6 +41,7 @@ pub struct ReloadedRuntime {
     pub tools: Vec<DynTool>,
     pub system_prompt: String,
     pub agent_resources: AgentResources,
+    pub tool_selection: super_coding::ToolSelection,
 }
 
 // The tool table lives in super-sdk so the command-line program and every SDK
@@ -84,6 +85,17 @@ fn configured_tools(
         .then(|| McpManager::new(loaded))
         .transpose()?;
     Ok((names, manager))
+}
+
+/// Which of the tools a session adds itself `--tools`, `--exclude-tools` and
+/// the `-Name` entries of `defaultTools` let through.
+fn tool_selection(args: &Args, settings: &Settings) -> super_coding::ToolSelection {
+    let allow = args.tools.as_ref().map(|_| Args::split_csv(&args.tools));
+    super_sdk::tools::tool_selection(
+        allow.as_deref(),
+        &Args::split_csv(&args.exclude_tools),
+        settings.default_tools.as_deref(),
+    )
 }
 
 /// The `--skill` paths, made absolute against `cwd`, so the skills list in
@@ -147,6 +159,7 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
 
     let (theme, themes) = load_themes(args, cwd, trusted, &settings);
 
+    let tool_selection = tool_selection(args, &settings);
     Ok(ReloadedRuntime {
         settings,
         skills,
@@ -157,6 +170,7 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
         tools,
         system_prompt,
         agent_resources,
+        tool_selection,
     })
 }
 
@@ -650,6 +664,7 @@ pub async fn build_startup(
         !args.no_tools,
     );
     session.set_agent_resources(agent_resources);
+    session.set_tool_selection(tool_selection(args, &settings));
 
     let initial_message = initial_message(args, &cwd)?;
 

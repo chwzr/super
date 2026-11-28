@@ -1582,3 +1582,69 @@ async fn turning_subagents_off_stops_the_running_agents() {
     eventually("the agent stopped", || !child.is_running()).await;
     assert!(!fixture.session.has_queued_entries());
 }
+
+#[tokio::test]
+async fn the_hosts_tool_list_chooses_among_the_tools_a_session_adds() {
+    use crate::session_runner::ToolSelection;
+    let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+    let fixture = fixture_with(core_tools, Vec::new());
+    let session = fixture.session.clone();
+    // An allowlist keeps the host's own tools, which it built from the same
+    // list, and lets through only the named ones of the rest.
+    session.set_tool_selection(ToolSelection {
+        allow: Some(names(&["Read", "Bash", "Agent", "TaskStop"])),
+        exclude: Vec::new(),
+    });
+    assert_eq!(
+        session.available_tool_names(),
+        [
+            "Read", "Write", "Edit", "Bash", "Gate", "Probe", "Agent", "TaskStop"
+        ]
+    );
+    session.set_tool_selection(ToolSelection {
+        allow: None,
+        exclude: names(&["Monitor", "ListAgents", "EnterWorktree"]),
+    });
+    assert_eq!(
+        session.available_tool_names(),
+        [
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Gate",
+            "Probe",
+            "Agent",
+            "SendMessage",
+            "TaskStop",
+            "Workflow",
+            "Skill",
+            "ScheduleWakeup",
+            "ExitWorktree"
+        ]
+    );
+    // The agents the session starts follow the same list.
+    let child = child_of(&session, &type_named(&session, "general-purpose"), 1);
+    assert_eq!(
+        child.available_tool_names(),
+        [
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Gate",
+            "Probe",
+            "Agent",
+            "SendMessage",
+            "TaskStop",
+            "Skill"
+        ]
+    );
+    session.set_tool_selection(ToolSelection::default());
+    assert!(
+        session
+            .available_tool_names()
+            .iter()
+            .any(|name| name == "Monitor")
+    );
+}

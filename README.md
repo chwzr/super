@@ -1123,11 +1123,12 @@ two tools.
 
 Tool names are case-sensitive. `Read`, `Write`, `Edit`, and `Bash` start with a
 capital letter, and their lower-case names from earlier versions are no longer
-recognized. `Monitor` and `TaskStop` are not chosen here: in the advanced mode
-they come with `Bash` (see [Shell tools](#shell-tools)). Neither are
-`ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`, which the main session
-gets in the advanced mode alongside `Read` or `Bash` (see
-[Wake-ups and worktrees](#wake-ups-and-worktrees)).
+recognized. The other tools of the advanced mode are not added here: `Monitor`
+and `TaskStop` come with `Bash` (see [Shell tools](#shell-tools)), `Skill`,
+`ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` with `Read` or `Bash`
+(see [Wake-ups and worktrees](#wake-ups-and-worktrees)), and the agent tools
+and `Workflow` with their switches. A `-` entry such as `"-Monitor"` leaves
+one of them out.
 
 To adjust the default selection, use `+` to add a tool and `-` to remove one.
 For example, `["+grep", "-Write"]` adds search and removes the Write tool. Add
@@ -1137,6 +1138,9 @@ Save this selection in your user settings to use it across projects. A trusted
 project can provide its own selection or adjust yours with `+` and `-` entries.
 For a single run, `--tools` selects the tools, `--exclude-tools` removes tools,
 and `--no-tools` disables them all. These options override your saved selection.
+`--tools` and `--exclude-tools` apply to every tool by its name, so
+`--tools Read` offers `Read` and nothing else, and `--exclude-tools Monitor`
+leaves out `Monitor`. Agents a session starts get no tool it left out.
 
 ### File tools
 

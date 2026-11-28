@@ -18,7 +18,20 @@ async def make_session(
         model='mock/mock-1',
         models_file=provider.catalog_path,
         thinking_level=super_sdk.ThinkingLevel.OFF,
-        tools=['Read', 'Write', 'Edit', 'Bash'],
+        # An allowlist names every tool it offers: the four default tools
+        # and the six that come with them in the advanced mode.
+        tools=[
+            'Read',
+            'Write',
+            'Edit',
+            'Bash',
+            'Monitor',
+            'TaskStop',
+            'Skill',
+            'ScheduleWakeup',
+            'EnterWorktree',
+            'ExitWorktree',
+        ],
         no_context_files=True,
     )
     return provider, session

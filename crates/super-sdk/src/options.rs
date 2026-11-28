@@ -266,6 +266,11 @@ impl SessionOptions {
             .api_key
             .clone()
             .map(|key| (model.provider.clone(), key));
+        let tool_selection = crate::tools::tool_selection(
+            self.tools.as_deref(),
+            &self.exclude_tools,
+            settings.default_tools.as_deref(),
+        );
         let session = AgentSession::new_with_subagents_allowed(
             manager,
             tools,
@@ -279,6 +284,7 @@ impl SessionOptions {
             !self.no_tools,
         );
         session.set_agent_resources(agent_resources);
+        session.set_tool_selection(tool_selection);
         session.set_stream_fn(self.stream_fn.clone());
 
         Ok(BuiltSession {

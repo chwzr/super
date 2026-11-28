@@ -295,6 +295,30 @@ fn normalize_session_title(text: &str) -> Option<String> {
     (!title.is_empty()).then(|| title.to_string())
 }
 
+/// Which of the tools a session adds itself the host's tool list lets
+/// through, by name: the agent tools, `Monitor`, `TaskStop`, `Workflow`,
+/// `Skill`, `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`. They are
+/// offered as the mode and the switches say, unless an allowlist (`--tools`)
+/// leaves them out or they are named to be left out (`--exclude-tools`, a
+/// `-Name` entry of `defaultTools`). The default lets every one through.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolSelection {
+    /// Only these, when given.
+    pub allow: Option<Vec<String>>,
+    /// Never these.
+    pub exclude: Vec<String>,
+}
+
+impl ToolSelection {
+    /// Whether the tool `name` may be offered.
+    pub fn admits(&self, name: &str) -> bool {
+        self.allow
+            .as_ref()
+            .is_none_or(|allow| allow.iter().any(|allowed| allowed == name))
+            && !self.exclude.iter().any(|excluded| excluded == name)
+    }
+}
+
 pub struct AgentSession {
     pub manager: Mutex<SessionManager>,
     /// Read with [`AgentSession::registry`]; a host replaces it when the
@@ -365,6 +389,9 @@ pub struct AgentSession {
     session_folder_tools: OnceLock<Vec<DynTool>>,
     /// This session's pending wake-up and its self-paced loop.
     wakeups: OnceLock<Arc<crate::wakeup::Wakeups>>,
+    /// Which of the tools the session adds itself the host's tool list lets
+    /// through; see [`ToolSelection`].
+    tool_selection: Mutex<ToolSelection>,
     /// Built as the session of a child: an agent, a workflow agent or a
     /// loop iteration.
     child: bool,
@@ -547,6 +574,7 @@ impl AgentSession {
             worktree: Mutex::new(None),
             session_folder_tools: OnceLock::new(),
             wakeups: OnceLock::new(),
+            tool_selection: Mutex::new(ToolSelection::default()),
             child,
             context_stale: std::sync::atomic::AtomicBool::new(false),
         });
@@ -892,6 +920,8 @@ impl AgentSession {
         if let Some(folder) = self.worktree_folder() {
             tools = in_directory(tools, &folder);
         }
+        // The host chose these; what follows the session adds itself.
+        let chosen = tools.len();
         let agents_offered = self.subagents_enabled();
         if let Some(agent_tools) = self.agent_tools.get() {
             if agents_offered {
@@ -945,8 +975,28 @@ impl AgentSession {
         {
             tools.extend(session_folder_tools.iter().cloned());
         }
+        let selection = self.tool_selection();
+        let mut position = 0;
+        tools.retain(|tool| {
+            position += 1;
+            position <= chosen || selection.admits(tool.name())
+        });
         let tools = self.bound_to_session(tools);
         *self.tools.lock().unwrap() = self.offered_in_mode(tools);
+    }
+
+    /// Which of the tools this session adds itself its host lets through.
+    pub fn tool_selection(&self) -> ToolSelection {
+        self.tool_selection.lock().unwrap().clone()
+    }
+
+    /// Let through only what `selection` admits of the tools this session
+    /// adds itself, from the next request on. The host's own tools are the
+    /// ones it built; the agents this session starts follow the selection
+    /// too.
+    pub fn set_tool_selection(&self, selection: ToolSelection) {
+        *self.tool_selection.lock().unwrap() = selection;
+        self.rebuild_tools();
     }
 
     /// The folder this session works in: the worktree it entered with
@@ -1938,7 +1988,7 @@ impl AgentSession {
                 file.path().display(), model.context_window
             ));
         }
-        if self.subagents_enabled() {
+        if self.subagents_enabled() && tools.iter().any(|tool| tool.name() == "Agent") {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&super_agent::placeholder::prompt_todo(
                 "Agent.system_section",
@@ -1956,7 +2006,10 @@ impl AgentSession {
             }
         }
         // The user asked for this turn to run as a dynamic workflow.
-        if prompt_mode == PromptMode::Workflow && self.workflows_enabled() {
+        if prompt_mode == PromptMode::Workflow
+            && self.workflows_enabled()
+            && tools.iter().any(|tool| tool.name() == "Workflow")
+        {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&super_agent::placeholder::prompt_todo("Workflow.opt_in"));
         }
@@ -2276,6 +2329,7 @@ impl AgentSession {
             true,
         );
         assert!(child.event_relay.set(relay).is_ok());
+        child.set_tool_selection(self.tool_selection());
         child.set_stream_fn(self.stream_fn.lock().unwrap().clone());
         if spec.copy_file_state {
             child.file_state().copy_from(&self.file_state());

@@ -396,7 +396,12 @@ Defaults are `Read`, `Write`, `Edit`, and `Bash`. Optional built-ins are `grep`,
 `find`, `ls`, and `mcp`. In the advanced mode a session with `Bash` also offers
 `Monitor` and `TaskStop`, which work on its background tasks; leave `Bash` out
 and they are gone too, unless the agent tools are offered, which bring
-`TaskStop`. Set a read-only allowlist for untrusted prompts. Project
+`TaskStop`. The allowlist (`tools`) and the exclusion list (`exclude_tools`)
+apply to these tools too, and to the agent tools, `Workflow`, `Skill`,
+`ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`: an allowlist of `Read`
+alone offers `Read` alone (`super_coding::ToolSelection`,
+`AgentSession::set_tool_selection`). Set a read-only allowlist for untrusted
+prompts. Project
 resource loading is off by default in SDK sessions. Explicitly enable
 `trust_project_files` only for a trusted directory.
 

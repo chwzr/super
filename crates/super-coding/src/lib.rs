@@ -49,7 +49,8 @@ pub use session::entry::{SessionEntry, SessionHeader};
 pub use session::manager::{SessionListing, SessionManager, default_session_dir};
 pub use session_runner::{
     AgentSession, EphemeralResponse, PromptMode, REMOTE_SESSION_REFUSAL, SessionBackend,
-    SessionEvent, SessionEventSink, TreeNavigationOutcome, TurnStarter, WorkflowTurnStatus,
+    SessionEvent, SessionEventSink, ToolSelection, TreeNavigationOutcome, TurnStarter,
+    WorkflowTurnStatus,
 };
 pub use settings::Settings;
 pub use tasks::{

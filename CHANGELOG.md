@@ -199,6 +199,14 @@
   entry such as `"-bash"` has to be written as `"-Bash"`. A session saved
   before this change still opens and shows its tool calls under their old
   names. `grep`, `find`, `ls`, `mcp` and `webmcp` keep their names.
+- `--tools` and `--exclude-tools`, the SDKs' `tools` and `excludeTools`,
+  and a `-Name` entry of `defaultTools` also choose among the tools a
+  session adds itself: the agent tools, `Monitor`, `TaskStop`, `Workflow`,
+  `Skill`, `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`. So
+  `--tools Read` offers `Read` only, and `--exclude-tools Monitor` leaves
+  `Monitor` out, for the session and the agents it starts. Rust SDK:
+  `super_coding::ToolSelection`, `AgentSession::set_tool_selection` and
+  `super_sdk::tools::tool_selection`.
 - An `abort` from an RPC client that did not say it shows a stop control for
   each background task, a remote client through the platform among them,
   also stops the session's background tasks; so does `session/cancel` from

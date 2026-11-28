@@ -27,7 +27,23 @@ fn options(
         models_file: Some(provider.catalog_path()),
         thinking_level: Some(ThinkingLevel::Off),
         settings: Some(settings),
-        tools: Some(vec!["Read".into()]),
+        // An allowlist names the agent tools too.
+        tools: Some(
+            [
+                "Read",
+                "Agent",
+                "SendMessage",
+                "ListAgents",
+                "TaskStop",
+                "Workflow",
+                "Skill",
+                "ScheduleWakeup",
+                "EnterWorktree",
+                "ExitWorktree",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+        ),
         trust_project_files: false,
         no_context_files: true,
         session: source,

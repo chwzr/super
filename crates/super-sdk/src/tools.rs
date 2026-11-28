@@ -119,9 +119,57 @@ pub fn select_tool_names(
     names
 }
 
+/// Which of the tools a session adds itself (the agent tools, `Monitor`,
+/// `TaskStop`, `Workflow`, `Skill`, `ScheduleWakeup`, `EnterWorktree`,
+/// `ExitWorktree`) the same lists let through: the allowlist as it is, and
+/// the exclusions together with the `-Name` entries of `defaults`
+/// (`defaultTools`). Its other entries choose among the built-in tools only.
+pub fn tool_selection(
+    allow: Option<&[String]>,
+    exclude: &[String],
+    defaults: Option<&[String]>,
+) -> super_coding::ToolSelection {
+    let mut excluded = exclude.to_vec();
+    if allow.is_none() {
+        excluded.extend(
+            defaults
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|entry| entry.strip_prefix('-'))
+                .filter(|name| !name.is_empty())
+                .map(str::to_string),
+        );
+    }
+    super_coding::ToolSelection {
+        allow: allow.map(<[String]>::to_vec),
+        exclude: excluded,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_same_lists_choose_among_the_tools_a_session_adds() {
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let everything = tool_selection(None, &[], None);
+        assert!(everything.admits("Monitor") && everything.admits("Agent"));
+        let allow = names(&["Read", "Bash", "TaskStop"]);
+        let allowed = tool_selection(Some(&allow), &names(&["TaskStop"]), None);
+        assert!(!allowed.admits("Monitor"));
+        assert!(!allowed.admits("TaskStop"));
+        let defaults = names(&["+grep", "-Monitor", "-EnterWorktree", "Read"]);
+        let configured = tool_selection(None, &names(&["Skill"]), Some(&defaults));
+        assert!(!configured.admits("Monitor"));
+        assert!(!configured.admits("EnterWorktree"));
+        assert!(!configured.admits("Skill"));
+        assert!(configured.admits("Read") && configured.admits("ExitWorktree"));
+        // An allowlist on the command line replaces defaultTools, as it does
+        // for the built-in tools.
+        let replaced = tool_selection(Some(&allow), &[], Some(&defaults));
+        assert!(replaced.admits("Bash") && !replaced.admits("Monitor"));
+    }
 
     #[test]
     fn defaults_match_the_command_line_program() {

@@ -28,10 +28,23 @@ async fn session_with(
         models_file: Some(provider.catalog_path()),
         thinking_level: Some(ThinkingLevel::Off),
         settings: Some(super_coding::Settings::default()),
+        // An allowlist names every tool it offers: the four default tools
+        // and the six that come with them in the advanced mode.
         tools: Some(
-            ["Read", "Write", "Edit", "Bash"]
-                .map(str::to_string)
-                .to_vec(),
+            [
+                "Read",
+                "Write",
+                "Edit",
+                "Bash",
+                "Monitor",
+                "TaskStop",
+                "Skill",
+                "ScheduleWakeup",
+                "EnterWorktree",
+                "ExitWorktree",
+            ]
+            .map(str::to_string)
+            .to_vec(),
         ),
         // Project files in a temporary directory are ours, but leaving trust
         // off and selecting tools keeps the test independent of local files.

@@ -13,7 +13,20 @@ async function fixture(script) {
     model: "mock/mock-1",
     modelsFile: provider.catalogPath,
     thinkingLevel: "off",
-    tools: ["Read", "Write", "Edit", "Bash"],
+    // An allowlist names every tool it offers: the four default tools and
+    // the six that come with them in the advanced mode.
+    tools: [
+      "Read",
+      "Write",
+      "Edit",
+      "Bash",
+      "Monitor",
+      "TaskStop",
+      "Skill",
+      "ScheduleWakeup",
+      "EnterWorktree",
+      "ExitWorktree",
+    ],
     noContextFiles: true,
   })
   return { directory, provider, session }
