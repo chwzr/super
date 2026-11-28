@@ -343,7 +343,7 @@ async fn a_stored_agent_whose_type_or_model_is_gone_is_not_resumed_as_something_
                     None,
                 )
                 .await;
-            format!("{:#}", result.err().expect("refused"))
+            format!("{:#}", result.expect_err("refused"))
         }
     };
     assert_eq!(
