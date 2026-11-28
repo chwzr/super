@@ -601,7 +601,11 @@ mod reads {
         let again = loaded(&stored, &root, &Events::default(), None);
         let files = again.file_state();
         assert!(files.get(&key(&root.join("a.txt"))).unwrap().whole);
-        assert_eq!(files.get(&key(&root.join("b.txt"))), None, "changed since");
+        // A file changed since keeps the read the session made, with the
+        // stamp the file had then.
+        let changed = files.get(&key(&root.join("b.txt"))).unwrap();
+        let now = std::fs::metadata(root.join("b.txt")).unwrap();
+        assert!(!changed.same_stamp(now.modified().ok(), now.len()));
         // Its own edit counts, with the stamp the edit left (the time of the
         // read is kept to the millisecond).
         let edited = files.get(&key(&root.join("c.txt"))).unwrap();
@@ -613,9 +617,10 @@ mod reads {
             before
         );
         assert!(files.get(&key(&root.join("d.txt"))).unwrap().whole);
-        assert_eq!(files.len(), 3);
+        assert_eq!(files.len(), 4);
 
-        // So Edit takes a.txt without a new read, and b.txt only after one.
+        // So Edit takes a.txt without a new read, and refuses b.txt as
+        // changed on disk, as a session that kept running would.
         let edit = tool(&again, "Edit");
         call(
             edit.as_ref(),
@@ -633,7 +638,10 @@ mod reads {
         )
         .await
         .unwrap_err();
-        assert!(refused.contains("has not been read yet"), "{refused}");
+        assert!(
+            refused.contains("has changed on disk since it was read"),
+            "{refused}"
+        );
         // Write overwrites d.txt, read whole by its own Write.
         call(
             tool(&again, "Write").as_ref(),

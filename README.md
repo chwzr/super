@@ -1197,7 +1197,8 @@ new file needs no read. A subagent keeps its own record, a fork starts with a
 copy of its parent's, and a new conversation starts with an empty one. A
 session opened again (`super -c`, `--session`, the daemon) takes the record
 back from its transcript: each file it read, or changed itself, counts as
-read while its modification time and size on disk are what they were then.
+read while its modification time and size on disk are what they were then,
+and one that changed since is refused as changed on disk.
 
 When one answer makes several calls, `Edit`, `Write` and `Bash` each run
 alone, in their place: the calls before one have ended when it starts, and

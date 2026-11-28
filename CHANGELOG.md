@@ -391,6 +391,9 @@
   background command's output file or a monitor's events: the profile's
   output and errors are thrown away on macOS and Linux, and its environment
   and folder change still reach the command.
+- A session opened again refuses a file it had read and that changed on disk
+  since with the same words as a session that kept running, "has changed on
+  disk since it was read", where it said the file had not been read yet.
 
 ## 0.0.42 - 2026-11-27
 
