@@ -154,18 +154,28 @@ fn workflow_permission(
     number: u64,
     plan: &super_coding::workflows::WorkflowPlan,
 ) -> RequestPermissionRequest {
+    let question = super_sdk::workflow_request(plan);
     let fields = ToolCallUpdateFields::new()
-        .title(format!("Run workflow {}?", plan.name))
+        .title(question.title)
         .kind(ToolKind::Execute)
         .status(ToolCallStatus::Pending)
-        .raw_input(serde_json::json!({"name": plan.name, "agents": plan.agent_estimate()}));
+        .raw_input(serde_json::json!({"name": plan.name, "agents": question.detail}));
+    let options = question
+        .choices
+        .into_iter()
+        .map(|choice| {
+            let kind = if choice.id == "approve" {
+                PermissionOptionKind::AllowOnce
+            } else {
+                PermissionOptionKind::RejectOnce
+            };
+            PermissionOption::new(choice.id, choice.label, kind)
+        })
+        .collect();
     RequestPermissionRequest::new(
         id,
         ToolCallUpdate::new(format!("workflow-question-{number}"), fields),
-        vec![
-            PermissionOption::new("approve", "Run it", PermissionOptionKind::AllowOnce),
-            PermissionOption::new("cancel", "Cancel", PermissionOptionKind::RejectOnce),
-        ],
+        options,
     )
 }
 
@@ -2067,6 +2077,15 @@ mod tests {
                     .map(|option| &*option.option_id.0)
                     .collect();
                 assert_eq!(options, ["approve", "cancel"]);
+                let kinds: Vec<PermissionOptionKind> =
+                    asked[0].options.iter().map(|option| option.kind).collect();
+                assert_eq!(
+                    kinds,
+                    [
+                        PermissionOptionKind::AllowOnce,
+                        PermissionOptionKind::RejectOnce
+                    ]
+                );
                 let server = sessions
                     .lock()
                     .unwrap()

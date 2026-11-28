@@ -78,7 +78,7 @@ pub mod rpc;
 #[cfg(feature = "native")]
 pub use approvals::{
     ApprovalAnswer, ApprovalChoice, ApprovalKind, ApprovalRequest, WORKTREE_KEEP, WORKTREE_REMOVE,
-    worktree_exit_request,
+    workflow_request, worktree_exit_request,
 };
 #[cfg(feature = "native")]
 pub use options::{SessionOptions, SessionSource};

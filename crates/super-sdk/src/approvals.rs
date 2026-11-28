@@ -162,6 +162,21 @@ pub fn worktree_exit_request(entered: &super_coding::EnteredWorktree) -> Approva
     }
 }
 
+/// The question a headless session puts to its clients before the workflow
+/// run `plan` while `workflows.confirm` is on: the daemon, `--mode rpc` and
+/// ACP ask it in these words, with the choices `approve` and `cancel`.
+pub fn workflow_request(plan: &super_coding::workflows::WorkflowPlan) -> ApprovalRequest {
+    ApprovalRequest {
+        kind: ApprovalKind::Workflow,
+        title: format!("Run workflow {}?", plan.name),
+        detail: Some(plan.agent_estimate()),
+        choices: vec![
+            ApprovalChoice::new("approve", "Run it"),
+            ApprovalChoice::new("cancel", "Cancel"),
+        ],
+    }
+}
+
 /// The `approval_request` event.
 pub fn approval_request_event(id: &str, request: &ApprovalRequest) -> Value {
     json!({

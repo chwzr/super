@@ -387,15 +387,7 @@ pub fn install_workflow_approval_gate(session: &Arc<Session>) {
         .set_workflow_approver(Arc::new(move |plan| {
             let sdk = sdk.clone();
             Box::pin(async move {
-                let (id, answer) = sdk.open_approval(ApprovalRequest {
-                    kind: crate::approvals::ApprovalKind::Workflow,
-                    title: format!("Run workflow {}?", plan.name),
-                    detail: Some(plan.agent_estimate()),
-                    choices: vec![
-                        crate::approvals::ApprovalChoice::new("approve", "Run it"),
-                        crate::approvals::ApprovalChoice::new("cancel", "Cancel"),
-                    ],
-                });
+                let (id, answer) = sdk.open_approval(crate::approvals::workflow_request(&plan));
                 // The call may stop waiting first (its turn was stopped, or
                 // the session's runs were): the question is withdrawn then.
                 let _withdraw = WithdrawUnanswered {

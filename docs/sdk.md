@@ -342,7 +342,11 @@ session is loaded again was cut off: it is marked stopped and its notice
 (status `stopped`) is queued by `resume_stored_work`, once.
 `AgentSession::set_closing` tells the session that its host ends it, so that
 a run stopped by that end counts as cut off; `Session::close` calls it. The approver installed with `AgentSession::set_workflow_approver`
-still answers before a run starts.
+still answers before a run starts. `install_workflow_approval_gate` puts
+the question `super_sdk::workflow_request(plan)` to the session's clients
+(an `ApprovalRequest` of kind `Workflow` with the choices `approve` and
+`cancel`); a host that asks in a protocol of its own, as ACP does, builds
+its request from the same question.
 
 An agent's session is stored like the session itself, in the folder beside
 the session's file (`<file without .jsonl>/agents/<agent id>.jsonl`,
