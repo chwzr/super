@@ -1137,3 +1137,39 @@ async fn the_calls_after_a_cancellation_are_answered_as_aborted() {
         .collect();
     assert_eq!(results, [("c", false), ("m0", true), ("c2", true)]);
 }
+
+#[tokio::test]
+async fn a_run_cancelled_while_its_tools_run_sends_the_model_no_more_requests() {
+    let cancel = CancellationToken::new();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let mut config = scripted_config(vec![
+        answer(vec![call("c", "cancel", json!({}))]),
+        assistant_text("never asked for", StopReason::Stop),
+    ]);
+    let scripted = config.stream_fn.clone();
+    let counted = requests.clone();
+    config.stream_fn = Arc::new(move |model, context, options| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        scripted(model, context, options)
+    });
+    let messages = run_agent_loop(
+        vec![AgentMessage::user("go")],
+        AgentContext {
+            tools: vec![Arc::new(CancellingTool(cancel.clone()))],
+            ..Default::default()
+        },
+        config,
+        cancel,
+        Arc::new(|_| {}),
+    )
+    .await;
+
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    match messages.last() {
+        Some(AgentMessage::Assistant(last)) => {
+            assert_eq!(last.stop_reason, StopReason::Aborted);
+            assert!(last.content.is_empty());
+        }
+        other => panic!("expected an aborted answer, got {other:?}"),
+    }
+}

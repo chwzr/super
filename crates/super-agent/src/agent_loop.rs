@@ -243,6 +243,24 @@ async fn stream_assistant(
     cancel: CancellationToken,
     emit: &EventSink,
 ) -> AssistantMessage {
+    if cancel.is_cancelled() {
+        // A run cancelled while its tools ran asks the model nothing more:
+        // a provider's request could go out before it sees the cancellation.
+        let mut aborted =
+            AssistantMessage::empty(&config.model.api, &config.model.provider, &config.model.id);
+        aborted.stop_reason = StopReason::Aborted;
+        aborted.error_message = Some("Request aborted".into());
+        context
+            .messages
+            .push(AgentMessage::Assistant(aborted.clone()));
+        emit(AgentEvent::MessageStart {
+            message: AgentMessage::Assistant(aborted.clone()),
+        });
+        emit(AgentEvent::MessageEnd {
+            message: AgentMessage::Assistant(aborted.clone()),
+        });
+        return aborted;
+    }
     let transformed = match &config.transform_context {
         Some(transform) => Some(transform(context.messages.clone()).await),
         None => None,
