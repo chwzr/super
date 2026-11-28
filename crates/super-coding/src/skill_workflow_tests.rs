@@ -799,6 +799,11 @@ return 'done'\n";
     other.append_message(AgentMessage::user("other")).unwrap();
     let other_file = other.session_file().unwrap().to_path_buf();
     session.replace_manager(other);
+    // The conversation the session is in now lists none of the runs of the
+    // one it left, nor is it told how they end.
+    let runtime = session.workflows().unwrap();
+    assert!(runtime.summaries().is_empty());
+    assert!(runtime.get(run.id).is_none());
     eventually("the run ends", || run.snapshot().status.is_finished()).await;
     eventually("its end is stored", || run_states(&left).len() == 2).await;
     let states: Vec<Value> = run_states(&left)

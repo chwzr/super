@@ -650,6 +650,11 @@
   (`\\?\C:\…`, as `EnterWorktree` with `path` writes it) is stored, and
   `Bash` and `Monitor` with Git Bash run in that folder. The session could
   not be written, and Git Bash could not enter the folder.
+- After `/new`, `/resume`, `new_session` or `switch_session`, `/workflows`
+  lists only the runs of the conversation the session is in, and neither
+  the terminal nor a client hears how a run of the conversation it left
+  ended (`workflow_outcome`). The new conversation showed "verified workflow
+  run 1 `name` was stopped" about the run of the one before.
 - A workflow run stopped with `x` in `/workflows` gets no notice, as one
   stopped with `/tasks` or the stop key: the model was sent a stopped notice
   and answered it in a turn of its own.

@@ -280,12 +280,18 @@ impl WorkflowRuntime {
         })
     }
 
+    /// Tell clients how a run ended, or that one was cancelled before it
+    /// ran (`run` `None`). A run the session forgot, because it moved to
+    /// another conversation, is not told of there.
     pub(crate) fn emit_outcome(
         &self,
         run: Option<RunId>,
         name: String,
         status: WorkflowTurnStatus,
     ) {
+        if run.is_some_and(|run| self.get(run).is_none()) {
+            return;
+        }
         if let Some(parent) = self.parent.upgrade() {
             parent.emit_workflow_outcome(run, name, status);
         }
@@ -542,6 +548,16 @@ impl WorkflowRuntime {
 
     pub fn is_empty(&self) -> bool {
         self.runs.lock().map(|runs| runs.is_empty()).unwrap_or(true)
+    }
+
+    /// Forget every run, for a session that moves to another conversation:
+    /// the runs are that conversation's, which stores their ends, and the
+    /// one the session moves to lists none of them and hears of none of
+    /// their ends ([`WorkflowRuntime::emit_outcome`]).
+    pub(crate) fn forget_runs(&self) {
+        if let Ok(mut runs) = self.runs.lock() {
+            runs.clear();
+        }
     }
 
     /// Stop every run still working. Called when the session closes or when the

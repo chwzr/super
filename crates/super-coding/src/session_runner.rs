@@ -1436,6 +1436,7 @@ impl AgentSession {
         }
         if let Some(runtime) = self.workflows.get() {
             runtime.stop_all();
+            runtime.forget_runs();
         }
         if let Some(runtime) = self.iterative.get() {
             runtime.stop_all();
