@@ -176,6 +176,35 @@ impl Default for WorkflowSettings {
     }
 }
 
+/// Where the branch of a new worktree starts: `worktree.baseRef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WorktreeBaseRef {
+    /// The remote's default branch (`origin`'s), fetched first; the local
+    /// `HEAD` when the repository has no such remote branch.
+    #[default]
+    Fresh,
+    /// The local `HEAD`: the state the session's folder is in.
+    Head,
+}
+
+impl WorktreeBaseRef {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Head => "head",
+        }
+    }
+}
+
+/// Git worktrees that `EnterWorktree` and agents with `isolation:
+/// "worktree"` make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WorktreeSettings {
+    pub base_ref: WorktreeBaseRef,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum QueueMode {
@@ -316,6 +345,7 @@ pub struct Settings {
     pub mode: Mode,
     pub subagents: SubagentSettings,
     pub workflows: WorkflowSettings,
+    pub worktree: WorktreeSettings,
     pub steering_mode: QueueMode,
     pub follow_up_mode: QueueMode,
     pub shell_path: Option<String>,
@@ -506,6 +536,22 @@ mod tests {
         assert!(Settings::default().daemon.attach_enabled());
         let settings: Settings = serde_json::from_str(r#"{"daemon":{"attach":false}}"#).unwrap();
         assert!(!settings.daemon.attach_enabled());
+    }
+
+    #[test]
+    fn worktrees_start_fresh_unless_the_settings_say_head() {
+        assert_eq!(
+            Settings::default().worktree.base_ref,
+            WorktreeBaseRef::Fresh
+        );
+        let settings: Settings =
+            serde_json::from_str(r#"{"worktree":{"baseRef":"head"}}"#).unwrap();
+        assert_eq!(settings.worktree.base_ref, WorktreeBaseRef::Head);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["worktree"]["baseRef"], "head");
+        // A project may choose it: it changes no authority of the user.
+        let settings = merged_settings(json!({}), Some(json!({"worktree":{"baseRef":"head"}})));
+        assert_eq!(settings.worktree.base_ref, WorktreeBaseRef::Head);
     }
 
     #[test]

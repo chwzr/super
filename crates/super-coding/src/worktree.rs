@@ -7,19 +7,64 @@
 //! deletes it together with its branch, and [`recreate`] makes a removed
 //! one again in the same place, for an agent that is resumed.
 //!
+//! Where a new worktree's branch starts follows the `worktree.baseRef`
+//! setting ([`start_point`]). A session that moved into a worktree keeps an
+//! [`EnteredWorktree`].
+//!
 //! Every call runs `git` and blocks until it is done; call them from a
-//! blocking thread (`tokio::task::spawn_blocking`) in async code.
+//! blocking thread (`tokio::task::spawn_blocking`) in async code. Only
+//! [`start_point`], which may fetch, is async.
 
+use crate::settings::WorktreeBaseRef;
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// The folder of a project that holds its worktrees.
 pub const WORKTREES_DIR: &str = ".super/worktrees";
 
 /// The prefix of the branch a worktree gets: `worktree-<name>`.
 pub const BRANCH_PREFIX: &str = "worktree-";
+
+/// The remote whose default branch a fresh worktree starts from.
+pub const REMOTE: &str = "origin";
+
+/// How long [`start_point`] waits for the fetch of the remote's default
+/// branch before it starts from what was fetched before.
+pub const FETCH_LIMIT: Duration = Duration::from_secs(30);
+
+/// The worktree a session moved into with `EnterWorktree`, and where it
+/// came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnteredWorktree {
+    pub worktree: Worktree,
+    /// `EnterWorktree` made it (with a name, or with neither name nor
+    /// path); `false` for an existing worktree it entered by its path.
+    pub created: bool,
+    /// The folder the session worked in before, where it goes back to.
+    pub original: PathBuf,
+    /// When the session moved in, in milliseconds since the epoch.
+    pub entered_at: i64,
+}
+
+/// What [`changes`] found in a worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Changes {
+    /// Files that differ from the branch: changed, added, deleted, or new
+    /// and not ignored.
+    pub files: usize,
+    /// Commits after the one the worktree started from.
+    pub commits: usize,
+}
+
+impl Changes {
+    pub fn is_empty(&self) -> bool {
+        self.files == 0 && self.commits == 0
+    }
+}
 
 /// One worktree [`create`] made.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,9 +88,7 @@ pub struct Worktree {
 /// exclude file, so the project's `git status` does not list it.
 pub fn create(project: &Path, name: &str, base_ref: Option<&str>) -> Result<Worktree> {
     check_name(name)?;
-    let top = git(project, &["rev-parse", "--show-toplevel"])
-        .with_context(|| format!("{} is not in a git repository", project.display()))?;
-    let top = PathBuf::from(top);
+    let top = top(project)?;
     let base_ref = base_ref.unwrap_or("HEAD");
     let base = git(
         &top,
@@ -106,18 +149,147 @@ pub fn create(project: &Path, name: &str, base_ref: Option<&str>) -> Result<Work
 /// commit after the one it started from. A worktree whose folder is gone has
 /// nothing to keep.
 pub fn has_changes(worktree: &Worktree) -> Result<bool> {
+    Ok(!changes(worktree)?.is_empty())
+}
+
+/// How many files differ in `worktree` and how many commits it has after
+/// the one it started from: what [`has_changes`] asks. A worktree whose
+/// folder is gone has none.
+pub fn changes(worktree: &Worktree) -> Result<Changes> {
     if !worktree.path.exists() {
-        return Ok(false);
+        return Ok(Changes::default());
     }
     let status = git(&worktree.path, &["status", "--porcelain"])?;
-    if !status.is_empty() {
-        return Ok(true);
-    }
+    let files = status
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
     let commits = git(
         &worktree.path,
         &["rev-list", "--count", &format!("{}..HEAD", worktree.base)],
     )?;
-    Ok(commits.trim() != "0")
+    let commits = commits
+        .trim()
+        .parse()
+        .with_context(|| format!("git rev-list counted '{}'", commits.trim()))?;
+    Ok(Changes { files, commits })
+}
+
+/// The commit a new worktree of `project` starts from, for [`create`]:
+/// `None` (the local `HEAD`) for [`WorktreeBaseRef::Head`]. For
+/// [`WorktreeBaseRef::Fresh`] the remote's default branch: `origin`'s
+/// `HEAD`, else its `main` or `master`. That branch is fetched first, for
+/// at most [`FETCH_LIMIT`]; when the fetch fails the branch as it was last
+/// fetched is used. A repository without such a remote branch starts from
+/// its `HEAD` too.
+pub async fn start_point(project: &Path, base: WorktreeBaseRef) -> Option<String> {
+    if base == WorktreeBaseRef::Head {
+        return None;
+    }
+    let folder = project.to_path_buf();
+    let found = tokio::task::spawn_blocking(move || {
+        let top = top(&folder).ok()?;
+        let branch = remote_default_branch(&top)?;
+        Some((top, branch))
+    })
+    .await
+    .ok()
+    .flatten();
+    let (top, branch) = found?;
+    fetch(&top, &branch).await;
+    Some(format!("refs/remotes/{REMOTE}/{branch}"))
+}
+
+/// The default branch of [`REMOTE`] as this repository knows it.
+fn remote_default_branch(top: &Path) -> Option<String> {
+    let prefix = format!("refs/remotes/{REMOTE}/");
+    if let Ok(head) = git(
+        top,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            &format!("refs/remotes/{REMOTE}/HEAD"),
+        ],
+    ) && let Some(branch) = head.strip_prefix(&prefix)
+    {
+        return Some(branch.to_string());
+    }
+    ["main", "master"]
+        .into_iter()
+        .find(|branch| {
+            git(
+                top,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("{prefix}{branch}"),
+                ],
+            )
+            .is_ok()
+        })
+        .map(str::to_string)
+}
+
+/// Fetch `branch` of [`REMOTE`] into its remote-tracking branch, without
+/// asking for credentials and for at most [`FETCH_LIMIT`]; a failure is
+/// ignored.
+async fn fetch(top: &Path, branch: &str) {
+    let mut command = tokio::process::Command::new("git");
+    command
+        .arg("-C")
+        .arg(top)
+        .args([
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            REMOTE,
+            &format!("+refs/heads/{branch}:refs/remotes/{REMOTE}/{branch}"),
+        ])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let _ = tokio::time::timeout(FETCH_LIMIT, command.status()).await;
+}
+
+/// The top of the working tree `folder` is in.
+pub fn top(folder: &Path) -> Result<PathBuf> {
+    git(folder, &["rev-parse", "--show-toplevel"])
+        .map(PathBuf::from)
+        .with_context(|| format!("{} is not in a git repository", folder.display()))
+}
+
+/// Every working tree of the repository `folder` is in, the main one first,
+/// as git lists them.
+pub fn list(folder: &Path) -> Result<Vec<PathBuf>> {
+    let listing = git(folder, &["worktree", "list", "--porcelain"])
+        .with_context(|| format!("{} is not in a git repository", folder.display()))?;
+    Ok(listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .collect())
+}
+
+/// The worktree at `path` as it is now, for a session that enters a
+/// worktree it did not make: its branch (`HEAD` when it is detached), its
+/// current commit as the one it started from, and `project` as the working
+/// tree its commands run in.
+pub fn describe(path: &Path, project: &Path) -> Result<Worktree> {
+    let branch = git(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let base = git(path, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .with_context(|| format!("{} has no commit", path.display()))?;
+    Ok(Worktree {
+        path: path.to_path_buf(),
+        branch,
+        base,
+        project: project.to_path_buf(),
+    })
 }
 
 /// Make the folder of `worktree` again after [`remove`], or after it was
@@ -308,6 +480,148 @@ pub(crate) mod tests {
 
     pub(crate) fn branches(root: &Path) -> String {
         git(root, &["branch", "--list"]).unwrap()
+    }
+
+    /// Run git in `root` for a test.
+    pub(crate) fn run(root: &Path, arguments: &[&str]) -> String {
+        git(root, arguments).unwrap()
+    }
+
+    /// A bare repository `remote.git` beside `root` that is `root`'s
+    /// `origin`, with `root`'s `main` pushed to it and fetched back, so
+    /// `origin/main` exists and `origin/HEAD` points at it. Then `root` gets
+    /// a commit of its own that the remote does not have.
+    pub(crate) fn with_remote(root: &Path) -> PathBuf {
+        let remote = root.parent().unwrap().join(format!(
+            "{}-remote.git",
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        git(
+            root.parent().unwrap(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                "-b",
+                "main",
+                &remote.display().to_string(),
+            ],
+        )
+        .unwrap();
+        git(
+            root,
+            &["remote", "add", "origin", &remote.display().to_string()],
+        )
+        .unwrap();
+        git(root, &["push", "--quiet", "origin", "main"]).unwrap();
+        git(root, &["fetch", "--quiet", "origin"]).unwrap();
+        git(root, &["remote", "set-head", "origin", "main"]).unwrap();
+        std::fs::write(root.join("local.txt"), "only here\n").unwrap();
+        git(root, &["add", "local.txt"]).unwrap();
+        git(root, &["commit", "--quiet", "-m", "local"]).unwrap();
+        remote
+    }
+
+    #[tokio::test]
+    async fn a_fresh_worktree_starts_from_the_remotes_default_branch_fetched_first() {
+        let repository = repository();
+        let root = repository.path().canonicalize().unwrap();
+        let remote = with_remote(&root);
+        // Someone else pushes a commit the repository has not fetched yet.
+        let other = tempfile::tempdir().unwrap();
+        let clone = other.path().join("clone");
+        git(
+            other.path(),
+            &[
+                "clone",
+                "--quiet",
+                &remote.display().to_string(),
+                &clone.display().to_string(),
+            ],
+        )
+        .unwrap();
+        for arguments in [
+            vec!["config", "user.name", "Other"],
+            vec!["config", "user.email", "other@example.com"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            git(&clone, &arguments).unwrap();
+        }
+        std::fs::write(clone.join("pushed.txt"), "from elsewhere\n").unwrap();
+        git(&clone, &["add", "pushed.txt"]).unwrap();
+        git(&clone, &["commit", "--quiet", "-m", "pushed"]).unwrap();
+        git(&clone, &["push", "--quiet", "origin", "main"]).unwrap();
+
+        let start = start_point(&root, WorktreeBaseRef::Fresh).await;
+        assert_eq!(start.as_deref(), Some("refs/remotes/origin/main"));
+        let fresh = create(&root, "fresh", start.as_deref()).unwrap();
+        assert!(fresh.path.join("pushed.txt").exists(), "fetched first");
+        assert!(!fresh.path.join("local.txt").exists());
+        assert_eq!(fresh.base, run(&clone, &["rev-parse", "HEAD"]));
+
+        // `head` starts from the local state.
+        assert_eq!(start_point(&root, WorktreeBaseRef::Head).await, None);
+        let head = create(&root, "head", None).unwrap();
+        assert!(head.path.join("local.txt").exists());
+        assert!(!head.path.join("pushed.txt").exists());
+        assert_eq!(head.base, run(&root, &["rev-parse", "HEAD"]));
+    }
+
+    #[tokio::test]
+    async fn a_fresh_worktree_of_a_repository_without_a_remote_starts_from_head() {
+        let repository = repository();
+        let root = repository.path().canonicalize().unwrap();
+        assert_eq!(start_point(&root, WorktreeBaseRef::Fresh).await, None);
+        // origin without a HEAD falls back to its main branch.
+        with_remote(&root);
+        run(&root, &["remote", "set-head", "origin", "--delete"]);
+        assert_eq!(
+            start_point(&root, WorktreeBaseRef::Fresh).await.as_deref(),
+            Some("refs/remotes/origin/main")
+        );
+        // Not a repository at all: nothing to start from.
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(
+            start_point(plain.path(), WorktreeBaseRef::Fresh).await,
+            None
+        );
+    }
+
+    #[test]
+    fn changes_count_files_and_commits_and_worktrees_are_listed() {
+        let repository = repository();
+        let root = repository.path().canonicalize().unwrap();
+        let worktree = create(&root, "counted", None).unwrap();
+        assert_eq!(changes(&worktree).unwrap(), Changes::default());
+        std::fs::write(worktree.path.join("README"), "changed\n").unwrap();
+        std::fs::write(worktree.path.join("new.txt"), "new\n").unwrap();
+        assert_eq!(
+            changes(&worktree).unwrap(),
+            Changes {
+                files: 2,
+                commits: 0
+            }
+        );
+        run(&worktree.path, &["add", "-A"]);
+        run(&worktree.path, &["commit", "--quiet", "-m", "one"]);
+        std::fs::write(worktree.path.join("README"), "again\n").unwrap();
+        run(&worktree.path, &["commit", "--quiet", "-am", "two"]);
+        assert_eq!(
+            changes(&worktree).unwrap(),
+            Changes {
+                files: 0,
+                commits: 2
+            }
+        );
+
+        let listed = list(&root).unwrap();
+        assert_eq!(listed.first(), Some(&root));
+        assert!(listed.contains(&worktree.path), "{listed:?}");
+        assert_eq!(top(&worktree.path).unwrap(), worktree.path);
+        let described = describe(&worktree.path, &root).unwrap();
+        assert_eq!(described.branch, "worktree-counted");
+        assert_eq!(described.base, run(&worktree.path, &["rev-parse", "HEAD"]));
+        assert_eq!(described.project, root);
     }
 
     #[test]
