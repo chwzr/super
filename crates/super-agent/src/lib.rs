@@ -23,7 +23,7 @@ pub use events::AgentEvent;
 pub use file_state::{FileRead, FileStates};
 pub use message::{
     AgentMessage, BashExecutionMessage, BranchSummaryMessage, CompactionSummaryMessage,
-    CustomMessage, convert_to_llm,
+    CustomMessage, convert_to_llm, convert_to_llm_as_is,
 };
 pub use tool::{
     AgentTool, ContextRoomFn, DynTool, ExecutionMode, ToolResult, ToolSession, ToolUpdateSink,

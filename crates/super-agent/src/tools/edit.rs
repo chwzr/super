@@ -16,7 +16,7 @@
 //!   an empty one.
 
 use crate::placeholder;
-use crate::tool::{AgentTool, DynTool, ToolResult, ToolSession, ToolUpdateSink};
+use crate::tool::{AgentTool, DynTool, ExecutionMode, ToolResult, ToolSession, ToolUpdateSink};
 use crate::tools::arguments;
 use crate::tools::files::{record_own_change, unchanged};
 use crate::tools::mutation_queue::lock_path;
@@ -269,6 +269,12 @@ impl EditTool {
 impl AgentTool for EditTool {
     fn name(&self) -> &str {
         "Edit"
+    }
+    /// It changes a file, so it runs alone, in its place among the calls of
+    /// one answer: a `Read` of the file before it has ended, and one after
+    /// it sees the change.
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     fn description(&self) -> String {

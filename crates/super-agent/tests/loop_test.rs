@@ -878,3 +878,262 @@ async fn benchmark_performance_200_tool_calls() {
         );
     }
 }
+
+/// A tool that runs alone and notes what the `measured` calls had done when
+/// it started and when it ended.
+struct AloneTool {
+    measured: Arc<MeasuredTool>,
+    seen: Mutex<Vec<(usize, usize)>>,
+}
+
+#[async_trait::async_trait]
+impl AgentTool for AloneTool {
+    fn name(&self) -> &str {
+        "alone"
+    }
+
+    fn description(&self) -> String {
+        "a tool that runs alone".into()
+    }
+
+    fn parameters(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn execution_mode(&self) -> super_agent::ExecutionMode {
+        super_agent::ExecutionMode::Sequential
+    }
+
+    async fn execute(
+        &self,
+        _id: &str,
+        _args: Value,
+        _cancel: CancellationToken,
+        _on_update: Option<ToolUpdateSink>,
+    ) -> anyhow::Result<ToolResult> {
+        let note = |seen: &Mutex<Vec<(usize, usize)>>| {
+            seen.lock().unwrap().push((
+                self.measured.calls.load(Ordering::SeqCst),
+                self.measured.active.load(Ordering::SeqCst),
+            ))
+        };
+        note(&self.seen);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        note(&self.seen);
+        Ok(ToolResult::text("alone"))
+    }
+}
+
+fn call(id: &str, name: &str, args: Value) -> ContentBlock {
+    ContentBlock::ToolCall(ToolCall {
+        id: id.to_string(),
+        name: name.to_string(),
+        arguments: args,
+        thought_signature: None,
+    })
+}
+
+fn answer(calls: Vec<ContentBlock>) -> AssistantMessage {
+    let mut message = AssistantMessage::empty("fake", "fake", "fake-model");
+    message.content = calls;
+    message.stop_reason = StopReason::ToolUse;
+    message
+}
+
+#[tokio::test]
+async fn a_call_that_runs_alone_keeps_its_place_among_the_calls_of_one_answer() {
+    let measured = Arc::new(MeasuredTool::new(Duration::from_millis(20)));
+    let alone = Arc::new(AloneTool {
+        measured: measured.clone(),
+        seen: Mutex::new(Vec::new()),
+    });
+    let config = scripted_config(vec![
+        answer(vec![
+            call("m0", "measured", json!({"value": "0"})),
+            call("m1", "measured", json!({"value": "1"})),
+            call("a", "alone", json!({})),
+            call("m2", "measured", json!({"value": "2"})),
+        ]),
+        assistant_text("done", StopReason::Stop),
+    ]);
+    let messages = run_agent_loop(
+        vec![AgentMessage::user("go")],
+        AgentContext {
+            tools: vec![measured.clone(), alone.clone()],
+            ..Default::default()
+        },
+        config,
+        CancellationToken::new(),
+        Arc::new(|_| {}),
+    )
+    .await;
+
+    // The two calls before it run together and have ended when it starts;
+    // the call after it starts only once it has ended.
+    assert_eq!(measured.peak(), 2);
+    assert_eq!(*alone.seen.lock().unwrap(), vec![(2, 0), (2, 0)]);
+    assert_eq!(measured.calls.load(Ordering::SeqCst), 3);
+    let ids = messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult(result) => Some(result.tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["m0", "m1", "a", "m2"]);
+}
+
+#[tokio::test]
+async fn the_file_and_shell_tools_run_in_the_order_of_the_answer() {
+    use super_agent::tools::{bash::BashTool, edit::EditTool, read::ReadTool, write::WriteTool};
+    use super_agent::{DynTool, ExecutionMode, ToolSession};
+
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let file = cwd.join("p.txt");
+    std::fs::write(&file, "one\n").unwrap();
+    let session = ToolSession::new();
+    let bind = |tool: DynTool| tool.for_session(&session).unwrap();
+    let tools: Vec<DynTool> = vec![
+        bind(Arc::new(ReadTool::new(cwd.clone()))),
+        bind(Arc::new(WriteTool::new(cwd.clone()))),
+        bind(Arc::new(EditTool::new(cwd.clone()))),
+        bind(Arc::new(BashTool::new(cwd.clone()))),
+    ];
+    let modes: Vec<(String, ExecutionMode)> = tools
+        .iter()
+        .map(|tool| (tool.name().to_string(), tool.execution_mode()))
+        .collect();
+    assert_eq!(
+        modes,
+        [
+            ("Read".to_string(), ExecutionMode::Parallel),
+            ("Write".to_string(), ExecutionMode::Sequential),
+            ("Edit".to_string(), ExecutionMode::Sequential),
+            ("Bash".to_string(), ExecutionMode::Sequential),
+        ]
+    );
+
+    let path = file.display().to_string();
+    let later = cwd.join("later.txt").display().to_string();
+    let config = scripted_config(vec![
+        answer(vec![
+            call("r", "Read", json!({"file_path": path})),
+            call("w", "Write", json!({"file_path": path, "content": "two\n"})),
+            call(
+                "e",
+                "Edit",
+                json!({"file_path": path, "old_string": "two", "new_string": "three"}),
+            ),
+            call(
+                "b",
+                "Bash",
+                json!({"command": format!("sleep 0.3; printf late > '{later}'")}),
+            ),
+            call("r2", "Read", json!({"file_path": later})),
+        ]),
+        assistant_text("done", StopReason::Stop),
+    ]);
+    let messages = run_agent_loop(
+        vec![AgentMessage::user("go")],
+        AgentContext {
+            tools,
+            ..Default::default()
+        },
+        config,
+        CancellationToken::new(),
+        Arc::new(|_| {}),
+    )
+    .await;
+
+    let results: Vec<(String, bool, String)> = messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult(result) => Some((
+                result.tool_call_id.clone(),
+                result.is_error,
+                result
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            )),
+            _ => None,
+        })
+        .collect();
+    for (id, is_error, text) in &results {
+        assert!(!is_error, "{id} failed: {text}");
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "three\n");
+    assert!(results[4].2.contains("late"), "{:?}", results[4]);
+}
+
+/// A tool that runs alone and cancels the run.
+struct CancellingTool(CancellationToken);
+
+#[async_trait::async_trait]
+impl AgentTool for CancellingTool {
+    fn name(&self) -> &str {
+        "cancel"
+    }
+
+    fn description(&self) -> String {
+        "cancel the run".into()
+    }
+
+    fn parameters(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn execution_mode(&self) -> super_agent::ExecutionMode {
+        super_agent::ExecutionMode::Sequential
+    }
+
+    async fn execute(
+        &self,
+        _id: &str,
+        _args: Value,
+        _cancel: CancellationToken,
+        _on_update: Option<ToolUpdateSink>,
+    ) -> anyhow::Result<ToolResult> {
+        self.0.cancel();
+        Ok(ToolResult::text("cancelled"))
+    }
+}
+
+#[tokio::test]
+async fn the_calls_after_a_cancellation_are_answered_as_aborted() {
+    let cancel = CancellationToken::new();
+    let measured = Arc::new(MeasuredTool::new(Duration::ZERO));
+    let config = scripted_config(vec![answer(vec![
+        call("c", "cancel", json!({})),
+        call("m0", "measured", json!({"value": "0"})),
+        call("c2", "cancel", json!({})),
+    ])]);
+    let messages = run_agent_loop(
+        vec![AgentMessage::user("go")],
+        AgentContext {
+            tools: vec![Arc::new(CancellingTool(cancel.clone())), measured.clone()],
+            ..Default::default()
+        },
+        config,
+        cancel,
+        Arc::new(|_| {}),
+    )
+    .await;
+
+    assert_eq!(measured.calls.load(Ordering::SeqCst), 0);
+    let results: Vec<(&str, bool)> = messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult(result) => {
+                Some((result.tool_call_id.as_str(), result.is_error))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results, [("c", false), ("m0", true), ("c2", true)]);
+}

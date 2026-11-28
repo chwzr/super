@@ -116,7 +116,7 @@ impl ContextFile {
 fn validate_messages(messages: &[AgentMessage]) -> Result<()> {
     let mut pending: HashMap<&str, &str> = HashMap::new();
     let mut used: HashSet<&str> = HashSet::new();
-    let messages = super_agent::convert_to_llm(messages);
+    let messages = super_agent::convert_to_llm_as_is(messages);
     for message in &messages {
         match message {
             // Not a match guard: a matching result must consume this arm so it

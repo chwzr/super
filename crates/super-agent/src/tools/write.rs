@@ -10,7 +10,7 @@
 //! - a folder, or anything that is not a regular file, is refused.
 
 use crate::placeholder;
-use crate::tool::{AgentTool, DynTool, ToolResult, ToolSession, ToolUpdateSink};
+use crate::tool::{AgentTool, DynTool, ExecutionMode, ToolResult, ToolSession, ToolUpdateSink};
 use crate::tools::files::{record_own_change, unchanged};
 use crate::tools::mutation_queue::lock_path;
 use crate::tools::path::{absolute, file_key};
@@ -74,6 +74,12 @@ fn not_writable(path: &Path, error: std::io::Error) -> anyhow::Error {
 impl AgentTool for WriteTool {
     fn name(&self) -> &str {
         "Write"
+    }
+    /// It changes a file, so it runs alone, in its place among the calls of
+    /// one answer: a `Read` of the file before it has ended, and one after
+    /// it sees the change.
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     fn description(&self) -> String {

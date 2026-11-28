@@ -26,7 +26,7 @@
 
 use crate::background::{HostedTask, TaskEnd, TaskEndStatus};
 use crate::placeholder;
-use crate::tool::{AgentTool, DynTool, ToolResult, ToolSession, ToolUpdateSink};
+use crate::tool::{AgentTool, DynTool, ExecutionMode, ToolResult, ToolSession, ToolUpdateSink};
 use crate::tools::arguments;
 use crate::tools::command_rules;
 use crate::tools::shell::{self, ShellKind, ShellProcess};
@@ -582,6 +582,12 @@ fn large_output_notice(path: &Path, total_bytes: usize, preview: &str) -> String
 impl AgentTool for BashTool {
     fn name(&self) -> &str {
         "Bash"
+    }
+    /// A command may change files and move the shell with `cd`, so it
+    /// runs alone, in its place among the calls of one answer: the call
+    /// before it has ended, and the call after it sees what it did.
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     /// One placeholder per shell family, so the text can name the syntax of

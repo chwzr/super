@@ -358,6 +358,21 @@
   question about a worktree at a session's end are placeholders until their
   text is written.
 
+### Fixed
+
+- The tool calls of one answer run in their order where it matters: `Edit`,
+  `Write` and `Bash` each run alone, after the calls before them and before
+  the calls after them, so a `Read` and then a `Write` or `Edit` of the same
+  file, or a `cd` and then another command, give the same result every time.
+  Calls of other tools next to each other still run at the same time. Before,
+  every call of an answer started at once. When a run is cancelled, each call
+  it did not run is answered as aborted.
+- A conversation in which a tool call has no result, because the process
+  that ran the call ended first, is sent with an aborted result for that
+  call. A session or an agent cut off that way, for example by the end of
+  `super -p` or of `--mode rpc`, can be resumed without the provider refusing
+  the request.
+
 ## 0.0.42 - 2026-11-27
 
 ### Fixed

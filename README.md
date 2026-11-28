@@ -1195,6 +1195,11 @@ session opened again (`super -c`, `--session`, the daemon) takes the record
 back from its transcript: each file it read, or changed itself, counts as
 read while its modification time and size on disk are what they were then.
 
+When one answer makes several calls, `Edit`, `Write` and `Bash` each run
+alone, in their place: the calls before one have ended when it starts, and
+the calls after it start when it has ended. Calls of other tools next to each
+other, such as several reads, run at the same time.
+
 ### Shell tools
 
 `Bash` runs a command in the shell from `shellPath`, Bash unless you choose
@@ -1210,7 +1215,8 @@ PowerShell or cmd, and works the same way in both modes.
   A command that ends outside it puts the shell back in the session folder.
   A subagent's commands always start in the session folder, and so does a
   new or resumed conversation. PowerShell, cmd and Bash on Windows start
-  every command in the session folder.
+  every command in the session folder. Two commands of one answer run one
+  after the other, so a `cd` in the first reaches the second.
 - Up to 30,000 characters of output come back to the agent. Longer output is
   saved to a file, and the agent gets its path and the first 2,000 bytes.
 - An exit code other than 0 is an error that starts with `Exit code N`. For
