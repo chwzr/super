@@ -45,8 +45,9 @@ older daemon.
 
 The daemon is started by launchd or systemd with a bare environment, so it
 reads the login shell's PATH once at start and uses it for every session's
-tools. `Bash` and `Monitor` also start their shell as a login shell, so a
-command reads the user's profile as it would in a terminal; the folders of
+tools. `Bash` and `Monitor` also start their shell from the user's profile
+(a login shell, or for Bash and `sh` the files a login shell reads), so a
+command reads the profile as it would in a terminal; the folders of
 the daemon's PATH come first again after the profile, and the profile's
 other folders follow them.
 

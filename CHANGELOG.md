@@ -504,8 +504,14 @@
   background file and monitor event, and a `pwd` function lost every `cd`.
 - A command that ends with `exit` no longer gets the output of
   `~/.bash_logout`, and an `EXIT` trap the profile sets no longer prints
-  into a background command's file or a monitor's events: the command runs
-  in a subshell, after the profile's trap is cleared.
+  into a background command's file or a monitor's events: the profile's
+  trap is cleared, and Bash and `sh` read the login files themselves and
+  run the command in that shell, which is no login shell, while the other
+  shells run it in a subshell. A command that signals its own shell
+  (`kill $$`, the usual `die` function) ends there with the signal's exit
+  code, in the foreground and in the background: with Bash the rest of the
+  command ran on, and a background task was reported ended while its
+  command went on.
 - `Bash` and `Monitor` commands find the programs of the `PATH` SUPER runs
   with first again: the folders of that `PATH` come before the ones the
   profile adds. A login shell on macOS put `/usr/bin` and the other system
@@ -659,6 +665,15 @@
 - A workflow run stopped with `x` in `/workflows` gets no notice, as one
   stopped with `/tasks` or the stop key: the model was sent a stopped notice
   and answered it in a turn of its own.
+- A profile that sends the shell's output elsewhere (`exec >/dev/null`,
+  `exec >>~/profile.log 2>&1`) no longer makes every `Bash` call an error
+  that says the command did not run: the command runs, and its output goes
+  where the profile sent it.
+- A profile that traces commands (`set -x`, `setopt xtrace`) traces the
+  command, not SUPER's work on `PATH`, which filled every result with the
+  trace of a loop, and a short command's result with a file.
+- A background command whose shell cannot start leaves its output file
+  empty; it held SUPER's own mark.
 - `super -r` (`--resume`) opens the session browser of the full-screen
   terminal, as `/resume` does. It started a new session.
 

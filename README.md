@@ -1258,8 +1258,12 @@ Calls of other tools next to each other, such as several reads or several
 `Bash` runs a command in the shell from `shellPath`, Bash unless you choose
 PowerShell or cmd, and works the same way in both modes.
 
-- The shell starts from your profile: Bash, zsh and the other POSIX shells
-  and fish start as login shells. What the profile prints is left out of the
+- The shell starts from your profile: zsh, the other POSIX shells and fish
+  start as login shells, and Bash and `sh` read the files a login shell
+  reads (`/etc/profile`, then `~/.bash_profile`, `~/.bash_login` or
+  `~/.profile`; `sh` reads `/etc/profile` and `~/.profile`) and run the
+  command in that same shell, so `$$` is the shell that runs it and
+  `kill $$` ends the command. What the profile prints is left out of the
   command's output, a background command's output file and a monitor's
   events (on macOS and Linux), and a job the profile starts with its output
   sent elsewhere, such as an agent, does not hold up the command. A `cd`,
@@ -1272,9 +1276,12 @@ PowerShell or cmd, and works the same way in both modes.
   front of Homebrew or an activated virtual environment. A profile that
   ends the shell, such as one that runs `exit` or `exec` of another shell,
   leaves the command unrun, and the result, a background command's end and
-  a monitor's end say that it did not run. A POSIX shell runs the command
-  with `eval`, in a subshell, so a syntax error in it comes back with the
-  shell's message and the command's own line numbers. Its output and errors
+  a monitor's end say that it did not run; one that only sends the shell's
+  output elsewhere, such as `exec >/dev/null`, lets it run. A profile that
+  traces commands (`set -x`) traces the command, not SUPER's work on
+  `PATH`. A POSIX shell runs the command with `eval`, so a syntax error in
+  it comes back with the shell's message and the command's own line
+  numbers. Its output and errors
   come back together in the order it wrote them. PowerShell and cmd start
   as before.
 - `timeout` is in milliseconds, 120,000 (two minutes) by default and 600,000
