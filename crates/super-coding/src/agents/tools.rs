@@ -5,7 +5,7 @@
 
 use super::registry::{AgentRequest, Delivery, Isolation, Started};
 use crate::child_turn::{AgentStatus, ChildTurnOutcome};
-use crate::notifications::{Priority, agent_message};
+use crate::notifications::{Priority, agent_message, escape};
 use crate::session_runner::AgentSession;
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -155,6 +155,13 @@ impl AgentTool for LaunchAgentTool {
                         file.display()
                     ));
                 }
+                if let Some(worktree) = &agent.worktree {
+                    text.push_str(&format!(
+                        " It works in the worktree {} on the branch {}.",
+                        worktree.path.display(),
+                        worktree.branch
+                    ));
+                }
                 Ok(ToolResult {
                     content: vec![ContentBlock::text(text)],
                     details: json!({"agent": agent}),
@@ -182,14 +189,25 @@ fn agent_details(agent: &super::AgentInfo, outcome: &ChildTurnOutcome) -> Value 
 }
 
 /// The result of an agent that ran in the caller's turn: its report, then
-/// its id and what it used.
+/// its id, what it used and the worktree it left with changes in it.
 fn finished_result(id: &str, details: Value, outcome: &ChildTurnOutcome) -> ToolResult {
-    let usage = format!(
-        "<agent-result>\n<agent-id>{id}</agent-id>\n<usage><subagent_tokens>{}</subagent_tokens><tool_uses>{}</tool_uses><duration_ms>{}</duration_ms></usage>\n</agent-result>",
+    let mut usage = format!(
+        "<agent-result>\n<agent-id>{id}</agent-id>\n<usage><subagent_tokens>{}</subagent_tokens><tool_uses>{}</tool_uses><duration_ms>{}</duration_ms></usage>\n",
         details["usage"]["subagentTokens"],
         details["usage"]["toolUses"],
         details["usage"]["durationMs"],
     );
+    if let (Some(path), Some(branch)) = (
+        details["agent"]["worktree"]["path"].as_str(),
+        details["agent"]["worktree"]["branch"].as_str(),
+    ) {
+        usage.push_str(&format!(
+            "<worktree-path>{}</worktree-path>\n<worktree-branch>{}</worktree-branch>\n",
+            escape(path),
+            escape(branch)
+        ));
+    }
+    usage.push_str("</agent-result>");
     let (report, is_error) = match outcome.status {
         AgentStatus::Completed => (outcome.result.clone().unwrap_or_default(), false),
         AgentStatus::Failed => (

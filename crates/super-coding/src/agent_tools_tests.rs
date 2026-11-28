@@ -31,19 +31,19 @@ use tokio_util::sync::CancellationToken;
 
 /// One request the provider saw.
 #[derive(Clone)]
-struct Request {
-    lane: String,
-    model: String,
-    context: Context,
+pub(crate) struct Request {
+    pub(crate) lane: String,
+    pub(crate) model: String,
+    pub(crate) context: Context,
 }
 
 #[derive(Default)]
-struct Seen {
+pub(crate) struct Seen {
     requests: Mutex<Vec<Request>>,
 }
 
 impl Seen {
-    fn of(&self, lane: &str) -> Vec<Request> {
+    pub(crate) fn of(&self, lane: &str) -> Vec<Request> {
         self.requests
             .lock()
             .unwrap()
@@ -53,12 +53,12 @@ impl Seen {
             .collect()
     }
 
-    fn count(&self, lane: &str) -> usize {
+    pub(crate) fn count(&self, lane: &str) -> usize {
         self.of(lane).len()
     }
 }
 
-fn user_text(message: &Message) -> Option<String> {
+pub(crate) fn user_text(message: &Message) -> Option<String> {
     match message {
         Message::User(user) => Some(user.content.as_text()),
         _ => None,
@@ -78,7 +78,7 @@ fn lane_of(context: &Context) -> String {
 
 /// A provider that answers each lane's requests with its replies in order;
 /// `None` holds the request until it is cancelled.
-fn lanes(script: Vec<(&str, Vec<Option<AssistantMessage>>)>) -> (StreamFn, Arc<Seen>) {
+pub(crate) fn lanes(script: Vec<(&str, Vec<Option<AssistantMessage>>)>) -> (StreamFn, Arc<Seen>) {
     let replies: Arc<Mutex<HashMap<String, VecDeque<Option<AssistantMessage>>>>> =
         Arc::new(Mutex::new(
             script
@@ -204,7 +204,7 @@ impl Fixture {
     }
 }
 
-fn settings() -> Settings {
+pub(crate) fn settings() -> Settings {
     let mut settings = Settings {
         retry: crate::settings::RetrySettings {
             enabled: false,
@@ -259,7 +259,7 @@ fn fixture(script: Vec<(&str, Vec<Option<AssistantMessage>>)>) -> Fixture {
     fixture_with(|_| Vec::new(), script)
 }
 
-fn request(description: &str, prompt: &str, background: bool) -> AgentRequest {
+pub(crate) fn request(description: &str, prompt: &str, background: bool) -> AgentRequest {
     AgentRequest {
         description: description.into(),
         prompt: prompt.into(),
@@ -268,7 +268,7 @@ fn request(description: &str, prompt: &str, background: bool) -> AgentRequest {
     }
 }
 
-fn last_tool_result(context: &Context) -> super_ai::ToolResultMessage {
+pub(crate) fn last_tool_result(context: &Context) -> super_ai::ToolResultMessage {
     context
         .messages
         .iter()
@@ -280,7 +280,7 @@ fn last_tool_result(context: &Context) -> super_ai::ToolResultMessage {
         .expect("a tool result")
 }
 
-fn texts(result: &super_ai::ToolResultMessage) -> Vec<String> {
+pub(crate) fn texts(result: &super_ai::ToolResultMessage) -> Vec<String> {
     result
         .content
         .iter()
@@ -291,18 +291,18 @@ fn texts(result: &super_ai::ToolResultMessage) -> Vec<String> {
         .collect()
 }
 
-fn notice_header() -> String {
+pub(crate) fn notice_header() -> String {
     prompt_todo("Notification.header")
 }
 
 /// Every queued entry of a quiet session so far.
-fn queued(session: &AgentSession, seen: &Mutex<Vec<AgentMessage>>) -> Vec<AgentMessage> {
+pub(crate) fn queued(session: &AgentSession, seen: &Mutex<Vec<AgentMessage>>) -> Vec<AgentMessage> {
     let mut seen = seen.lock().unwrap();
     seen.extend(session.take_queued_for_test());
     seen.clone()
 }
 
-fn notice_text(message: &AgentMessage) -> Option<String> {
+pub(crate) fn notice_text(message: &AgentMessage) -> Option<String> {
     match message {
         AgentMessage::Custom(custom)
             if custom.custom_type == crate::notifications::TASK_NOTIFICATION =>
@@ -504,7 +504,7 @@ async fn an_agent_can_start_an_agent_of_its_own() {
     assert_eq!(inner[0].status, TaskStatus::Completed);
 }
 
-fn core_tools(directory: &Path) -> Vec<DynTool> {
+pub(crate) fn core_tools(directory: &Path) -> Vec<DynTool> {
     let cwd = directory.to_path_buf();
     vec![
         Arc::new(super_agent::tools::read::ReadTool::new(cwd.clone())),
@@ -524,6 +524,7 @@ fn child_of(parent: &Arc<AgentSession>, agent_type: &AgentType, depth: usize) ->
             thinking: parent.thinking_level(),
             depth,
             tool_use_id: "call",
+            worktree: None,
         })
         .unwrap()
 }
@@ -892,6 +893,7 @@ async fn a_model_or_effort_that_does_not_fit_fails_with_what_would() {
         .await,
         "isolation 'remote' is not available: agents run on this machine only. Leave isolation out."
     );
+    // A worktree needs a git repository, and the fixture's folder is none.
     assert_eq!(
         refusal(
             &fixture,
@@ -901,7 +903,10 @@ async fn a_model_or_effort_that_does_not_fit_fails_with_what_would() {
             }
         )
         .await,
-        "isolation 'worktree' is not available yet; leave isolation out to run the agent in this folder."
+        format!(
+            "Could not make a worktree for the agent: {} is not in a git repository. Leave isolation out to run the agent in this folder.",
+            fixture.directory.path().display()
+        )
     );
     // No refused call left an agent behind.
     assert!(fixture.registry().list().is_empty());

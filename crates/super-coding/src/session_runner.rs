@@ -1,8 +1,8 @@
 //! AgentSession: the high-level facade every mode drives. Owns the session
 //! manager, tool set, queues, retry, auto-compaction, and cost accounting.
 
-use crate::agents::registry::{AgentLink, AgentRegistry, MAX_DEPTH};
-use crate::agents::{AgentResources, AgentType, AgentTypeSummary};
+use crate::agents::registry::{AgentLink, AgentRegistry, MAX_DEPTH, StoredAgent};
+use crate::agents::{AgentObserver, AgentResources, AgentType, AgentTypeSummary};
 use crate::child_turn::{ForkTurns, fork_messages};
 use crate::compaction::{
     self, estimate_context_tokens, extract_file_ops, file_ops_details, plan_compaction,
@@ -10,7 +10,7 @@ use crate::compaction::{
 };
 use crate::iterative::IterativeRuntime;
 use crate::notifications::Priority;
-use crate::session::manager::SessionManager;
+use crate::session::manager::{SUBAGENT_ENTRY, SessionManager};
 use crate::settings::{
     CacheWarmingMode, CompactionMode, Mode, QueueMode, ReasoningEffortMode, Settings,
 };
@@ -19,6 +19,7 @@ use crate::workflows::{WorkflowApprover, WorkflowRuntime};
 use anyhow::Context as _;
 use futures::future::BoxFuture;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use super_agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, FileStates,
@@ -92,6 +93,10 @@ pub enum SessionEvent {
 
 pub type SessionEventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
 
+/// Where a child session's events go: nowhere until a host forwards them
+/// ([`AgentSession::forward_events`]).
+type EventRelay = Arc<Mutex<Option<SessionEventSink>>>;
+
 /// Runs a turn the session starts on its own, because an entry was queued
 /// while it was idle ([`AgentSession::queue_entry`]). The future resolves
 /// to whether a turn ran: another run may have taken the entries first.
@@ -162,12 +167,9 @@ struct QueuedPrompt {
     starts_turn: bool,
 }
 
-/// How [`AgentSession::create_child`] builds a child session.
+/// How [`AgentSession::create_child`] builds a child session from its
+/// session manager.
 struct ChildSpec {
-    /// Copied into the child before its `subagent` entry.
-    history: Vec<AgentMessage>,
-    /// The data of the `subagent` entry; the parent's id is added.
-    entry: serde_json::Value,
     /// Start with a copy of what the parent read.
     copy_file_state: bool,
     model: Model,
@@ -188,6 +190,22 @@ pub(crate) struct AgentChild<'a> {
     /// 1 for an agent of the main session.
     pub depth: usize,
     pub tool_use_id: &'a str,
+    /// The worktree it works in, for `isolation: "worktree"`.
+    pub worktree: Option<&'a crate::worktree::Worktree>,
+}
+
+/// What an agent's session is built from, whether the agent starts now or
+/// its stored session is loaded.
+struct AgentSetup<'a> {
+    id: &'a str,
+    agent_type: &'a AgentType,
+    model: Model,
+    thinking: ThinkingLevel,
+    depth: usize,
+    /// The folder it works in, when it is not this session's: its worktree.
+    folder: Option<&'a Path>,
+    /// Start from what this session read: a fork that starts now.
+    copy_file_state: bool,
 }
 
 pub struct TreeNavigationOutcome {
@@ -213,6 +231,26 @@ fn empty_answer_reason(assistant: &super_ai::AssistantMessage, budget: u64) -> S
         ),
         _ => format!("the model reached its {budget}-token budget before answering"),
     }
+}
+
+/// `prompt` for a session that works in `folder`: its last working
+/// directory line names `folder` instead. A prompt without one is returned
+/// as it is.
+fn in_folder(prompt: &str, folder: &Path) -> String {
+    const LINE: &str = "Current working directory: ";
+    let Some(start) = prompt.rfind(LINE) else {
+        return prompt.to_string();
+    };
+    let value = start + LINE.len();
+    let end = prompt[value..]
+        .find('\n')
+        .map_or(prompt.len(), |offset| value + offset);
+    format!(
+        "{}{}{}",
+        &prompt[..value],
+        folder.display().to_string().replace('\\', "/"),
+        &prompt[end..]
+    )
 }
 
 const SESSION_TITLE_MAX_CHARS: usize = 36;
@@ -278,6 +316,10 @@ pub struct AgentSession {
     agent_resources: Mutex<AgentResources>,
     /// `Agent`, `SendMessage` and `ListAgents`, bound to this session.
     agent_tools: OnceLock<Vec<DynTool>>,
+    /// Hears of this session's agent sessions; see [`AgentObserver`].
+    agent_observer: Mutex<Option<Arc<dyn AgentObserver>>>,
+    /// Set for a child session: where its events go.
+    event_relay: OnceLock<EventRelay>,
     workflows: OnceLock<Arc<WorkflowRuntime>>,
     iterative: OnceLock<Arc<IterativeRuntime>>,
     workflow_approver: Mutex<Option<WorkflowApprover>>,
@@ -459,6 +501,8 @@ impl AgentSession {
             agent_link: OnceLock::new(),
             agent_resources: Mutex::new(AgentResources::default()),
             agent_tools: OnceLock::new(),
+            agent_observer: Mutex::new(None),
+            event_relay: OnceLock::new(),
             workflows: OnceLock::new(),
             iterative: OnceLock::new(),
             workflow_approver: Mutex::new(None),
@@ -500,6 +544,8 @@ impl AgentSession {
         assert!(session.agent_tools.set(agent_tools).is_ok());
         if subagents_allowed {
             let agents = AgentRegistry::new(Arc::downgrade(&session), 0);
+            // A session loaded again knows the agents it had.
+            agents.restore();
             assert!(session.agents.set(agents).is_ok());
             let workflows = WorkflowRuntime::new(Arc::downgrade(&session));
             assert!(session.workflows.set(workflows).is_ok());
@@ -915,6 +961,10 @@ impl AgentSession {
         *self.manager.lock().unwrap() = manager;
         *self.context_usage_cache.lock().unwrap() = None;
         *self.totals.lock().unwrap() = totals;
+        // The conversation it moved to may have agents of its own.
+        if let Some(agents) = self.agents.get() {
+            agents.restore();
+        }
     }
 
     pub fn set_model(&self, model: Model) {
@@ -1804,21 +1854,29 @@ impl AgentSession {
         system_prompt.push_str(&format!(
             "\n\nYou are child agent {canonical_path}. Complete only the assigned task. Return a concise result to the parent agent."
         ));
-        self.create_child(ChildSpec {
+        let manager = self.child_manager(
+            None,
+            None,
             history,
-            entry: serde_json::json!({
+            serde_json::json!({
                 "taskName": task_name,
                 "canonicalPath": canonical_path,
             }),
-            // A fork carries on the parent's conversation and starts from
-            // what the parent read; any other child reads for itself.
-            copy_file_state: fork_turns != ForkTurns::None,
-            model,
-            thinking,
-            system_prompt,
-            tools: self.base_tools.lock().unwrap().clone(),
-            settings,
-        })
+        )?;
+        Ok(self.create_child(
+            manager,
+            ChildSpec {
+                // A fork carries on the parent's conversation and starts
+                // from what the parent read; any other child reads for
+                // itself.
+                copy_file_state: fork_turns != ForkTurns::None,
+                model,
+                thinking,
+                system_prompt,
+                tools: self.base_tools.lock().unwrap().clone(),
+                settings,
+            },
+        ))
     }
 
     /// The session of an agent the `Agent` tool starts. A fork starts with
@@ -1827,7 +1885,9 @@ impl AgentSession {
     /// context of this session's prompt ([`AgentResources::prompt_context`])
     /// and nothing read. Its tools are this session's that its type allows;
     /// it gets the agent tools when its type may start agents and it is not
-    /// as deep as agents nest, else `SendMessage` only, to write to main.
+    /// as deep as agents nest, else `SendMessage` only, to write to main. It
+    /// is stored in this session's folder of agents as `<id>.jsonl`, and an
+    /// agent with a worktree works there.
     pub(crate) fn create_agent_session(
         self: &Arc<Self>,
         child: AgentChild<'_>,
@@ -1844,74 +1904,197 @@ impl AgentSession {
         } else {
             Vec::new()
         };
-        let system_prompt = if fork {
-            self.system_prompt()
-        } else {
-            format!(
-                "{}{}",
-                child.agent_type.instructions,
-                self.child_prompt_context()
-            )
-        };
-        let mut tools = self.base_tools.lock().unwrap().clone();
-        tools.retain(|tool| child.agent_type.tools.allows(tool.name()));
-        let mut settings = self.settings();
-        // Workflows belong to the main session.
-        settings.workflows.enabled = false;
-        let path = format!(
-            "{}/{}",
-            self.agent_link
-                .get()
-                .map_or("/root", |link| link.path.as_str()),
-            child.id
-        );
-        let session = self.create_child(ChildSpec {
+        let folder = child.worktree.map(|worktree| worktree.path.as_path());
+        let model = &child.model;
+        let manager = self.child_manager(
+            Some(child.id),
+            folder,
             history,
-            entry: serde_json::json!({
+            serde_json::json!({
                 "taskName": child.description,
-                "canonicalPath": path,
+                "canonicalPath": self.agent_path(child.id),
                 "agentId": child.id,
                 "agentType": child.agent_type.name,
                 "depth": child.depth,
                 "toolUseId": child.tool_use_id,
+                "model": {"provider": model.provider, "id": model.id},
+                "thinkingLevel": child.thinking,
+                "worktree": child.worktree,
             }),
-            copy_file_state: fork,
-            model: child.model,
-            thinking: child.thinking,
-            system_prompt,
-            tools,
-            settings,
-        })?;
+        )?;
+        Ok(self.agent_session_from(
+            manager,
+            AgentSetup {
+                id: child.id,
+                agent_type: child.agent_type,
+                model: child.model,
+                thinking: child.thinking,
+                depth: child.depth,
+                folder,
+                copy_file_state: fork,
+            },
+        ))
+    }
+
+    /// The session of an agent this session started before it was loaded
+    /// again, built from its stored session the way
+    /// [`create_agent_session`](Self::create_agent_session) builds a new one,
+    /// with nothing read. A type that is gone is taken as `general-purpose`,
+    /// a model that is gone as this session's.
+    pub(crate) fn load_agent_session(
+        self: &Arc<Self>,
+        stored: &StoredAgent,
+    ) -> anyhow::Result<Arc<Self>> {
+        let manager = SessionManager::open(&stored.file)?;
+        let types = self.agent_types();
+        let agent_type = types
+            .iter()
+            .find(|known| known.name == stored.agent_type)
+            .or_else(|| {
+                types
+                    .iter()
+                    .find(|known| known.name == crate::agents::types::GENERAL_PURPOSE)
+            })
+            .context("no agent type to load the agent with")?;
+        let model = stored
+            .model
+            .as_ref()
+            .and_then(|(provider, id)| self.registry().resolve(id, Some(provider)))
+            .map(|(model, _)| model)
+            .unwrap_or_else(|| self.model());
+        let thinking = stored
+            .thinking
+            .filter(|level| model.supported_thinking_levels().contains(level))
+            .unwrap_or_else(|| self.thinking_level());
+        let own_folder = self.manager.lock().unwrap().cwd().to_path_buf();
+        let folder = manager.cwd().to_path_buf();
+        let depth = self
+            .agent_link
+            .get()
+            .map_or(0, |link| link.depth)
+            .saturating_add(1);
+        Ok(self.agent_session_from(
+            manager,
+            AgentSetup {
+                id: &stored.id,
+                agent_type,
+                model,
+                thinking,
+                depth,
+                folder: (folder != own_folder).then_some(folder.as_path()),
+                copy_file_state: false,
+            },
+        ))
+    }
+
+    /// `/root/<id>`, with the ids of the agents above this session between.
+    fn agent_path(&self, id: &str) -> String {
+        format!(
+            "{}/{}",
+            self.agent_link
+                .get()
+                .map_or("/root", |link| link.path.as_str()),
+            id
+        )
+    }
+
+    /// Build an agent's session on `manager`: see
+    /// [`create_agent_session`](Self::create_agent_session).
+    fn agent_session_from(
+        self: &Arc<Self>,
+        manager: SessionManager,
+        setup: AgentSetup<'_>,
+    ) -> Arc<Self> {
+        let mut system_prompt = if setup.agent_type.is_fork() {
+            self.system_prompt()
+        } else {
+            format!(
+                "{}{}",
+                setup.agent_type.instructions,
+                self.child_prompt_context()
+            )
+        };
+        let mut tools = self.base_tools.lock().unwrap().clone();
+        if let Some(folder) = setup.folder {
+            system_prompt = in_folder(&system_prompt, folder);
+            tools = tools
+                .into_iter()
+                .map(|tool| tool.in_directory(folder).unwrap_or(tool))
+                .collect();
+        }
+        tools.retain(|tool| setup.agent_type.tools.allows(tool.name()));
+        let mut settings = self.settings();
+        // Workflows belong to the main session.
+        settings.workflows.enabled = false;
+        let session = self.create_child(
+            manager,
+            ChildSpec {
+                copy_file_state: setup.copy_file_state,
+                model: setup.model,
+                thinking: setup.thinking,
+                system_prompt,
+                tools,
+                settings,
+            },
+        );
         let link = AgentLink {
             parent: Arc::downgrade(self),
-            id: child.id.to_string(),
-            depth: child.depth,
-            path,
+            id: setup.id.to_string(),
+            depth: setup.depth,
+            path: self.agent_path(setup.id),
         };
         assert!(session.agent_link.set(link).is_ok());
-        if child.agent_type.can_start_agents() && child.depth < MAX_DEPTH {
-            let agents = AgentRegistry::new(Arc::downgrade(&session), child.depth);
-            assert!(session.agents.set(agents).is_ok());
+        if setup.agent_type.can_start_agents() && setup.depth < MAX_DEPTH {
+            let agents = AgentRegistry::new(Arc::downgrade(&session), setup.depth);
+            assert!(session.agents.set(agents.clone()).is_ok());
+            agents.restore();
         }
         session.set_agent_resources(self.agent_resources());
         session.rebuild_tools();
-        Ok(session)
+        session
     }
 
-    /// Build a child session in this session's store: `history` first, then
-    /// the `subagent` entry that names the parent.
-    fn create_child(self: &Arc<Self>, spec: ChildSpec) -> anyhow::Result<Arc<Self>> {
+    /// A new child's session manager, stored in this session's folder of
+    /// agents as `<name>.jsonl` (its own id when `name` is `None`) and
+    /// working in `folder` (this session's when `None`): `history` first,
+    /// then the `subagent` entry that names the parent.
+    fn child_manager(
+        &self,
+        name: Option<&str>,
+        folder: Option<&Path>,
+        history: Vec<AgentMessage>,
+        entry: serde_json::Value,
+    ) -> anyhow::Result<SessionManager> {
         let (mut manager, parent_id) = {
             let parent = self.manager.lock().unwrap();
-            (parent.create_child()?, parent.session_id().to_string())
+            let folder = folder.unwrap_or_else(|| parent.cwd()).to_path_buf();
+            (
+                parent.create_child_named(name, &folder)?,
+                parent.session_id().to_string(),
+            )
         };
-        for message in spec.history {
+        for message in history {
             manager.append_message(message)?;
         }
-        let mut entry = spec.entry;
+        let mut entry = entry;
         entry["parentSessionId"] = serde_json::Value::String(parent_id);
-        manager.append_custom("subagent", Some(entry))?;
+        manager.append_custom(SUBAGENT_ENTRY, Some(entry))?;
+        Ok(manager)
+    }
 
+    /// Build a child session on `manager`. Its events go nowhere until a
+    /// host forwards them ([`forward_events`](Self::forward_events)).
+    fn create_child(self: &Arc<Self>, manager: SessionManager, spec: ChildSpec) -> Arc<Self> {
+        let relay: EventRelay = Arc::default();
+        let sink: SessionEventSink = {
+            let relay = relay.clone();
+            Arc::new(move |event| {
+                let forward = relay.lock().unwrap().clone();
+                if let Some(forward) = forward {
+                    forward(event);
+                }
+            })
+        };
         let child = Self::construct(
             manager,
             spec.tools,
@@ -1921,15 +2104,75 @@ impl AgentSession {
             spec.model,
             spec.thinking,
             self.api_key_override.clone(),
-            Arc::new(|_| {}),
+            sink,
             false,
             true,
         );
+        assert!(child.event_relay.set(relay).is_ok());
         child.set_stream_fn(self.stream_fn.lock().unwrap().clone());
         if spec.copy_file_state {
             child.file_state().copy_from(&self.file_state());
         }
-        Ok(child)
+        child
+    }
+
+    /// Send the events of this child session to `sink` from now on, or
+    /// nowhere with `None`: what a host that shows or mirrors an agent's
+    /// session does when its [`AgentObserver`] hears of it. Returns whether
+    /// it took: a session that is no child keeps the sink it was built with.
+    pub fn forward_events(&self, sink: Option<SessionEventSink>) -> bool {
+        match self.event_relay.get() {
+            Some(relay) => {
+                *relay.lock().unwrap() = sink;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Install what hears of this session's agent sessions, and tell it of
+    /// those that exist already. A session's agents are told to their own
+    /// observer, which the host installs on them in turn.
+    pub fn set_agent_observer(&self, observer: Option<Arc<dyn AgentObserver>>) {
+        *self.agent_observer.lock().unwrap() = observer.clone();
+        if let (Some(observer), Some(agents)) = (observer, self.agents.get()) {
+            for (id, session) in agents.built_sessions() {
+                observer.agent_session(&id, &session);
+            }
+        }
+    }
+
+    pub(crate) fn agent_observer(&self) -> Option<Arc<dyn AgentObserver>> {
+        self.agent_observer.lock().unwrap().clone()
+    }
+
+    /// The session of the agent at `path`: an agent id of this session, or
+    /// ids separated by `/` for an agent of an agent (`a1b2c3d4e/a5f6g7h8i`).
+    /// A stored agent's session is built if it was not yet.
+    pub fn agent_at(&self, path: &str) -> anyhow::Result<Arc<Self>> {
+        let mut ids = path.split('/').map(str::trim).filter(|id| !id.is_empty());
+        let first = ids
+            .next()
+            .context("Give the id of an agent of this session.")?;
+        let mut session = self
+            .agent_registry()
+            .context("This session has no agents.")?
+            .session_of(first)?;
+        for id in ids {
+            let next = session
+                .agent_registry()
+                .with_context(|| format!("Agent {} has no agents.", session.agent_path_label()))?
+                .session_of(id)?;
+            session = next;
+        }
+        Ok(session)
+    }
+
+    /// This agent's id, for a message about it.
+    fn agent_path_label(&self) -> String {
+        self.agent_link
+            .get()
+            .map_or_else(|| "main".to_string(), |link| link.id.clone())
     }
 
     /// The agents this session started, when it may start agents: the main

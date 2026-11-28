@@ -8,6 +8,8 @@ mod agent_tools_tests;
 pub mod agents;
 #[cfg(test)]
 mod background_tests;
+#[cfg(test)]
+mod child_sessions_tests;
 mod child_turn;
 pub mod compaction;
 mod context_file;

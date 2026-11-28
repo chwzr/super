@@ -194,6 +194,10 @@ fn notification_block(task: &TaskInfo, outcome: &TaskOutcome) -> String {
             usage.subagent_tokens, usage.tool_uses, usage.duration_ms
         ));
     }
+    if let Some(worktree) = &outcome.worktree {
+        block.element("worktree-path", &worktree.path.display().to_string());
+        block.element("worktree-branch", &worktree.branch);
+    }
     block.finish()
 }
 
@@ -229,7 +233,7 @@ impl Block {
 }
 
 /// Escape the three characters that could open or close an element.
-fn escape(value: &str) -> String {
+pub(crate) fn escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
@@ -304,11 +308,30 @@ mod tests {
                 tool_uses: 3,
                 duration_ms: 4500,
             }),
+            worktree: None,
         };
         let text = text(&task_notification(&agent, &outcome));
         assert!(text.ends_with(
             "<task-notification>\n<task-id>b1234abcd</task-id>\n<status>failed</status>\n<summary>the child failed</summary>\n<usage><subagent_tokens>1200</subagent_tokens><tool_uses>3</tool_uses><duration_ms>4500</duration_ms></usage>\n</task-notification>"
         ));
+    }
+
+    #[test]
+    fn an_agent_notice_names_the_worktree_it_kept() {
+        let mut agent = task();
+        agent.kind = TaskKind::Agent;
+        let outcome = TaskOutcome::completed("Fix it (completed)")
+            .with_result("done")
+            .with_worktree(crate::worktree::Worktree {
+                path: PathBuf::from("/work/.super/worktrees/agent-a1"),
+                branch: "worktree-agent-a1".into(),
+                base: "0123abcd".into(),
+                project: PathBuf::from("/work"),
+            });
+        let text = text(&task_notification(&agent, &outcome));
+        assert!(text.ends_with(
+            "<result>done</result>\n<worktree-path>/work/.super/worktrees/agent-a1</worktree-path>\n<worktree-branch>worktree-agent-a1</worktree-branch>\n</task-notification>"
+        ), "{text}");
     }
 
     #[test]

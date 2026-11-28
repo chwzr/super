@@ -192,6 +192,10 @@ pub struct TaskOutcome {
     /// Present for agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TaskUsage>,
+    /// The worktree an agent left with changes in it, kept for whoever
+    /// looks at them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<crate::worktree::Worktree>,
 }
 
 impl TaskOutcome {
@@ -201,6 +205,7 @@ impl TaskOutcome {
             summary: summary.into(),
             result: None,
             usage: None,
+            worktree: None,
         }
     }
 
@@ -224,6 +229,12 @@ impl TaskOutcome {
 
     pub fn with_usage(mut self, usage: TaskUsage) -> Self {
         self.usage = Some(usage);
+        self
+    }
+
+    /// Name the worktree the task left behind.
+    pub fn with_worktree(mut self, worktree: crate::worktree::Worktree) -> Self {
+        self.worktree = Some(worktree);
         self
     }
 }

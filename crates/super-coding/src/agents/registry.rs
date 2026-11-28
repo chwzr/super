@@ -10,19 +10,41 @@
 //!
 //! A finished agent keeps its session, so a message sent to it with
 //! `SendMessage` resumes it as a background run.
+//!
+//! An agent's session is stored like any session, in the folder of agents
+//! of its parent's session file
+//! ([`agents_dir`](crate::session::manager::agents_dir)), as
+//! `<agent id>.jsonl`. Every run's end is recorded in it (an
+//! [`AGENT_RUN_ENTRY`] entry), so a session that is loaded again rebuilds
+//! its registry from the stored agents ([`AgentRegistry::restore`]): they are
+//! listed at once and their sessions are built the first time they are
+//! needed, for a message that resumes them or a client that reads them.
+//!
+//! An agent with `isolation: "worktree"` works in a git worktree of its own
+//! (see [`crate::worktree`]). When a run ends and nothing changed in it, the
+//! worktree is removed; otherwise it is kept, and the run's result names its
+//! folder and branch. A resumed agent gets its worktree back first.
 
 use super::types::{AgentType, GENERAL_PURPOSE};
 use crate::child_turn::{self, AgentStatus, ChildTurnOutcome};
 use crate::notifications::{Priority, agent_message};
+use crate::session::manager::SUBAGENT_ENTRY;
 use crate::session_runner::AgentSession;
 use crate::tasks::{TaskHandle, TaskKind, TaskOutcome, TaskSpec, TaskStatus, TaskUsage};
+use crate::worktree::{self, Worktree};
 use anyhow::Context as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::io::BufRead as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use super_agent::AgentMessage;
 use super_ai::{ContentBlock, Model, ThinkingLevel, UserContent, UserMessage};
 use tokio_util::sync::CancellationToken;
+
+/// `customType` of the entry an agent's session gets when a run of it ends:
+/// how it ended, whether it ran in the background, and its worktree.
+pub const AGENT_RUN_ENTRY: &str = "agent_run";
 
 /// At most this many agents of one session run at once.
 pub const MAX_RUNNING: usize = 20;
@@ -83,6 +105,11 @@ pub struct AgentInfo {
     /// Where its transcript is stored, when its session is stored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_file: Option<PathBuf>,
+    /// The worktree it works in, while there is one: during a run of an
+    /// agent with `isolation: "worktree"`, and after a run that left
+    /// changes in it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<Worktree>,
 }
 
 /// How a started agent stands when [`AgentRegistry::start`] returns.
@@ -106,8 +133,36 @@ pub(crate) struct AgentRecord {
     id: String,
     name: String,
     agent_type: String,
-    session: Arc<AgentSession>,
+    /// Built when the agent starts; for an agent rebuilt from its stored
+    /// session, the first time it is needed.
+    session: Mutex<Option<Arc<AgentSession>>>,
+    /// Where its session is stored, when it is.
+    file: Option<PathBuf>,
+    /// What building the session of a stored agent needs.
+    stored: Option<StoredAgent>,
+    /// The worktree of an agent with `isolation: "worktree"`, as it was last
+    /// made; its folder is gone after a run that changed nothing in it.
+    worktree: Mutex<Option<Worktree>>,
     state: Mutex<RunState>,
+}
+
+/// An agent as its stored session tells of it.
+#[derive(Debug, Clone)]
+pub(crate) struct StoredAgent {
+    pub file: PathBuf,
+    pub id: String,
+    pub name: String,
+    pub agent_type: String,
+    /// Provider and model id.
+    pub model: Option<(String, String)>,
+    pub thinking: Option<ThinkingLevel>,
+    pub worktree: Option<Worktree>,
+    /// How its last run ended; `stopped` when the session ended during a
+    /// run, so that its end was never recorded.
+    pub status: TaskStatus,
+    pub background: bool,
+    /// When its session was made, for the order of the list.
+    pub started: String,
 }
 
 struct RunState {
@@ -129,17 +184,97 @@ impl AgentRecord {
         background: bool,
         stop: CancellationToken,
     ) -> Self {
+        let file = session
+            .manager
+            .lock()
+            .unwrap()
+            .session_file()
+            .map(Path::to_path_buf);
         AgentRecord {
             id,
             name,
             agent_type,
-            session,
+            session: Mutex::new(Some(session)),
+            file,
+            stored: None,
+            worktree: Mutex::new(None),
             state: Mutex::new(RunState {
                 status: TaskStatus::Running,
                 background,
                 stop: Some(stop),
             }),
         }
+    }
+
+    /// A record of an agent rebuilt from its stored session, which does not
+    /// run; its session is built when it is needed.
+    pub(crate) fn stored(stored: StoredAgent) -> Self {
+        AgentRecord {
+            id: stored.id.clone(),
+            name: stored.name.clone(),
+            agent_type: stored.agent_type.clone(),
+            session: Mutex::new(None),
+            file: Some(stored.file.clone()),
+            worktree: Mutex::new(stored.worktree.clone()),
+            state: Mutex::new(RunState {
+                status: stored.status,
+                background: stored.background,
+                stop: None,
+            }),
+            stored: Some(stored),
+        }
+    }
+
+    /// The agent's session, when it was built.
+    fn built(&self) -> Option<Arc<AgentSession>> {
+        self.session.lock().unwrap().clone()
+    }
+
+    /// The agent's session, built from its stored session the first time
+    /// for an agent the registry was rebuilt with; `owner` hears of it.
+    fn session_in(&self, owner: &Arc<AgentSession>) -> anyhow::Result<Arc<AgentSession>> {
+        let mut slot = self.session.lock().unwrap();
+        if let Some(session) = slot.as_ref() {
+            return Ok(session.clone());
+        }
+        let stored = self
+            .stored
+            .as_ref()
+            .with_context(|| format!("Agent {} has no session to resume.", self.id))?;
+        let session = owner.load_agent_session(stored).with_context(|| {
+            format!(
+                "Could not load agent {} from {}",
+                self.id,
+                stored.file.display()
+            )
+        })?;
+        *slot = Some(session.clone());
+        drop(slot);
+        if let Some(observer) = owner.agent_observer() {
+            observer.agent_session(&self.id, &session);
+        }
+        Ok(session)
+    }
+
+    /// Record in the agent's session how its run ended, so the registry of
+    /// a session loaded again knows.
+    fn save_run(&self) {
+        let Some(session) = self.built() else {
+            return;
+        };
+        let (status, background) = {
+            let state = self.state.lock().unwrap();
+            (state.status, state.background)
+        };
+        let worktree = self.worktree.lock().unwrap().clone();
+        let _ = session.manager.lock().unwrap().append_custom(
+            AGENT_RUN_ENTRY,
+            Some(json!({
+                "status": status,
+                "background": background,
+                "worktree": worktree,
+            })),
+        );
     }
 
     fn begin_run(&self, background: bool, stop: CancellationToken) {
@@ -179,13 +314,13 @@ impl AgentRecord {
             agent_type: self.agent_type.clone(),
             status,
             background,
-            session_file: self
-                .session
-                .manager
+            session_file: self.file.clone(),
+            worktree: self
+                .worktree
                 .lock()
                 .unwrap()
-                .session_file()
-                .map(Path::to_path_buf),
+                .clone()
+                .filter(|worktree| worktree.path.exists()),
         }
     }
 
@@ -240,15 +375,59 @@ impl AgentRegistry {
         Ok(record.info(self.owner.upgrade().as_deref()))
     }
 
-    /// The session of the agent with this id or name.
+    /// The session of the agent with this id or name, built from its stored
+    /// session if it was not yet.
     pub fn session_of(&self, id_or_name: &str) -> anyhow::Result<Arc<AgentSession>> {
-        Ok(self.resolve(id_or_name)?.session.clone())
+        let owner = self.owner()?;
+        self.resolve(id_or_name)?.session_in(&owner)
+    }
+
+    /// The agents whose sessions are built, with their ids, oldest first.
+    pub fn built_sessions(&self) -> Vec<(String, Arc<AgentSession>)> {
+        self.records
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|record| Some((record.id.clone(), record.built()?)))
+            .collect()
     }
 
     /// Add an agent. A record built from a stored session joins the same
     /// way as one [`AgentRegistry::start`] made.
     pub(crate) fn insert(&self, record: Arc<AgentRecord>) {
         self.records.lock().unwrap().push(record);
+    }
+
+    /// Add every agent stored in the owner's folder of agents that the
+    /// registry does not know yet, oldest first: what a session loaded again
+    /// does, so that `ListAgents` lists them and `SendMessage` resumes them.
+    /// Returns how many were added.
+    pub fn restore(&self) -> usize {
+        let Some(owner) = self.owner.upgrade() else {
+            return 0;
+        };
+        let files = owner.manager.lock().unwrap().stored_children();
+        let mut stored: Vec<StoredAgent> = files
+            .iter()
+            .filter_map(|file| read_stored_agent(file))
+            .collect();
+        stored.sort_by(|a, b| a.started.cmp(&b.started).then(a.file.cmp(&b.file)));
+        let mut records = self.records.lock().unwrap();
+        let mut added = 0;
+        for agent in stored {
+            if records.iter().any(|record| record.id == agent.id) {
+                continue;
+            }
+            records.push(Arc::new(AgentRecord::stored(agent)));
+            added += 1;
+        }
+        added
+    }
+
+    fn owner(&self) -> anyhow::Result<Arc<AgentSession>> {
+        self.owner
+            .upgrade()
+            .context("The session has ended, so it has no agents.")
     }
 
     /// Start an agent for the tool call `tool_use_id`. In the background it
@@ -285,13 +464,17 @@ impl AgentRegistry {
         let agent_type = find_type(&types, request.agent_type.as_deref())?;
         let (model, thinking) = choose_model(&owner, agent_type, &request)?;
 
-        let (record, handle, stop) = {
+        let id = owner.background_tasks().new_id(TaskKind::Agent);
+        // No worktree for an agent that could not start anyway.
+        let worktree = if request.isolation == Some(Isolation::Worktree) {
+            self.check_room()?;
+            Some(agent_worktree(&owner, &id).await?)
+        } else {
+            None
+        };
+        let started = (|| {
             let _starting = self.starting.lock().unwrap();
             self.check_room()?;
-            let id = owner.background_tasks().new_id(TaskKind::Agent);
-            if request.isolation == Some(Isolation::Worktree) {
-                let _folder = agent_worktree(&owner, &id)?;
-            }
             let child = owner.create_agent_session(crate::session_runner::AgentChild {
                 id: &id,
                 agent_type,
@@ -300,6 +483,7 @@ impl AgentRegistry {
                 thinking,
                 depth: self.depth + 1,
                 tool_use_id,
+                worktree: worktree.as_ref(),
             })?;
             // A background run is stopped through its task, a waited one
             // with the caller's turn.
@@ -311,26 +495,38 @@ impl AgentRegistry {
                 (None, cancel.child_token())
             };
             let record = Arc::new(AgentRecord::new(
-                id,
+                id.clone(),
                 description.to_string(),
                 agent_type.name.clone(),
-                child,
+                child.clone(),
                 request.background,
                 stop.clone(),
             ));
+            *record.worktree.lock().unwrap() = worktree.clone();
             self.insert(record.clone());
-            (record, handle, stop)
+            anyhow::Ok((record, child, handle, stop))
+        })();
+        let (record, child, handle, stop) = match started {
+            Ok(started) => started,
+            Err(error) => {
+                if let Some(worktree) = worktree {
+                    let _ = tokio::task::spawn_blocking(move || worktree::remove(&worktree)).await;
+                }
+                return Err(error);
+            }
         };
+        if let Some(observer) = owner.agent_observer() {
+            observer.agent_session(&id, &child);
+        }
         let prompt = first_message(agent_type, &request.prompt);
 
         if let Some(handle) = handle {
-            self.spawn_run(record.clone(), handle, prompt);
+            self.spawn_run(record.clone(), child, handle, prompt);
             return Ok(Started::Background(record.info(Some(&owner))));
         }
         let outcome =
-            child_turn::run_child_turn(&self.owner, &record.session, prompt, Some(stop), None)
-                .await;
-        record.end_run(&outcome);
+            child_turn::run_child_turn(&self.owner, &child, prompt, Some(stop), None).await;
+        self.finish_run(&record, &outcome).await;
         Ok(Started::Finished(
             record.info(self.owner.upgrade().as_deref()),
             outcome,
@@ -361,19 +557,16 @@ impl AgentRegistry {
                     record.id
                 );
             }
-            record.session.queue_entry(note, Priority::Next);
+            if let Some(session) = record.built() {
+                session.queue_entry(note, Priority::Next);
+            }
             return Ok(Delivery::Queued(record.info(Some(&owner))));
         }
         self.check_room()?;
-        let handle = register_run(
-            &owner,
-            &record.id,
-            &record.name,
-            &record.session,
-            tool_use_id,
-        )?;
+        let session = record.session_in(&owner)?;
+        let handle = register_run(&owner, &record.id, &record.name, &session, tool_use_id)?;
         record.begin_run(true, handle.stop_signal());
-        self.spawn_run(record.clone(), handle, note);
+        self.spawn_run(record.clone(), session, handle, note);
         Ok(Delivery::Resumed(record.info(Some(&owner))))
     }
 
@@ -411,6 +604,13 @@ impl AgentRegistry {
     pub(crate) fn reset(&self) {
         self.stop_all();
         self.records.lock().unwrap().clear();
+        if let Some(observer) = self
+            .owner
+            .upgrade()
+            .and_then(|owner| owner.agent_observer())
+        {
+            observer.agents_reset();
+        }
     }
 
     fn resolve(&self, id_or_name: &str) -> anyhow::Result<Arc<AgentRecord>> {
@@ -455,23 +655,206 @@ impl AgentRegistry {
     fn spawn_run(
         self: &Arc<Self>,
         record: Arc<AgentRecord>,
+        session: Arc<AgentSession>,
         handle: TaskHandle,
         prompt: AgentMessage,
     ) {
-        let owner = self.owner.clone();
+        let registry = self.clone();
         tokio::spawn(async move {
-            let outcome = child_turn::run_child_turn(
-                &owner,
-                &record.session,
-                prompt,
-                Some(handle.stop_signal()),
-                None,
-            )
-            .await;
-            record.end_run(&outcome);
-            handle.finish(task_outcome(&record.name, &outcome));
+            let outcome = match prepare_worktree(&record).await {
+                Ok(()) => {
+                    child_turn::run_child_turn(
+                        &registry.owner,
+                        &session,
+                        prompt,
+                        Some(handle.stop_signal()),
+                        None,
+                    )
+                    .await
+                }
+                Err(error) => ChildTurnOutcome {
+                    status: AgentStatus::Failed,
+                    result: None,
+                    error: Some(format!("{error:#}")),
+                    usage: Default::default(),
+                    tool_uses: 0,
+                    duration: Default::default(),
+                },
+            };
+            let kept = registry.finish_run(&record, &outcome).await;
+            let mut ended = task_outcome(&record.name, &outcome);
+            if let Some(worktree) = kept {
+                ended = ended.with_worktree(worktree);
+            }
+            handle.finish(ended);
         });
     }
+
+    /// End a run of `record`: remove its worktree when nothing changed in
+    /// it, record the end in its session and tell the owner's observer.
+    /// Returns the worktree when it is kept.
+    async fn finish_run(
+        &self,
+        record: &AgentRecord,
+        outcome: &ChildTurnOutcome,
+    ) -> Option<Worktree> {
+        let kept = settle_worktree(record).await;
+        record.end_run(outcome);
+        record.save_run();
+        if let Some(observer) = self
+            .owner
+            .upgrade()
+            .and_then(|owner| owner.agent_observer())
+        {
+            observer.agent_settled(&record.id);
+        }
+        kept
+    }
+}
+
+/// Make the worktree of an agent with `isolation: "worktree"` again before
+/// a run, when the run before removed it.
+async fn prepare_worktree(record: &AgentRecord) -> anyhow::Result<()> {
+    let Some(known) = record.worktree.lock().unwrap().clone() else {
+        return Ok(());
+    };
+    if known.path.exists() {
+        return Ok(());
+    }
+    let made = tokio::task::spawn_blocking(move || worktree::recreate(&known))
+        .await
+        .context("the worktree could not be made")?
+        .context("Could not make the agent's worktree again")?;
+    *record.worktree.lock().unwrap() = Some(made);
+    Ok(())
+}
+
+/// After a run: remove the agent's worktree when nothing changed in it, and
+/// return it when it stays. A worktree that cannot be checked or removed
+/// stays.
+async fn settle_worktree(record: &AgentRecord) -> Option<Worktree> {
+    let known = record.worktree.lock().unwrap().clone()?;
+    if !known.path.exists() {
+        return None;
+    }
+    let checked = known.clone();
+    let kept = tokio::task::spawn_blocking(move || match worktree::has_changes(&checked) {
+        Ok(false) => worktree::remove(&checked).is_err(),
+        Ok(true) | Err(_) => true,
+    })
+    .await
+    .unwrap_or(true);
+    kept.then_some(known)
+}
+
+/// The data of a stored session's `subagent` entry that the registry reads.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubagentEntry {
+    agent_id: Option<String>,
+    #[serde(default)]
+    task_name: String,
+    #[serde(default)]
+    agent_type: Option<String>,
+    #[serde(default)]
+    model: Option<StoredModel>,
+    #[serde(default)]
+    thinking_level: Option<ThinkingLevel>,
+    #[serde(default)]
+    worktree: Option<Worktree>,
+}
+
+#[derive(Deserialize)]
+struct StoredModel {
+    provider: String,
+    id: String,
+}
+
+/// The data of an [`AGENT_RUN_ENTRY`] entry.
+#[derive(Deserialize)]
+struct RunEntry {
+    status: TaskStatus,
+    #[serde(default)]
+    background: bool,
+    #[serde(default)]
+    worktree: Option<Worktree>,
+}
+
+/// One line of a stored session, as far as the registry reads it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntryLine {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    custom_type: Option<String>,
+    #[serde(default)]
+    data: Option<Value>,
+}
+
+/// What the stored session `file` of an agent tells of it: `None` for a
+/// file that is not an agent's (a workflow's or a loop's child) or cannot be
+/// read.
+pub(crate) fn read_stored_agent(file: &Path) -> Option<StoredAgent> {
+    let reader = std::io::BufReader::new(std::fs::File::open(file).ok()?);
+    let mut lines = reader.lines().map_while(Result::ok);
+    let header: crate::SessionHeader = loop {
+        let line = lines.next()?;
+        if !line.trim().is_empty() {
+            break serde_json::from_str(&line).ok()?;
+        }
+    };
+    let mut subagent: Option<SubagentEntry> = None;
+    let mut last_run: Option<RunEntry> = None;
+    let mut since_run = false;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<EntryLine>(&line) else {
+            continue;
+        };
+        match (entry.kind.as_str(), entry.custom_type.as_deref()) {
+            ("custom", Some(SUBAGENT_ENTRY)) if subagent.is_none() => {
+                subagent = serde_json::from_value(entry.data?).ok();
+            }
+            ("custom", Some(AGENT_RUN_ENTRY)) => {
+                last_run = entry
+                    .data
+                    .and_then(|data| serde_json::from_value(data).ok());
+                since_run = false;
+            }
+            ("message" | "custom_message", _) => since_run = true,
+            _ => {}
+        }
+    }
+    let subagent = subagent?;
+    let id = subagent.agent_id?;
+    // A run that left no end behind was cut off with its process.
+    let (status, background) = match &last_run {
+        Some(run) if !since_run && !run.status.is_running() => (run.status, run.background),
+        Some(run) => (TaskStatus::Stopped, run.background),
+        None => (TaskStatus::Stopped, false),
+    };
+    let worktree = last_run.and_then(|run| run.worktree).or(subagent.worktree);
+    Some(StoredAgent {
+        file: file.to_path_buf(),
+        name: if subagent.task_name.is_empty() {
+            id.clone()
+        } else {
+            subagent.task_name
+        },
+        id,
+        agent_type: subagent
+            .agent_type
+            .unwrap_or_else(|| GENERAL_PURPOSE.to_string()),
+        model: subagent.model.map(|model| (model.provider, model.id)),
+        thinking: subagent.thinking_level,
+        worktree,
+        status,
+        background,
+        started: header.timestamp,
+    })
 }
 
 /// Register a background run of the agent `id` as a task of `owner` with
@@ -615,10 +998,21 @@ fn task_outcome(name: &str, outcome: &ChildTurnOutcome) -> TaskOutcome {
     .with_usage(usage)
 }
 
-/// The folder of the git worktree an agent with `isolation: "worktree"`
-/// works in. Not built yet: the call fails, and no agent starts.
-pub(crate) fn agent_worktree(_owner: &AgentSession, _agent_id: &str) -> anyhow::Result<PathBuf> {
-    anyhow::bail!(
-        "isolation 'worktree' is not available yet; leave isolation out to run the agent in this folder."
-    )
+/// The git worktree an agent with `isolation: "worktree"` works in:
+/// `.super/worktrees/agent-<id>` in the project of `owner`'s folder, on the
+/// new branch `worktree-agent-<id>` from the project's `HEAD`.
+pub(crate) async fn agent_worktree(
+    owner: &AgentSession,
+    agent_id: &str,
+) -> anyhow::Result<Worktree> {
+    let project = owner.manager.lock().unwrap().cwd().to_path_buf();
+    let name = format!("agent-{agent_id}");
+    tokio::task::spawn_blocking(move || worktree::create(&project, &name, None))
+        .await
+        .context("the worktree could not be made")?
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "Could not make a worktree for the agent: {error}. Leave isolation out to run the agent in this folder."
+            )
+        })
 }
