@@ -260,8 +260,11 @@ Limits:
 - The maximum explicit iteration limit is 100.
 
 Each job with an interval, every job in the basic mode and every autoresearch
-job branches from the current conversation into a persistent SUPER session. A
-self-paced loop runs in the session itself, one at a time. Run `/jobs`, `/loop`
+job branches from the current conversation into a persistent SUPER session.
+That session is saved and sent like a subagent's (see
+[Subagents](#subagents)): it is no session of its own in `/resume`, and the
+apps list it among the session's agents. A self-paced loop runs in the
+session itself, one at a time. Run `/jobs`, `/loop`
 without a goal, or `/autoresearch` without a goal to manage jobs; stopping a
 self-paced loop there cancels its pending wake-up.
 
@@ -369,7 +372,10 @@ script is the built-in skill `workflow-authoring`, which the agent loads with
 
 One workflow can start up to 1,000 agents, with 16 active at once. Workflow
 scripts cannot read files, use the network, load modules, or start processes.
-Only their child agents use SUPER tools.
+Only their child agents use SUPER tools. Each one is saved and sent like a
+subagent (see [Subagents](#subagents)), so the apps list it among the
+session's agents and show its conversation; `ListAgents` and `SendMessage`
+reach only the agents the main agent started itself.
 
 ### Skills
 

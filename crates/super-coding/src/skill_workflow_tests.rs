@@ -998,3 +998,138 @@ async fn a_workflow_turn_still_says_the_user_asked_for_one() {
             .ends_with(&format!("\n\n{}", prompt_todo("Workflow.opt_in")))
     );
 }
+
+const LABELLED: &str = "export const meta = { name: 'labelled', description: 'Two labelled steps' }\n\
+const a = await agent('look one', { label: 'Look' })\n\
+const b = await agent('look two')\n\
+return [a, b].join(' + ')\n";
+
+#[tokio::test]
+async fn a_workflows_agents_are_agents_of_the_session_for_storage_and_clients() {
+    use crate::agents::AgentOrigin;
+    let mut fixture = fixture(Vec::new());
+    fixture.answer(vec![
+        ("main", workflow_calls("w1", json!({"script": LABELLED}))),
+        ("look one", vec![Some(text("one"))]),
+        ("look two", vec![Some(text("two"))]),
+    ]);
+    // Hosts hear of the agents' sessions, so they mirror them.
+    let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+    struct Heard(Arc<Mutex<Vec<String>>>);
+    impl crate::agents::AgentObserver for Heard {
+        fn agent_session(&self, agent_id: &str, _session: &Arc<AgentSession>) {
+            self.0.lock().unwrap().push(agent_id.to_string());
+        }
+    }
+    fixture
+        .session
+        .set_agent_observer(Some(Arc::new(Heard(heard.clone()))));
+    fixture.workflow_turn("main").await;
+    let run = fixture.latest_run();
+
+    let registry = fixture.session.agent_registry().unwrap();
+    let agents = registry.list();
+    assert_eq!(agents.len(), 2, "{agents:?}");
+    let origin = AgentOrigin::Workflow {
+        run_id: run.run_id.clone(),
+    };
+    for agent in &agents {
+        assert!(
+            agent.id.starts_with('a') && agent.id.len() == 9,
+            "{agent:?}"
+        );
+        assert_eq!(agent.origin, origin);
+        assert_eq!(agent.agent_type, "workflow");
+        assert_eq!(agent.status, TaskStatus::Completed);
+        assert!(!agent.background);
+        // Stored in the session's folder of agents by its id.
+        assert_eq!(
+            agent.session_file,
+            Some(
+                crate::session::manager::agents_dir(&fixture.session_file())
+                    .join(format!("{}.jsonl", agent.id))
+            )
+        );
+    }
+    // Named by the script's label, else by its task name.
+    assert_eq!(agents[0].name, "Look");
+    assert!(agents[1].name.starts_with("wf_"), "{}", agents[1].name);
+    assert_eq!(
+        serde_json::to_value(&agents[0]).unwrap()["origin"],
+        json!({"kind": "workflow", "runId": run.run_id})
+    );
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [agents[0].id.clone(), agents[1].id.clone()]
+    );
+    // Its transcript is the agent's session.
+    let first = fixture.session.agent_at(&agents[0].id).unwrap();
+    let messages = first
+        .manager
+        .lock()
+        .unwrap()
+        .build_session_context()
+        .messages;
+    assert!(
+        matches!(&messages[0], AgentMessage::User(user) if user.content.as_text() == "look one")
+    );
+
+    // The model's ListAgents and SendMessage know the agents it started
+    // only.
+    let tools = crate::agents::tools::agent_tools(Arc::downgrade(&fixture.session));
+    let tool = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .unwrap()
+            .clone()
+    };
+    let listing = tool("ListAgents")
+        .execute("l1", json!({}), CancellationToken::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(listing.details["agents"], json!([]));
+    let refused = tool("SendMessage")
+        .execute(
+            "s1",
+            json!({"to": agents[0].id, "message": "again"}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        format!("{refused:#}"),
+        format!(
+            "No agent of this session has the id or name '{}'; ListAgents lists them.",
+            agents[0].id
+        )
+    );
+
+    // The session loaded again rebuilds them.
+    let loaded = session_on(
+        SessionManager::open(&fixture.session_file()).unwrap(),
+        fixture.folder(),
+        settings(),
+        &fixture.open,
+        &fixture.entered,
+    );
+    let rebuilt = loaded.agent_registry().unwrap().list();
+    assert_eq!(rebuilt.len(), 2);
+    assert_eq!(rebuilt[0].id, agents[0].id);
+    assert_eq!(rebuilt[0].name, "Look");
+    assert_eq!(rebuilt[0].origin, origin);
+    assert_eq!(rebuilt[0].agent_type, "workflow");
+    assert_eq!(rebuilt[0].status, TaskStatus::Completed);
+    assert_eq!(rebuilt[1].id, agents[1].id);
+    let read = loaded.agent_at(&agents[1].id).unwrap();
+    assert_eq!(
+        read.manager
+            .lock()
+            .unwrap()
+            .build_session_context()
+            .messages
+            .len(),
+        2
+    );
+}

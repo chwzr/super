@@ -11,15 +11,16 @@
 //!
 //! The tools need the advanced mode and the Subagents switch. Workflows and
 //! loops run their children on the same engine
-//! (`crate::child_turn`), without these tools.
+//! (`crate::child_turn`), without these tools; the registry keeps a record
+//! of those children too, so that clients see them as agents.
 
 pub mod registry;
 pub mod tools;
 pub mod types;
 
 pub use registry::{
-    AGENT_RUN_ENTRY, AgentInfo, AgentLink, AgentRegistry, AgentRequest, Isolation, MAX_DEPTH,
-    MAX_RUNNING,
+    AGENT_RUN_ENTRY, AgentInfo, AgentLink, AgentOrigin, AgentRegistry, AgentRequest, Isolation,
+    MAX_DEPTH, MAX_RUNNING,
 };
 pub use types::{
     AgentType, AgentTypeSource, AgentTypeSummary, ToolChoice, built_in_types, discover, type_list,

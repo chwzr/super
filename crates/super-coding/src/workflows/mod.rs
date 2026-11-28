@@ -315,15 +315,16 @@ impl WorkflowRuntime {
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("the parent session has closed"))?;
         let limits = self.limits();
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let directory = self.directory();
+        let run_id = self.new_run_id(directory.as_deref());
         let runner = Arc::new(runner::SessionAgentRunner::new(
             self.parent.clone(),
+            run_id.clone(),
             limits.max_concurrency,
         ));
         let cwd = parent.working_folder().display().to_string();
 
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let directory = self.directory();
-        let run_id = self.new_run_id(directory.as_deref());
         let name = script.meta().name.clone();
         let description = script.meta().description.clone();
         let source: Arc<str> = Arc::from(script.source());

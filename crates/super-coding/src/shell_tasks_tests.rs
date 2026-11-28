@@ -159,9 +159,7 @@ async fn only_the_main_session_keeps_a_cd() {
     assert!(session.tool_session().shell.is_some());
     assert!(session.tool_session().tasks.is_some());
     for fork in [ForkTurns::None, ForkTurns::All] {
-        let child = session
-            .create_subagent_session("child", "/root/child", fork, None, None)
-            .unwrap();
+        let child = session.test_child("child", fork);
         assert!(child.tool_session().shell.is_none());
         assert!(child.tool_session().tasks.is_some());
     }

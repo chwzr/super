@@ -129,14 +129,24 @@ See [Background tasks](#background-tasks) for what a task is.
 
 See [Agents](#agents-1) for how an agent's session is stored and sent.
 
-- `get_agents`, optional `agent`: `data.agents`, the agents the session
-  started with the `Agent` tool, oldest first, those of an earlier run of the
-  session included. Each is `{id, path, name, type, status, background,
-  sessionFile, worktree}`: `path` is what the agent commands take, `status`
-  is `running`, `completed`, `failed` or `stopped`, `background` says whether
+- `get_agents`, optional `agent`: `data.agents`, the agents of the session,
+  oldest first, those of an earlier run of the session included: the ones
+  it started with the `Agent` tool, the agents of its workflow runs, and the
+  child sessions of its `/loop` jobs with an interval and its `/autoresearch`
+  jobs. Each is `{id, path, name, type, status, background, sessionFile,
+  worktree, origin}`: `path` is what the agent commands take, `status` is
+  `running`, `completed`, `failed` or `stopped`, `background` says whether
   its latest run is or was a background task, and `sessionFile` and
   `worktree` (`{path, branch, base, project}`) are there when the agent has
-  them. With `agent`, the agents that agent started.
+  them. `origin` says where it comes from: `{"kind": "agent"}` for an
+  `Agent` call (or a skill that runs in an agent), `{"kind": "workflow",
+  "runId": "wf_…"}` for an agent of a workflow run, and `{"kind": "job",
+  "jobId": 3, "jobKind": "loop"}` (or `"autoresearch"`) for a job's child
+  session. A workflow's agent has the `type` `workflow` and the name of its
+  `label`, else of its task (`wf_<phase>_<n>`); a job's child has the type
+  `loop` or `autoresearch` and the name `loop_<job id>` or
+  `autoresearch_<job id>`; its status is that of its latest iteration. With
+  `agent`, the agents that agent started.
 - `get_agent_entries` with `agent`, optional `since`: the entries of the
   agent's session, its transcript, as `get_entries` answers for the session
   (`entries` after the `since` entry id, and `leafId`), with the agent's
@@ -324,7 +334,10 @@ answer comes within a minute.
 
 An agent the `Agent` tool starts runs in a session of its own, which is
 stored and sent like the session itself, but is not a session of its own in
-any list:
+any list. So does every agent of a workflow run and the child session of a
+`/loop` job with an interval or an `/autoresearch` job; they differ only in
+their `origin` and in that the model's `ListAgents` and `SendMessage` do not
+reach them, since they run as their workflow or job says:
 
 - **Stored** next to its parent's session file, in a folder named after it:
   `<session file without .jsonl>/agents/<agent id>.jsonl`, and an agent's
@@ -332,7 +345,7 @@ any list:
   pickers, the daemon's `list_sessions`, the platform's registry) leave them
   out, and `--session <id>` does not find them. The child's first entries
   are a `custom` entry with `customType: "subagent"` (`agentId`, `taskName`,
-  `agentType`, `canonicalPath`, `depth`, `toolUseId`, `parentSessionId`,
+  `agentType`, `origin`, `canonicalPath`, `depth`, `toolUseId`, `parentSessionId`,
   `model`, `thinkingLevel`, `worktree`), and every run's end adds one with
   `customType: "agent_run"` (`status`, `background`, `worktree`).
 - **Rebuilt** when the session is loaded again, after a restart or in the

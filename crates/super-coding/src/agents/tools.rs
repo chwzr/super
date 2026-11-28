@@ -415,7 +415,9 @@ impl AgentTool for ListAgentsTool {
                 format!("cursor '{cursor}' is not one ListAgents gave; leave it out to list from the start.")
             })?,
         };
-        let agents = registry.list();
+        // The agents this session started; a workflow's or a job's children
+        // run as their workflow or job says.
+        let agents = registry.list_started();
         let page: Vec<Value> = agents
             .iter()
             .skip(start)

@@ -1,8 +1,8 @@
 //! Running one workflow agent as a real SUPER child session.
 
-use crate::child_turn;
+use crate::agents::AgentOrigin;
 use crate::child_turn::{AgentStatus, ForkTurns};
-use crate::session_runner::AgentSession;
+use crate::session_runner::{AgentSession, SubagentSpec};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -14,17 +14,26 @@ use tokio_util::sync::CancellationToken;
 ///
 /// Workflow agents get their own concurrency budget rather than counting
 /// against the agents the `Agent` tool starts: a fan-out wants up to sixteen
-/// at once and would otherwise starve behind hand-started children.
+/// at once and would otherwise starve behind hand-started children. Each one
+/// is an agent of the parent for storage and for clients, of the origin
+/// `workflow` with the run's id.
 pub(crate) struct SessionAgentRunner {
     parent: Weak<AgentSession>,
+    /// The id of the run whose agents this starts.
+    run_id: String,
     permits: Arc<Semaphore>,
     tokens: Mutex<HashMap<AgentId, u64>>,
 }
 
 impl SessionAgentRunner {
-    pub(crate) fn new(parent: Weak<AgentSession>, concurrency: usize) -> SessionAgentRunner {
+    pub(crate) fn new(
+        parent: Weak<AgentSession>,
+        run_id: String,
+        concurrency: usize,
+    ) -> SessionAgentRunner {
         SessionAgentRunner {
             parent,
+            run_id,
             permits: Arc::new(Semaphore::new(concurrency.max(1))),
             tokens: Mutex::new(HashMap::new()),
         }
@@ -47,16 +56,28 @@ impl AgentRunner for SessionAgentRunner {
 
         let task_name = task_name_for(&request);
         let canonical_path = format!("/root/{task_name}");
-        let child = match parent.create_subagent_session(
-            &task_name,
-            &canonical_path,
-            // A workflow agent gets exactly the task the script wrote. Copying
-            // the parent conversation would defeat the point of keeping
-            // intermediate results out of that conversation.
-            ForkTurns::None,
-            request.model.as_deref(),
-            request.effort.as_deref(),
-        ) {
+        // Clients see it by the script's label, else by its task name.
+        let name = request
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .unwrap_or(&task_name);
+        let child = match parent.create_subagent_session(SubagentSpec {
+            model: request.model.as_deref(),
+            effort: request.effort.as_deref(),
+            ..SubagentSpec::new(
+                name,
+                &canonical_path,
+                // A workflow agent gets exactly the task the script wrote.
+                // Copying the parent conversation would defeat the point of
+                // keeping intermediate results out of that conversation.
+                ForkTurns::None,
+                AgentOrigin::Workflow {
+                    run_id: self.run_id.clone(),
+                },
+            )
+        }) {
             Ok(child) => child,
             Err(error) => return AgentOutcome::Failed(format!("{error:#}")),
         };
@@ -66,14 +87,14 @@ impl AgentRunner for SessionAgentRunner {
             None => request.prompt.clone(),
         };
 
-        let outcome = child_turn::run_child_turn(
-            &self.parent,
-            &child,
-            super_agent::AgentMessage::user(prompt),
-            Some(cancel.clone()),
-            request.timeout_ms,
-        )
-        .await;
+        let outcome = child
+            .run(
+                &self.parent,
+                super_agent::AgentMessage::user(prompt),
+                Some(cancel.clone()),
+                request.timeout_ms,
+            )
+            .await;
         if let Ok(mut tokens) = self.tokens.lock() {
             *tokens.entry(request.index).or_default() += outcome.usage.total_tokens;
         }

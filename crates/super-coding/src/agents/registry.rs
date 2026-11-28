@@ -24,6 +24,13 @@
 //! (see [`crate::worktree`]). When a run ends and nothing changed in it, the
 //! worktree is removed; otherwise it is kept, and the run's result names its
 //! folder and branch. A resumed agent gets its worktree back first.
+//!
+//! The child sessions of a workflow run and of a `/loop` or `/autoresearch`
+//! job have a record too ([`AgentRegistry::adopt`]), so they are stored,
+//! listed, mirrored and rebuilt like agents; their [`AgentOrigin`] says where
+//! they come from. They run as their workflow or job says, not as the model
+//! says: `ListAgents` and `SendMessage` know only the agents the session
+//! started itself, and they do not count against [`MAX_RUNNING`].
 
 use super::types::{AgentType, GENERAL_PURPOSE};
 use crate::child_turn::{AgentStatus, ChildRun, ChildTurnOutcome};
@@ -73,6 +80,40 @@ pub struct AgentLink {
     pub path: String,
 }
 
+/// Where an agent comes from.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentOrigin {
+    /// An `Agent` call of the session, or a skill that runs in an agent.
+    #[default]
+    Agent,
+    /// An agent of the workflow run `run_id`.
+    #[serde(rename_all = "camelCase")]
+    Workflow { run_id: String },
+    /// The child session of the job `job_id`: a `/loop` with an interval or
+    /// an `/autoresearch` (`job_kind`).
+    #[serde(rename_all = "camelCase")]
+    Job { job_id: u64, job_kind: String },
+}
+
+impl AgentOrigin {
+    /// Whether the session started the agent itself, so that the model's
+    /// `ListAgents` and `SendMessage` reach it.
+    pub fn is_agent_call(&self) -> bool {
+        matches!(self, AgentOrigin::Agent)
+    }
+
+    /// The type a child of a workflow or a job has: `workflow`, `loop` or
+    /// `autoresearch`.
+    pub(crate) fn child_type(&self) -> &str {
+        match self {
+            AgentOrigin::Agent => GENERAL_PURPOSE,
+            AgentOrigin::Workflow { .. } => "workflow",
+            AgentOrigin::Job { job_kind, .. } => job_kind,
+        }
+    }
+}
+
 /// What a call of the `Agent` tool asks for.
 #[derive(Debug, Clone, Default)]
 pub struct AgentRequest {
@@ -110,6 +151,8 @@ pub struct AgentInfo {
     /// changes in it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<Worktree>,
+    /// Who started it: the session, a workflow run or a job.
+    pub origin: AgentOrigin,
 }
 
 /// How a started agent stands when [`AgentRegistry::start`] returns.
@@ -133,6 +176,7 @@ pub(crate) struct AgentRecord {
     id: String,
     name: String,
     agent_type: String,
+    origin: AgentOrigin,
     /// Built when the agent starts; for an agent rebuilt from its stored
     /// session, the first time it is needed.
     session: Mutex<Option<Arc<AgentSession>>>,
@@ -157,6 +201,7 @@ pub(crate) struct StoredAgent {
     pub model: Option<(String, String)>,
     pub thinking: Option<ThinkingLevel>,
     pub worktree: Option<Worktree>,
+    pub origin: AgentOrigin,
     /// How its last run ended; `stopped` when the session ended during a
     /// run, so that its end was never recorded.
     pub status: TaskStatus,
@@ -194,6 +239,7 @@ impl AgentRecord {
             id,
             name,
             agent_type,
+            origin: AgentOrigin::Agent,
             session: Mutex::new(Some(session)),
             file,
             stored: None,
@@ -213,6 +259,7 @@ impl AgentRecord {
             id: stored.id.clone(),
             name: stored.name.clone(),
             agent_type: stored.agent_type.clone(),
+            origin: stored.origin.clone(),
             session: Mutex::new(None),
             file: Some(stored.file.clone()),
             worktree: Mutex::new(stored.worktree.clone()),
@@ -321,6 +368,7 @@ impl AgentRecord {
                 .unwrap()
                 .clone()
                 .filter(|worktree| worktree.path.exists()),
+            origin: self.origin.clone(),
         }
     }
 
@@ -375,9 +423,17 @@ impl AgentRegistry {
             .collect()
     }
 
+    /// The agents the session started itself (with `Agent`, or a skill
+    /// that runs in an agent), oldest first: what `ListAgents` lists.
+    pub fn list_started(&self) -> Vec<AgentInfo> {
+        let mut agents = self.list();
+        agents.retain(|agent| agent.origin.is_agent_call());
+        agents
+    }
+
     /// The agent with this id, else the one agent with this name.
     pub fn find(&self, id_or_name: &str) -> anyhow::Result<AgentInfo> {
-        let record = self.resolve(id_or_name)?;
+        let record = self.resolve(id_or_name, |_| true)?;
         Ok(record.info(self.owner.upgrade().as_deref()))
     }
 
@@ -385,7 +441,7 @@ impl AgentRegistry {
     /// session if it was not yet.
     pub fn session_of(&self, id_or_name: &str) -> anyhow::Result<Arc<AgentSession>> {
         let owner = self.owner()?;
-        self.resolve(id_or_name)?.session_in(&owner)
+        self.resolve(id_or_name, |_| true)?.session_in(&owner)
     }
 
     /// The agents whose sessions are built, with their ids, oldest first.
@@ -551,7 +607,8 @@ impl AgentRegistry {
             .owner
             .upgrade()
             .context("The session has ended, so it cannot send a message.")?;
-        let record = self.resolve(to)?;
+        // A workflow's or a job's child runs as its workflow or job says.
+        let record = self.resolve(to, |record| record.origin.is_agent_call())?;
         let _starting = self.starting.lock().unwrap();
         let note = agent_message("main", &record.id, summary, message);
         if record.is_running() {
@@ -572,6 +629,84 @@ impl AgentRegistry {
         record.begin_run(true, handle.stop_signal());
         self.spawn_run(record.clone(), session, handle, note);
         Ok(Delivery::Resumed(record.info(Some(&owner))))
+    }
+
+    /// Add the record of `session`, a child that a workflow run or a job
+    /// starts (`origin`), and tell the owner's observer of it, so that it is
+    /// listed, read and mirrored like an agent. It counts as running until
+    /// its first run ends.
+    pub(crate) fn adopt(
+        &self,
+        id: &str,
+        name: &str,
+        origin: AgentOrigin,
+        session: &Arc<AgentSession>,
+    ) -> Arc<AgentRecord> {
+        let mut record = AgentRecord::new(
+            id.to_string(),
+            name.to_string(),
+            origin.child_type().to_string(),
+            session.clone(),
+            false,
+            CancellationToken::new(),
+        );
+        record.origin = origin;
+        let record = Arc::new(record);
+        self.insert(record.clone());
+        if let Some(observer) = self
+            .owner
+            .upgrade()
+            .and_then(|owner| owner.agent_observer())
+        {
+            observer.agent_session(id, session);
+        }
+        record
+    }
+
+    /// One run of the adopted child of `record` with `prompt`, as its
+    /// workflow or job runs it: until it has nothing left to do, `cancel`
+    /// fires or `timeout_ms` passes. The record shows the run, and its end
+    /// is recorded in the child's session.
+    pub(crate) async fn run_child(
+        &self,
+        record: &AgentRecord,
+        session: &Arc<AgentSession>,
+        prompt: AgentMessage,
+        cancel: Option<CancellationToken>,
+        timeout_ms: Option<u64>,
+    ) -> ChildTurnOutcome {
+        // Its own token, so that stopping the agent stops this run only.
+        let stop = cancel.map_or_else(CancellationToken::new, |cancel| cancel.child_token());
+        record.begin_run(false, stop.clone());
+        let run = ChildRun::begin(session, Some(stop), timeout_ms);
+        run.prompt(session, prompt).await;
+        let _starting = self.starting.lock().unwrap();
+        let outcome = run.end(&self.owner, session);
+        self.close_run(record, &outcome, None, None);
+        outcome
+    }
+
+    /// The workflow or job of the adopted child of `record` is over: a
+    /// record that still counts as running, because the job ended before
+    /// its first run, is stopped and its end recorded.
+    pub(crate) fn release(&self, record: &AgentRecord) {
+        let _starting = self.starting.lock().unwrap();
+        if !record.is_running() {
+            return;
+        }
+        {
+            let mut state = record.state.lock().unwrap();
+            state.status = TaskStatus::Stopped;
+            state.stop = None;
+        }
+        record.save_run();
+        if let Some(observer) = self
+            .owner
+            .upgrade()
+            .and_then(|owner| owner.agent_observer())
+        {
+            observer.agent_settled(&record.id);
+        }
     }
 
     /// Stop every agent that runs: a background run through the task
@@ -617,14 +752,23 @@ impl AgentRegistry {
         }
     }
 
-    fn resolve(&self, id_or_name: &str) -> anyhow::Result<Arc<AgentRecord>> {
+    /// The agent with this id, else the one agent with this name, among
+    /// those `known` admits.
+    fn resolve(
+        &self,
+        id_or_name: &str,
+        known: impl Fn(&AgentRecord) -> bool,
+    ) -> anyhow::Result<Arc<AgentRecord>> {
         let records = self.records.lock().unwrap();
+        let records: Vec<&Arc<AgentRecord>> =
+            records.iter().filter(|record| known(record)).collect();
         if let Some(record) = records.iter().find(|record| record.id == id_or_name) {
-            return Ok(record.clone());
+            return Ok((*record).clone());
         }
         let named: Vec<&Arc<AgentRecord>> = records
             .iter()
             .filter(|record| record.name == id_or_name)
+            .copied()
             .collect();
         match named.as_slice() {
             [record] => Ok((*record).clone()),
@@ -646,7 +790,9 @@ impl AgentRegistry {
             .lock()
             .unwrap()
             .iter()
-            .filter(|record| record.info(owner.as_deref()).status.is_running())
+            .filter(|record| {
+                record.origin.is_agent_call() && record.info(owner.as_deref()).status.is_running()
+            })
             .count();
         if running >= MAX_RUNNING {
             anyhow::bail!(
@@ -808,6 +954,8 @@ struct SubagentEntry {
     thinking_level: Option<ThinkingLevel>,
     #[serde(default)]
     worktree: Option<Worktree>,
+    #[serde(default)]
+    origin: AgentOrigin,
 }
 
 #[derive(Deserialize)]
@@ -839,8 +987,8 @@ struct EntryLine {
 }
 
 /// What the stored session `file` of an agent tells of it: `None` for a
-/// file that is not an agent's (a workflow's or a loop's child) or cannot be
-/// read.
+/// file without an agent id (a workflow's or a loop's child stored by an
+/// earlier version) or one that cannot be read.
 pub(crate) fn read_stored_agent(file: &Path) -> Option<StoredAgent> {
     let reader = std::io::BufReader::new(std::fs::File::open(file).ok()?);
     let mut lines = reader.lines().map_while(Result::ok);
@@ -897,6 +1045,7 @@ pub(crate) fn read_stored_agent(file: &Path) -> Option<StoredAgent> {
         model: subagent.model.map(|model| (model.provider, model.id)),
         thinking: subagent.thinking_level,
         worktree,
+        origin: subagent.origin,
         status,
         background,
         started: header.timestamp,

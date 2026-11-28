@@ -147,6 +147,7 @@ async fn a_sessions_agents_are_listed_read_and_sent_like_sessions() {
     assert_eq!(agent["type"], "general-purpose");
     assert_eq!(agent["status"], "completed");
     assert_eq!(agent["background"], false);
+    assert_eq!(agent["origin"], json!({"kind": "agent"}));
     assert_eq!(
         agent["sessionFile"],
         json!(
@@ -250,4 +251,76 @@ async fn a_sessions_agents_are_listed_read_and_sent_like_sessions() {
         super_coding::SessionManager::list_all(&directory.path().join("sessions")).unwrap();
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].path, main_file);
+}
+
+#[tokio::test]
+async fn a_workflows_agents_are_listed_read_and_sent_like_the_sessions_own() {
+    let directory = tempfile::tempdir().unwrap();
+    let script = "export const meta = { name: 'pair', description: 'Two steps' }\n\
+const a = await agent('first step', { label: 'First' })\n\
+const b = await agent('second step')\n\
+return [a, b].join(' + ')\n";
+    // The agents and the main session ask at the same time; every answer
+    // after the call is the same.
+    let mut mock = MockScript::default().then(vec![MockTurn::ToolCall {
+        id: "call_1".into(),
+        name: "Workflow".into(),
+        arguments: json!({"script": script}),
+    }]);
+    for _ in 0..4 {
+        mock = mock.then(vec![MockTurn::Text("ok".into())]);
+    }
+    let provider = MockProvider::start(directory.path().join("provider"), mock)
+        .await
+        .unwrap();
+    let mut options = options(directory.path(), &provider, SessionSource::Create);
+    if let Some(settings) = options.settings.as_mut() {
+        settings.workflows.confirm = false;
+    }
+    let session = Session::create(options).await.unwrap();
+    let (_, mut changes) = session.subscribe_agents();
+    session.prompt("run the pair").await.unwrap();
+    session.wait_idle().await;
+    session.agent_session().wait_for_background_work().await;
+
+    let run_id = session
+        .agent_session()
+        .workflows()
+        .and_then(|runtime| runtime.latest())
+        .unwrap()
+        .run_id
+        .clone();
+    let listed = execute(&session, Command::GetAgents { agent: None }).await;
+    let agents = listed["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 2, "{listed}");
+    assert_eq!(agents[0]["name"], "First");
+    for agent in agents {
+        assert_eq!(
+            agent["origin"],
+            json!({"kind": "workflow", "runId": run_id})
+        );
+        assert_eq!(agent["type"], "workflow");
+        assert_eq!(agent["status"], "completed");
+        assert_eq!(agent["path"], agent["id"]);
+    }
+    // Their sessions were announced like an agent's, so mirrors follow them.
+    let mut announced = Vec::new();
+    while let Ok(change) = changes.try_recv() {
+        if let AgentChange::Loaded { id, .. } = change {
+            announced.push(id);
+        }
+    }
+    assert_eq!(
+        announced,
+        [agents[0]["id"].clone(), agents[1]["id"].clone()]
+    );
+    let read = execute(
+        &session,
+        Command::GetAgentEntries {
+            agent: agents[0]["id"].as_str().unwrap().to_string(),
+            since: None,
+        },
+    )
+    .await;
+    assert_eq!(message_texts(&read["entries"])[0], "user: first step");
 }

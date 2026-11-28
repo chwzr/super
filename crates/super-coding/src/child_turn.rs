@@ -31,6 +31,58 @@ pub enum ForkTurns {
     All,
 }
 
+/// A child that a workflow run or a job starts
+/// ([`AgentSession::create_subagent_session`]), with its record among its
+/// parent's agents when the parent keeps them.
+pub(crate) struct ChildAgent {
+    pub(crate) session: Arc<AgentSession>,
+    record: Option<(
+        Weak<crate::agents::AgentRegistry>,
+        Arc<crate::agents::registry::AgentRecord>,
+    )>,
+}
+
+impl ChildAgent {
+    pub(crate) fn new(
+        session: Arc<AgentSession>,
+        record: Option<(
+            Weak<crate::agents::AgentRegistry>,
+            Arc<crate::agents::registry::AgentRecord>,
+        )>,
+    ) -> Self {
+        ChildAgent { session, record }
+    }
+
+    /// Run it with `prompt` until it has nothing left to do, as
+    /// [`run_child_turn`] does; its record shows the run.
+    pub(crate) async fn run(
+        &self,
+        parent: &Weak<AgentSession>,
+        prompt: AgentMessage,
+        cancel: Option<CancellationToken>,
+        timeout_ms: Option<u64>,
+    ) -> ChildTurnOutcome {
+        if let Some((registry, record)) = &self.record
+            && let Some(registry) = registry.upgrade()
+        {
+            return registry
+                .run_child(record, &self.session, prompt, cancel, timeout_ms)
+                .await;
+        }
+        run_child_turn(parent, &self.session, prompt, cancel, timeout_ms).await
+    }
+
+    /// Its workflow or job is over: a record that still counts as running
+    /// (the job ended before its first run) is stopped.
+    pub(crate) fn release(&self) {
+        if let Some((registry, record)) = &self.record
+            && let Some(registry) = registry.upgrade()
+        {
+            registry.release(record);
+        }
+    }
+}
+
 pub(crate) struct ChildTurnOutcome {
     pub status: AgentStatus,
     pub result: Option<String>,

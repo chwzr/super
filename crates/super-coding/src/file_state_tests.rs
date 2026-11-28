@@ -253,9 +253,7 @@ async fn a_child_reads_for_itself_and_a_fork_starts_from_its_parents_reads() {
     .await;
     assert_eq!(parent.file_state().len(), 1);
 
-    let child = parent
-        .create_subagent_session("child", "/root/child", ForkTurns::None, None, None)
-        .unwrap();
+    let child = parent.test_child("child", ForkTurns::None);
     assert!(child.file_state().is_empty());
     let edit = |id: &str, old: &str, new: &str| {
         call(
@@ -269,9 +267,7 @@ async fn a_child_reads_for_itself_and_a_fork_starts_from_its_parents_reads() {
     assert_eq!(fixture.content("f.txt"), "one\n");
     assert!(child.file_state().is_empty());
 
-    let fork = parent
-        .create_subagent_session("fork", "/root/fork", ForkTurns::All, None, None)
-        .unwrap();
+    let fork = parent.test_child("fork", ForkTurns::All);
     assert_eq!(fork.file_state().len(), 1);
     run(&fork, vec![edit("f1", "one", "two"), text("edited")]).await;
     let fork_results = results(&fork);

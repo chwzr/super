@@ -10,10 +10,11 @@
 //! `ScheduleWakeup` when the next round comes or that the loop is over
 //! ([`crate::wakeup`]).
 
+use crate::agents::AgentOrigin;
 use crate::child_turn;
 use crate::child_turn::{AgentStatus, ForkTurns};
 use crate::notifications::Priority;
-use crate::session_runner::AgentSession;
+use crate::session_runner::{AgentSession, SubagentSpec};
 use crate::wakeup::Decision;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -138,9 +139,10 @@ pub struct JobRecord {
     limit: Option<u32>,
     interval: Option<Duration>,
     session_id: String,
-    /// The child session the iterations run in; `None` for a self-paced
-    /// loop, whose rounds are turns of the session itself.
-    child: Option<Arc<AgentSession>>,
+    /// The child session the iterations run in, an agent of the parent of
+    /// the origin `job`; `None` for a self-paced loop, whose rounds are turns
+    /// of the session itself.
+    child: Option<child_turn::ChildAgent>,
     started: Instant,
     state: Mutex<JobState>,
     cancel: CancellationToken,
@@ -216,7 +218,7 @@ impl JobRecord {
         }
         self.cancel.cancel();
         if let Some(child) = &self.child {
-            child.abort();
+            child.session.abort();
         }
         self.wake.notify_waiters();
     }
@@ -299,14 +301,23 @@ impl IterativeRuntime {
         }
         let limit = limit.map(|limit| limit.clamp(1, MAX_ITERATIONS));
         let task_name = format!("{}_{}", kind.label(), id);
-        let child = parent.create_subagent_session(
+        let canonical_path = format!("/root/{task_name}");
+        let child = parent.create_subagent_session(SubagentSpec::new(
             &task_name,
-            &format!("/root/{task_name}"),
+            &canonical_path,
             ForkTurns::All,
-            None,
-            None,
-        )?;
-        let session_id = child.manager.lock().unwrap().session_id().to_string();
+            AgentOrigin::Job {
+                job_id: id,
+                job_kind: kind.label().to_string(),
+            },
+        ))?;
+        let session_id = child
+            .session
+            .manager
+            .lock()
+            .unwrap()
+            .session_id()
+            .to_string();
         let (version, _) = watch::channel(0);
         let record = Arc::new(JobRecord {
             id,
@@ -415,6 +426,14 @@ impl IterativeRuntime {
     }
 
     async fn run(self: Arc<Self>, job: Arc<JobRecord>) {
+        self.run_iterations(&job).await;
+        if let Some(child) = &job.child {
+            child.release();
+        }
+    }
+
+    /// The iterations of `job`, until it ends.
+    async fn run_iterations(&self, job: &Arc<JobRecord>) {
         let permit = tokio::select! {
             _ = job.cancel.cancelled() => None,
             permit = self.permits.clone().acquire_owned() => permit.ok(),
@@ -442,16 +461,16 @@ impl IterativeRuntime {
                 job.set_status(JobStatus::Failed);
                 return;
             };
-            let outcome = child_turn::run_child_turn(
-                &job.parent,
-                child,
-                super_agent::AgentMessage::user(iteration_prompt(
-                    job.kind, &job.goal, iteration, job.limit,
-                )),
-                Some(job.cancel.clone()),
-                None,
-            )
-            .await;
+            let outcome = child
+                .run(
+                    &job.parent,
+                    super_agent::AgentMessage::user(iteration_prompt(
+                        job.kind, &job.goal, iteration, job.limit,
+                    )),
+                    Some(job.cancel.clone()),
+                    None,
+                )
+                .await;
             {
                 let mut state = job.state.lock().unwrap();
                 state.tokens = state.tokens.saturating_add(outcome.usage.total_tokens);
@@ -811,6 +830,7 @@ mod tests {
             .child
             .as_ref()
             .unwrap()
+            .session
             .manager
             .lock()
             .unwrap()

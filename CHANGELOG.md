@@ -101,6 +101,14 @@
   branch.
 - RPC: `get_agents` lists a session's subagents, those of earlier runs
   included, and `get_agent_entries` reads a subagent's transcript.
+- The agents of a workflow run and the child session of a `/loop` job with
+  an interval or an `/autoresearch` job are subagents of the session for
+  storage and for the apps: each has an agent id, is saved in the session's
+  folder of agents, is listed by `get_agents` with an `origin` that names its
+  workflow run (`runId`) or its job (`jobId`, `jobKind`), is read with
+  `get_agent_entries`, is mirrored to the nested streams, and is known again
+  when the session is opened again. `ListAgents` and `SendMessage` reach only
+  the agents the session started itself.
 - Rust SDK: `Session::agent_sessions` and `Session::subscribe_agents` hand
   out each loaded subagent session as a read-only `Session`
   (`Session::is_agent_view`), `AgentSession::agent_at` reaches an agent by

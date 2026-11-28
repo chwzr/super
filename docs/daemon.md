@@ -242,8 +242,11 @@ null for a stored session.
   out. A session the daemon loads again rebuilds its agents from that
   folder, so the model's `ListAgents` lists them and `SendMessage` resumes
   one; a client lists them with `get_agents` and reads one's transcript with
-  `get_agent_entries` on the session ([rpc.md](rpc.md#agents)). An agent
-  that still ran when the daemon stopped counts as `stopped`.
+  `get_agent_entries` on the session ([rpc.md](rpc.md#agents)). The agents
+  of the session's workflow runs and the child sessions of its loop and
+  autoresearch jobs are stored, listed, read and mirrored the same way, with
+  an `origin` that names the run or the job. An agent that still ran when the
+  daemon stopped counts as `stopped`.
 
 ## The terminal
 

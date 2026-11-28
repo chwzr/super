@@ -182,6 +182,42 @@ struct ChildSpec {
     settings: Settings,
 }
 
+/// What a workflow run or a job asks of
+/// [`AgentSession::create_subagent_session`].
+pub(crate) struct SubagentSpec<'a> {
+    /// The name clients see the child by.
+    pub name: &'a str,
+    /// What the child's system prompt calls it.
+    pub canonical_path: &'a str,
+    pub fork_turns: ForkTurns,
+    /// A model of the registry; `None` is this session's.
+    pub model: Option<&'a str>,
+    /// A thinking level; `None` is the model's or this session's.
+    pub effort: Option<&'a str>,
+    /// The workflow run or job it belongs to.
+    pub origin: crate::agents::AgentOrigin,
+}
+
+impl<'a> SubagentSpec<'a> {
+    /// A child named `name`, called `canonical_path`, that starts with
+    /// `fork_turns` of the conversation on this session's model.
+    pub(crate) fn new(
+        name: &'a str,
+        canonical_path: &'a str,
+        fork_turns: ForkTurns,
+        origin: crate::agents::AgentOrigin,
+    ) -> Self {
+        SubagentSpec {
+            name,
+            canonical_path,
+            fork_turns,
+            model: None,
+            effort: None,
+            origin,
+        }
+    }
+}
+
 /// An agent [`AgentSession::create_agent_session`] makes.
 pub(crate) struct AgentChild<'a> {
     pub id: &'a str,
@@ -2050,28 +2086,28 @@ impl AgentSession {
 
     /// A child session for a workflow agent or a loop: the parent's system
     /// prompt with one sentence for the child, the parent's tools, and as
-    /// much of the parent's text conversation as `fork_turns` asks for.
+    /// much of the parent's text conversation as `fork_turns` asks for. It
+    /// gets an agent id, is stored in this session's folder of agents as
+    /// `<id>.jsonl`, and has a record among this session's agents (when the
+    /// session keeps them), so clients list, read and mirror it like an
+    /// agent.
     pub(crate) fn create_subagent_session(
         self: &Arc<Self>,
-        task_name: &str,
-        canonical_path: &str,
-        fork_turns: ForkTurns,
-        model_pattern: Option<&str>,
-        reasoning_effort: Option<&str>,
-    ) -> anyhow::Result<Arc<Self>> {
-        let (model, suggested_thinking) = match model_pattern {
+        spec: SubagentSpec<'_>,
+    ) -> anyhow::Result<crate::child_turn::ChildAgent> {
+        let (model, suggested_thinking) = match spec.model {
             Some(pattern) => self
                 .registry()
                 .resolve(pattern, None)
                 .with_context(|| format!("no model matches subagent model '{pattern}'"))?,
             None => (self.model(), None),
         };
-        let thinking = match reasoning_effort {
+        let thinking = match spec.effort {
             Some(level) => ThinkingLevel::parse(level)
                 .with_context(|| format!("unknown subagent reasoning_effort '{level}'"))?,
             None => suggested_thinking.unwrap_or_else(|| self.thinking_level()),
         };
-        let history = if fork_turns == ForkTurns::None {
+        let history = if spec.fork_turns == ForkTurns::None {
             Vec::new()
         } else {
             let messages = self
@@ -2080,7 +2116,7 @@ impl AgentSession {
                 .unwrap()
                 .build_session_context()
                 .messages;
-            fork_messages(&messages, fork_turns)
+            fork_messages(&messages, spec.fork_turns)
         };
         let mut settings = self.settings();
         settings.subagents.enabled = false;
@@ -2090,16 +2126,31 @@ impl AgentSession {
         if let Some(folder) = &folder {
             system_prompt = in_folder(&system_prompt, folder);
         }
+        let canonical_path = spec.canonical_path;
         system_prompt.push_str(&format!(
             "\n\nYou are child agent {canonical_path}. Complete only the assigned task. Return a concise result to the parent agent."
         ));
+        let id = self
+            .background_tasks()
+            .new_id(crate::tasks::TaskKind::Agent);
+        let depth = self
+            .agent_link
+            .get()
+            .map_or(0, |link| link.depth)
+            .saturating_add(1);
         let manager = self.child_manager(
-            None,
+            Some(&id),
             folder.as_deref(),
             history,
             serde_json::json!({
-                "taskName": task_name,
+                "taskName": spec.name,
                 "canonicalPath": canonical_path,
+                "agentId": id,
+                "agentType": spec.origin.child_type(),
+                "origin": spec.origin,
+                "depth": depth,
+                "model": {"provider": model.provider, "id": model.id},
+                "thinkingLevel": thinking,
             }),
         )?;
         let child = self.create_child(
@@ -2108,7 +2159,7 @@ impl AgentSession {
                 // A fork carries on the parent's conversation and starts
                 // from what the parent read; any other child reads for
                 // itself.
-                copy_file_state: fork_turns != ForkTurns::None,
+                copy_file_state: spec.fork_turns != ForkTurns::None,
                 model,
                 thinking,
                 system_prompt,
@@ -2118,7 +2169,29 @@ impl AgentSession {
         );
         // Its `Skill` tool loads the parent's skills.
         child.set_agent_resources(self.agent_resources());
-        Ok(child)
+        let record = self.agents.get().map(|registry| {
+            (
+                Arc::downgrade(registry),
+                registry.adopt(&id, spec.name, spec.origin, &child),
+            )
+        });
+        Ok(crate::child_turn::ChildAgent::new(child, record))
+    }
+
+    /// A workflow's child named `name`, for tests.
+    #[cfg(test)]
+    pub(crate) fn test_child(self: &Arc<Self>, name: &str, fork_turns: ForkTurns) -> Arc<Self> {
+        let path = format!("/root/{name}");
+        self.create_subagent_session(SubagentSpec::new(
+            name,
+            &path,
+            fork_turns,
+            crate::agents::AgentOrigin::Workflow {
+                run_id: "wf_test0000".into(),
+            },
+        ))
+        .unwrap()
+        .session
     }
 
     /// The session of an agent the `Agent` tool starts. A fork starts with
@@ -3764,9 +3837,7 @@ mod ephemeral_tests {
             .unwrap()
             .path()
             .to_path_buf();
-        let child = session
-            .create_subagent_session("task", "/root/task", ForkTurns::None, None, None)
-            .unwrap();
+        let child = session.test_child("task", ForkTurns::None);
         child.sync_context_file();
         let child_path = child
             .context_file
@@ -4295,9 +4366,7 @@ mod ephemeral_tests {
             .append_message(AgentMessage::user("parent context"))
             .unwrap();
 
-        let child = parent
-            .create_subagent_session("inspect", "/root/inspect", ForkTurns::All, None, None)
-            .unwrap();
+        let child = parent.test_child("inspect", ForkTurns::All);
         assert!(Arc::ptr_eq(&parent.registry(), &child.registry()));
         assert!(child.available_tool_names().is_empty());
         let context = child.manager.lock().unwrap().build_session_context();
@@ -4317,9 +4386,7 @@ mod ephemeral_tests {
             .append_message(AgentMessage::user("parent context"))
             .unwrap();
 
-        let child = parent
-            .create_subagent_session("inspect", "/root/inspect", ForkTurns::None, None, None)
-            .unwrap();
+        let child = parent.test_child("inspect", ForkTurns::None);
         assert!(
             child
                 .manager

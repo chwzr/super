@@ -704,3 +704,140 @@ async fn an_agent_whose_folder_is_gone_is_loaded_and_resumed_in_its_parents_fold
         "{system}"
     );
 }
+
+#[tokio::test]
+async fn a_jobs_child_is_an_agent_of_the_session_for_storage_and_clients() {
+    use crate::agents::AgentOrigin;
+    use crate::iterative::JobKind;
+    let directory = tempfile::tempdir().unwrap();
+    let sessions = directory.path().join("sessions");
+    let stream: StreamFn = Arc::new(|_, _, _| {
+        let mut message = super_ai::AssistantMessage::empty("fake", "fake", "fake");
+        message
+            .content
+            .push(super_ai::ContentBlock::text("progress\n[continue]"));
+        message.stop_reason = super_ai::StopReason::Stop;
+        let (sink, stream) = super_ai::EventStream::channel();
+        sink.send(super_ai::AssistantEvent::Start {
+            partial: message.clone(),
+        });
+        sink.done(message);
+        stream
+    });
+    let session = main_session(
+        stored_manager(directory.path(), &sessions),
+        stream.clone(),
+        Vec::new(),
+    );
+    let jobs = session.iterative_jobs().unwrap();
+    let finished = |job: &Arc<crate::iterative::JobRecord>| {
+        let job = job.clone();
+        async move {
+            let mut updates = job.subscribe();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !job.snapshot().status.is_finished() {
+                    updates.changed().await.unwrap();
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+    let looped = jobs
+        .start(JobKind::Loop, "finish it", Some(2), None)
+        .unwrap();
+    finished(&looped).await;
+    let research = jobs
+        .start(JobKind::Autoresearch, "make it faster", Some(1), None)
+        .unwrap();
+    finished(&research).await;
+    // A job stopped before its first iteration leaves a child that never ran.
+    let stopped = jobs.start(JobKind::Loop, "never mind", None, None).unwrap();
+    stopped.stop();
+    finished(&stopped).await;
+
+    let agents = registry(&session).list();
+    assert_eq!(agents.len(), 3, "{agents:?}");
+    let origins: Vec<AgentOrigin> = agents.iter().map(|agent| agent.origin.clone()).collect();
+    assert_eq!(
+        origins,
+        [
+            AgentOrigin::Job {
+                job_id: looped.snapshot().id,
+                job_kind: "loop".into()
+            },
+            AgentOrigin::Job {
+                job_id: research.snapshot().id,
+                job_kind: "autoresearch".into()
+            },
+            AgentOrigin::Job {
+                job_id: stopped.snapshot().id,
+                job_kind: "loop".into()
+            },
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&agents[0]).unwrap()["origin"],
+        json!({"kind": "job", "jobId": looped.snapshot().id, "jobKind": "loop"})
+    );
+    let types: Vec<&str> = agents
+        .iter()
+        .map(|agent| agent.agent_type.as_str())
+        .collect();
+    assert_eq!(types, ["loop", "autoresearch", "loop"]);
+    assert_eq!(agents[0].name, format!("loop_{}", looped.snapshot().id));
+    let statuses: Vec<TaskStatus> = agents.iter().map(|agent| agent.status).collect();
+    assert_eq!(
+        statuses,
+        [
+            TaskStatus::Completed,
+            TaskStatus::Completed,
+            TaskStatus::Stopped
+        ]
+    );
+    // One child per job, stored by its id, with every iteration's end.
+    let file = agents[0].session_file.clone().unwrap();
+    assert_eq!(
+        file,
+        agents_dir(&session_file(&session)).join(format!("{}.jsonl", agents[0].id))
+    );
+    let stored = SessionManager::open(&file).unwrap();
+    assert_eq!(stored.session_id(), looped.snapshot().session_id);
+    let runs = stored
+        .entries()
+        .iter()
+        .filter(|entry| {
+            matches!(entry, crate::SessionEntry::Custom { custom_type, .. } if custom_type == AGENT_RUN_ENTRY)
+        })
+        .count();
+    assert_eq!(runs, 2);
+    // `ListAgents` lists the agents the session started only.
+    let listing = tool(&session, "ListAgents")
+        .execute("list", json!({}), CancellationToken::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(listing.details["agents"], json!([]));
+
+    // Loaded again, the session knows them.
+    let again = main_session(
+        SessionManager::open(&session_file(&session)).unwrap(),
+        stream,
+        Vec::new(),
+    );
+    let rebuilt = registry(&again).list();
+    let rebuilt_origins: Vec<AgentOrigin> =
+        rebuilt.iter().map(|agent| agent.origin.clone()).collect();
+    assert_eq!(rebuilt_origins, origins);
+    let rebuilt_statuses: Vec<TaskStatus> = rebuilt.iter().map(|agent| agent.status).collect();
+    assert_eq!(rebuilt_statuses, statuses);
+    let read = again.agent_at(&agents[1].id).unwrap();
+    assert!(
+        read.manager
+            .lock()
+            .unwrap()
+            .build_session_context()
+            .messages
+            .iter()
+            .any(|message| matches!(message, AgentMessage::Assistant(_)))
+    );
+}

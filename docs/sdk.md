@@ -268,7 +268,13 @@ id is the agent's id; its notice's `result` is the agent's report.
 In Rust, `AgentSession::agent_registry` returns the session's
 `super_coding::AgentRegistry`, the agents it started, with `list` and `find`
 returning `AgentInfo` (`id`, `name`, `type`, `status`, `background`,
-`sessionFile`, `worktree`) and `session_of` an agent's own `AgentSession`.
+`sessionFile`, `worktree`, `origin`) and `session_of` an agent's own
+`AgentSession`. The registry also keeps the agents of the session's workflow
+runs and the child sessions of its loop and autoresearch jobs, whose
+`origin` (`super_coding::agents::AgentOrigin`: `Agent`, `Workflow { run_id
+}`, `Job { job_id, job_kind }`) says so; they are stored, rebuilt and
+mirrored like the others, and `list_started` leaves them out, as the
+model's `ListAgents` does.
 `AgentSession::agent_at("a1b2c3d4e/a5f6g7h8i")` reaches an agent's agent by
 the path of ids.
 `AgentSession::agent_types` returns the agent types (`super_coding::AgentType`)
