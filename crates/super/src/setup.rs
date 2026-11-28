@@ -113,7 +113,9 @@ pub fn tool_name_warnings(
 
 /// [`tool_name_warnings`] for a front end that builds no session of its
 /// own, such as the line front end attached to the daemon: the settings and
-/// agent types of `cwd`, with the project's when it is trusted.
+/// agent types of `cwd`, with the project's when it is trusted. Unix only,
+/// as the line front end is.
+#[cfg(unix)]
 pub fn tool_name_warnings_in(args: &Args, cwd: &std::path::Path) -> Vec<String> {
     let cli_trust = if args.approve {
         Some(true)
