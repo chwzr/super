@@ -7,12 +7,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use super_agent::DynTool;
 use super_ai::{Model, Registry, ThinkingLevel};
+use super_coding::agents::AgentResources;
 use super_coding::context_files;
 use super_coding::session::manager::{SessionManager, default_session_dir};
 use super_coding::session_runner::{AgentSession, SessionEventSink};
 use super_coding::settings::Settings;
 use super_coding::skills::Skill;
-use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt};
+use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt, prompt_context};
 use super_coding::trust;
 use super_mcp::McpManager;
 use super_tui::Theme;
@@ -39,6 +40,7 @@ pub struct ReloadedRuntime {
     pub themes: Vec<Theme>,
     pub tools: Vec<DynTool>,
     pub system_prompt: String,
+    pub agent_resources: AgentResources,
 }
 
 // The tool table lives in super-sdk so the command-line program and every SDK
@@ -132,6 +134,15 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
 
     let (tool_names, mcp) = configured_tools(args, cwd, trusted, &settings)?;
     let system_prompt = system_prompt(args, cwd, &settings, &tool_names, &context, &skills);
+    let agent_resources = agent_resources(
+        args,
+        cwd,
+        trusted,
+        &settings,
+        &tool_names,
+        &context,
+        &skills,
+    );
     let tools = build_tools(&tool_names, cwd, &settings, mcp.as_ref());
 
     let (theme, themes) = load_themes(args, cwd, trusted, &settings);
@@ -145,6 +156,7 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
         themes,
         tools,
         system_prompt,
+        agent_resources,
     })
 }
 
@@ -162,12 +174,7 @@ pub fn system_prompt(
 ) -> String {
     let files = context_files::system_prompt_files(cwd);
     let custom = args.system_prompt.clone().or(files.replace);
-    let append = match (&args.append_system_prompt, &files.append) {
-        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
-        (Some(value), None) => Some(value.clone()),
-        (None, Some(value)) => Some(value.clone()),
-        (None, None) => None,
-    };
+    let append = appended_text(args, files.append);
     build_system_prompt(&SystemPromptOptions {
         mode: settings.mode,
         custom_prompt: custom.as_deref(),
@@ -177,6 +184,44 @@ pub fn system_prompt(
         context_files: context,
         skills,
     })
+}
+
+/// What the agents of a session in `cwd` start from: the agent types of
+/// the definition files (the project's only when it is trusted) and the
+/// context of the system prompt that [`system_prompt`] builds.
+pub fn agent_resources(
+    args: &Args,
+    cwd: &std::path::Path,
+    trusted: bool,
+    settings: &Settings,
+    tool_names: &[String],
+    context: &[context_files::ContextFile],
+    skills: &[Skill],
+) -> AgentResources {
+    let files = context_files::system_prompt_files(cwd);
+    let append = appended_text(args, files.append);
+    AgentResources {
+        definitions: super_coding::agents::discover(cwd, trusted),
+        prompt_context: Some(prompt_context(&SystemPromptOptions {
+            mode: settings.mode,
+            custom_prompt: None,
+            append: append.as_deref(),
+            selected_tools: tool_names,
+            cwd: &cwd.display().to_string(),
+            context_files: context,
+            skills,
+        })),
+    }
+}
+
+/// `--append-system-prompt` followed by the project's append file.
+fn appended_text(args: &Args, file: Option<String>) -> Option<String> {
+    match (&args.append_system_prompt, file) {
+        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
+        (Some(value), None) => Some(value.clone()),
+        (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
 }
 
 /// Discover theme files from `--theme`, the `themes` setting, and the
@@ -526,6 +571,15 @@ pub async fn build_startup(
     // System prompt.
     let (tool_names, mcp) = configured_tools(args, &cwd, trusted, &settings)?;
     let system_prompt = system_prompt(args, &cwd, &settings, &tool_names, &context, &skills);
+    let agent_resources = agent_resources(
+        args,
+        &cwd,
+        trusted,
+        &settings,
+        &tool_names,
+        &context,
+        &skills,
+    );
 
     // Session.
     let dir = session_dir(args, &settings);
@@ -592,6 +646,7 @@ pub async fn build_startup(
         sink,
         !args.no_tools,
     );
+    session.set_agent_resources(agent_resources);
 
     let initial_message = initial_message(args, &cwd)?;
 

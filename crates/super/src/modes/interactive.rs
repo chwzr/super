@@ -9183,6 +9183,7 @@ fn reload_interactive(
     app.webmcp_manager = webmcp_manager(&reloaded.settings.webmcp);
     resources.settings = reloaded.settings.clone();
     session.reload_runtime(reloaded.settings, reloaded.system_prompt, reloaded.tools);
+    session.set_agent_resources(reloaded.agent_resources);
     resources.saved_workflows = discover_saved_workflows(session);
     resources.themes = reloaded.themes;
 

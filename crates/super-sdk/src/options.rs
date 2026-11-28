@@ -18,7 +18,7 @@ use super_ai::{Model, Registry, ThinkingLevel};
 use super_coding::session::manager::{SessionManager, default_session_dir};
 use super_coding::session_runner::{AgentSession, SessionEventSink};
 use super_coding::settings::Settings;
-use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt};
+use super_coding::system_prompt::{SystemPromptOptions, build_system_prompt, prompt_context};
 use super_coding::{context_files, trust};
 
 /// Where the session's history comes from and whether it is written to disk.
@@ -216,7 +216,7 @@ impl SessionOptions {
             (None, Some(value)) => Some(value.clone()),
             (None, None) => None,
         };
-        let system_prompt = build_system_prompt(&SystemPromptOptions {
+        let prompt_options = SystemPromptOptions {
             mode: settings.mode,
             custom_prompt: custom.as_deref(),
             append: append.as_deref(),
@@ -224,7 +224,12 @@ impl SessionOptions {
             cwd: &cwd.display().to_string(),
             context_files: &context,
             skills: &skills,
-        });
+        };
+        let system_prompt = build_system_prompt(&prompt_options);
+        let agent_resources = super_coding::agents::AgentResources {
+            definitions: super_coding::agents::discover(&cwd, trusted),
+            prompt_context: Some(prompt_context(&prompt_options)),
+        };
 
         let mut tools = build_tools(&tool_names, &cwd, &settings, mcp.as_ref());
         tools.extend(self.custom_tools.iter().cloned());
@@ -267,6 +272,7 @@ impl SessionOptions {
             sink,
             !self.no_tools,
         );
+        session.set_agent_resources(agent_resources);
         session.set_stream_fn(self.stream_fn.clone());
 
         Ok(BuiltSession {
