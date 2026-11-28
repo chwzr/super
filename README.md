@@ -1021,7 +1021,8 @@ two tools.
 
 Tool names are case-sensitive. `Read`, `Write`, `Edit`, and `Bash` start with a
 capital letter, and their lower-case names from earlier versions are no longer
-recognized.
+recognized. `Monitor` and `TaskStop` are not chosen here: in the advanced mode
+they come with `Bash` (see [Shell tools](#shell-tools)).
 
 To adjust the default selection, use `+` to add a tool and `-` to remove one.
 For example, `["+grep", "-Write"]` adds search and removes the Write tool. Add
@@ -1058,6 +1059,45 @@ the whole file counts. The session's own edits keep this record current. A
 new file needs no read. A subagent keeps its own record, a fork starts with a
 copy of its parent's, and a new or resumed conversation starts with an empty
 one.
+
+### Shell tools
+
+`Bash` runs a command in the shell from `shellPath`, Bash unless you choose
+PowerShell or cmd, and works the same way in both modes.
+
+- The shell starts from your profile: Bash, zsh and the other POSIX shells
+  and fish start as login shells. PowerShell and cmd start as before.
+- `timeout` is in milliseconds, 120,000 (two minutes) by default and 600,000
+  at most. A command that does nothing but `sleep` is refused; it can wait in
+  the background instead.
+- In the main session a `cd` carries over to the next command while it stays
+  inside the session folder. A command that ends outside it puts the shell
+  back in the session folder. A subagent's commands always start in the
+  session folder, and so does a new or resumed conversation.
+- Up to 30,000 characters of output come back to the agent. Longer output is
+  saved to a file, and the agent gets its path and the first 2,000 bytes.
+- An exit code other than 0 is an error that starts with `Exit code N`. For
+  `grep`, `rg`, `egrep`, `fgrep`, `find`, `diff`, `test`, `[`, `git grep` and
+  `git diff` as the last command, exit code 1 is an answer, not an error.
+- With `run_in_background` the command runs as a background task, for ten
+  minutes by default and two hours at most. Its output goes to the task's
+  output file, and the agent is told when it ends or reaches its limit.
+- `dangerouslyDisableSandbox` is accepted and has no effect, because SUPER
+  has no sandbox.
+
+In the advanced mode two tools come with `Bash`:
+
+- `Monitor` watches a script or a WebSocket in the background. Each line the
+  script writes to its standard output reaches the agent as an event, and
+  lines that arrive within 200 ms come as one; standard error goes only to
+  the monitor's output file. With `ws`, each text frame is an event, a binary
+  frame shows as a short line, and a close from the server ends the watch. A
+  monitor ends after `timeout_ms`, five minutes by default and ten at most,
+  and one that brings more than 60 events within a minute is stopped. The
+  agent is told when a monitor ends.
+- `TaskStop` stops a background task by its id or its name: a command, a
+  monitor, an agent or a workflow run. It does not touch `/loop` and
+  `/autoresearch` jobs.
 
 ## Experimental context file
 

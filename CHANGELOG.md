@@ -49,6 +49,23 @@
 - Rust SDK: `AgentSession::file_state` returns the session's record of
   reads, and `AgentTool::for_session` binds a tool to a session's
   `ToolSession`.
+- `Bash` takes `run_in_background`: the command runs as a background task,
+  for ten minutes by default and two hours at most, with its output in the
+  task's output file, and the agent is told when it ends. `Bash` also takes
+  `description` and `dangerouslyDisableSandbox`, which has no effect.
+- `Monitor`, in the advanced mode, watches a script or a WebSocket in the
+  background and brings each line of the script's output, or each frame,
+  to the agent as an event; lines within 200 ms come as one. A monitor ends
+  after `timeout_ms`, five minutes by default and ten at most, and one with
+  more than 60 events within a minute is stopped. Its events are `custom`
+  messages of type `monitor_event`.
+- `TaskStop`, in the advanced mode, stops a background task by id or by
+  name, with `task_id` or its older name `shell_id`. `Monitor` and
+  `TaskStop` come with `Bash`.
+- Rust SDK: `ToolSession::shell` and `ToolSession::tasks` give a tool the
+  main session's shell folder and the session's background tasks
+  (`super_agent::TaskHost`); `BackgroundTasks::new_id` and
+  `super_coding::monitor_event` are new.
 
 ### Changed
 
@@ -77,6 +94,21 @@
   placeholders until their text is written.
 - Gemini requests leave `exclusiveMinimum` and `exclusiveMaximum` out of tool
   schemas, which its API does not accept.
+- `Bash` takes `timeout` in milliseconds, 120,000 by default and 600,000 at
+  most, where it took seconds without a default; its `cwd` parameter is gone.
+  The shell starts as a login shell from the user's profile (POSIX shells
+  and fish). In the main session a `cd` carries over to the next command
+  while it stays inside the session folder. A command that only sleeps is
+  refused in the foreground. Up to 30,000 characters of output come back;
+  longer output is saved to a file, and the agent gets its path and the
+  first 2,000 bytes. An exit code other than 0 comes back as
+  `Exit code N` with the output, except 1 from `grep`, `rg`, `egrep`,
+  `fgrep`, `find`, `diff`, `test`, `[`, `git grep` or `git diff` as the last
+  command. A Cursor model's native shell calls follow: its working folder is
+  entered with `cd`, and its timeout stays in milliseconds.
+- The descriptions of `Bash`, `Monitor` and `TaskStop` and of their
+  parameters are placeholders until their text is written; `Bash` has one
+  for each shell family.
 
 ## 0.0.42 - 2026-11-27
 

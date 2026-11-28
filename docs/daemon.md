@@ -44,7 +44,8 @@ older daemon.
 
 The daemon is started by launchd or systemd with a bare environment, so it
 reads the login shell's PATH once at start and uses it for every session's
-tools.
+tools. `Bash` and `Monitor` also start their shell as a login shell, so a
+command reads the user's profile as it would in a terminal.
 
 ## On Linux: a systemd user service
 
@@ -384,7 +385,9 @@ running after the terminal closes. In order:
 What the session read stays behind: the daemon's copy starts with an empty
 record of reads, so its `Edit` and `Write` ask for a file to be read again
 ([README](../README.md#file-tools)). The same holds whenever the daemon loads
-a session from its file.
+a session from its file. So does the folder a `cd` left the shell in: the
+daemon's first `Bash` command starts in the session folder
+([README](../README.md#shell-tools)).
 
 On screen that is one line, `♦ session a1b2c3d4 now runs in the SUPER daemon
 (pid 4242) and shows up in the apps; this terminal is attached to it`, and the

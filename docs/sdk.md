@@ -249,14 +249,21 @@ In Rust, a tool that runs in the background registers its task with the
 harness session: `agent_session().background_tasks().register(TaskSpec)`
 returns a `TaskHandle`, whose `stop_signal` is cancelled when the task is
 stopped and whose `finish(TaskOutcome)` ends it and queues its notice.
-`AgentSession::queue_entry(message, Priority)` queues anything else that
-reaches the agent from outside a tool call, with the priority `Now`, `Next`
-(the default) or `Later`.
+`BackgroundTasks::new_id` gives an id before the task is registered, for a
+tool that names its output file after it. `AgentSession::queue_entry(message,
+Priority)` queues anything else that reaches the agent from outside a tool
+call, with the priority `Now`, `Next` (the default) or `Later`; a monitor's
+events go this way, as `super_coding::monitor_event` messages. A tool in
+`super-agent`, which cannot see the session, reaches the registry through
+`ToolSession::tasks` (`super_agent::TaskHost`), as `Bash` does with
+`run_in_background`.
 
 ## Tools and safety
 
 Defaults are `Read`, `Write`, `Edit`, and `Bash`. Optional built-ins are `grep`,
-`find`, `ls`, and `mcp`. Set a read-only allowlist for untrusted prompts. Project
+`find`, `ls`, and `mcp`. In the advanced mode a session with `Bash` also offers
+`Monitor` and `TaskStop`, which work on its background tasks; leave `Bash` out
+and they are gone too. Set a read-only allowlist for untrusted prompts. Project
 resource loading is off by default in SDK sessions. Explicitly enable
 `trust_project_files` only for a trusted directory.
 
@@ -274,7 +281,17 @@ record (`super_agent::FileStates`). A session hands every tool its own
 `super_agent::ToolSession`, the record and the free room of its context,
 through `AgentTool::for_session`; a custom tool that keeps state per session
 returns a copy of itself bound to it, and the default `None` uses the tool as
-it is. A tool built outside a session gets a `ToolSession` of its own.
+it is. A tool built outside a session gets a `ToolSession` of its own. A
+`ToolSession` also carries the folder a `cd` left the main session's shell
+in (`shell`, `None` in a subagent, whose commands start in the session folder)
+and the session's background tasks (`tasks`); outside a session both are
+`None`, so `Bash` keeps no `cd` and refuses `run_in_background` there.
+
+`Bash` takes `command`, `timeout` in milliseconds (120,000 by default, 600,000
+at most; in the background 600,000 and 7,200,000), `description`,
+`run_in_background` and `dangerouslyDisableSandbox`, which has no effect; its
+`cwd` parameter is gone and refused. Output and exit codes follow the rules in
+the [README](../README.md#shell-tools).
 Cross-language custom callback tools are intentionally not supported yet: a
 callback during an agent tool batch needs cancellation, streaming updates, and
 safe runtime re-entry semantics, and pretending a plain synchronous callback

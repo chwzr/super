@@ -111,7 +111,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### Tools and shell
 
-- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. A session in the basic mode (the `mode` setting) lists no agent or workflow tools.
+- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Monitor` or `TaskStop` tools.
 - `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
 
@@ -208,6 +208,18 @@ the user typed. It is part of the session history, so `get_entries` and
 `get_messages` return it too. A task stopped with `stop_task`, with `abort`
 or by the model gets no notice: it ends with `task_ended` and
 `status: "stopped"`.
+
+A monitor (`kind: "monitor"`) also reaches the agent while it runs: each of
+its events is a `custom` message with `customType: "monitor_event"`, queued
+and delivered the way a notice is. Its `details` carry the `task`, the
+`event` (the lines of the event) and `omittedLines` (lines left out of a
+long event, which are in the task's output file). Show it as a notice too.
+
+A `Bash` call with `run_in_background` answers at once; its `details` carry
+`backgroundTaskId` and `outputFile`. A `Bash` call in the foreground has
+`details.exitCode` and, when the output was too long to return,
+`details.fullOutputPath`. A `Monitor` call's `details` carry `taskId`,
+`outputFile` and `timeoutMs`, and a `TaskStop` call's the stopped `task`.
 
 `abort` cancels the turn. Whether the background tasks stop with it depends
 on the client: one that shows a stop control for each task (`initialize`
