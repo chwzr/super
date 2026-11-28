@@ -7,7 +7,7 @@ use anyhow::Context as _;
 use serde_json::{Value, json};
 use std::sync::Weak;
 use super_agent::placeholder;
-use super_agent::{AgentTool, ToolResult, ToolUpdateSink};
+use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
 use tokio_util::sync::CancellationToken;
 
 pub struct TaskStopTool {
@@ -28,6 +28,12 @@ impl AgentTool for TaskStopTool {
 
     fn advanced_only(&self) -> bool {
         true
+    }
+
+    /// Alone in its place among the calls of one answer, so that it finds
+    /// the task a call before it started.
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     fn description(&self) -> String {

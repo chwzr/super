@@ -1466,6 +1466,94 @@ async fn a_background_agent_is_stopped_by_its_name() {
     session.stop_background_tasks();
 }
 
+/// The calls of one answer take effect in its order: a message, a stop
+/// and a listing after an `Agent` call find the agent it started, and two
+/// messages to one agent reach it in the order they were sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_agent_tools_of_one_answer_take_effect_in_its_order() {
+    let mut answer = tool_call(
+        "a1",
+        "Agent",
+        json!({"description": "Alpha", "prompt": "alpha task", "run_in_background": true}),
+    );
+    for (id, name, arguments) in [
+        (
+            "s1",
+            "SendMessage",
+            json!({"to": "Alpha", "message": "MSG-1"}),
+        ),
+        (
+            "s2",
+            "SendMessage",
+            json!({"to": "Alpha", "message": "MSG-2"}),
+        ),
+        (
+            "a2",
+            "Agent",
+            json!({"description": "Beta", "prompt": "beta task", "run_in_background": true}),
+        ),
+        ("t1", "TaskStop", json!({"task_id": "Beta"})),
+        ("l1", "ListAgents", json!({})),
+    ] {
+        answer
+            .content
+            .push(super_ai::ContentBlock::ToolCall(super_ai::ToolCall {
+                id: id.into(),
+                name: name.into(),
+                arguments,
+                thought_signature: None,
+            }));
+    }
+    let fixture = fixture(vec![
+        ("main", vec![Some(answer), Some(text("done"))]),
+        (
+            "alpha task",
+            vec![
+                Some(tool_call("g1", "Gate", json!({}))),
+                Some(text("alpha done")),
+            ],
+        ),
+        ("beta task", vec![None]),
+    ]);
+    let session = fixture.session.clone();
+    session.prompt(vec![AgentMessage::user("main")]).await;
+    let results: HashMap<String, (bool, String)> = fixture.seen.of("main")[1]
+        .context
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolResult(result) => Some((
+                result.tool_call_id.clone(),
+                (result.is_error, texts(result).join("\n")),
+            )),
+            _ => None,
+        })
+        .collect();
+    for id in ["s1", "s2", "t1", "l1"] {
+        assert!(!results[id].0, "{id}: {}", results[id].1);
+    }
+    assert!(results["t1"].1.contains("(Beta)"), "{}", results["t1"].1);
+    assert!(
+        results["l1"].1.contains("Alpha") && results["l1"].1.contains("Beta"),
+        "{}",
+        results["l1"].1
+    );
+    // Both messages wait for Alpha's next step, in the order they were sent.
+    fixture.gate.notify_one();
+    let seen = fixture.seen.clone();
+    eventually("Alpha asks again", || seen.count("alpha task") == 2).await;
+    let delivered: Vec<String> = fixture.seen.of("alpha task")[1]
+        .context
+        .messages
+        .iter()
+        .filter_map(user_text)
+        .filter(|text| text.contains("<message>MSG-"))
+        .collect();
+    assert_eq!(delivered.len(), 2, "{delivered:?}");
+    assert!(delivered[0].contains("MSG-1") && delivered[1].contains("MSG-2"));
+    session.stop_background_tasks();
+}
+
 #[test]
 fn the_agent_tools_have_the_interface_schemas_and_placeholder_descriptions() {
     let tools = agent_tools(std::sync::Weak::new());

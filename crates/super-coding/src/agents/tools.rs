@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Weak};
 use super_agent::placeholder::{tool_description, tool_parameter};
 use super_agent::tools::arguments::{boolean, drop_nulls};
-use super_agent::{AgentTool, ToolResult, ToolUpdateSink};
+use super_agent::{AgentTool, ExecutionMode, ToolResult, ToolUpdateSink};
 use super_ai::ContentBlock;
 use tokio_util::sync::CancellationToken;
 
@@ -252,6 +252,13 @@ impl AgentTool for SendMessageTool {
         true
     }
 
+    /// Alone in its place among the calls of one answer: after an `Agent`
+    /// call before it has started its agent, and before the next message,
+    /// so that messages arrive in the order they were sent.
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
+    }
+
     fn description(&self) -> String {
         tool_description("SendMessage")
     }
@@ -370,6 +377,12 @@ impl AgentTool for ListAgentsTool {
 
     fn advanced_only(&self) -> bool {
         true
+    }
+
+    /// Alone in its place among the calls of one answer, so that it lists
+    /// the agents the calls before it started.
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     fn description(&self) -> String {

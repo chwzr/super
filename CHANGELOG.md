@@ -368,7 +368,10 @@
   file, or a `cd` and then another command, give the same result every time.
   Calls of other tools next to each other still run at the same time. Before,
   every call of an answer started at once. When a run is cancelled, each call
-  it did not run is answered as aborted.
+  it did not run is answered as aborted. `SendMessage`, `ListAgents` and
+  `TaskStop` run alone too, so they find the agent an `Agent` call before them
+  in the same answer started, and two messages to one agent reach it, or
+  resume it, in the order of the answer.
 - A conversation in which a tool call has no result, because the process
   that ran the call ended first, is sent with an aborted result for that
   call. A session or an agent cut off that way, for example by the end of

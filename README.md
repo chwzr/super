@@ -1221,8 +1221,11 @@ no more.
 
 When one answer makes several calls, `Edit`, `Write` and `Bash` each run
 alone, in their place: the calls before one have ended when it starts, and
-the calls after it start when it has ended. Calls of other tools next to each
-other, such as several reads, run at the same time.
+the calls after it start when it has ended. So do `SendMessage`,
+`ListAgents`, `TaskStop` and `Workflow`, so that they find an agent or a task
+a call before them started, and two messages reach an agent in their order.
+Calls of other tools next to each other, such as several reads or several
+`Agent` calls, run at the same time.
 
 ### Shell tools
 
