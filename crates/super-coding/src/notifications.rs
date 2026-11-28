@@ -18,6 +18,10 @@
 //! runs: [`monitor_event`] builds a message of type [`MONITOR_EVENT`] with its
 //! own header placeholder and the same block, whose status is `running` and
 //! which carries the event's lines in `<event>`.
+//!
+//! A message one agent sends another with `SendMessage` is queued the same
+//! way too: [`agent_message`] builds a message of type [`AGENT_MESSAGE`],
+//! its header placeholder followed by an `<agent-message>` block.
 
 use crate::tasks::{TaskInfo, TaskOutcome};
 use serde::{Deserialize, Serialize};
@@ -45,6 +49,9 @@ pub const TASK_NOTIFICATION: &str = "task_notification";
 /// `customType` of the message that brings an event of a monitor.
 pub const MONITOR_EVENT: &str = "monitor_event";
 
+/// `customType` of a message one agent sent another with `SendMessage`.
+pub const AGENT_MESSAGE: &str = "agent_message";
+
 /// Whether `message` is the notice of a background task.
 pub fn is_task_notification(message: &AgentMessage) -> bool {
     matches!(message, AgentMessage::Custom(custom) if custom.custom_type == TASK_NOTIFICATION)
@@ -63,6 +70,26 @@ pub fn monitored_event(message: &AgentMessage) -> Option<(TaskInfo, String)> {
             let details = custom.details.as_ref()?;
             let task = serde_json::from_value(details.get("task")?.clone()).ok()?;
             Some((task, details.get("event")?.as_str()?.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// Who sent a message of an agent, its summary when it has one, and the
+/// message, from the message's `details`: what clients show in place of its
+/// text.
+pub fn sent_message(message: &AgentMessage) -> Option<(String, Option<String>, String)> {
+    match message {
+        AgentMessage::Custom(custom) if custom.custom_type == AGENT_MESSAGE => {
+            let details = custom.details.as_ref()?;
+            Some((
+                details.get("from")?.as_str()?.to_string(),
+                details
+                    .get("summary")
+                    .and_then(|summary| summary.as_str())
+                    .map(str::to_string),
+                details.get("message")?.as_str()?.to_string(),
+            ))
         }
         _ => None,
     }
@@ -120,6 +147,36 @@ pub fn monitor_event(task: &TaskInfo, event: &str, omitted_lines: usize) -> Agen
         content: UserContent::Text(text),
         display: true,
         details: Some(json!({"task": task, "event": event, "omittedLines": omitted_lines})),
+        timestamp: super_ai::now_ms(),
+    })
+}
+
+/// A message `from` one agent `to` another: the `Notification.agent_message`
+/// placeholder, a line break and an `<agent-message>` block with `<from>`,
+/// `<summary>` when there is one, and `<message>`, every value escaped.
+/// `from` is `main` for a message from the session that started the
+/// receiving agent, else the sending agent's id. Its details carry the same
+/// for clients.
+pub fn agent_message(from: &str, to: &str, summary: Option<&str>, message: &str) -> AgentMessage {
+    let mut block = String::from("<agent-message>\n");
+    let mut element = |name: &str, value: &str| {
+        block.push_str(&format!("<{name}>{}</{name}>\n", escape(value)));
+    };
+    element("from", from);
+    if let Some(summary) = summary {
+        element("summary", summary);
+    }
+    element("message", message);
+    block.push_str("</agent-message>");
+    let text = format!(
+        "{}\n{block}",
+        super_agent::placeholder::prompt_todo("Notification.agent_message")
+    );
+    AgentMessage::Custom(CustomMessage {
+        custom_type: AGENT_MESSAGE.into(),
+        content: UserContent::Text(text),
+        display: true,
+        details: Some(json!({"from": from, "to": to, "summary": summary, "message": message})),
         timestamp: super_ai::now_ms(),
     })
 }
@@ -296,6 +353,31 @@ mod tests {
         assert!(shortened.ends_with(
             "<event>first</event>\n<omitted-lines>12</omitted-lines>\n</task-notification>"
         ));
+    }
+
+    #[test]
+    fn a_message_of_an_agent_is_its_header_placeholder_and_the_block() {
+        let message = agent_message("a12345678", "main", Some("found it"), "line <1>\nline 2");
+        assert_eq!(
+            text(&message),
+            format!(
+                "{}\n<agent-message>\n<from>a12345678</from>\n<summary>found it</summary>\n<message>line &lt;1&gt;\nline 2</message>\n</agent-message>",
+                super_agent::placeholder::prompt_todo("Notification.agent_message")
+            )
+        );
+        assert_eq!(
+            sent_message(&message),
+            Some((
+                "a12345678".to_string(),
+                Some("found it".to_string()),
+                "line <1>\nline 2".to_string()
+            ))
+        );
+        assert!(!is_task_notification(&message));
+        let converted = super_agent::convert_to_llm(std::slice::from_ref(&message));
+        assert!(matches!(converted.as_slice(), [super_ai::Message::User(_)]));
+        // Without a summary the element is left out.
+        assert!(!text(&agent_message("main", "a1", None, "go on")).contains("<summary>"));
     }
 
     #[test]
