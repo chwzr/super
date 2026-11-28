@@ -47,6 +47,10 @@ pub async fn run(args: &Args) -> Result<i32> {
         super::print::told_to_end(),
     )
     .await;
+    // A worktree the session made is kept: the last event says where.
+    if let Some(entered) = super::print::kept_worktree(&startup.session) {
+        println!("{}", super_sdk::events::worktree_kept(&entered));
+    }
     Ok(if finished { 0 } else { 130 })
 }
 

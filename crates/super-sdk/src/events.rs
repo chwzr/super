@@ -222,6 +222,13 @@ pub fn session_event_json(event: &SessionEvent) -> Option<Value> {
     })
 }
 
+/// The line `--mode rpc` and `--mode json` end with when the session works
+/// in a worktree it made: nobody can be asked whether to keep or remove it
+/// there, so it is kept, and this says where it is.
+pub fn worktree_kept(entered: &super_coding::EnteredWorktree) -> Value {
+    json!({"type": "worktree_kept", "worktree": worktree_json(entered)})
+}
+
 /// A worktree a session works in, as `get_state` and `worktree_changed`
 /// report it: its folder, its branch, whether `EnterWorktree` made it, and
 /// the folder the session goes back to.

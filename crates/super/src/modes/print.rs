@@ -89,14 +89,19 @@ pub async fn run(args: &Args) -> Result<i32> {
     }
 
     let prompt_mode = startup.session.prompt_mode_for(&prompt);
-    if !run_one_prompt(
+    let finished = run_one_prompt(
         &startup.session,
         AgentMessage::user(prompt),
         prompt_mode,
         told_to_end(),
     )
-    .await
-    {
+    .await;
+    // Nobody can be asked at the end here: a worktree the session made
+    // stays, and the session is in it when it is opened again.
+    if let Some(note) = kept_worktree_note(&startup.session) {
+        eprintln!("{note}");
+    }
+    if !finished {
         // Told to end: the turn was cancelled and the tasks stopped.
         return Ok(130);
     }
@@ -149,6 +154,23 @@ pub(crate) async fn run_one_prompt(
     })
     .await;
     false
+}
+
+/// The worktree the session made with `EnterWorktree` and works in, when
+/// it ends where nobody can be asked whether to keep or remove it (`-p`,
+/// `--mode json`, `--mode rpc`, ACP): it is kept.
+pub(crate) fn kept_worktree(session: &AgentSession) -> Option<super_coding::EnteredWorktree> {
+    session.worktree().filter(|entered| entered.created)
+}
+
+/// What such a session says at its end about the worktree it keeps.
+pub(crate) fn kept_worktree_note(session: &AgentSession) -> Option<String> {
+    let entered = kept_worktree(session)?;
+    Some(format!(
+        "The worktree {} and its branch {} are kept.",
+        entered.worktree.path.display(),
+        entered.worktree.branch
+    ))
 }
 
 /// Resolves on SIGINT or, on Unix, SIGTERM.
@@ -302,6 +324,39 @@ mod tests {
         assert!(!run.await.unwrap());
         assert_eq!(*requests.lock().unwrap(), 3);
         assert!(session.wakeups().pending().is_some());
+    }
+
+    #[test]
+    fn a_session_that_ends_in_a_worktree_it_made_says_it_is_kept() {
+        let (session, _) = session();
+        assert_eq!(kept_worktree_note(&session), None);
+        let entered = |created| super_coding::EnteredWorktree {
+            worktree: super_coding::worktree::Worktree {
+                path: "/work/project/.super/worktrees/feature".into(),
+                branch: "worktree-feature".into(),
+                base: "abc123".into(),
+                project: "/work/project".into(),
+            },
+            created,
+            original: "/work/project".into(),
+            entered_at: 0,
+        };
+        session.enter_worktree(entered(false));
+        assert_eq!(kept_worktree_note(&session), None, "not one it made");
+        session.leave_worktree();
+        session.enter_worktree(entered(true));
+        assert_eq!(
+            kept_worktree_note(&session).unwrap(),
+            "The worktree /work/project/.super/worktrees/feature and its branch worktree-feature are kept."
+        );
+        let event = super_sdk::events::worktree_kept(&kept_worktree(&session).unwrap());
+        assert_eq!(event["type"], "worktree_kept");
+        assert_eq!(
+            event["worktree"]["path"],
+            "/work/project/.super/worktrees/feature"
+        );
+        assert_eq!(event["worktree"]["branch"], "worktree-feature");
+        assert_eq!(event["worktree"]["created"], true);
     }
 
     #[tokio::test]

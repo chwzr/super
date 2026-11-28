@@ -118,6 +118,7 @@ pub async fn run(args: &Args) -> Result<i32> {
         })
     });
 
+    let ending = session.clone();
     let serve = async {
         match &args.rpc_listen {
             Some(address) => {
@@ -143,6 +144,18 @@ pub async fn run(args: &Args) -> Result<i32> {
     }
     #[cfg(not(unix))]
     serve.await?;
+    // Nobody can be asked at the end here: a worktree the session made is
+    // kept, and the last line says where, as an event on standard output.
+    if let Some(entered) = super::print::kept_worktree(ending.agent_session()) {
+        match &args.rpc_listen {
+            None => println!("{}", super_sdk::events::worktree_kept(&entered)),
+            Some(_) => {
+                if let Some(note) = super::print::kept_worktree_note(ending.agent_session()) {
+                    eprintln!("{note}");
+                }
+            }
+        }
+    }
     if let Some(task) = presence {
         task.abort();
     }

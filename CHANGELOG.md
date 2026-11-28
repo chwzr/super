@@ -192,6 +192,12 @@
   command `set_mode` reads and sets them for a session. Rust SDK:
   `AgentSession::set_prompt_builder`, `PromptBuilder` and
   `SessionBackend::set_mode`.
+- `super -p`, `--mode json`, `--mode rpc` and the editor mode keep a
+  worktree the session made when they end, as they cannot ask, and say where
+  it is: `-p` and the editor mode on standard error, `--mode json` and
+  `--mode rpc` with a last `worktree_kept` event. The session is in the
+  worktree again when it is opened again, and so is a session the daemon
+  unloaded while idle.
 - A workflow run's journal is written call by call as the run goes
   (`<run id>.journal.jsonl`), so a run cut off by the end of its process can
   be resumed with `resumeFromRunId` after a restart. Such a run is announced

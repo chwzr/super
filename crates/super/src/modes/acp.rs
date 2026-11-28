@@ -57,6 +57,10 @@ impl Drop for ActiveSession {
         self.agent.abort();
         self.agent.set_closing();
         self.agent.stop_background_tasks();
+        // Nobody can be asked here: a worktree the session made is kept.
+        if let Some(note) = super::print::kept_worktree_note(&self.agent) {
+            eprintln!("{note}");
+        }
     }
 }
 

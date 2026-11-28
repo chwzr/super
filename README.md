@@ -1281,8 +1281,11 @@ SUPER asks whether to keep or remove the worktree; `Esc` goes back to the
 session. Remote controllers see the same question and may answer it. A
 session stopped from an app or with `stop_session` asks its clients the same
 way and keeps the worktree when nobody answers within a minute. A session
-the daemon unloads while idle, `super -p`, `--mode rpc` and the editor mode
-keep the worktree without asking. A new conversation starts in the session
+the daemon unloads while idle, `super -p`, `--mode json`, `--mode rpc` and
+the editor mode keep the worktree without asking; the daemon's session is in
+it again when it is loaded, and the others say at their end where it is:
+`super -p` and the editor mode in a line on standard error, `--mode json` and
+`--mode rpc` with a last `worktree_kept` event. A new conversation starts in the session
 folder; a session opened again works in its worktree again.
 
 ## Experimental context file

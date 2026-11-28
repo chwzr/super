@@ -1167,6 +1167,8 @@ mod tests {
             .expect("create");
         let path = enter_worktree(&idle, &root, "idle");
         let mut events = idle.session.events();
+        let id = idle.session_id.clone();
+        drop(idle);
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(fixture.host.sweep_idle().await, 1);
         assert!(path.exists());
@@ -1175,6 +1177,16 @@ mod tests {
         {
             assert_ne!(event.0["type"], "approval_request");
         }
+        // The idle unload did not end the session: loaded again, it works in
+        // its worktree.
+        let again = fixture.host.load(&id).await.expect("load");
+        let entered = again
+            .session
+            .agent_session()
+            .worktree()
+            .expect("in its worktree again");
+        assert_eq!(entered.worktree.path, path);
+        assert_eq!(again.session.agent_session().working_folder(), path);
     }
 
     #[tokio::test]

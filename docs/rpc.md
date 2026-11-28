@@ -353,7 +353,11 @@ it with `answer_approval` and `keep` or `remove`; `remove` stops the
 session's background tasks and deletes the worktree with its branch and its
 changes. The interactive terminal asks when it quits; the daemon asks when a
 client stops the session with `stop_session`, and keeps the worktree when no
-answer comes within a minute.
+answer comes within a minute. `--mode rpc` cannot ask at its end: it keeps
+the worktree, and its last line on standard output, after the client closed
+its input, is the event `worktree_kept` with the `worktree` (as in
+`get_state`); with `--rpc-listen` it names the worktree on standard error
+instead. The session is in that worktree again when it is loaded.
 
 ## Agents
 
