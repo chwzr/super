@@ -166,11 +166,8 @@ impl BashTool {
             directory,
             report.as_ref().map(|file| file.path()),
         );
-        let shell_name = cmd.as_std().get_program().to_string_lossy().into_owned();
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut process = ShellProcess::spawn(cmd).map_err(|e| {
-            anyhow::anyhow!("Could not start shell {shell_name}: {e}. Install Bash or set shellPath to an installed Bash, PowerShell, or cmd.exe executable.")
-        })?;
+        let mut process = ShellProcess::start(cmd)?;
         let mut stdout = process.child.stdout.take().expect("piped stdout");
         let mut stderr = process.child.stderr.take().expect("piped stderr");
         let mut capture = Capture::new(tool_call_id);
@@ -326,11 +323,8 @@ impl BashTool {
             directory,
             None,
         );
-        let shell_name = cmd.as_std().get_program().to_string_lossy().into_owned();
         cmd.stdout(Stdio::from(file)).stderr(Stdio::from(errors));
-        let process = ShellProcess::spawn(cmd).map_err(|e| {
-            anyhow::anyhow!("Could not start shell {shell_name}: {e}. Install Bash or set shellPath to an installed Bash, PowerShell, or cmd.exe executable.")
-        })?;
+        let process = ShellProcess::start(cmd)?;
         tokio::spawn(watch_background(
             process,
             task,

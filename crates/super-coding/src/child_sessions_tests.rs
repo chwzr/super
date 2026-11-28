@@ -751,6 +751,80 @@ async fn an_agent_whose_folder_is_gone_is_loaded_and_resumed_in_its_parents_fold
 }
 
 #[tokio::test]
+async fn an_agent_whose_folder_is_gone_resumes_in_its_parents_folder_in_the_same_process() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let sessions = root.join("sessions");
+    let (stream, seen) = lanes(vec![(
+        "child task",
+        vec![
+            Some(text("first report")),
+            Some(tool_call("b1", "Bash", json!({"command": "pwd"}))),
+            Some(text("second report")),
+        ],
+    )]);
+    let session = main_session(stored_manager(&root, &sessions), stream, core_tools(&root));
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    session.enter_worktree(crate::worktree::EnteredWorktree {
+        worktree: crate::worktree::Worktree {
+            path: elsewhere.clone(),
+            branch: "worktree-elsewhere".into(),
+            base: "0000000".into(),
+            project: root.clone(),
+        },
+        created: true,
+        original: root.clone(),
+        entered_at: 0,
+    });
+    registry(&session)
+        .start(
+            request("Work", "child task", false),
+            "call_1",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let work = registry(&session).list().pop().unwrap();
+    // The session leaves the worktree and removes it while the agent's
+    // session is still in memory.
+    session.leave_worktree();
+    std::fs::remove_dir_all(&elsewhere).unwrap();
+
+    tool(&session, "SendMessage")
+        .execute(
+            "call_2",
+            json!({"to": work.id, "message": "go on"}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    let collected = Mutex::new(Vec::new());
+    let notice = next_notice(&session, &collected).await;
+    assert!(
+        notice.contains("<result>second report</result>"),
+        "{notice}"
+    );
+    let resumed = seen.of("child task");
+    let pwd = last_tool_result(&resumed[2].context);
+    assert!(!pwd.is_error, "{:?}", texts(&pwd));
+    assert_eq!(texts(&pwd)[0], root.display().to_string());
+    let system = resumed[1].context.system_prompt.clone().unwrap();
+    assert!(
+        system.contains(&format!("Current working directory: {}", root.display())),
+        "{system}"
+    );
+    assert_eq!(
+        registry(&session)
+            .session_of(&work.id)
+            .unwrap()
+            .working_folder(),
+        root
+    );
+}
+
+#[tokio::test]
 async fn a_jobs_child_is_an_agent_of_the_session_for_storage_and_clients() {
     use crate::agents::AgentOrigin;
     use crate::iterative::JobKind;

@@ -263,15 +263,8 @@ impl AgentTool for MonitorTool {
                 let errors = file
                     .try_clone()
                     .map_err(|e| anyhow::anyhow!("Could not open {}: {e}.", output.display()))?;
-                let shell_name = process
-                    .as_std()
-                    .get_program()
-                    .to_string_lossy()
-                    .into_owned();
                 process.stdout(Stdio::piped()).stderr(Stdio::from(errors));
-                let mut process = ShellProcess::spawn(process).map_err(|e| {
-                    anyhow::anyhow!("Could not start shell {shell_name}: {e}. Install Bash or set shellPath to an installed Bash, PowerShell, or cmd.exe executable.")
-                })?;
+                let mut process = ShellProcess::start(process)?;
                 let stdout = process.child.stdout.take().expect("piped stdout");
                 let handle = tasks.register(spec).map_err(|e| anyhow::anyhow!("{e}"))?;
                 let events = Events::new(&session, &handle, file, description, self.limits);

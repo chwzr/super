@@ -401,6 +401,15 @@
   start sessions without file tools.
 - Rust SDK: `super_sdk::tools::unknown_tool_names` finds those names and
   `SESSION_TOOLS` lists the tools a session adds itself.
+- An agent whose folder is gone, such as a worktree the session worked in and
+  removed, goes on in the session's folder when a message resumes it in the
+  same process too, not only after the session was opened again; its
+  commands failed there with an error about the shell. A command whose folder
+  does not exist now fails with "The folder <path> does not exist, so the
+  command cannot start there." A `shellPath` that names no installed shell
+  still fails with "Could not start shell …".
+- Rust SDK: `ShellProcess::start` starts a shell command with an error that
+  says what is missing.
 
 ## 0.0.42 - 2026-11-27
 

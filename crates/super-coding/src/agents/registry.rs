@@ -625,6 +625,12 @@ impl AgentRegistry {
         }
         self.check_room()?;
         let session = record.session_in(&owner)?;
+        // An agent without a worktree of its own whose folder is gone since
+        // (a worktree the session worked in and removed) goes on in the
+        // session's folder.
+        if record.worktree.lock().unwrap().is_none() && !session.working_folder().exists() {
+            session.move_agent_to(&owner.working_folder());
+        }
         let handle = register_run(&owner, &record.id, &record.name, &session, tool_use_id)?;
         record.begin_run(true, handle.stop_signal());
         self.spawn_run(record.clone(), session, handle, note);

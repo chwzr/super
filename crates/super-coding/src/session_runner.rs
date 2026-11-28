@@ -2573,6 +2573,23 @@ impl AgentSession {
         Ok(session)
     }
 
+    /// Move an agent's session to `folder`, for an agent whose folder is
+    /// gone (a worktree its parent worked in and removed): its tools work
+    /// there, its prompt's working-directory line names it, and its stored
+    /// file keeps the folder it was made in, as a stored agent loaded with
+    /// a folder that is gone does ([`load_agent_session`](Self::load_agent_session)).
+    pub(crate) fn move_agent_to(&self, folder: &Path) {
+        self.manager.lock().unwrap().set_cwd(folder);
+        {
+            let mut base = self.base_tools.lock().unwrap();
+            let tools = std::mem::take(&mut *base);
+            *base = in_directory(tools, folder);
+        }
+        let prompt = in_folder(&self.system_prompt(), folder);
+        self.set_system_prompt(prompt);
+        self.rebuild_tools();
+    }
+
     /// `/root/<id>`, with the ids of the agents above this session between.
     fn agent_path(&self, id: &str) -> String {
         format!(

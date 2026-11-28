@@ -125,9 +125,10 @@ pub fn script(
 pub const PROFILE_QUIET: &str = r#"exec 3>&1 4>&2 >/dev/null 2>&1; exec "$0" -l -c "$1""#;
 
 /// `shell` as a login shell running `text`; on Unix through `/bin/sh` with
-/// [`PROFILE_QUIET`].
+/// [`PROFILE_QUIET`], unless the shell cannot be found, so that starting it
+/// fails with an error that names it.
 fn login_shell(shell: &Path, text: String) -> Command {
-    if cfg!(unix) {
+    if cfg!(unix) && findable(shell) {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", PROFILE_QUIET]).arg(shell).arg(text);
         command
@@ -135,6 +136,43 @@ fn login_shell(shell: &Path, text: String) -> Command {
         let mut command = Command::new(shell);
         command.args(["-l", "-c"]).arg(text);
         command
+    }
+}
+
+/// Whether `shell` is a file, or a bare name of a file in a folder of
+/// `PATH`.
+fn findable(shell: &Path) -> bool {
+    if shell.components().count() > 1 {
+        return shell.is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|folder| folder.join(shell).is_file()))
+}
+
+/// The error for a shell that could not start in `folder`: the folder is
+/// gone, or `shell` is not installed.
+fn start_error(folder: Option<&Path>, shell: &str, error: std::io::Error) -> anyhow::Error {
+    if let Some(folder) = folder
+        && !folder.is_dir()
+    {
+        return anyhow::anyhow!(
+            "The folder {} does not exist, so the command cannot start there.",
+            folder.display()
+        );
+    }
+    anyhow::anyhow!(
+        "Could not start shell {shell}: {error}. Install Bash or set shellPath to an installed Bash, PowerShell, or cmd.exe executable."
+    )
+}
+
+/// The shell `command` starts: the login shell `/bin/sh` hands over to
+/// ([`PROFILE_QUIET`]), else its program.
+fn shell_of(command: &Command) -> String {
+    let command = command.as_std();
+    let arguments: Vec<_> = command.get_args().collect();
+    match arguments.as_slice() {
+        [_, script, shell, ..] if *script == PROFILE_QUIET => shell.to_string_lossy().into_owned(),
+        _ => command.get_program().to_string_lossy().into_owned(),
     }
 }
 
@@ -157,6 +195,14 @@ impl ShellProcess {
         #[cfg(not(unix))]
         let group = None;
         Ok(ShellProcess { child, group })
+    }
+
+    /// [`spawn`](Self::spawn), with an error that says what is missing:
+    /// the folder the command starts in, or the shell.
+    pub fn start(command: Command) -> anyhow::Result<Self> {
+        let folder = command.as_std().get_current_dir().map(Path::to_path_buf);
+        let shell = shell_of(&command);
+        Self::spawn(command).map_err(|error| start_error(folder.as_deref(), &shell, error))
     }
 
     /// Kill the shell and everything in its process group.
@@ -305,8 +351,13 @@ mod tests {
     fn fish_enters_the_folder_and_reports_where_it_ended_like_a_posix_shell() {
         let directory = Path::new("/work/it's here");
         let report = Path::new("/tmp/super-cwd-1");
+        // A file named fish stands in for one, which this machine may lack.
+        let installed = tempfile::tempdir().unwrap();
+        let fish_path = installed.path().join("fish");
+        std::fs::write(&fish_path, "").unwrap();
+        let fish_path = fish_path.display().to_string();
         let fish = script(
-            Some("/usr/local/bin/fish"),
+            Some(&fish_path),
             "cd sub\necho done",
             Some("set -x A 1"),
             directory,
@@ -321,14 +372,18 @@ mod tests {
             "set -x A 1\n",
             "cd sub\necho done",
         );
-        assert_eq!(login(&fish, "/usr/local/bin/fish"), fish_block(expected));
+        assert_eq!(login(&fish, &fish_path), fish_block(expected));
         assert_eq!(fish.as_std().get_current_dir(), Some(directory));
         // Without a report file the command only starts in the folder.
-        let quiet = script(Some("fish"), "ls", None, directory, None);
+        let quiet = script(Some(&fish_path), "ls", None, directory, None);
         assert_eq!(
-            login(&quiet, "fish"),
+            login(&quiet, &fish_path),
             fish_block(concat!(r"builtin cd '/work/it\'s here'; or exit 1", "\nls"))
         );
+        // A shell that is not there is started as it is, so that the error
+        // of its start names it.
+        let missing = script(Some("/no/such/fish"), "ls", None, directory, None);
+        assert_eq!(missing.as_std().get_program(), "/no/such/fish");
         assert_eq!(fish_quote(r"a\b'c"), r"'a\\b\'c'");
         // A POSIX shell does the same with a trap.
         let posix = script(Some("/bin/bash"), "ls", None, directory, Some(report));
@@ -372,6 +427,32 @@ mod tests {
         } else {
             script.to_string()
         }
+    }
+
+    #[tokio::test]
+    async fn a_shell_that_cannot_start_names_the_missing_folder_or_shell() {
+        let gone = tempfile::tempdir().unwrap().path().join("gone");
+        let error = ShellProcess::start(script(Some("/bin/bash"), "pwd", None, &gone, None))
+            .err()
+            .expect("no folder to start in");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "The folder {} does not exist, so the command cannot start there.",
+                gone.display()
+            )
+        );
+        let here = tempfile::tempdir().unwrap();
+        let missing = "/no/such/shell/bash";
+        let error = ShellProcess::start(script(Some(missing), "pwd", None, here.path(), None))
+            .err()
+            .expect("no shell to start");
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("Could not start shell {missing}: ")),
+            "{error}"
+        );
     }
 
     /// What the profile writes stays out of the command's output and errors;
