@@ -120,18 +120,19 @@ pub fn script(
                 text.push_str(files);
             }
             if marks {
-                text.push_str(&format!(
-                    "{builtin} printf '{MARK_FORMAT}'; {builtin} printf '{MARK_FORMAT}' >&2; "
-                ));
+                text.push_str(&format!("{builtin} printf '{MARK_FORMAT}'; "));
                 if let Some(file) = report_directory {
                     // Until the command reports its folder the file says
                     // that it started, which a profile that sends the
-                    // shell's output elsewhere cannot hide.
+                    // shell's output elsewhere cannot hide. It comes before
+                    // the mark on the errors, which leaves a profile's trace
+                    // of it out.
                     text.push_str(&format!(
                         "{builtin} printf '{MARK_FORMAT}' >| {}; ",
                         posix_quote(&file.to_string_lossy())
                     ));
                 }
+                text.push_str(&format!("{builtin} printf '{MARK_FORMAT}' >&2; "));
                 if let Some(file) = output_file {
                     text.push_str(&format!(": >| {}; ", posix_quote(&file.to_string_lossy())));
                 }
@@ -630,7 +631,7 @@ mod tests {
                     .map(|path| path_first(&path))
                     .unwrap_or_default();
                 format!(
-                    "{builtin} printf '{MARK_FORMAT}'; {builtin} printf '{MARK_FORMAT}' >&2; {builtin} printf '{MARK_FORMAT}' >| '/tmp/super-cwd-1'; {errors}{path}"
+                    "{builtin} printf '{MARK_FORMAT}'; {builtin} printf '{MARK_FORMAT}' >| '/tmp/super-cwd-1'; {builtin} printf '{MARK_FORMAT}' >&2; {errors}{path}"
                 )
             } else {
                 String::new()
