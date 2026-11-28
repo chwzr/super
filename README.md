@@ -310,7 +310,8 @@ the advanced mode; see [Mode](#mode).
   `Bash`; `ListAgents` only with `Agent`, since a child that starts no agents
   has none to list. Without `tools`, or with `*`, a child gets every tool its
   parent has. A value written without quotes that has `: ` in it, such as
-  `description: Reviews code: read only`, is read as its text; a file whose
+  `description: Reviews code: read only`, is read as its text, and a
+  comment such as `tools: Read, Bash # no edits` stays a comment; a file whose
   frontmatter is not YAML even so is left out, so that a type never gets
   every tool because its `tools` could not be read. Skills read their
   frontmatter the same way.

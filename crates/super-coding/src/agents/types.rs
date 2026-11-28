@@ -383,6 +383,19 @@ mod tests {
         assert_eq!(definition.model.as_deref(), Some("thinker"));
         assert_eq!(definition.effort.as_deref(), Some("low"));
         assert_eq!(definition.instructions, "MY-COLON");
+        // A comment at the end of another line stays a comment.
+        let commented = parse_definition(
+            path,
+            "---\nname: q_cmt\ndescription: Reviews code: read only\ntools: Read, Bash # no edits\nmodel: thinker # the big one\neffort: low # fast\n---\nX\n",
+            AgentTypeSource::User(path.into()),
+        )
+        .unwrap();
+        assert_eq!(
+            commented.tools,
+            ToolChoice::Only(vec!["Read".into(), "Bash".into()])
+        );
+        assert_eq!(commented.model.as_deref(), Some("thinker"));
+        assert_eq!(commented.effort.as_deref(), Some("low"));
         let flow = parse_definition(
             path,
             "---\ndescription: \"quoted: fine\"\ntools: [Read, Bash]\n---\nX",

@@ -124,8 +124,9 @@ pub fn split_frontmatter(text: &str) -> (Option<&str>, &str) {
 /// The YAML of a frontmatter. A value written without quotes that YAML does
 /// not take as it stands, such as `description: Reviews code: read only`,
 /// is read as the text it is: when the whole does not parse, each
-/// `key: value` line whose value holds `: ` or ` #` is read again with the
-/// value quoted. `None` when even that is not YAML.
+/// `key: value` line whose value holds `: ` before any comment is read
+/// again with that part quoted. A comment stays a comment, on that line and
+/// on every other. `None` when even that is not YAML.
 pub fn frontmatter_value(frontmatter: &str) -> Option<serde_yaml::Value> {
     if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) {
         return Some(value);
@@ -141,11 +142,15 @@ pub fn frontmatter_value(frontmatter: &str) -> Option<serde_yaml::Value> {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
             let value = value.trim();
-            let needs_quotes = value.contains(": ") || value.contains(" #");
-            let structured = value.starts_with(['"', '\'', '[', '{', '|', '>', '&', '*', '!']);
-            if plain_key && needs_quotes && !structured {
-                let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-                format!("{key}: \"{escaped}\"")
+            // As in YAML, a `#` after a space starts a comment.
+            let (text, comment) = match value.find(" #") {
+                Some(at) => (value[..at].trim_end(), &value[at..]),
+                None => (value, ""),
+            };
+            let structured = text.starts_with(['"', '\'', '[', '{', '|', '>', '&', '*', '!']);
+            if plain_key && text.contains(": ") && !structured {
+                let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("{key}: \"{escaped}\"{comment}")
             } else {
                 line.to_string()
             }
@@ -478,6 +483,30 @@ mod tests {
         let loaded =
             parse_loaded("---\ncontext: fork\nagent: Explore\ndescription: a: b\n---\nBody");
         assert_eq!(loaded.run.unwrap().agent.as_deref(), Some("Explore"));
+    }
+
+    /// A comment at the end of a line stays a comment when another line's
+    /// value has a colon: the flag that keeps a skill from the model holds,
+    /// and so do `context` and `background`.
+    #[test]
+    fn a_comment_stays_a_comment_beside_a_value_with_a_colon() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("mine.md"),
+            "---\nname: mine\ndisable-model-invocation: true # only I start it\ndescription: Deploys: production # the real one\n---\nGo",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        scan_dir(root, true, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].disable_model_invocation);
+        assert_eq!(out[0].description, "Deploys: production");
+        let loaded = parse_loaded(
+            "---\ncontext: fork # its own agent\nbackground: true # do not wait\ndescription: a: b\n---\nBody",
+        );
+        let run = loaded.run.expect("a forked skill");
+        assert!(run.background);
     }
 
     #[test]

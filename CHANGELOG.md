@@ -479,9 +479,10 @@
 - An agent type or a skill whose frontmatter has a value with `: ` in it,
   such as `description: Reviews code: read only`, keeps its `tools`,
   `model`, `effort`, description and `disable-model-invocation`: the value
-  is read as its text. The whole frontmatter was dropped without a word, so
-  such a type's child got every tool on the session's model. A file whose
-  frontmatter is not YAML even so is left out.
+  is read as its text, and a comment at the end of a line stays a comment.
+  The whole frontmatter was dropped without a word, so such a type's child
+  got every tool on the session's model. A file whose frontmatter is not
+  YAML even so is left out.
 - A `/loop` job with an interval, an `/autoresearch` job or any other agent
   started before anything was said in a new session saves that session, and
   `super -c`, `/resume` and `--session` open it again with the job's
