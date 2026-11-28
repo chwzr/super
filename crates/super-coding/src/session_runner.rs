@@ -1195,6 +1195,15 @@ impl AgentSession {
         if let Some(stored) = wakeups {
             self.wakeups().restore(stored);
         }
+        // Workflow runs the end of their process cut off are announced once.
+        let runtime = self.workflows();
+        let known = |run_id: &str| {
+            runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.find(run_id).is_some())
+        };
+        let notices = crate::workflows::cut_off_runs(&mut self.manager.lock().unwrap(), known);
+        self.stored_work.lock().unwrap().notices.extend(notices);
     }
 
     /// Start what [`AgentSession::restore_stored_state`] brought back and

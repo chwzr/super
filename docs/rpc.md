@@ -259,7 +259,13 @@ workflow's answer. The call's result has `details.runId`, `details.name`,
 `details.scriptPath` (where the run's script was saved, or `null`) and
 `details.resumedFrom` (the run whose finished agent calls it replays, or
 `null`). The question before a run starts is the `approval_request` of kind
-`workflow` above. A skill that runs in an agent of its own is a `Skill` call
+`workflow` above. The session stores each run's start and end (`custom`
+entries with `customType: "workflow_run"`: `runId`, `name`, `description`,
+`status`, `at`). A run that the end of its process cut off is announced once
+when the session is loaded again: a notice with `status: "stopped"`, the run's
+id as `task.id`, a summary that says how many of its agent calls had
+finished, and a placeholder `outcome.result`; its stored entry then says
+`stopped` with `cutOff: true`. A skill that runs in an agent of its own is a `Skill` call
 whose result has `details.skill` and `details.agent`, and in the background
 a task of kind `agent`.
 

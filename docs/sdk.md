@@ -316,10 +316,19 @@ letters or digits, `RunRecord::run_id`); it ends with a notice, and
 script in the session's folder of workflows
 (`super_coding::session::manager::workflows_dir`, `<file without
 .jsonl>/workflows/<run id>.js`; `<temp>/super-workflows/<session id>/` for a
-session in memory), and `WorkflowRuntime::run` saves its journal of finished
-agent calls beside it when it ends (`<run id>.journal.json`).
-`WorkflowRuntime::journal_for(run_id)` reads it back for a run that resumes
-another. The approver installed with `AgentSession::set_workflow_approver`
+session in memory), and its journal of finished agent calls beside it
+(`<run id>.journal.jsonl`), each call as it finishes: the engine reports
+every change of a run's journal to its runner
+(`super_workflow::AgentRunner::journal_changed`,
+`super_workflow::JournalChange`), and the session's runner adds it to the
+file. `WorkflowRuntime::journal_for(run_id)` reads it back for a run that
+resumes another, also one the end of its process cut off. The session stores
+when each run starts and ends (`workflow_run` entries,
+`super_coding::stored_state`); a run that still runs by that record when the
+session is loaded again was cut off: it is marked stopped and its notice
+(status `stopped`) is queued by `resume_stored_work`, once.
+`AgentSession::set_closing` tells the session that its host ends it, so that
+a run stopped by that end counts as cut off; `Session::close` calls it. The approver installed with `AgentSession::set_workflow_approver`
 still answers before a run starts.
 
 An agent's session is stored like the session itself, in the folder beside

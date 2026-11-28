@@ -331,6 +331,10 @@ pub const SLOTS: &[(&str, &str)] = &[
         "SUPER_PROMPT_TODO(Workflow.description)",
     ),
     (
+        "Workflow.notice.cut_off",
+        "SUPER_PROMPT_TODO(Workflow.notice.cut_off)",
+    ),
+    (
         "Workflow.notice.stopped",
         "SUPER_PROMPT_TODO(Workflow.notice.stopped)",
     ),

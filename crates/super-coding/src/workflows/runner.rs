@@ -6,7 +6,7 @@ use crate::session_runner::{AgentSession, SubagentSpec};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
-use super_workflow::{AgentId, AgentOutcome, AgentRequest, AgentRunner};
+use super_workflow::{AgentId, AgentOutcome, AgentRequest, AgentRunner, JournalChange};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +23,9 @@ pub(crate) struct SessionAgentRunner {
     run_id: String,
     permits: Arc<Semaphore>,
     tokens: Mutex<HashMap<AgentId, u64>>,
+    /// The run's journal file, which every change of the journal is added
+    /// to as it is made ([`super::journal`]).
+    journal: Option<std::path::PathBuf>,
 }
 
 impl SessionAgentRunner {
@@ -30,12 +33,14 @@ impl SessionAgentRunner {
         parent: Weak<AgentSession>,
         run_id: String,
         concurrency: usize,
+        journal: Option<std::path::PathBuf>,
     ) -> SessionAgentRunner {
         SessionAgentRunner {
             parent,
             run_id,
             permits: Arc::new(Semaphore::new(concurrency.max(1))),
             tokens: Mutex::new(HashMap::new()),
+            journal,
         }
     }
 }
@@ -126,6 +131,15 @@ impl AgentRunner for SessionAgentRunner {
             .ok()
             .and_then(|tokens| tokens.get(&index).copied())
             .unwrap_or(0)
+    }
+
+    /// Every finished agent call is on disk when it finishes, so a run cut
+    /// off by the end of the process can be resumed after a restart. A run
+    /// whose journal cannot be written keeps it in memory.
+    fn journal_changed(&self, change: JournalChange<'_>) {
+        if let Some(path) = &self.journal {
+            let _ = super::journal::append(path, change);
+        }
     }
 }
 

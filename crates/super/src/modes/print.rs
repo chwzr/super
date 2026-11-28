@@ -138,6 +138,8 @@ pub(crate) async fn run_one_prompt(
         () = end => {}
     }
     session.abort();
+    // The run ends with the process: what it leaves unfinished was cut off.
+    session.set_closing();
     session.stop_background_tasks();
     // The cancelled turn records its end; it does not take long.
     let _ = tokio::time::timeout(Duration::from_secs(2), async {

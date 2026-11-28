@@ -133,9 +133,9 @@
   run a saved workflow from `.super/workflows/` or
   `~/.super/agent/workflows/`, `args` for the script's `args`, and
   `resumeFromRunId` to replay the finished agent calls of an earlier run up
-  to the first one whose prompt changed. Every run saves its script and,
-  when it ends, its journal of finished agent calls in the session's folder
-  of workflows, so a run can be resumed after the session was opened again.
+  to the first one whose prompt changed. Every run saves its script and its
+  journal of finished agent calls in the session's folder of workflows, so a
+  run can be resumed after the session was opened again.
 - Rust SDK: `AgentResources::skills`, `super_coding::skills::{skill_list_section,
   load, skill_text}`, `RunRecord::run_id` and `script_path`,
   `WorkflowRuntime::find`, `journal_for` and `directory`,
@@ -179,6 +179,13 @@
 - `super -p` and `--mode json` wait for a pending wake-up and the turn it
   starts, as they wait for background tasks; `Ctrl+C` or `SIGTERM` ends the
   wait. Rust SDK: `AgentSession::wait_for_all_work`.
+- A workflow run's journal is written call by call as the run goes
+  (`<run id>.journal.jsonl`), so a run cut off by the end of its process can
+  be resumed with `resumeFromRunId` after a restart. Such a run is announced
+  once, as stopped, with a notice when the session is opened again; the
+  notice's fixed text is a placeholder until it is written. Rust SDK:
+  `super_workflow::AgentRunner::journal_changed`, `JournalChange`,
+  `Journal::invalidate_from` and `AgentSession::set_closing`.
 
 ### Changed
 

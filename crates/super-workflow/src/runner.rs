@@ -65,6 +65,26 @@ pub trait AgentRunner: Send + Sync + 'static {
     fn tokens_used(&self, _index: AgentId) -> u64 {
         0
     }
+
+    /// The run's [`Journal`] changed. Called once per change, in the order
+    /// the changes are made and before the next one: a host that writes the
+    /// journal down as the run goes, so that a run cut off by the end of its
+    /// process can be resumed, does it here. Hosts that keep the journal in
+    /// memory only leave this alone.
+    fn journal_changed(&self, _change: JournalChange<'_>) {}
+}
+
+/// One change of a run's [`Journal`], for [`AgentRunner::journal_changed`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum JournalChange<'a> {
+    /// The agent at `index` finished with `value` for `prompt`.
+    Completed {
+        index: AgentId,
+        prompt: &'a str,
+        value: &'a Json,
+    },
+    /// Every position from `from` on was forgotten: the prompt there changed.
+    Invalidated { from: AgentId },
 }
 
 /// Bounds on one run.
@@ -174,11 +194,18 @@ impl Journal {
         (recorded == prompt).then(|| outcome.clone())
     }
 
+    /// Whether anything is remembered at this position or a later one.
+    pub(crate) fn has_from(&self, index: AgentId) -> bool {
+        self.entries.keys().any(|recorded| *recorded >= index)
+    }
+
     /// Forget this position and every later one.
     ///
     /// Called when a prompt stops matching: everything after a changed input is
-    /// no longer trustworthy, even if it completed.
-    pub(crate) fn invalidate_from(&mut self, index: AgentId) {
+    /// no longer trustworthy, even if it completed. A host that reads a
+    /// journal back from what [`AgentRunner::journal_changed`] reported
+    /// replays a [`JournalChange::Invalidated`] with it.
+    pub fn invalidate_from(&mut self, index: AgentId) {
         self.entries.retain(|recorded, _| *recorded < index);
     }
 }

@@ -10,9 +10,14 @@
 //! Every run has an id (`wf_` and eight letters or digits). Its script is
 //! saved in the session's folder of workflows
 //! ([`workflows_dir`](crate::session::manager::workflows_dir)) as
-//! `<run id>.js`, and when it ends its journal of finished agent calls as
-//! `<run id>.journal.json`, so that a later run can start from the file
-//! (`scriptPath`) and replay the calls that still match (`resumeFromRunId`).
+//! `<run id>.js`, and its journal of finished agent calls as
+//! `<run id>.journal.jsonl`, each call as it finishes, so that a later run
+//! can start from the file (`scriptPath`) and replay the calls that still
+//! match (`resumeFromRunId`), also after the process that ran it ended in
+//! the middle of the run. The session stores when a run starts and ends
+//! ([`crate::stored_state::WORKFLOW_RUN_ENTRY`]); a run that was cut off is
+//! announced once, as stopped, when the session is loaded again
+//! ([`cut_off_runs`]).
 
 mod journal;
 mod prompt;
@@ -62,7 +67,7 @@ pub struct RunRecord {
     /// could not be written.
     pub script_path: Option<PathBuf>,
     /// The session's folder of workflows when the run started: its journal
-    /// goes there when it ends.
+    /// goes there.
     directory: Option<PathBuf>,
     workflow: Arc<Workflow>,
 }
@@ -318,10 +323,17 @@ impl WorkflowRuntime {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let directory = self.directory();
         let run_id = self.new_run_id(directory.as_deref());
+        // The journal is on disk from the start, with the calls the run
+        // resumes, and grows as the run goes.
+        let journal_path = directory.as_deref().and_then(|directory| {
+            let path = journal::path_in(directory, &run_id);
+            journal::save(&path, &run_id, &journal).ok().map(|()| path)
+        });
         let runner = Arc::new(runner::SessionAgentRunner::new(
             self.parent.clone(),
             run_id.clone(),
             limits.max_concurrency,
+            journal_path,
         ));
         let cwd = parent.working_folder().display().to_string();
 
@@ -390,7 +402,11 @@ impl WorkflowRuntime {
 
     /// Run a prepared workflow to completion, and save its journal of
     /// finished agent calls beside its script for a run that resumes it.
+    /// The session stores that the run started and how it ended; a run
+    /// stopped because the session's host ends it is left as it was, cut
+    /// off, so that it is announced when the session is loaded again.
     pub async fn run(&self, record: &Arc<RunRecord>) -> Result<Value, String> {
+        self.record_run(record, "running");
         let result = record
             .workflow
             .run()
@@ -402,7 +418,37 @@ impl WorkflowRuntime {
             let path = journal::path_in(directory, &record.run_id);
             let _ = journal::save(&path, &record.run_id, &record.journal());
         }
+        let status = match (&result, record.snapshot().status) {
+            (Err(_), _) | (_, RunStatus::Failed) => "failed",
+            (_, RunStatus::Stopped) => "stopped",
+            _ => "completed",
+        };
+        let closing = self
+            .parent
+            .upgrade()
+            .is_none_or(|parent| parent.is_closing());
+        if !(status == "stopped" && closing) {
+            self.record_run(record, status);
+        }
         result
+    }
+
+    /// Write down in the session that `record` has `status` now.
+    fn record_run(&self, record: &RunRecord, status: &str) {
+        let Some(parent) = self.parent.upgrade() else {
+            return;
+        };
+        crate::stored_state::record(
+            &mut parent.manager.lock().unwrap(),
+            crate::stored_state::WORKFLOW_RUN_ENTRY,
+            serde_json::json!({
+                "runId": record.run_id,
+                "name": record.name,
+                "description": record.description,
+                "status": status,
+                "at": super_ai::now_ms(),
+            }),
+        );
     }
 
     pub fn get(&self, id: RunId) -> Option<Arc<RunRecord>> {
@@ -474,6 +520,96 @@ impl WorkflowRuntime {
             run.stop();
         }
     }
+}
+
+/// The workflow runs of the session in `manager` that were cut off by the
+/// end of the process that ran them, the last time it ran: their last
+/// stored state ([`crate::stored_state::WORKFLOW_RUN_ENTRY`]) says they
+/// run, and `known` (the runs this process has) does not know them. Each
+/// is marked stopped and cut off, so it is announced once, and its notice
+/// comes back: a task of kind `workflow` with the run's id that stopped,
+/// whose summary says how many of its agent calls had finished, and whose
+/// result is a placeholder until its text is written.
+pub(crate) fn cut_off_runs(
+    manager: &mut crate::session::manager::SessionManager,
+    known: impl Fn(&str) -> bool,
+) -> Vec<super_agent::AgentMessage> {
+    use crate::stored_state::{WORKFLOW_RUN_ENTRY, all, record};
+    let mut last: Vec<(String, Value)> = Vec::new();
+    for data in all(manager, WORKFLOW_RUN_ENTRY) {
+        let Some(run_id) = data.get("runId").and_then(Value::as_str) else {
+            continue;
+        };
+        last.retain(|(known, _)| known != run_id);
+        last.push((run_id.to_string(), data.clone()));
+    }
+    let directory = manager
+        .session_file()
+        .map(crate::session::manager::workflows_dir);
+    let mut notices = Vec::new();
+    for (run_id, data) in last {
+        if data.get("status").and_then(Value::as_str) != Some("running") || known(&run_id) {
+            continue;
+        }
+        let text = |key: &str| {
+            data.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let name = text("name");
+        let label = if name.trim().is_empty() {
+            run_id.clone()
+        } else {
+            name.clone()
+        };
+        let description = match text("description") {
+            description if description.trim().is_empty() => label.clone(),
+            description => description,
+        };
+        let finished = directory
+            .as_deref()
+            .map(|directory| journal::path_in(directory, &run_id))
+            .and_then(|path| journal::load(&path).ok())
+            .map_or(0, |journal| journal.len());
+        let now = super_ai::now_ms();
+        record(
+            manager,
+            WORKFLOW_RUN_ENTRY,
+            serde_json::json!({
+                "runId": run_id,
+                "name": name,
+                "description": description,
+                "status": "stopped",
+                "cutOff": true,
+                "at": now,
+            }),
+        );
+        let calls = if finished == 1 { "call" } else { "calls" };
+        let task = crate::tasks::TaskInfo {
+            id: run_id.clone(),
+            name: (!name.trim().is_empty()).then(|| name.clone()),
+            kind: crate::tasks::TaskKind::Workflow,
+            description,
+            status: crate::tasks::TaskStatus::Stopped,
+            tool_use_id: None,
+            output_file: None,
+            progress: None,
+            summary: None,
+            started_at: data.get("at").and_then(Value::as_i64).unwrap_or(now),
+            ended_at: Some(now),
+        };
+        let outcome = crate::tasks::TaskOutcome::stopped(format!(
+            "{label} (stopped when its process ended, after {finished} finished agent {calls})"
+        ))
+        .with_result(super_agent::placeholder::prompt_todo(
+            "Workflow.notice.cut_off",
+        ));
+        let mut task = task;
+        task.summary = Some(outcome.summary.clone());
+        notices.push(crate::notifications::task_notification(&task, &outcome));
+    }
+    notices
 }
 
 #[cfg(test)]

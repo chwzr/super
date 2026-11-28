@@ -246,8 +246,11 @@ platform`: a remote client follows the agent's nested `events` stream.
   client's `hello.name`. A workflow the model starts then runs in the
   daemon's session as a background task, so the daemon keeps the session
   loaded until it ends; its script and journal are stored in the folder
-  beside the session's file (`<file without .jsonl>/workflows/`), and a run
-  the session started before it was loaded again can be resumed from there.
+  beside the session's file (`<file without .jsonl>/workflows/`), the
+  journal call by call as the run goes, and a run the session started before
+  it was loaded again can be resumed from there. A run that a `shutdown` or
+  `stop_session` cut off is announced once, as stopped, when the daemon
+  loads the session again.
 - The daemon builds a session's skills with it, as the terminal does; in the
   advanced mode the model loads them with `Skill`.
 - A wake-up the model schedules with `ScheduleWakeup` runs in the daemon's

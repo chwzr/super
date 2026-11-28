@@ -55,6 +55,7 @@ struct ActiveSession {
 impl Drop for ActiveSession {
     fn drop(&mut self) {
         self.agent.abort();
+        self.agent.set_closing();
         self.agent.stop_background_tasks();
     }
 }

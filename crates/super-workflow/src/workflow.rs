@@ -141,6 +141,8 @@ mod tests {
         calls: AtomicU32,
         /// Prompts that should fail rather than answer.
         fail_on: Vec<String>,
+        /// What the journal told the host, in order.
+        changes: Mutex<Vec<String>>,
     }
 
     impl FakeRunner {
@@ -176,6 +178,18 @@ mod tests {
 
         fn tokens_used(&self, _index: AgentId) -> u64 {
             10
+        }
+
+        fn journal_changed(&self, change: crate::JournalChange<'_>) {
+            let line = match change {
+                crate::JournalChange::Completed {
+                    index,
+                    prompt,
+                    value,
+                } => format!("{index} {prompt} = {value}"),
+                crate::JournalChange::Invalidated { from } => format!("from {from} forgotten"),
+            };
+            self.changes.lock().unwrap().push(line);
         }
     }
 
@@ -513,6 +527,56 @@ mod tests {
             .collect();
         assert_eq!(statuses[0], crate::progress::AgentStatus::Reused);
         assert_eq!(statuses[1], crate::progress::AgentStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn the_host_hears_of_each_journal_change_as_it_is_made() {
+        let source = |second: &str| {
+            script(&format!(
+                "const a = await agent('one')\n\
+                 const b = await agent('{second}')\n\
+                 const c = await agent('three')\n\
+                 return [a, b, c]"
+            ))
+        };
+        let runner = FakeRunner::shared();
+        let first = Workflow::new(
+            Script::parse(&source("two")).unwrap(),
+            Json::Null,
+            "/repo".into(),
+            runner.clone(),
+            Limits::default(),
+        );
+        first.run().await.unwrap();
+        assert_eq!(
+            *runner.changes.lock().unwrap(),
+            [
+                "0 one = \"answer to one\"",
+                "1 two = \"answer to two\"",
+                "2 three = \"answer to three\"",
+            ]
+        );
+
+        // A changed prompt forgets it and what follows, before the new
+        // answers come.
+        let runner = FakeRunner::shared();
+        let resumed = Workflow::with_journal(
+            Script::parse(&source("two, revised")).unwrap(),
+            Json::Null,
+            "/repo".into(),
+            runner.clone(),
+            Limits::default(),
+            first.journal(),
+        );
+        resumed.run().await.unwrap();
+        assert_eq!(
+            *runner.changes.lock().unwrap(),
+            [
+                "from 1 forgotten",
+                "1 two, revised = \"answer to two, revised\"",
+                "2 three = \"answer to three\"",
+            ]
+        );
     }
 
     #[tokio::test]

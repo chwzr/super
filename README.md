@@ -363,9 +363,11 @@ script is the built-in skill `workflow-authoring`, which the agent loads with
   `title` are accepted and not used.
 - Every run saves its script in the session's folder, as
   `<session file without .jsonl>/workflows/<run id>.js`, and the call names
-  the file, so a later call can run it again with `scriptPath`. When a run
-  ends, its finished agent calls are kept next to it in
-  `<run id>.journal.json`.
+  the file, so a later call can run it again with `scriptPath`. Its
+  finished agent calls are kept next to it in `<run id>.journal.jsonl`, each
+  as soon as it finishes, so a run that was cut off when SUPER ended can be
+  resumed after a restart. Such a run is announced once, as stopped, when the
+  session is opened again.
 - `resumeFromRunId` starts a run that replays the finished agent calls of an
   earlier run of the session, also one from before the session was opened
   again, up to the first call whose prompt changed; from there the agents run

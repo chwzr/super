@@ -7,7 +7,7 @@
 use super::{DETERMINISM_MESSAGE, Interp, RunError, to_number};
 use crate::ast::Pos;
 use crate::progress::AgentStatus;
-use crate::runner::{AgentId, AgentOutcome, AgentRequest};
+use crate::runner::{AgentId, AgentOutcome, AgentRequest, JournalChange};
 use crate::value::{Builtin, Value, format_number};
 use futures::future::BoxFuture;
 use serde_json::Value as Json;
@@ -225,8 +225,12 @@ impl Interp {
             return Ok(Value::from_json(&value));
         }
         // Anything after a position that no longer matches is stale too.
-        if let Ok(mut journal) = self.journal.lock() {
+        if let Ok(mut journal) = self.journal.lock()
+            && journal.has_from(index)
+        {
             journal.invalidate_from(index);
+            self.runner
+                .journal_changed(JournalChange::Invalidated { from: index });
         }
 
         let mut cancel = self.state.register_agent(index, label, prompt.clone());
@@ -291,6 +295,11 @@ impl Interp {
                 );
                 if let Ok(mut journal) = self.journal.lock() {
                     journal.record(index, &prompt, &outcome);
+                    self.runner.journal_changed(JournalChange::Completed {
+                        index,
+                        prompt: &prompt,
+                        value,
+                    });
                 }
                 Ok(Value::from_json(value))
             }

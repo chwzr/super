@@ -661,7 +661,7 @@ async fn a_workflow_runs_in_the_background_and_its_notice_carries_the_answer() {
     // Its journal is kept beside the script for a run that resumes it.
     assert!(
         workflows_dir(&fixture.session_file())
-            .join(format!("{}.journal.json", run.run_id))
+            .join(format!("{}.journal.jsonl", run.run_id))
             .is_file()
     );
 }
@@ -947,6 +947,143 @@ async fn a_run_resumes_from_its_journal_after_the_session_is_loaded_again() {
         [WorkflowAgentStatus::Reused, WorkflowAgentStatus::Reused]
     );
     assert!(notice.contains("<result>one + two\n\n"), "{notice}");
+}
+
+const THREE_STEPS: &str = "export const meta = { name: 'steps', description: 'Three steps' }\n\
+const a = await agent('step one')\n\
+const b = await agent('step two')\n\
+const c = await agent('step three')\n\
+return [a, b, c].join(' + ')\n";
+
+/// The session's stored workflow run states, oldest first.
+fn run_states(file: &Path) -> Vec<Value> {
+    let manager = SessionManager::open(file).unwrap();
+    crate::stored_state::all(&manager, crate::stored_state::WORKFLOW_RUN_ENTRY)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn a_run_cut_off_by_the_end_of_its_process_is_announced_once_and_resumes_from_its_journal() {
+    let mut fixture = fixture(Vec::new()).quiet();
+    fixture.answer(vec![
+        (
+            "main",
+            vec![
+                Some(tool_call("w1", "Workflow", json!({"script": THREE_STEPS}))),
+                Some(text("started it")),
+            ],
+        ),
+        ("step one", vec![Some(text("one"))]),
+        ("step two", vec![Some(text("two"))]),
+        // The third call is still out when the process ends.
+        ("step three", vec![None]),
+    ]);
+    let session = fixture.session.clone();
+    session.prompt(vec![AgentMessage::user("main")]).await;
+    let run = fixture.latest_run();
+    eventually("the third call is out", || {
+        fixture.seen.count("step three") == 1
+    })
+    .await;
+    // Each finished call is on disk as soon as it finished.
+    let file = fixture.session_file();
+    let journal = workflows_dir(&file).join(format!("{}.journal.jsonl", run.run_id));
+    let written = std::fs::read_to_string(&journal).unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    assert_eq!(lines.len(), 3, "{written}");
+    assert!(lines[1].contains("step one") && lines[2].contains("step two"));
+    assert_eq!(run_states(&file).last().unwrap()["status"], "running");
+
+    // The process ends: its host closes the session, which stops the run.
+    session.set_closing();
+    session.stop_background_tasks();
+    eventually("the run ends", || run.snapshot().status.is_finished()).await;
+    assert_eq!(
+        run_states(&file).last().unwrap()["status"],
+        "running",
+        "a run the end of its process stopped is not recorded as stopped"
+    );
+    drop(session);
+
+    // Loaded again, the run is announced once, as stopped.
+    let quiet = |session: &Arc<AgentSession>| {
+        session.set_turn_starter(Some(Arc::new(|_turn| {})));
+    };
+    let loaded = session_on(
+        SessionManager::open(&file).unwrap(),
+        fixture.folder(),
+        settings(),
+        &fixture.open,
+        &fixture.entered,
+    );
+    quiet(&loaded);
+    loaded.resume_stored_work();
+    let seen = Mutex::new(Vec::new());
+    let notices: Vec<String> = queued(&loaded, &seen)
+        .iter()
+        .filter_map(notice_text)
+        .collect();
+    assert_eq!(notices.len(), 1);
+    let notice = &notices[0];
+    assert!(notice.contains(&format!("<task-id>{}</task-id>", run.run_id)));
+    assert!(notice.contains("<status>stopped</status>"));
+    assert!(
+        notice.contains(
+            "<summary>steps (stopped when its process ended, after 2 finished agent calls)</summary>"
+        ),
+        "{notice}"
+    );
+    assert!(notice.contains(&format!(
+        "<result>{}</result>",
+        prompt_todo("Workflow.notice.cut_off")
+    )));
+    let last = run_states(&file).last().unwrap().clone();
+    assert_eq!(last["status"], "stopped");
+    assert_eq!(last["cutOff"], true);
+    drop(loaded);
+
+    let again = session_on(
+        SessionManager::open(&file).unwrap(),
+        fixture.folder(),
+        settings(),
+        &fixture.open,
+        &fixture.entered,
+    );
+    quiet(&again);
+    again.resume_stored_work();
+    let seen = Mutex::new(Vec::new());
+    assert!(
+        queued(&again, &seen)
+            .iter()
+            .all(|message| notice_text(message).is_none()),
+        "announced once"
+    );
+
+    // Resumed from its journal, only the call that was out runs.
+    again.set_turn_starter(None);
+    fixture.session = again;
+    fixture.answer(vec![
+        (
+            "main",
+            workflow_calls(
+                "w2",
+                json!({
+                    "scriptPath": run.script_path.as_ref().unwrap(),
+                    "resumeFromRunId": run.run_id,
+                }),
+            ),
+        ),
+        ("step three", vec![Some(text("three"))]),
+    ]);
+    let notice = fixture.workflow_turn("again").await;
+    assert_eq!(fixture.seen.count("step one"), 0);
+    assert_eq!(fixture.seen.count("step two"), 0);
+    assert_eq!(fixture.seen.count("step three"), 1);
+    assert!(notice.contains("<result>one + two + three\n\n"), "{notice}");
+    let states = run_states(&file);
+    assert_eq!(states.last().unwrap()["status"], "completed");
 }
 
 #[tokio::test]

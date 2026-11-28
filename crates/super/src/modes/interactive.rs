@@ -2022,7 +2022,10 @@ async fn run_with_hosts(
     if let Some(note) = app.exit_note.take() {
         println!("{note}");
     }
-    // Background tasks end with the process that runs them.
+    // Background tasks end with the process that runs them: a workflow
+    // that runs now was cut off, and is announced when the session is
+    // opened again.
+    session.set_closing();
     session.stop_background_tasks();
     if let Some(remote) = app.remote.take() {
         // Flush what is queued and announce the end; bounded, never hangs.
