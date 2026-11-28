@@ -3,8 +3,8 @@
 //!
 //! A key usually has one action. A key may also carry an action that acts
 //! only while it has something to act on, before the key's other action:
-//! by default Ctrl+X stops the background tasks while any run, and copies
-//! the last response otherwise.
+//! stopping the background tasks has Ctrl+B to itself by default, and a
+//! user who binds it to a key that has an action gets both on that key.
 
 use crate::keys::KeyEvent;
 use std::collections::HashMap;
@@ -104,7 +104,7 @@ impl Action {
             Action::SaveDefault => "ctrl+s",
             Action::CycleThinking => "shift+tab",
             Action::ToggleThinking => "ctrl+t",
-            Action::StopBackgroundTasks => "ctrl+x",
+            Action::StopBackgroundTasks => "ctrl+b",
             Action::CopyLastResponse => "ctrl+x",
             Action::OpenTree => "",
             Action::ExternalEditor => "ctrl+g",
@@ -248,33 +248,36 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_x_stops_background_tasks_before_it_copies_and_either_can_move() {
+    fn ctrl_b_stops_background_tasks_and_shares_a_key_only_when_bound_to_one() {
+        let ctrl_b = KeyEvent::parse("ctrl+b").unwrap();
         let ctrl_x = KeyEvent::parse("ctrl+x").unwrap();
         let mut kb = Keybindings::default();
-        assert_eq!(
-            kb.actions_for(&ctrl_x),
-            [Action::StopBackgroundTasks, Action::CopyLastResponse]
-        );
-        assert_eq!(kb.action_for(&ctrl_x), Some(Action::StopBackgroundTasks));
-        assert_eq!(kb.key_for(Action::StopBackgroundTasks), Some(&ctrl_x));
+        assert_eq!(kb.actions_for(&ctrl_b), [Action::StopBackgroundTasks]);
+        assert_eq!(kb.actions_for(&ctrl_x), [Action::CopyLastResponse]);
+        assert_eq!(kb.key_for(Action::StopBackgroundTasks), Some(&ctrl_b));
         assert_eq!(kb.key_for(Action::CopyLastResponse), Some(&ctrl_x));
         assert_eq!(Action::StopBackgroundTasks.name(), "stopBackgroundTasks");
 
         // Binding it where it is changes nothing.
+        kb.bind(ctrl_b.clone(), Action::StopBackgroundTasks);
+        assert_eq!(kb.actions_for(&ctrl_b), [Action::StopBackgroundTasks]);
+
+        // On a key that has an action it goes first, and the key keeps
+        // its other action.
         kb.bind(ctrl_x.clone(), Action::StopBackgroundTasks);
         assert_eq!(
             kb.actions_for(&ctrl_x),
             [Action::StopBackgroundTasks, Action::CopyLastResponse]
         );
+        assert_eq!(kb.action_for(&ctrl_x), Some(Action::StopBackgroundTasks));
+        assert!(kb.actions_for(&ctrl_b).is_empty());
 
-        // A key of its own takes the action off Ctrl+X, which copies only.
-        let ctrl_b = KeyEvent::parse("ctrl+b").unwrap();
+        // Back on a key of its own, the other key copies only.
         kb.bind(ctrl_b.clone(), Action::StopBackgroundTasks);
         assert_eq!(kb.actions_for(&ctrl_b), [Action::StopBackgroundTasks]);
         assert_eq!(kb.actions_for(&ctrl_x), [Action::CopyLastResponse]);
-        assert_eq!(kb.key_for(Action::StopBackgroundTasks), Some(&ctrl_b));
 
-        // Another action on that key comes after it.
+        // Another action on its key comes after it.
         kb.bind(ctrl_b.clone(), Action::CycleModel);
         assert_eq!(
             kb.actions_for(&ctrl_b),

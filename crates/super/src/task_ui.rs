@@ -391,11 +391,11 @@ mod tests {
     fn the_footer_names_the_key_that_stops_every_background_task() {
         let session = session();
         let theme = Theme::dark();
-        let ctrl_x = KeyEvent::parse("ctrl+x").unwrap();
+        let ctrl_b = KeyEvent::parse("ctrl+b").unwrap();
         let line = |key: Option<&KeyEvent>| {
             progress_line(&session, &theme, 80, key).map(|line| text::strip_ansi(&line))
         };
-        assert_eq!(line(Some(&ctrl_x)), None);
+        assert_eq!(line(Some(&ctrl_b)), None);
         assert_eq!(stop_all(&session), None, "nothing runs, nothing to stop");
 
         let tasks = session.background_tasks();
@@ -403,8 +403,8 @@ mod tests {
             .register(TaskSpec::new(TaskKind::Shell, "npm test"))
             .unwrap();
         assert_eq!(
-            line(Some(&ctrl_x)).unwrap(),
-            "● 1 background task running · Ctrl+X to stop"
+            line(Some(&ctrl_b)).unwrap(),
+            "● 1 background task running · Ctrl+B to stop"
         );
         let monitor = tasks
             .register(TaskSpec::new(TaskKind::Monitor, "watch the log"))
@@ -420,14 +420,14 @@ mod tests {
             .unwrap();
         session.stop_task(ended.id()).unwrap();
         assert_eq!(
-            line(Some(&ctrl_x)).unwrap(),
-            "● 4 background tasks running · Ctrl+X to stop"
-        );
-        // A key the user bound instead is the one the line names.
-        let ctrl_b = KeyEvent::parse("ctrl+b").unwrap();
-        assert_eq!(
             line(Some(&ctrl_b)).unwrap(),
             "● 4 background tasks running · Ctrl+B to stop"
+        );
+        // A key the user bound instead is the one the line names.
+        let ctrl_n = KeyEvent::parse("ctrl+n").unwrap();
+        assert_eq!(
+            line(Some(&ctrl_n)).unwrap(),
+            "● 4 background tasks running · Ctrl+N to stop"
         );
         assert_eq!(line(None).unwrap(), "● 4 background tasks running");
 
@@ -437,7 +437,7 @@ mod tests {
         }
         assert_eq!(stopped_line(4), "stopped 4 background tasks");
         assert_eq!(stopped_line(1), "stopped 1 background task");
-        assert_eq!(line(Some(&ctrl_x)), None);
+        assert_eq!(line(Some(&ctrl_b)), None);
         assert_eq!(stop_all(&session), None);
     }
 

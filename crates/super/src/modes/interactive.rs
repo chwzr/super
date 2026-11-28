@@ -10188,7 +10188,7 @@ mod tests {
         let text = hotkeys_text(&keybindings);
         assert!(text.contains("Ctrl+Y copy"), "{text}");
         assert!(!text.contains("Ctrl+X copy"), "{text}");
-        assert!(text.contains("Ctrl+X stop background tasks"), "{text}");
+        assert!(text.contains("Ctrl+B stop background tasks"), "{text}");
     }
 
     /// The warnings about tool names reach the transcript, where the
@@ -10240,7 +10240,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stop_key_stops_every_background_task_and_copies_while_none_runs() {
+    fn the_stop_key_stops_every_background_task_and_leaves_copying_to_its_own_key() {
         let mut app = test_app();
         let session = test_session(super_coding::SessionManager::in_memory(Path::new(
             "/synthetic",
@@ -10268,11 +10268,17 @@ mod tests {
             _ => panic!("the last cell is no notice"),
         };
 
-        // Nothing runs: Ctrl+X copies the last response, as before.
+        // Nothing runs: Ctrl+B does nothing, and Ctrl+X copies the last
+        // response as it always did.
+        app.editor.set_text("draft");
+        let cells = app.cells.len();
         assert!(matches!(
-            press(&mut app, KeyEvent::ctrl('x')),
+            press(&mut app, KeyEvent::ctrl('b')),
             Flow::Continue
         ));
+        assert_eq!(app.cells.len(), cells);
+        assert_eq!(app.editor.text(), "draft");
+        press(&mut app, KeyEvent::ctrl('x'));
         assert_eq!(last_notice(&app), "nothing to copy");
 
         let tasks = session.background_tasks();
@@ -10299,25 +10305,27 @@ mod tests {
         };
         assert_eq!(
             footer(&app).unwrap(),
-            "● 2 background tasks running · Ctrl+X to stop"
+            "● 2 background tasks running · Ctrl+B to stop"
         );
-        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+X stop background tasks"));
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+B stop background tasks"));
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+X copy"));
 
-        // One press stops them all and says how many.
+        // Ctrl+X copies while tasks run, too, and stops none of them.
         press(&mut app, KeyEvent::ctrl('x'));
+        assert_eq!(last_notice(&app), "nothing to copy");
+        assert!(!command.is_stopped() && !agent.is_stopped());
+
+        // One press of Ctrl+B stops them all and says how many.
+        press(&mut app, KeyEvent::ctrl('b'));
         assert!(command.is_stopped() && agent.is_stopped());
         assert_eq!(last_notice(&app), "stopped 2 background tasks");
         assert_eq!(footer(&app), None);
 
-        // A key of its own: the footer and the help name it, it does
-        // nothing while no task runs, and Ctrl+X only copies.
+        // Bound to the key that copies, it stops the tasks while any run
+        // and leaves the key to copying otherwise; the footer and the help
+        // name that key.
         app.keybindings
-            .bind(KeyEvent::ctrl('b'), Action::StopBackgroundTasks);
-        app.editor.set_text("draft");
-        let cells = app.cells.len();
-        press(&mut app, KeyEvent::ctrl('b'));
-        assert_eq!(app.cells.len(), cells);
-        assert_eq!(app.editor.text(), "draft");
+            .bind(KeyEvent::ctrl('x'), Action::StopBackgroundTasks);
         let monitor = tasks
             .register(super_coding::TaskSpec::new(
                 super_coding::TaskKind::Monitor,
@@ -10326,16 +10334,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             footer(&app).unwrap(),
-            "● 1 background task running · Ctrl+B to stop"
+            "● 1 background task running · Ctrl+X to stop"
         );
-        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+B stop background tasks"));
-        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+X copy"));
-        press(&mut app, KeyEvent::ctrl('x'));
-        assert!(!monitor.is_stopped());
-        assert_eq!(last_notice(&app), "nothing to copy");
+        assert!(hotkeys_text(&app.keybindings).contains("Ctrl+X stop background tasks"));
         press(&mut app, KeyEvent::ctrl('b'));
+        assert!(!monitor.is_stopped());
+        press(&mut app, KeyEvent::ctrl('x'));
         assert!(monitor.is_stopped());
         assert_eq!(last_notice(&app), "stopped 1 background task");
+        press(&mut app, KeyEvent::ctrl('x'));
+        assert_eq!(last_notice(&app), "nothing to copy");
     }
 
     /// A repository with one commit, for a session that enters a worktree.

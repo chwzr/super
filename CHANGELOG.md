@@ -217,13 +217,14 @@
   shows a task's notice, a monitor's event, an agent's message, a wake-up
   and a loop's round as one line each, where it showed nothing.
 - While background tasks run, the terminal's footer says how many and which
-  key stops them all, `● 2 background tasks running · Ctrl+X to stop`, also
-  when it is attached to the daemon. One press stops every command,
-  monitor, agent and workflow of the session and says how many it stopped;
-  while none runs, `Ctrl+X` copies the last response as before. The key is
-  the action `stopBackgroundTasks` in `~/.super/agent/keybindings.json`;
-  given a key of its own, it does nothing while no task runs, and the footer
-  and `/hotkeys` name that key.
+  key stops them all, `● 2 background tasks running · Ctrl+B to stop`, also
+  when it is attached to the daemon. One press of `Ctrl+B` stops every
+  command, monitor, agent and workflow of the session and says how many it
+  stopped; while none runs, the key does nothing. `Ctrl+X` copies the last
+  response as before. The key is the action `stopBackgroundTasks` in
+  `~/.super/agent/keybindings.json`, and the footer and `/hotkeys` name the
+  key it is bound to; bound to a key that has an action, it stops the tasks
+  while any run and leaves the key to that action otherwise.
 - A workflow run's journal is written call by call as the run goes
   (`<run id>.journal.jsonl`), so a run cut off by the end of its process can
   be resumed with `resumeFromRunId` after a restart. Such a run is announced
@@ -461,7 +462,7 @@
   worktree in the main working tree's `.super/worktrees/`, as an agent's
   worktree is, starting from the linked worktree's `HEAD` with
   `worktree.baseRef` `head`. It was made inside the linked worktree.
-- A workflow run stopped while its last agent call runs (Ctrl+X, `/tasks`,
+- A workflow run stopped while its last agent call runs (Ctrl+B, `/tasks`,
   `stop_task`, `TaskStop`, `abort`, turning the switches off) ends as
   stopped: its `workflow_outcome`, its stored `workflow_run` entry and
   `/workflows` say so, as its task does. A script whose last step was that
