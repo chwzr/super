@@ -593,7 +593,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.output_text(), "     5\tl5");
-        assert!(!record(&t, &path).await.unwrap().whole);
+        // Parts read after the whole of the unchanged file leave the whole
+        // read in the record.
+        assert!(record(&t, &path).await.unwrap().whole);
 
         // A limited read that covers every line is a read of the whole file.
         read(&t, json!({"file_path": path, "offset": 1, "limit": 10}))

@@ -118,9 +118,24 @@ impl FileStates {
     }
 
     /// Remember `read` for the file with this key, in place of what was
-    /// there. A full record forgets the file read longest ago.
+    /// there. A read of a part of a file whose whole read is remembered with
+    /// the same stamp keeps the whole read: the session has seen all of the
+    /// file as it is, in one call. So reads of one answer that run at the
+    /// same time leave the same record whichever ends last. A full record
+    /// forgets the file read longest ago.
     pub fn record(&self, key: PathBuf, read: FileRead) {
         let mut entries = self.entries.lock().unwrap();
+        let read = match entries.get(&key) {
+            Some(known)
+                if known.whole && !read.whole && known.same_stamp(read.modified, read.len) =>
+            {
+                FileRead {
+                    at: known.at.max(read.at),
+                    ..known.clone()
+                }
+            }
+            _ => read,
+        };
         entries.insert(key, read);
         while entries.len() > MAX_FILE_STATES {
             let Some(oldest) = entries
@@ -228,6 +243,29 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files.forget(Path::new("/a")), Some(read_at(2, true)));
         assert!(files.is_empty());
+    }
+
+    /// Whichever of a whole and a partial read of an unchanged file comes
+    /// last, the whole one counts; once the file changed, the newer read
+    /// does.
+    #[test]
+    fn a_part_read_after_the_whole_of_an_unchanged_file_keeps_the_whole_read() {
+        // Two reads of the same file as it is, one second apart.
+        let unchanged = |seconds: u64, whole: bool| FileRead {
+            at: SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+            ..read_at(1, whole)
+        };
+        for (first, second) in [(true, false), (false, true)] {
+            let files = FileStates::new();
+            files.record("/a".into(), unchanged(1, first));
+            files.record("/a".into(), unchanged(2, second));
+            assert_eq!(files.get(Path::new("/a")), Some(unchanged(2, true)));
+        }
+        // Once the file changed, the newer read counts.
+        let files = FileStates::new();
+        files.record("/a".into(), read_at(1, true));
+        files.record("/a".into(), read_at(2, false));
+        assert_eq!(files.get(Path::new("/a")), Some(read_at(2, false)));
     }
 
     #[test]
