@@ -1223,14 +1223,19 @@ PowerShell or cmd, and works the same way in both modes.
 - The shell starts from your profile: Bash, zsh and the other POSIX shells
   and fish start as login shells. What the profile prints is left out of the
   command's output, a background command's output file and a monitor's
-  events (on macOS and Linux). PowerShell and cmd start as before.
+  events (on macOS and Linux), and a job the profile starts with its output
+  sent elsewhere, such as an agent, does not hold up the command. A POSIX
+  shell runs the command with `eval`, so a syntax error in it comes back
+  with the shell's message and the command's own line numbers. PowerShell
+  and cmd start as before.
 - `timeout` is in milliseconds, 120,000 (two minutes) by default and 600,000
   at most. A command that does nothing but `sleep` is refused; it can wait in
   the background instead.
 - In the main session a `cd` carries over to the next command while it stays
   inside the session folder, with a POSIX shell or fish on macOS and Linux.
   A command that ends outside it puts the shell back in the session folder.
-  A subagent's commands always start in the session folder, and so does a
+  A command that sets its own `EXIT` trap keeps its `cd` too, unless it also
+  ends with `exit`. A subagent's commands always start in the session folder, and so does a
   new or resumed conversation. PowerShell, cmd and Bash on Windows start
   every command in the session folder. Two commands of one answer run one
   after the other, so a `cd` in the first reaches the second.

@@ -333,7 +333,9 @@
   most, where it took seconds without a default; its `cwd` parameter is gone.
   The shell starts as a login shell from the user's profile (POSIX shells
   and fish). In the main session a `cd` carries over to the next command
-  while it stays inside the session folder. A command that only sleeps is
+  while it stays inside the session folder, also past a command's own `EXIT`
+  trap, and a command that removes its own folder gets no error about it
+  that it did not print. A command that only sleeps is
   refused in the foreground. Up to 30,000 characters of output come back;
   longer output is saved to a file, and the agent gets its path and the
   first 2,000 bytes. An exit code other than 0 comes back as
@@ -388,9 +390,14 @@
   for one run with `--approve`, and a session that works in a worktree, no
   longer miss them.
 - What a login profile prints is no longer part of a `Bash` result, a
-  background command's output file or a monitor's events: the profile's
-  output and errors are thrown away on macOS and Linux, and its environment
-  and folder change still reach the command.
+  background command's output file or a monitor's events: what the shell
+  writes before the command runs is left out on macOS and Linux, and the
+  profile's environment and folder change still reach the command. A job the
+  profile starts with its output sent elsewhere does not hold up a command
+  or a monitor until it ends. A POSIX shell runs the command with `eval`, so
+  a syntax error in it comes back with the shell's message (zsh gave only the
+  exit code) and the command's own line numbers. A `shellPath` that is there
+  but cannot run fails with "Could not start shell …" too.
 - A session opened again refuses a file it had read and that changed on disk
   since with the same words as a session that kept running, "has changed on
   disk since it was read", where it said the file had not been read yet.

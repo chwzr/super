@@ -221,6 +221,42 @@ async fn a_cd_carries_over_in_the_main_session_while_it_stays_inside() {
     assert_eq!(pwd(&bash).await, root.join("other").display().to_string());
 }
 
+/// A command's own `EXIT` trap does not lose its `cd`, and a command that
+/// removes the folder it is in gets no error it did not print.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cd_carries_over_past_the_commands_own_exit_trap() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = canonical(directory.path());
+    std::fs::create_dir_all(root.join("sub/deeper")).unwrap();
+    let bash = main_session_tool(directory.path());
+    let result = run(
+        &bash,
+        json!({"command": "cd sub; trap 'echo cleanup-ran' EXIT; echo body"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.output_text(), "body\ncleanup-ran");
+    assert_eq!(pwd(&bash).await, root.join("sub").display().to_string());
+    // The command's own exit code stays.
+    let result = run(&bash, json!({"command": "cd deeper; (exit 3)"}))
+        .await
+        .unwrap();
+    assert!(result.is_error);
+    assert_eq!(result.output_text(), "Exit code 3");
+    assert_eq!(
+        pwd(&bash).await,
+        root.join("sub/deeper").display().to_string()
+    );
+    let result = run(
+        &bash,
+        json!({"command": format!("rmdir {}", root.join("sub/deeper").display())}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.output_text(), "(no output)");
+}
+
 /// fish on the `PATH`, if it is installed.
 #[cfg(unix)]
 fn installed_fish() -> Option<PathBuf> {

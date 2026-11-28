@@ -109,7 +109,8 @@ impl BashTool {
         };
         let reported = text.trim_end_matches(['\n', '\r']);
         if reported.is_empty() {
-            // The command replaced the exit trap or ended without it.
+            // The command ended without reporting, such as by `exec`, or
+            // in a folder that is gone.
             return false;
         }
         let ended = PathBuf::from(reported);
@@ -165,9 +166,13 @@ impl BashTool {
             self.command_prefix.as_deref(),
             directory,
             report.as_ref().map(|file| file.path()),
+            None,
         );
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut process = ShellProcess::start(cmd)?;
+        let marked = shell::marks_output(self.shell_path.as_deref());
+        let mut stdout_profile = shell::ProfileOutput::new(marked);
+        let mut stderr_profile = shell::ProfileOutput::new(marked);
         let mut stdout = process.child.stdout.take().expect("piped stdout");
         let mut stderr = process.child.stderr.take().expect("piped stderr");
         let mut capture = Capture::new(tool_call_id);
@@ -184,14 +189,20 @@ impl BashTool {
             tokio::select! {
                 n = stdout.read(&mut stdout_buf), if stdout_open => {
                     match n {
-                        Ok(0) | Err(_) => stdout_open = false,
-                        Ok(n) => capture.push(&stdout_buf[..n]),
+                        Ok(0) | Err(_) => {
+                            stdout_open = false;
+                            capture.push(&stdout_profile.finish());
+                        }
+                        Ok(n) => capture.push(&stdout_profile.feed(&stdout_buf[..n])),
                     }
                 }
                 n = stderr.read(&mut stderr_buf), if stderr_open => {
                     match n {
-                        Ok(0) | Err(_) => stderr_open = false,
-                        Ok(n) => capture.push(&stderr_buf[..n]),
+                        Ok(0) | Err(_) => {
+                            stderr_open = false;
+                            capture.push(&stderr_profile.finish());
+                        }
+                        Ok(n) => capture.push(&stderr_profile.feed(&stderr_buf[..n])),
                     }
                 }
                 _ = cancel.cancelled() => {
@@ -322,6 +333,7 @@ impl BashTool {
             self.command_prefix.as_deref(),
             directory,
             None,
+            Some(&output),
         );
         cmd.stdout(Stdio::from(file)).stderr(Stdio::from(errors));
         let process = ShellProcess::start(cmd)?;

@@ -259,6 +259,7 @@ impl AgentTool for MonitorTool {
                     settings.shell_command_prefix.as_deref(),
                     &directory,
                     None,
+                    Some(&output),
                 );
                 let errors = file
                     .try_clone()
@@ -266,10 +267,11 @@ impl AgentTool for MonitorTool {
                 process.stdout(Stdio::piped()).stderr(Stdio::from(errors));
                 let mut process = ShellProcess::start(process)?;
                 let stdout = process.child.stdout.take().expect("piped stdout");
+                let profile = shell::ProfileOutput::new(shell::marks_output(shell_path));
                 let handle = tasks.register(spec).map_err(|e| anyhow::anyhow!("{e}"))?;
                 let events = Events::new(&session, &handle, file, description, self.limits);
                 tokio::spawn(watch_command(
-                    process, stdout, command, handle, events, timeout,
+                    process, stdout, profile, command, handle, events, timeout,
                 ));
             }
             Source::Socket { url, protocols } => {
@@ -331,6 +333,7 @@ async fn connect(url: &str, protocols: &[String]) -> anyhow::Result<Socket> {
 async fn watch_command(
     mut process: ShellProcess,
     mut stdout: tokio::process::ChildStdout,
+    mut profile: shell::ProfileOutput,
     command: String,
     handle: TaskHandle,
     mut events: Events,
@@ -365,11 +368,15 @@ async fn watch_command(
             read = stdout.read(&mut buffer), if open => match read {
                 Ok(0) | Err(_) => {
                     open = false;
+                    let held = profile.finish();
+                    events.record(&held);
+                    events.push_all(lines.feed(&held));
                     events.push_all(lines.rest());
                 }
                 Ok(n) => {
-                    events.record(&buffer[..n]);
-                    events.push_all(lines.feed(&buffer[..n]));
+                    let bytes = profile.feed(&buffer[..n]);
+                    events.record(&bytes);
+                    events.push_all(lines.feed(&bytes));
                 }
             },
             status = process.child.wait(), if !open => {
