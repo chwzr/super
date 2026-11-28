@@ -146,18 +146,105 @@ async fn captures_stdout_and_stderr_in_the_session_folder() {
     assert_eq!(result.details["exitCode"], 0);
 }
 
+/// bash reads the files a login shell reads: `/etc/profile`, then the
+/// first of `~/.bash_profile`, `~/.bash_login` and `~/.profile`.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_shell_starts_from_the_profile() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
     let mut bash = tool();
-    bash.shell_path = Some("bash".into());
+    bash.shell_path = Some(bash_with_home(directory.path(), &home));
+    for (file, name) in [
+        (".profile", "profile"),
+        (".bash_login", "bash_login"),
+        (".bash_profile", "bash_profile"),
+    ] {
+        std::fs::write(home.join(file), format!("FROM={name}\n")).unwrap();
+        let result = run(&bash, json!({"command": "echo \"$FROM\""}))
+            .await
+            .unwrap();
+        assert_eq!(result.output_text(), name);
+    }
+}
+
+/// A command that signals its own shell, as the usual `die` function does
+/// with `kill $$`, ends there with the signal's exit code, in the
+/// foreground and in the background, and nothing after the signal runs.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_command_that_signals_its_own_shell_ends_with_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let work = directory.path().canonicalize().unwrap();
+    std::fs::write(work.join("keep.txt"), "keep\n").unwrap();
+    let host = FakeHost::new(&work);
+    let bash = background_tool(&work, &host);
+    let result = run(&bash, json!({"command": "echo a; kill -9 $$; echo b"}))
+        .await
+        .unwrap();
+    assert!(result.is_error);
+    assert_eq!(result.output_text(), "Exit code 137\na");
     let result = run(
         &bash,
-        json!({"command": "shopt -q login_shell && echo login shell"}),
+        json!({"command": "die() { echo \"$1\" >&2; kill $$; }; [ -f no-such-config ] || die 'no config'; rm keep.txt; echo removed"}),
     )
     .await
     .unwrap();
-    assert_eq!(result.output_text(), "login shell");
+    assert_eq!(result.output_text(), "Exit code 143\nno config");
+    assert!(work.join("keep.txt").exists());
+
+    run(
+        &bash,
+        json!({"command": "echo a; kill -9 $$; sleep 1; echo late > late.txt", "run_in_background": true, "description": "die"}),
+    )
+    .await
+    .unwrap();
+    let end = host.end_of("b0").await;
+    assert_eq!(end.summary, "die (exit code 137)");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!work.join("late.txt").exists(), "the command went on");
+    assert_eq!(
+        std::fs::read_to_string(work.join("b0.output")).unwrap(),
+        "a\n"
+    );
+}
+
+/// A profile that sends the shell's output elsewhere, or its output and its
+/// errors, lets the command run, and the result says that it ran: its
+/// output went where the profile sent it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_profile_that_sends_the_output_elsewhere_still_runs_the_command() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    let work = directory.path().join("work");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    let mut bash = main_session_tool(&work);
+    bash.shell_path = Some(bash_with_home(directory.path(), &home));
+    for profile in [
+        "echo before; exec >/dev/null\n",
+        "echo before; exec >>\"$HOME/profile.log\" 2>&1\n",
+    ] {
+        std::fs::write(home.join(".bash_profile"), profile).unwrap();
+        let _ = std::fs::remove_file(work.join("ran-marker"));
+        let result = run(
+            &bash,
+            json!({"command": "touch ran-marker; echo hi; echo oops >&2"}),
+        )
+        .await
+        .unwrap();
+        assert!(!result.is_error, "{profile}: {}", result.output_text());
+        assert_eq!(result.output_text(), "(no output)", "{profile}");
+        assert!(work.join("ran-marker").exists(), "{profile}");
+    }
+    // Errors sent elsewhere leave the output.
+    std::fs::write(home.join(".bash_profile"), "exec 2>/dev/null\n").unwrap();
+    let result = run(&bash, json!({"command": "echo hi; echo oops >&2"}))
+        .await
+        .unwrap();
+    assert_eq!(result.output_text(), "hi\noops");
 }
 
 /// A background command whose shell cannot start leaves its output file

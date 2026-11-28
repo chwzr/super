@@ -108,9 +108,9 @@ impl BashTool {
             return false;
         };
         let reported = text.trim_end_matches(['\n', '\r']);
-        if reported.is_empty() {
+        if reported.is_empty() || reported.as_bytes().starts_with(shell::OUTPUT_MARK) {
             // The command ended without reporting, such as by `exec`, or
-            // in a folder that is gone.
+            // in a folder that is gone; the mark says only that it started.
             return false;
         }
         let ended = PathBuf::from(reported);
@@ -177,6 +177,9 @@ impl BashTool {
         let mut stdout = process.child.stdout.take().expect("piped stdout");
         let mut stderr = process.child.stderr.take().expect("piped stderr");
         let mut capture = Capture::new(tool_call_id);
+        // What a stream held back because its mark never came: the
+        // profile's, kept for when the command never ran.
+        let mut held = Vec::new();
         let mut stdout_buf = [0u8; 8192];
         let mut stderr_buf = [0u8; 8192];
         let mut stdout_open = true;
@@ -192,7 +195,7 @@ impl BashTool {
                     match n {
                         Ok(0) | Err(_) => {
                             stdout_open = false;
-                            capture.push(&stdout_profile.finish());
+                            held.extend(stdout_profile.finish());
                         }
                         Ok(n) => capture.push(&stdout_profile.feed(&stdout_buf[..n])),
                     }
@@ -201,7 +204,7 @@ impl BashTool {
                     match n {
                         Ok(0) | Err(_) => {
                             stderr_open = false;
-                            capture.push(&stderr_profile.finish());
+                            held.extend(stderr_profile.finish());
                         }
                         Ok(n) => capture.push(&stderr_profile.feed(&stderr_buf[..n])),
                     }
@@ -233,6 +236,18 @@ impl BashTool {
 
         let status = process.child.wait().await.ok();
         let exit_code = status.and_then(exit_code);
+        // A profile may send the shell's output or errors elsewhere, and
+        // with them a mark; the command started when either mark came or
+        // the script marked the report file.
+        let started = !stdout_profile.missed_mark()
+            || !stderr_profile.missed_mark()
+            || report
+                .as_ref()
+                .is_some_and(|report| std::fs::metadata(report.path()).is_ok_and(|m| m.len() > 0));
+        let never_ran = !cancelled && !timed_out && !started;
+        if never_ran {
+            capture.push(&held);
+        }
         if !cancelled
             && !timed_out
             && let Some(report) = &report
@@ -242,7 +257,7 @@ impl BashTool {
 
         let saved = capture.finish();
         let mut output = saved.text;
-        if !cancelled && !timed_out && stdout_profile.missed_mark() {
+        if never_ran {
             // The shell ended in its profile: what it printed is the
             // profile's, and the command never ran.
             let mut text = shell::never_ran(exit_code);

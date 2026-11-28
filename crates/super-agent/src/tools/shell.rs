@@ -60,9 +60,12 @@ pub fn fish_quote(text: &str) -> String {
 /// and with an `EXIT` trap for a command that exits, fish with a handler of
 /// its `fish_exit` event. A POSIX shell runs the command with `eval`, so
 /// that a syntax error in it is reported when it runs, with the command's
-/// own line numbers, and in a subshell, so that an `exit` in it ends only
-/// that: bash reads `~/.bash_logout` when a login shell runs `exit` itself.
-/// An `EXIT` trap the profile set is cleared, and the script calls `cd`,
+/// own line numbers, and so that an `exit` in it reads no logout file: bash
+/// reads `~/.bash_logout` when a login shell runs `exit` itself. On Unix
+/// bash and sh are started as plain shells that read the files a login
+/// shell reads and run the command themselves, so that `$$` is the shell
+/// that runs it; the other POSIX shells run it in a subshell, which they
+/// run in place. An `EXIT` trap the profile set is cleared, and the script calls `cd`,
 /// `pwd` and `printf` so that a function of that name or a zsh `chpwd`
 /// hook the profile defined does not run for them. PowerShell and cmd
 /// start as [`command`] starts them.
@@ -97,14 +100,38 @@ pub fn script(
             // hooks; POSIX `command` skips a function in the others.
             let zsh = stem(&shell) == "zsh";
             let builtin = if zsh { "builtin" } else { "command" };
+            // bash, also as `sh` (macOS), runs a subshell `( … )` in a
+            // process of its own, where `$$` would name the shell around the
+            // command: bash and sh read the profile themselves, as a login
+            // shell does, and run the command in place, where an `exit`
+            // reads no logout file, since the shell is not a login shell.
+            // The other shells run their last subshell in place.
+            let login_files = match stem(&shell).as_str() {
+                "bash" if marks => Some(BASH_LOGIN_FILES),
+                "sh" if marks => Some(SH_LOGIN_FILES),
+                _ => None,
+            };
+            let in_place = login_files.is_some();
             // Everything before the command is on its first line, so that
             // bash, which counts the lines of an `eval` from the line it is
             // on, counts the command's own.
             let mut text = String::new();
+            if let Some(files) = login_files {
+                text.push_str(files);
+            }
             if marks {
                 text.push_str(&format!(
                     "{builtin} printf '{MARK_FORMAT}'; {builtin} printf '{MARK_FORMAT}' >&2; "
                 ));
+                if let Some(file) = report_directory {
+                    // Until the command reports its folder the file says
+                    // that it started, which a profile that sends the
+                    // shell's output elsewhere cannot hide.
+                    text.push_str(&format!(
+                        "{builtin} printf '{MARK_FORMAT}' >| {}; ",
+                        posix_quote(&file.to_string_lossy())
+                    ));
+                }
                 if let Some(file) = output_file {
                     text.push_str(&format!(": >| {}; ", posix_quote(&file.to_string_lossy())));
                 }
@@ -115,7 +142,11 @@ pub fn script(
                     text.push_str(&path_first(&path));
                 }
             }
-            text.push_str("trap - EXIT; (");
+            text.push_str(if in_place {
+                "trap - EXIT; "
+            } else {
+                "trap - EXIT; ("
+            });
             text.push_str(&format!(
                 "{} -- {} || exit 1; ",
                 if zsh { "builtin cd -q" } else { "command cd" },
@@ -139,8 +170,14 @@ pub fn script(
                 // and end with the command's status.
                 text.push_str(&format!("\nset -- \"$?\"\n{report}\nexit \"$1\""));
             }
-            text.push(')');
-            login_shell(&shell, text)
+            if in_place {
+                let mut command = Command::new(&shell);
+                command.arg("-c").arg(text);
+                command
+            } else {
+                text.push(')');
+                login_shell(&shell, text)
+            }
         }
         ShellKind::Fish => {
             let mut text = String::new();
@@ -192,6 +229,23 @@ pub fn never_ran(exit_code: Option<i32>) -> String {
 /// its profile is summed up, after its description.
 pub const NEVER_RAN_SUMMARY: &str =
     "the shell ended while it ran the profile, so the command did not run";
+
+/// What bash reads when it starts as a login shell: `/etc/profile`, then
+/// the first of `~/.bash_profile`, `~/.bash_login` and `~/.profile` that it
+/// can read.
+const BASH_LOGIN_FILES: &str = concat!(
+    "if [ -r /etc/profile ]; then . /etc/profile; fi; ",
+    "if [ -r ~/.bash_profile ]; then . ~/.bash_profile; ",
+    "elif [ -r ~/.bash_login ]; then . ~/.bash_login; ",
+    "elif [ -r ~/.profile ]; then . ~/.profile; fi; "
+);
+
+/// What a POSIX `sh`, dash or bash as `sh`, reads when it starts as a login
+/// shell.
+const SH_LOGIN_FILES: &str = concat!(
+    "if [ -r /etc/profile ]; then . /etc/profile; fi; ",
+    "if [ -r ~/.profile ]; then . ~/.profile; fi; "
+);
 
 /// POSIX shell text that puts the entries of `inherited` in front of the
 /// `PATH` the profile left, keeping each entry once and leaving out empty
@@ -559,14 +613,15 @@ mod tests {
             )
         );
         assert_eq!(fish_quote(r"a\b'c"), r"'a\\b\'c'");
-        // A POSIX shell runs the command with eval and reports its folder
-        // after it, and with a trap for a command that exits.
-        // A POSIX shell runs the command with eval in a subshell, after the
-        // profile's EXIT trap is cleared, and reports its folder after it,
-        // and with a trap for a command that exits. It calls `cd`, `pwd`
-        // and `printf` past any function of that name, and zsh's `cd` runs
-        // no `chpwd` hook. After the mark the errors may go to the output,
-        // and the PATH SUPER runs with comes first again.
+        // A POSIX shell runs the command with eval, after the profile's
+        // EXIT trap is cleared, and reports its folder after it, and with a
+        // trap for a command that exits. It calls `cd`, `pwd` and `printf`
+        // past any function of that name, and zsh's `cd` runs no `chpwd`
+        // hook. After the mark the report file says the command started,
+        // the errors may go to the output, and the PATH SUPER runs with
+        // comes first again. zsh runs it in a subshell, which it runs in
+        // place; bash on Unix reads the login files itself and runs it in
+        // the shell.
         let start = |builtin: &str, errors: &str| {
             if cfg!(unix) {
                 let path = std::env::var("PATH")
@@ -575,7 +630,7 @@ mod tests {
                     .map(|path| path_first(&path))
                     .unwrap_or_default();
                 format!(
-                    "{builtin} printf '{MARK_FORMAT}'; {builtin} printf '{MARK_FORMAT}' >&2; {errors}{path}"
+                    "{builtin} printf '{MARK_FORMAT}'; {builtin} printf '{MARK_FORMAT}' >&2; {builtin} printf '{MARK_FORMAT}' >| '/tmp/super-cwd-1'; {errors}{path}"
                 )
             } else {
                 String::new()
@@ -594,18 +649,30 @@ mod tests {
                 None,
                 errors,
             );
+            let in_place = cfg!(unix) && shell.ends_with("bash");
             let report = format!("{builtin} pwd -P 2>/dev/null >| '/tmp/super-cwd-1' || :");
-            assert_eq!(
-                login(&posix, shell),
-                format!(
-                    "{}trap - EXIT; ({cd} -- {} || exit 1; trap {} EXIT; eval 'set -u'; eval {}\nset -- \"$?\"\n{report}\nexit \"$1\")",
-                    start(builtin, if errors { "exec 2>&1; " } else { "" }),
-                    r"'/work/it'\''s here'",
-                    posix_quote(&report),
-                    posix_quote("echo 'hi'"),
-                ),
-                "{shell}"
+            let body = format!(
+                "{cd} -- {} || exit 1; trap {} EXIT; eval 'set -u'; eval {}\nset -- \"$?\"\n{report}\nexit \"$1\"",
+                r"'/work/it'\''s here'",
+                posix_quote(&report),
+                posix_quote("echo 'hi'"),
             );
+            let start = start(builtin, if errors { "exec 2>&1; " } else { "" });
+            if in_place {
+                let arguments = arguments(&posix);
+                assert_eq!(posix.as_std().get_program(), shell);
+                assert_eq!(arguments[0], "-c");
+                assert_eq!(
+                    arguments[1],
+                    format!("{BASH_LOGIN_FILES}{start}trap - EXIT; {body}")
+                );
+            } else {
+                assert_eq!(
+                    login(&posix, shell),
+                    format!("{start}trap - EXIT; ({body})"),
+                    "{shell}"
+                );
+            }
         }
     }
 
@@ -1036,6 +1103,43 @@ mod tests {
             .expect("the output ends with the command, not with the profile's job")
             .unwrap();
         assert_eq!(read_as_the_tools_do(&output.stdout), "hi\n");
+    }
+
+    /// A command that signals its own shell, as `kill $$` and the usual
+    /// `die` function do, ends there: `$$` is the shell that runs it, also
+    /// for bash, and nothing after the signal runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_that_signals_its_own_shell_ends_there() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let folder = folder.path().canonicalize().unwrap();
+        let mut shells = vec!["/bin/bash", "/bin/sh"];
+        if Path::new("/bin/zsh").is_file() {
+            shells.push("/bin/zsh");
+        }
+        for shell in shells {
+            for (source, signal) in [
+                ("echo a; kill -9 $$; echo b; touch marker", libc::SIGKILL),
+                (
+                    "die() { echo a; kill $$; }; [ -f no-such-config ] || die; echo b; touch marker",
+                    libc::SIGTERM,
+                ),
+            ] {
+                let output = piped(shell, home.path(), source, &folder, None, true)
+                    .output()
+                    .await
+                    .unwrap();
+                use std::os::unix::process::ExitStatusExt as _;
+                assert_eq!(output.status.signal(), Some(signal), "{shell} {source}");
+                assert_eq!(
+                    read_as_the_tools_do(&output.stdout),
+                    "a\n",
+                    "{shell} {source}"
+                );
+                assert!(!folder.join("marker").exists(), "{shell} {source}");
+            }
+        }
     }
 
     /// A profile that traces its commands traces the command, not the
