@@ -192,7 +192,7 @@ fn dispatch(session: &Arc<Session>, line: &str, out: &mpsc::UnboundedSender<Stri
             });
         }
         Err(error) => {
-            let _ = out.send(error_line("parse", error));
+            let _ = out.send(encode(&crate::protocol::parse_failure(line, &error)));
         }
     }
 }

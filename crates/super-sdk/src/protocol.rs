@@ -457,9 +457,63 @@ pub fn decode_request(line: &str) -> Result<Request, ProtocolError> {
     })
 }
 
+/// The response to `line`, which could not be run as a command (`error`):
+/// with the line's `id`, so that a client waiting for that id gets an
+/// answer, and with its `type` as the command when the line is a command
+/// this build knows whose fields do not fit, such as one without a field it
+/// needs. A line that is no JSON object, or whose `type` is missing or
+/// unknown, has the command `parse`.
+pub fn parse_failure(line: &str, error: &ProtocolError) -> Response {
+    let value = serde_json::from_str::<Value>(line).ok();
+    let field = |name: &str| {
+        value
+            .as_ref()
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let command = match error {
+        ProtocolError::Json(_) => field("type"),
+        ProtocolError::MissingType | ProtocolError::UnknownCommand(_) => None,
+    };
+    Response::err(command.unwrap_or_else(|| "parse".into()), error).with_id(field("id"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_that_does_not_fit_its_command_is_answered_with_its_id() {
+        let answer = |line: &str| {
+            let error = decode_request(line).unwrap_err();
+            serde_json::to_value(parse_failure(line, &error)).unwrap()
+        };
+        let missing = answer(r#"{"id":"e1","type":"get_agent_entries"}"#);
+        assert_eq!(missing["id"], "e1");
+        assert_eq!(missing["command"], "get_agent_entries");
+        assert_eq!(missing["success"], false);
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap()
+                .contains("missing field `agent`"),
+            "{missing}"
+        );
+        let wrong = answer(r#"{"id":"e3","type":"get_agents","agent":7}"#);
+        assert_eq!(
+            (wrong["id"].as_str(), wrong["command"].as_str()),
+            (Some("e3"), Some("get_agents"))
+        );
+        let unknown = answer(r#"{"id":"e4","type":"teleport"}"#);
+        assert_eq!(
+            (unknown["id"].as_str(), unknown["command"].as_str()),
+            (Some("e4"), Some("parse"))
+        );
+        let broken = answer("{not json");
+        assert_eq!(broken["command"], "parse");
+        assert!(broken.get("id").is_none());
+    }
 
     #[test]
     fn command_tags_are_snake_case() {

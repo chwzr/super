@@ -54,7 +54,10 @@ Failures are responses and do not close the connection:
 }
 ```
 
-Malformed input uses command `parse`.
+A line that is no JSON object, or whose `type` is missing or unknown, is
+answered with command `parse`. A known command whose fields do not fit, such
+as `stop_task` without `taskId`, is answered with its own command. Either
+response carries the line's `id` when it has one.
 
 ## Commands
 

@@ -451,6 +451,10 @@
   names the type or the model. The agent was resumed as a general-purpose
   agent with every tool, or on the session's model, in the middle of a
   conversation it had under its own type.
+- RPC and the daemon answer a command whose fields do not fit, such as
+  `get_agent_entries` without `agent`, with the command's `id` and its own
+  `command`, so a client that waits for that id gets its answer; it came
+  without an id as command `parse`. Rust SDK: `protocol::parse_failure`.
 - `switch_session` back to a session the process left a moment before opens
   it, with its agents. Within half a second it was refused as "open in
   another SUPER process", because the process's own lock on that file had not

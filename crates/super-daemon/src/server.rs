@@ -438,7 +438,9 @@ fn handshake(
 fn dispatch(ctx: &Arc<ServerContext>, client: &Arc<Client>, line: &str) {
     match decode_client_line(line) {
         Err(error) => {
-            let _ = client.out.send(error_line("parse", error));
+            let _ = client
+                .out
+                .send(encode(&super_sdk::protocol::parse_failure(line, &error)));
         }
         Ok(ClientLine::Daemon(request)) => {
             let ctx = ctx.clone();
