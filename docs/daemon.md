@@ -260,9 +260,10 @@ platform`: a remote client follows the agent's nested `events` stream.
   `approval_request` of kind `worktree` with the choices `keep` and
   `remove`, and unloads the session once one answers or after a minute
   without an answer, keeping the worktree then. A session unloaded while
-  idle, or by `shutdown`, keeps its worktree without asking. The worktree is
-  not stored with the session: loaded again, the session works in its own
-  folder, and the worktree stays on disk.
+  idle, or by `shutdown`, keeps its worktree without asking, and works in it
+  again when the daemon loads it again: the worktree is stored with the
+  session. If its folder is gone by then, the session works in its own
+  folder and says so once (`worktree_changed` with `missing`).
 - The agents a hosted session starts run inside it, in the daemon, and are
   stored in the folder beside its file (`<file without .jsonl>/agents/`).
   They are not sessions of their own: `list_sessions`, `status`'s

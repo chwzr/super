@@ -165,6 +165,13 @@
   `Session::settle_worktree`, `super_sdk::worktree_exit_request`,
   `super_coding::worktree::{start_point, changes, list, describe, top}`, and
   the messages `wakeup` and `loop_round` (`super_coding::notifications`).
+- A session that works in a worktree works there again when it is opened
+  again (`super -c`, `--session`, the daemon, `/remote`, `switch_session`);
+  when the worktree's folder is gone it works in its own folder and says so
+  once. RPC: `get_state` reports the session's `cwd` and its `worktree`, and
+  the event `worktree_changed` tells clients when the session moves. Rust
+  SDK: `super_coding::stored_state`, `SessionEvent::WorktreeChanged` and
+  `AgentSession::resume_stored_work`.
 
 ### Changed
 

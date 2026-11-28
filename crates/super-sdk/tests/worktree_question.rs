@@ -164,3 +164,39 @@ async fn a_session_ending_in_its_worktree_asks_to_keep_or_remove_it() {
     enter(&session, &root, "foreign", false);
     assert_eq!(session.settle_worktree(Duration::from_secs(5)).await, None);
 }
+
+#[tokio::test]
+async fn get_state_reports_the_folder_and_the_worktree_and_an_event_tells_of_each_move() {
+    let (_directory, root) = repository();
+    let session = session_in(&root);
+    let state = session
+        .execute(super_sdk::Command::GetState {})
+        .await
+        .data
+        .unwrap();
+    assert_eq!(state["cwd"], root.display().to_string());
+    assert_eq!(state["worktree"], Value::Null);
+
+    let mut events = session.events();
+    let entered = enter(&session, &root, "moved", true);
+    let moved = next_event(&mut events, "worktree_changed").await;
+    let path = entered.worktree.path.display().to_string();
+    assert_eq!(moved["folder"], path);
+    assert_eq!(moved["worktree"]["path"], path);
+    assert_eq!(moved["worktree"]["branch"], "worktree-moved");
+    assert_eq!(moved["worktree"]["created"], true);
+    assert_eq!(moved["worktree"]["original"], root.display().to_string());
+    assert!(moved.get("missing").is_none());
+    let state = session
+        .execute(super_sdk::Command::GetState {})
+        .await
+        .data
+        .unwrap();
+    assert_eq!(state["cwd"], root.display().to_string());
+    assert_eq!(state["worktree"], moved["worktree"]);
+
+    session.agent_session().leave_worktree();
+    let back = next_event(&mut events, "worktree_changed").await;
+    assert_eq!(back["folder"], root.display().to_string());
+    assert_eq!(back["worktree"], Value::Null);
+}

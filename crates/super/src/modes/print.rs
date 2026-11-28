@@ -39,6 +39,16 @@ pub async fn run(args: &Args) -> Result<i32> {
                     }
                 }
             }
+            // A worktree the session worked in was gone when it was loaded.
+            SessionEvent::WorktreeChanged {
+                folder,
+                missing: Some(missing),
+                ..
+            } => eprintln!(
+                "worktree {} is gone · the session works in {}",
+                missing.display(),
+                folder.display()
+            ),
             SessionEvent::WorkflowOutcome { run, name, status } => {
                 let run = run.map(|id| format!(" run {id}")).unwrap_or_default();
                 let result = match status {

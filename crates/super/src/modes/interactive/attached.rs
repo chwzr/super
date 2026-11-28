@@ -249,6 +249,9 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
         .collect();
     let mut cells = Vec::new();
     for entry in entries {
+        if let Some(line) = crate::task_ui::state_line(entry, manager.cwd()) {
+            cells.push(Cell::Notice(line));
+        }
         match entry {
             super_coding::SessionEntry::Message { message, .. } => match message {
                 AgentMessage::User(user) => {

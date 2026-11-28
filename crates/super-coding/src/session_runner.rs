@@ -89,6 +89,17 @@ pub enum SessionEvent {
     TaskUpdated(TaskInfo),
     /// A background task ended: completed, failed or stopped.
     TaskEnded(TaskInfo),
+    /// The folder the session works in changed: it moved into a worktree or
+    /// back to its own folder, or the worktree it worked in was gone when
+    /// it was loaded again.
+    WorktreeChanged {
+        /// The folder its tools work in now.
+        folder: std::path::PathBuf,
+        /// The worktree it works in, if any.
+        worktree: Option<crate::worktree::EnteredWorktree>,
+        /// The worktree whose folder was gone when the session was loaded.
+        missing: Option<std::path::PathBuf>,
+    },
 }
 
 pub type SessionEventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
@@ -457,6 +468,20 @@ pub struct AgentSession {
     /// or out of a worktree): the run builds its context again before its
     /// next model request.
     context_stale: std::sync::atomic::AtomicBool,
+    /// This session, for the work it starts on its own.
+    weak_self: std::sync::Weak<AgentSession>,
+    /// What the session stored and brought back, waiting for its host to be
+    /// ready: see [`AgentSession::resume_stored_work`].
+    stored_work: Mutex<StoredWork>,
+    /// The session's host is ending it; see [`AgentSession::set_closing`].
+    closing: std::sync::atomic::AtomicBool,
+}
+
+/// What [`AgentSession::resume_stored_work`] starts.
+#[derive(Default)]
+struct StoredWork {
+    /// The notices of workflow runs that were cut off.
+    notices: Vec<AgentMessage>,
 }
 
 struct ReasoningRunState {
@@ -590,7 +615,10 @@ impl AgentSession {
         child: bool,
     ) -> Arc<Self> {
         let totals = manager.usage_totals();
-        let session = Arc::new(AgentSession {
+        let session = Arc::new_cyclic(|weak_self| AgentSession {
+            weak_self: weak_self.clone(),
+            stored_work: Mutex::new(StoredWork::default()),
+            closing: std::sync::atomic::AtomicBool::new(false),
             manager: Mutex::new(manager),
             registry: RwLock::new(registry),
             base_tools: Mutex::new(tools.clone()),
@@ -698,6 +726,8 @@ impl AgentSession {
             assert!(session.iterative.set(iterative).is_ok());
         }
         session.rebuild_tools();
+        // A session loaded again is where it was.
+        session.restore_stored_state();
         session
     }
 
@@ -1082,6 +1112,7 @@ impl AgentSession {
     /// shell starts there. `EnterWorktree` does this after it made or found
     /// the worktree.
     pub fn enter_worktree(&self, entered: crate::worktree::EnteredWorktree) {
+        self.record_worktree(Some(&entered), None);
         *self.worktree.lock().unwrap() = Some(entered);
         self.moved();
     }
@@ -1091,9 +1122,40 @@ impl AgentSession {
     pub fn leave_worktree(&self) -> Option<crate::worktree::EnteredWorktree> {
         let left = self.worktree.lock().unwrap().take();
         if left.is_some() {
+            self.record_worktree(None, None);
             self.moved();
         }
         left
+    }
+
+    /// Leave the worktree without writing it down, for a session that moves
+    /// to another conversation: the one it leaves is in the worktree again
+    /// when it is loaded.
+    fn forget_worktree(&self) {
+        if self.worktree.lock().unwrap().take().is_some() {
+            self.moved();
+        }
+    }
+
+    /// Write down the worktree the session works in, so that it is there
+    /// again when the session is loaded ([`crate::stored_state`]).
+    fn record_worktree(
+        &self,
+        entered: Option<&crate::worktree::EnteredWorktree>,
+        missing: Option<&Path>,
+    ) {
+        if self.is_remote() {
+            return;
+        }
+        let mut data = serde_json::json!({ "worktree": entered });
+        if let Some(missing) = missing {
+            data["missing"] = serde_json::json!(missing);
+        }
+        crate::stored_state::record(
+            &mut self.manager.lock().unwrap(),
+            crate::stored_state::WORKTREE_ENTRY,
+            data,
+        );
     }
 
     /// The session's folder changed: the shell starts in the new one, and
@@ -1106,6 +1168,83 @@ impl AgentSession {
         self.rebuild_tools();
         self.context_stale
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        (self.sink)(SessionEvent::WorktreeChanged {
+            folder: self.working_folder(),
+            worktree: self.worktree(),
+            missing: None,
+        });
+    }
+
+    /// Bring back what this session stored besides its conversation
+    /// ([`crate::stored_state`]) when it is loaded again: the worktree it
+    /// worked in, what it had read, the workflow runs that were cut off and
+    /// its wake-up and self-paced loop. What starts turns (a wake-up that
+    /// is due, the next round of the loop, the notice of a cut-off run)
+    /// waits for [`AgentSession::resume_stored_work`].
+    fn restore_stored_state(&self) {
+        if self.child || self.is_remote() {
+            return;
+        }
+        self.restore_worktree();
+    }
+
+    /// Start what [`AgentSession::restore_stored_state`] brought back and
+    /// what needs the session's host: a wake-up whose time has passed fires
+    /// now and a later one at its time, a self-paced loop goes on, and the
+    /// notice of each workflow run that was cut off is queued. A host calls
+    /// this once the session is set up (the SDK when it wraps the session,
+    /// print and JSON mode before their prompt); a session that moves to
+    /// another conversation calls it itself. Calling it again does nothing.
+    pub fn resume_stored_work(self: &Arc<Self>) {
+        if self.child || self.is_remote() {
+            return;
+        }
+        let work = std::mem::take(&mut *self.stored_work.lock().unwrap());
+        for notice in work.notices {
+            self.queue_entry(notice, Priority::Next);
+        }
+    }
+
+    /// The worktree the session worked in, when the session is loaded
+    /// again: it works there again, or in its own folder when the
+    /// worktree's folder is gone, which it writes down and announces.
+    fn restore_worktree(&self) {
+        let stored = {
+            let manager = self.manager.lock().unwrap();
+            crate::stored_state::latest(&manager, crate::stored_state::WORKTREE_ENTRY)
+                .and_then(|data| data.get("worktree").cloned())
+                .and_then(|worktree| {
+                    serde_json::from_value::<crate::worktree::EnteredWorktree>(worktree).ok()
+                })
+        };
+        let Some(entered) = stored else {
+            return;
+        };
+        if entered.worktree.path.is_dir() {
+            *self.worktree.lock().unwrap() = Some(entered);
+            self.moved();
+            return;
+        }
+        let missing = entered.worktree.path;
+        self.record_worktree(None, Some(&missing));
+        (self.sink)(SessionEvent::WorktreeChanged {
+            folder: self.working_folder(),
+            worktree: None,
+            missing: Some(missing),
+        });
+    }
+
+    /// Say that the session's host is ending it: what its background work
+    /// leaves unfinished from now on was cut off, and is announced when
+    /// the session is loaded again, not recorded as stopped.
+    pub fn set_closing(&self) {
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the session's host is ending it.
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// This session's base tools as they work in its folder, for a child it
@@ -1191,13 +1330,16 @@ impl AgentSession {
         }
         // Background work and what it queued belong to the conversation
         // that is left, and so does what it read, a pending wake-up and the
-        // worktree it moved into; the worktree stays on disk.
+        // worktree it moved into; the worktree stays on disk, and the
+        // conversation that is left keeps them written down for when it is
+        // loaded again.
         self.file_state().clear();
         if let Some(shell) = &self.tool_session().shell {
             shell.reset();
         }
         self.wakeups().reset();
-        self.leave_worktree();
+        self.forget_worktree();
+        *self.stored_work.lock().unwrap() = StoredWork::default();
         self.background_tasks().reset();
         self.remote_tasks.lock().unwrap().clear();
         for queue in [&self.steering, &self.follow_up] {
@@ -1216,9 +1358,14 @@ impl AgentSession {
         *self.manager.lock().unwrap() = manager;
         *self.context_usage_cache.lock().unwrap() = None;
         *self.totals.lock().unwrap() = totals;
-        // The conversation it moved to may have agents of its own.
+        // The conversation it moved to may have agents of its own, and the
+        // state it was left in.
         if let Some(agents) = self.agents.get() {
             agents.restore();
+        }
+        self.restore_stored_state();
+        if let Some(this) = self.weak_self.upgrade() {
+            this.resume_stored_work();
         }
     }
 
@@ -2921,9 +3068,16 @@ impl AgentSession {
                 if persist {
                     // User prompts were persisted in prompt(). Avoid double
                     // writes by checking the current leaf message identity.
+                    // The session's own state entries may have come in
+                    // between ([`crate::stored_state`]).
                     let mut manager = self.manager.lock().unwrap();
+                    let last = manager
+                        .entries()
+                        .iter()
+                        .rev()
+                        .find(|entry| !crate::stored_state::is_state_entry(entry));
                     let duplicate = matches!(
-                        (manager.entries().last(), message),
+                        (last, message),
                         (Some(crate::session::entry::SessionEntry::Message { message: last, .. }), m) if last == m
                     );
                     if !duplicate {

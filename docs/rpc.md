@@ -83,7 +83,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### State and sessions
 
-- `get_state`: model, thinking level, streaming state, session id/file/name, message count, tool names, queue modes, retry and compaction state.
+- `get_state`: model, thinking level, streaming state, session id/file/name, message count, tool names, queue modes, retry and compaction state, the session's folder (`cwd`) and, while it works in one, its `worktree` (`path`, `branch`, `created`: whether `EnterWorktree` made it, `original`: the folder it goes back to), else `null`.
 - `get_messages`: active conversation after branching/compaction.
 - `get_entries`, optionally `since`: append-only entries after a durable entry-id cursor and current `leafId`.
 - `get_tree`: recursive `{entry, children, label}` nodes and `leafId`.
@@ -326,8 +326,14 @@ its `path`), `original` (the folder the session goes back to) and
 call's `details` carry `action`, `left` (whether the session left a
 worktree) and `worktree`, and `removed` for a removed one. While a session
 works in a worktree, its tools, the agents it starts and the working
-directory in its system prompt use the worktree. The worktree is not
-stored: a session loaded again works in its own folder.
+directory in its system prompt use the worktree. Each move is the event
+`worktree_changed`, with `folder` (the folder the session works in now) and
+`worktree` (as in `get_state`, or `null`). The worktree is stored in the
+session (a `custom` entry with `customType: "session_worktree"`): a session
+loaded again works in it again while its folder exists. When the folder is
+gone, the session works in its own folder, stores that, and says so once:
+`worktree_changed` then also carries `missing`, the worktree's folder, and
+the stored entry has `missing` too, which the terminal shows as a line.
 
 A session that ends in a worktree it made asks its clients whether to keep
 or remove it, with an `approval_request` of kind `worktree` (above). Answer

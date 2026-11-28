@@ -50,6 +50,34 @@ pub fn workflows_dir(session_file: &Path) -> PathBuf {
 /// the child is for, and who started it.
 pub const SUBAGENT_ENTRY: &str = "subagent";
 
+/// `entries` without the session's own state ([`crate::stored_state`]), for
+/// a fork: an entry whose parent was left out hangs from that parent's
+/// parent instead, and so does the leaf.
+fn without_state_entries(
+    entries: Vec<SessionEntry>,
+    leaf: Option<String>,
+) -> (Vec<SessionEntry>, Option<String>) {
+    let mut replaced: HashMap<String, Option<String>> = HashMap::new();
+    let resolve = |replaced: &HashMap<String, Option<String>>, mut id: Option<String>| {
+        while let Some(parent) = id.as_ref().and_then(|id| replaced.get(id)) {
+            id = parent.clone();
+        }
+        id
+    };
+    let mut kept = Vec::with_capacity(entries.len());
+    for mut entry in entries {
+        let parent = resolve(&replaced, entry.parent_id().map(str::to_string));
+        if crate::stored_state::is_state_entry(&entry) {
+            replaced.insert(entry.id().to_string(), parent);
+            continue;
+        }
+        entry.base_mut().parent_id = parent;
+        kept.push(entry);
+    }
+    let leaf = resolve(&replaced, leaf);
+    (kept, leaf)
+}
+
 pub fn default_session_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -262,10 +290,11 @@ impl SessionManager {
         let origin = Self::open(source)?;
         let mut manager = Self::create(cwd, session_dir)?;
         manager.header.parent_session = Some(source.display().to_string());
-        for entry in &origin.entries {
-            manager.insert_entry(entry.clone());
+        let (entries, leaf) = without_state_entries(origin.entries.clone(), origin.leaf_id.clone());
+        for entry in entries {
+            manager.insert_entry(entry);
         }
-        manager.leaf_id = origin.leaf_id.clone();
+        manager.leaf_id = leaf;
         manager.rewrite_file()?;
         Ok(manager)
     }
@@ -292,11 +321,13 @@ impl SessionManager {
         manager.entries.clear();
         manager.index.clear();
         manager.leaf_id = None;
+        let leaf = branch.last().map(|entry| entry.id().to_string());
+        let branch: Vec<SessionEntry> = branch.into_iter().cloned().collect();
+        let (branch, leaf) = without_state_entries(branch, leaf);
         for entry in branch {
-            let entry = entry.clone();
-            manager.leaf_id = Some(entry.id().to_string());
             manager.insert_entry(entry);
         }
+        manager.leaf_id = leaf;
         manager.rewrite_file()?;
         Ok(manager)
     }

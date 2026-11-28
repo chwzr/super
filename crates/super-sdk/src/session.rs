@@ -589,6 +589,10 @@ impl Session {
     ) -> Arc<Session> {
         let session = Self::build(inner, cwd, events, catalog, false);
         session.install_turn_starter();
+        // What the session stored starts now that its turns run here: a
+        // wake-up that is due, its self-paced loop, the notices of workflow
+        // runs that were cut off.
+        session.inner.resume_stored_work();
         session
     }
 
@@ -1163,6 +1167,8 @@ impl Session {
     /// turn and every background task stop.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        // What the stop leaves unfinished was cut off by the session's end.
+        self.inner.set_closing();
         self.interrupt(true);
     }
 
@@ -1406,7 +1412,14 @@ impl Session {
             Command::GetState {} => {
                 let state = self.state();
                 let settings = self.inner.settings();
+                let cwd = self.inner.manager.lock().unwrap().cwd().to_path_buf();
                 Ok(Some(json!({
+                    "cwd": cwd,
+                    "worktree": self
+                        .inner
+                        .worktree()
+                        .as_ref()
+                        .map(crate::events::worktree_json),
                     "model": state.model,
                     "thinkingLevel": state.thinking_level,
                     "isStreaming": state.is_streaming,

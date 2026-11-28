@@ -391,7 +391,19 @@ folder it works in, and a host can move a session itself with
 `enter_worktree` and `leave_worktree`. `ExitWorktree` goes back, keeping or
 removing the worktree (`super_coding::tools::worktree::exit_worktree`). A
 new conversation (`replace_manager`) starts in the session folder again; the
-worktree stays on disk.
+worktree stays on disk. Each move emits `SessionEvent::WorktreeChanged`.
+
+What a session keeps besides its conversation is stored in its file as
+`custom` entries (`super_coding::stored_state`: `session_worktree`,
+`session_wakeup`, `workflow_run`; the last entry of a type is the state, and
+a fork copies none of them). `AgentSession` brings them back when it is built
+from a stored session and in `replace_manager`: the worktree (or, when its
+folder is gone, its own folder, with `WorktreeChanged { missing }` and a
+stored line). What starts turns waits for
+`AgentSession::resume_stored_work()`, which `Session::create` and
+`Session::attach` call once the session's turn starter is installed; an
+embedder that drives an `AgentSession` without the SDK calls it when it is
+ready.
 
 A session that ends in a worktree it made asks whether to keep or remove it:
 `Session::settle_worktree(wait)` opens the question

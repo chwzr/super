@@ -204,6 +204,33 @@ pub fn session_event_json(event: &SessionEvent) -> Option<Value> {
         SessionEvent::TaskStarted(task) => json!({"type": "task_started", "task": task}),
         SessionEvent::TaskUpdated(task) => json!({"type": "task_updated", "task": task}),
         SessionEvent::TaskEnded(task) => json!({"type": "task_ended", "task": task}),
+        SessionEvent::WorktreeChanged {
+            folder,
+            worktree,
+            missing,
+        } => {
+            let mut event = json!({
+                "type": "worktree_changed",
+                "folder": folder,
+                "worktree": worktree.as_ref().map(worktree_json),
+            });
+            if let Some(missing) = missing {
+                event["missing"] = json!(missing);
+            }
+            event
+        }
+    })
+}
+
+/// A worktree a session works in, as `get_state` and `worktree_changed`
+/// report it: its folder, its branch, whether `EnterWorktree` made it, and
+/// the folder the session goes back to.
+pub fn worktree_json(entered: &super_coding::EnteredWorktree) -> Value {
+    json!({
+        "path": entered.worktree.path,
+        "branch": entered.worktree.branch,
+        "created": entered.created,
+        "original": entered.original,
     })
 }
 

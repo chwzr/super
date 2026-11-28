@@ -211,6 +211,32 @@ pub(crate) fn background_line(message: &super_agent::AgentMessage) -> Option<Str
         .map(|(task, event)| event_line(&task, &event))
 }
 
+/// The transcript line for an entry of the session's own state
+/// ([`super_coding::stored_state`]): a worktree whose folder was gone when
+/// the session was loaded again, so that it works in `folder`, its own
+/// folder; `None` for any other entry.
+pub(crate) fn state_line(
+    entry: &super_coding::SessionEntry,
+    folder: &std::path::Path,
+) -> Option<String> {
+    let super_coding::SessionEntry::Custom {
+        custom_type,
+        data: Some(data),
+        ..
+    } = entry
+    else {
+        return None;
+    };
+    if custom_type != super_coding::stored_state::WORKTREE_ENTRY {
+        return None;
+    }
+    let missing = data.get("missing")?.as_str()?;
+    Some(format!(
+        "worktree {missing} is gone · the session works in {}",
+        folder.display()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +355,40 @@ mod tests {
             background_line(&summarized).unwrap(),
             "message from a1234abcd · progress"
         );
+    }
+
+    #[test]
+    fn a_worktree_gone_at_load_has_a_transcript_line_and_other_state_has_none() {
+        let entry =
+            |custom_type: &str, data: serde_json::Value| super_coding::SessionEntry::Custom {
+                base: super_coding::session::entry::EntryBase {
+                    id: "e1".into(),
+                    parent_id: None,
+                    timestamp: "t".into(),
+                },
+                custom_type: custom_type.into(),
+                data: Some(data),
+                extra: Default::default(),
+            };
+        let folder = std::path::Path::new("/work/project");
+        let gone = entry(
+            super_coding::stored_state::WORKTREE_ENTRY,
+            serde_json::json!({"worktree": null, "missing": "/work/project/.super/worktrees/feature"}),
+        );
+        assert_eq!(
+            state_line(&gone, folder).unwrap(),
+            "worktree /work/project/.super/worktrees/feature is gone · the session works in /work/project"
+        );
+        let left = entry(
+            super_coding::stored_state::WORKTREE_ENTRY,
+            serde_json::json!({"worktree": null}),
+        );
+        assert_eq!(state_line(&left, folder), None);
+        let wakeup = entry(
+            super_coding::stored_state::WAKEUP_ENTRY,
+            serde_json::json!({"wakeup": null, "loop": null}),
+        );
+        assert_eq!(state_line(&wakeup, folder), None);
     }
 
     #[test]

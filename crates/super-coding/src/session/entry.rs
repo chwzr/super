@@ -168,6 +168,21 @@ impl SessionEntry {
         }
     }
 
+    pub fn base_mut(&mut self) -> &mut EntryBase {
+        match self {
+            SessionEntry::Message { base, .. }
+            | SessionEntry::ModelChange { base, .. }
+            | SessionEntry::ThinkingLevelChange { base, .. }
+            | SessionEntry::Usage { base, .. }
+            | SessionEntry::Compaction { base, .. }
+            | SessionEntry::BranchSummary { base, .. }
+            | SessionEntry::Custom { base, .. }
+            | SessionEntry::CustomMessage { base, .. }
+            | SessionEntry::Label { base, .. }
+            | SessionEntry::SessionInfo { base, .. } => base,
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.base().id
     }

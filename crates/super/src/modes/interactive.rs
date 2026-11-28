@@ -1146,8 +1146,8 @@ fn read_git_branch(cwd: &Path) -> Option<String> {
 }
 
 fn refresh_git_branch(app: &mut App, session: &Arc<super_coding::AgentSession>) {
-    let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
-    app.git_branch = read_git_branch(&cwd);
+    // In a worktree the footer shows the worktree's branch.
+    app.git_branch = read_git_branch(&session.working_folder());
 }
 
 fn mermaid_mode(setting: MermaidRendering) -> MermaidMode {
@@ -2330,6 +2330,9 @@ fn handle_session_event(
         SessionEvent::TaskStarted(_)
         | SessionEvent::TaskUpdated(_)
         | SessionEvent::TaskEnded(_) => {}
+        // A worktree that was gone at load is a line of the transcript,
+        // drawn from the session's entries.
+        SessionEvent::WorktreeChanged { .. } => refresh_git_branch(app, session),
         SessionEvent::AccountSwitched(switch) => {
             app.cells.push(Cell::Notice(format!(
                 "{}: {} hit its rate limit (ready again in {}); switched to account {}/{} ({})",
@@ -7791,6 +7794,9 @@ fn session_cells(session: &Arc<super_coding::AgentSession>) -> Vec<Cell> {
     let manager = session.manager.lock().unwrap();
     let mut cells = Vec::new();
     for entry in manager.branch_entries(None) {
+        if let Some(line) = task_ui::state_line(entry, manager.cwd()) {
+            cells.push(Cell::Notice(line));
+        }
         if let super_coding::SessionEntry::Message { message, .. } = entry {
             match message {
                 AgentMessage::User(user) => {

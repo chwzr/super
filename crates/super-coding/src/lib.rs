@@ -28,6 +28,9 @@ mod shell_tasks_tests;
 #[cfg(test)]
 mod skill_workflow_tests;
 pub mod skills;
+pub mod stored_state;
+#[cfg(test)]
+mod stored_state_tests;
 pub mod system_prompt;
 pub mod tasks;
 #[cfg(test)]
