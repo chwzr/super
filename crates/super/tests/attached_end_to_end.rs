@@ -517,3 +517,68 @@ async fn a_lost_daemon_is_reported_reconnected_and_finally_handed_back() {
     assert_eq!(local.session_id(), terminal.remote.session_id());
     assert_eq!(local.build_session_context().messages.len(), 4);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mode_and_the_agent_switches_of_an_attached_terminal_reach_the_daemons_session() {
+    let sandbox = Sandbox::new();
+    let provider = MockProvider::start(sandbox.path("mock"), script())
+        .await
+        .expect("mock provider");
+    let mut daemon = sandbox.start_daemon(&provider).await;
+    let first = terminal(&sandbox, &provider, "Terminal A", None).await;
+    let session_id = first.remote.session_id();
+    // Another client reads the daemon's copy of the session.
+    let reader = DaemonClient::connect_to(&sandbox.socket(), &info("Reader"))
+        .await
+        .expect("connect");
+    reader.attach(&session_id).await.expect("attach");
+    let state = || async {
+        reader
+            .execute_ok(super_sdk::Command::GetState {})
+            .await
+            .expect("get_state")
+            .expect("state")
+    };
+    let before = state().await;
+    assert_eq!(before["mode"], "advanced");
+    assert_eq!(before["subagents"], true, "the sandbox's settings");
+    let tools = |state: &serde_json::Value| -> Vec<String> {
+        serde_json::from_value(state["tools"].clone()).unwrap()
+    };
+    assert!(tools(&before).contains(&"Agent".to_string()));
+
+    // `/settings` saves the file and updates the session it shows.
+    let mut settings = first.view.settings();
+    settings.mode = super_coding::settings::Mode::Basic;
+    first.view.update_settings(settings.clone());
+    // The settings come first and the tools right after them.
+    let mut after = state().await;
+    for _ in 0..200 {
+        if after["mode"] == "basic" && tools(&after).len() == 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        after = state().await;
+    }
+    assert_eq!(after["mode"], "basic");
+    assert_eq!(tools(&after), ["Read", "Write", "Edit", "Bash"]);
+
+    settings.mode = super_coding::settings::Mode::Advanced;
+    settings.subagents.enabled = false;
+    first.view.update_settings(settings);
+    let mut after = state().await;
+    for _ in 0..200 {
+        if after["mode"] == "advanced"
+            && after["subagents"] == false
+            && tools(&after).contains(&"Monitor".to_string())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        after = state().await;
+    }
+    assert_eq!(after["subagents"], false);
+    assert!(!tools(&after).contains(&"Agent".to_string()));
+    assert!(tools(&after).contains(&"Monitor".to_string()));
+    daemon.kill().await.ok();
+}

@@ -148,6 +148,19 @@ pub enum Command {
     SetAutoRetry {
         enabled: bool,
     },
+    /// Set the session's `mode` (`basic` or `advanced`) and its Subagents
+    /// and Dynamic workflows switches, each only when given, for this
+    /// session from now on; answers with all three. With none given it only
+    /// reads them. The user's settings file is not changed.
+    #[serde(rename_all = "camelCase")]
+    SetMode {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagents: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workflows: Option<bool>,
+    },
 
     // --- direct shell ---
     #[serde(rename_all = "camelCase")]
@@ -257,6 +270,7 @@ impl Command {
             Command::Compact { .. } => "compact",
             Command::SetAutoCompaction { .. } => "set_auto_compaction",
             Command::SetAutoRetry { .. } => "set_auto_retry",
+            Command::SetMode { .. } => "set_mode",
             Command::Bash { .. } => "bash",
             Command::AbortBash {} => "abort_bash",
             Command::GetTools {} => "get_tools",

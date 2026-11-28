@@ -83,7 +83,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### State and sessions
 
-- `get_state`: model, thinking level, streaming state, session id/file/name, message count, tool names, queue modes, retry and compaction state, the session's folder (`cwd`) and, while it works in one, its `worktree` (`path`, `branch`, `created`: whether `EnterWorktree` made it, `original`: the folder it goes back to), else `null`.
+- `get_state`: model, thinking level, streaming state, session id/file/name, message count, tool names, queue modes, retry and compaction state, `mode` (`basic` or `advanced`) with the `subagents` and `workflows` switches, the session's folder (`cwd`) and, while it works in one, its `worktree` (`path`, `branch`, `created`: whether `EnterWorktree` made it, `original`: the folder it goes back to), else `null`.
 - `get_messages`: active conversation after branching/compaction.
 - `get_entries`, optionally `since`: append-only entries after a durable entry-id cursor and current `leafId`.
 - `get_tree`: recursive `{entry, children, label}` nodes and `leafId`.
@@ -108,6 +108,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 - `set_steering_mode` / `set_follow_up_mode` with `mode` `all` or `one-at-a-time`.
 - `compact`, optional `customInstructions`.
 - `set_auto_compaction` / `set_auto_retry` with boolean `enabled`.
+- `set_mode` with optional `mode` (`basic` or `advanced`), `subagents` and `workflows` (booleans, the Subagents and Dynamic workflows switches): sets those given for this session from now on, builds its system prompt again when the mode changed, and answers with all three (`data.mode`, `data.subagents`, `data.workflows`); with none given it only reads them. The user's settings file is not changed. A mode it does not know is refused: `mode 'expert' is not basic or advanced.` Turning Subagents off, or the mode to `basic`, stops the session's agents and workflow runs, as `/settings` does.
 
 ### Tools and shell
 

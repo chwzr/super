@@ -51,9 +51,9 @@ pub use notifications::{Priority, agent_message, monitor_event, task_notificatio
 pub use session::entry::{SessionEntry, SessionHeader};
 pub use session::manager::{SessionListing, SessionManager, default_session_dir};
 pub use session_runner::{
-    AgentSession, EphemeralResponse, PromptMode, REMOTE_SESSION_REFUSAL, SessionBackend,
-    SessionEvent, SessionEventSink, ToolSelection, TreeNavigationOutcome, TurnStarter,
-    WorkflowTurnStatus,
+    AgentSession, EphemeralResponse, PromptBuilder, PromptMode, REMOTE_SESSION_REFUSAL,
+    SessionBackend, SessionEvent, SessionEventSink, ToolSelection, TreeNavigationOutcome,
+    TurnStarter, WorkflowTurnStatus,
 };
 pub use settings::Settings;
 pub use tasks::{

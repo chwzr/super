@@ -544,3 +544,68 @@ async fn a_prompt_from_another_surface_is_announced_before_its_run() {
         super_sdk::SessionNotice::Applied { origin, success: true, .. } if origin == "iPhone"
     )));
 }
+
+#[tokio::test]
+async fn set_mode_changes_the_sessions_mode_and_switches_and_builds_its_prompt_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_provider, session) = session_with(directory.path(), MockScript::text("hi")).await;
+    let state = session.execute(Command::GetState {}).await.data.unwrap();
+    assert_eq!(state["mode"], "advanced");
+    let advanced = super_agent::placeholder::prompt_todo("SystemPrompt.advanced");
+    assert!(session.agent_session().system_prompt().contains(&advanced));
+
+    let response = session
+        .execute(Command::SetMode {
+            mode: Some("basic".into()),
+            subagents: Some(true),
+            workflows: None,
+        })
+        .await;
+    assert!(response.success, "{:?}", response.error);
+    let answer = response.data.unwrap();
+    assert_eq!(answer["mode"], "basic");
+    assert_eq!(answer["subagents"], true);
+    let state = session.execute(Command::GetState {}).await.data.unwrap();
+    assert_eq!(state["mode"], "basic");
+    assert_eq!(state["subagents"], true);
+    assert_eq!(state["workflows"], answer["workflows"]);
+    assert_eq!(
+        state["tools"],
+        serde_json::json!(["Read", "Write", "Edit", "Bash"])
+    );
+    assert!(!session.agent_session().system_prompt().contains(&advanced));
+
+    // With nothing given it only reads; a mode it does not know is refused.
+    let read = session
+        .execute(Command::SetMode {
+            mode: None,
+            subagents: None,
+            workflows: None,
+        })
+        .await
+        .data
+        .unwrap();
+    assert_eq!(read, answer);
+    let refused = session
+        .execute(Command::SetMode {
+            mode: Some("expert".into()),
+            subagents: None,
+            workflows: None,
+        })
+        .await;
+    assert!(!refused.success);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("mode 'expert' is not basic or advanced.")
+    );
+
+    session
+        .execute(Command::SetMode {
+            mode: Some("advanced".into()),
+            subagents: None,
+            workflows: Some(false),
+        })
+        .await;
+    assert!(session.agent_session().system_prompt().contains(&advanced));
+    assert!(!session.agent_session().settings().workflows.enabled);
+}

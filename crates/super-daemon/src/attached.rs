@@ -994,6 +994,20 @@ impl SessionBackend for RemoteSession {
             task_id: task_id.to_string(),
         });
     }
+
+    fn set_mode(&self, mode: super_coding::settings::Mode, subagents: bool, workflows: bool) {
+        self.send(Command::SetMode {
+            mode: Some(
+                match mode {
+                    super_coding::settings::Mode::Basic => "basic",
+                    super_coding::settings::Mode::Advanced => "advanced",
+                }
+                .to_string(),
+            ),
+            subagents: Some(subagents),
+            workflows: Some(workflows),
+        });
+    }
 }
 
 /// The `prompt` command for one message. A workflow turn the daemon cannot

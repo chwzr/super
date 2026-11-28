@@ -67,6 +67,7 @@ pub(super) fn typed(command: &Command) -> Typed {
         Command::SetFollowUpMode { .. } => Typed::Setting("follow-up mode"),
         Command::SetAutoCompaction { .. } => Typed::Setting("auto-compaction"),
         Command::SetAutoRetry { .. } => Typed::Setting("auto-retry"),
+        Command::SetMode { .. } => Typed::Setting("mode"),
         Command::GetState {}
         | Command::GetMessages {}
         | Command::GetEntries { .. }

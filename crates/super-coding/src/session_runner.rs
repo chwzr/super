@@ -142,7 +142,15 @@ pub trait SessionBackend: Send + Sync {
     fn is_running(&self) -> bool;
     /// Stop one background task there, by id or by name.
     fn stop_task(&self, task_id: &str);
+    /// Set the session's mode and its Subagents and Dynamic workflows
+    /// switches there, as [`AgentSession::update_settings`] changed them
+    /// here.
+    fn set_mode(&self, _mode: Mode, _subagents: bool, _workflows: bool) {}
 }
+
+/// Builds the system prompt of a session for a mode, as its host built it
+/// at the start: [`AgentSession::set_prompt_builder`].
+pub type PromptBuilder = Arc<dyn Fn(Mode) -> String + Send + Sync>;
 
 /// Why an operation that only works on a session this process runs refused.
 pub const REMOTE_SESSION_REFUSAL: &str =
@@ -475,6 +483,9 @@ pub struct AgentSession {
     stored_work: Mutex<StoredWork>,
     /// The session's host is ending it; see [`AgentSession::set_closing`].
     closing: std::sync::atomic::AtomicBool,
+    /// How the host builds the system prompt for a mode; see
+    /// [`AgentSession::set_prompt_builder`].
+    prompt_builder: Mutex<Option<PromptBuilder>>,
 }
 
 /// What [`AgentSession::resume_stored_work`] starts.
@@ -619,6 +630,7 @@ impl AgentSession {
             weak_self: weak_self.clone(),
             stored_work: Mutex::new(StoredWork::default()),
             closing: std::sync::atomic::AtomicBool::new(false),
+            prompt_builder: Mutex::new(None),
             manager: Mutex::new(manager),
             registry: RwLock::new(registry),
             base_tools: Mutex::new(tools.clone()),
@@ -845,12 +857,37 @@ impl AgentSession {
         self.settings.lock().unwrap().mode
     }
 
+    /// Replace the session's settings. A change of the mode builds the
+    /// system prompt again when the host installed a
+    /// [`AgentSession::set_prompt_builder`]; a session whose engine runs
+    /// elsewhere passes a change of the mode or of the Subagents and Dynamic
+    /// workflows switches on to it.
     pub fn update_settings(&self, settings: Settings) {
         *self.context_usage_cache.lock().unwrap() = None;
         let was_enabled = self.subagents_enabled();
         let workflows_were_enabled = self.workflows_enabled();
         let cache_warming = settings.cache_warming;
+        let switches = |settings: &Settings| {
+            (
+                settings.mode,
+                settings.subagents.enabled,
+                settings.workflows.enabled,
+            )
+        };
+        let before = switches(&self.settings.lock().unwrap());
+        let after = switches(&settings);
         *self.settings.lock().unwrap() = settings;
+        if before != after
+            && let Some(backend) = self.backend()
+        {
+            backend.set_mode(after.0, after.1, after.2);
+        }
+        if before.0 != after.0 {
+            let builder = self.prompt_builder.lock().unwrap().clone();
+            if let Some(builder) = builder {
+                self.set_system_prompt(builder(after.0));
+            }
+        }
         if cache_warming == CacheWarmingMode::Off
             || (cache_warming == CacheWarmingMode::Streaming && !self.is_running())
         {
@@ -876,6 +913,14 @@ impl AgentSession {
     pub fn set_system_prompt(&self, system_prompt: String) {
         *self.context_usage_cache.lock().unwrap() = None;
         *self.system_prompt.lock().unwrap() = system_prompt;
+    }
+
+    /// Install how the host builds this session's system prompt for a mode,
+    /// so that [`AgentSession::update_settings`] builds it again when the
+    /// mode changes, whoever changed it (the `set_mode` command of a client,
+    /// a terminal attached to the daemon). The SDK installs one.
+    pub fn set_prompt_builder(&self, builder: Option<PromptBuilder>) {
+        *self.prompt_builder.lock().unwrap() = builder;
     }
 
     /// Replace resources used by the next model request.

@@ -226,6 +226,26 @@ impl SessionOptions {
             skills: &skills,
         };
         let system_prompt = build_system_prompt(&prompt_options);
+        // The same prompt for another mode, when a client changes it.
+        let prompt_builder: super_coding::PromptBuilder = {
+            let custom = custom.clone();
+            let append = append.clone();
+            let tool_names = tool_names.clone();
+            let cwd = cwd.display().to_string();
+            let context = context.clone();
+            let skills = skills.clone();
+            std::sync::Arc::new(move |mode| {
+                build_system_prompt(&SystemPromptOptions {
+                    mode,
+                    custom_prompt: custom.as_deref(),
+                    append: append.as_deref(),
+                    selected_tools: &tool_names,
+                    cwd: &cwd,
+                    context_files: &context,
+                    skills: &skills,
+                })
+            })
+        };
         // Agents run in the advanced mode, which lists the skills for the
         // `Skill` tool on each request: their context has no list of its own.
         let agent_resources = super_coding::agents::AgentResources {
@@ -286,6 +306,7 @@ impl SessionOptions {
         session.set_agent_resources(agent_resources);
         session.set_tool_selection(tool_selection);
         session.set_stream_fn(self.stream_fn.clone());
+        session.set_prompt_builder(Some(prompt_builder));
 
         Ok(BuiltSession {
             session,

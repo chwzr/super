@@ -42,7 +42,12 @@ async fn main() -> anyhow::Result<()> {
 level, tool allow/exclude lists, custom Rust tools, prompts, project trust,
 event capacity, and session persistence. The `mode` of the settings it loads,
 or of `SessionOptions::settings`, picks the tools and the body of the system
-prompt: `advanced` (the default) or `basic`, as in the terminal. SDK sessions are in-memory by default;
+prompt: `advanced` (the default) or `basic`, as in the terminal. The command
+`set_mode` changes the mode and the two switches of a running session;
+`AgentSession::update_settings` builds the system prompt again for a new mode
+with the `PromptBuilder` the SDK installs (`AgentSession::set_prompt_builder`),
+and a session whose engine runs elsewhere passes the change on
+(`SessionBackend::set_mode`). SDK sessions are in-memory by default;
 choose `SessionSource::Create` to persist one. Rust callers can restore caller-owned
 history without creating a file through `SessionBuilder::restore_entries` or
 `SessionSource::InMemoryEntries`.

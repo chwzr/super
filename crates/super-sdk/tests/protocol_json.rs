@@ -99,6 +99,14 @@ fn every_command_serializes_with_a_snake_case_type() {
             "bash",
         ),
         (Command::AbortBash {}, "abort_bash"),
+        (
+            Command::SetMode {
+                mode: Some("basic".into()),
+                subagents: Some(true),
+                workflows: None,
+            },
+            "set_mode",
+        ),
         (Command::GetTools {}, "get_tools"),
         (Command::GetTasks {}, "get_tasks"),
         (
@@ -146,7 +154,7 @@ fn every_command_serializes_with_a_snake_case_type() {
         ),
     ];
 
-    assert_eq!(cases.len(), 37, "keep this list exhaustive");
+    assert_eq!(cases.len(), 38, "keep this list exhaustive");
     for (command, expected) in cases {
         assert_eq!(command.name(), expected);
         let value = serde_json::to_value(&command).unwrap();

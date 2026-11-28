@@ -186,6 +186,12 @@
   A stored agent's session does the same when it is loaded. The results of
   `Read`, `Edit` and `Write` carry the read in `details.fileRead`. Rust SDK:
   `FileRead::to_json` and `from_json`, `super_coding::stored_state::rebuild_reads`.
+- Changing `Mode`, `Subagents` or `Dynamic workflows` in `/settings` of a
+  terminal attached to the daemon applies to the daemon's session at once.
+  RPC: `get_state` reports `mode`, `subagents` and `workflows`, and the new
+  command `set_mode` reads and sets them for a session. Rust SDK:
+  `AgentSession::set_prompt_builder`, `PromptBuilder` and
+  `SessionBackend::set_mode`.
 - A workflow run's journal is written call by call as the run goes
   (`<run id>.journal.jsonl`), so a run cut off by the end of its process can
   be resumed with `resumeFromRunId` after a restart. Such a run is announced

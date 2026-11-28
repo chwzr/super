@@ -1432,6 +1432,9 @@ impl Session {
                     "followUpMode": queue_mode_name(settings.follow_up_mode),
                     "autoCompactionEnabled": settings.compaction.enabled,
                     "autoRetryEnabled": settings.retry.enabled,
+                    "mode": settings.mode,
+                    "subagents": settings.subagents.enabled,
+                    "workflows": settings.workflows.enabled,
                 })))
             }
             Command::GetMessages {} => Ok(Some(json!({"messages": self.messages()}))),
@@ -1578,6 +1581,30 @@ impl Session {
                 settings.retry.enabled = enabled;
                 self.inner.update_settings(settings);
                 Ok(None)
+            }
+            Command::SetMode {
+                mode,
+                subagents,
+                workflows,
+            } => {
+                let mut settings = self.inner.settings();
+                if let Some(mode) = mode {
+                    settings.mode = serde_json::from_value(json!(mode)).map_err(|_| {
+                        SdkErrorText(format!("mode '{mode}' is not basic or advanced."))
+                    })?;
+                }
+                if let Some(enabled) = subagents {
+                    settings.subagents.enabled = enabled;
+                }
+                if let Some(enabled) = workflows {
+                    settings.workflows.enabled = enabled;
+                }
+                self.inner.update_settings(settings.clone());
+                Ok(Some(json!({
+                    "mode": settings.mode,
+                    "subagents": settings.subagents.enabled,
+                    "workflows": settings.workflows.enabled,
+                })))
             }
             // `execute_with_id` handles this before entering this match so
             // streamed output can carry the request correlation id.
