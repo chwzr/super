@@ -878,12 +878,31 @@ pub(super) async fn detach(attached: Attached) {
 /// Leave: detach, say where the session went.
 pub(super) async fn finish(attached: Attached) {
     let summary = attached.remote.session();
+    let connected = attached.remote.is_connected() && !attached.lost;
     attached.remote.detach().await;
-    println!(
-        "detached from session {}; it keeps running in the SUPER daemon",
-        short_id(&summary.session_id)
-    );
-    println!("`super` here attaches again");
+    for line in exit_lines(&summary.session_id, connected) {
+        println!("{line}");
+    }
+}
+
+/// What the terminal says about the session when it leaves: that it keeps
+/// running in the daemon, or, with the daemon gone, that nothing runs it
+/// and how to open it again.
+fn exit_lines(session_id: &str, connected: bool) -> Vec<String> {
+    if connected {
+        vec![
+            format!(
+                "detached from session {}; it keeps running in the SUPER daemon",
+                short_id(session_id)
+            ),
+            "`super` here attaches again".to_string(),
+        ]
+    } else {
+        vec![format!(
+            "the SUPER daemon is gone, so session {} does not run; `super -c` resumes it",
+            short_id(session_id)
+        )]
+    }
 }
 
 fn short_id(session_id: &str) -> &str {
@@ -894,6 +913,21 @@ fn short_id(session_id: &str) -> &str {
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn the_exit_line_says_the_session_runs_on_only_while_the_daemon_is_there() {
+        assert_eq!(
+            exit_lines("25ed5436-0000", true),
+            [
+                "detached from session 25ed5436; it keeps running in the SUPER daemon",
+                "`super` here attaches again"
+            ]
+        );
+        assert_eq!(
+            exit_lines("25ed5436-0000", false),
+            ["the SUPER daemon is gone, so session 25ed5436 does not run; `super -c` resumes it"]
+        );
+    }
 
     fn test_session() -> Arc<super_coding::AgentSession> {
         let registry = super_ai::Registry::from_builtin();

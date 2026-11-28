@@ -372,8 +372,10 @@ session again (a restarted daemon loads it from its file) and redraws the
 transcript from the daemon's entries. When no daemon comes back it offers to
 continue in this process: the TUI opens the session file itself, holds its
 lock as an in-process `super` does, and goes on from there. If another
-process holds the file by then, it says so instead. When another client
-stops the session, the next message loads it again.
+process holds the file by then, it says so instead. Quitting without taking
+the session in says that the daemon is gone and that `super -c` resumes the
+session. When another client stops the session, the next message loads it
+again.
 
 With piped input or output `super` uses a line-based front end instead: the
 reply streams as it arrives, every tool call is one line named as the

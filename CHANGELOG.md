@@ -450,6 +450,12 @@
   `session/update` notifications, as in every other mode. It waited for the
   next prompt, whose response then carried the reply to it after the reply to
   the prompt.
+- A terminal attached to the daemon that quits after the daemon is gone says
+  so, "the SUPER daemon is gone, so session <id> does not run; `super -c`
+  resumes it", where it said the session kept running in the daemon.
+- The terminal's last lines when it quits ("session saved: …", "resume with:
+  super -c") start on clean lines: the rest of the last frame below the
+  editor is erased first, where pieces of its footer stayed beside them.
 
 ## 0.0.42 - 2026-11-27
 
