@@ -26,7 +26,7 @@
 //! folder and branch. A resumed agent gets its worktree back first.
 
 use super::types::{AgentType, GENERAL_PURPOSE};
-use crate::child_turn::{self, AgentStatus, ChildTurnOutcome};
+use crate::child_turn::{AgentStatus, ChildRun, ChildTurnOutcome};
 use crate::notifications::{Priority, agent_message};
 use crate::session::manager::SUBAGENT_ENTRY;
 use crate::session_runner::AgentSession;
@@ -339,8 +339,12 @@ pub struct AgentRegistry {
     /// How deep that session is: 0 for the main session.
     depth: usize,
     records: Mutex<Vec<Arc<AgentRecord>>>,
-    /// Held while an agent is checked against the limit and started.
+    /// Held while an agent is checked against the limit and started, while
+    /// a message is delivered, and while a run's end is decided.
     starting: Mutex<()>,
+    /// Called once, in tests, right before the end of a run is decided.
+    #[cfg(test)]
+    pub(crate) before_close: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl AgentRegistry {
@@ -350,6 +354,8 @@ impl AgentRegistry {
             depth,
             records: Mutex::new(Vec::new()),
             starting: Mutex::new(()),
+            #[cfg(test)]
+            before_close: Mutex::new(None),
         })
     }
 
@@ -524,9 +530,7 @@ impl AgentRegistry {
             self.spawn_run(record.clone(), child, handle, prompt);
             return Ok(Started::Background(record.info(Some(&owner))));
         }
-        let outcome =
-            child_turn::run_child_turn(&self.owner, &child, prompt, Some(stop), None).await;
-        self.finish_run(&record, &outcome).await;
+        let outcome = self.run_to_end(&record, &child, prompt, stop, None).await;
         Ok(Started::Finished(
             record.info(self.owner.upgrade().as_deref()),
             outcome,
@@ -661,44 +665,80 @@ impl AgentRegistry {
     ) {
         let registry = self.clone();
         tokio::spawn(async move {
-            let outcome = match prepare_worktree(&record).await {
-                Ok(()) => {
-                    child_turn::run_child_turn(
-                        &registry.owner,
-                        &session,
-                        prompt,
-                        Some(handle.stop_signal()),
-                        None,
-                    )
-                    .await
-                }
-                Err(error) => ChildTurnOutcome {
-                    status: AgentStatus::Failed,
-                    result: None,
-                    error: Some(format!("{error:#}")),
-                    usage: Default::default(),
-                    tool_uses: 0,
-                    duration: Default::default(),
-                },
-            };
-            let kept = registry.finish_run(&record, &outcome).await;
-            let mut ended = task_outcome(&record.name, &outcome);
-            if let Some(worktree) = kept {
-                ended = ended.with_worktree(worktree);
-            }
-            handle.finish(ended);
+            let stop = handle.stop_signal();
+            registry
+                .run_to_end(&record, &session, prompt, stop, Some(handle))
+                .await;
         });
     }
 
-    /// End a run of `record`: remove its worktree when nothing changed in
-    /// it, record the end in its session and tell the owner's observer.
-    /// Returns the worktree when it is kept.
-    async fn finish_run(
+    /// Run the agent of `record` with `prompt` until it is done, and end the
+    /// run: its background task when it has one (`handle`), its worktree
+    /// when nothing changed in it, and the end recorded in its session.
+    ///
+    /// The run is over only when the agent has nothing left to do at the
+    /// moment its end is recorded: its own background tasks have ended,
+    /// their notices are answered, and no message waits for it. A message
+    /// [`send`](Self::send) delivers after the agent's last turn, before the
+    /// end is recorded, is part of the run; one after it resumes the agent.
+    async fn run_to_end(
+        &self,
+        record: &AgentRecord,
+        session: &Arc<AgentSession>,
+        prompt: AgentMessage,
+        stop: CancellationToken,
+        mut handle: Option<TaskHandle>,
+    ) -> ChildTurnOutcome {
+        if let Err(error) = prepare_worktree(record).await {
+            let outcome = ChildTurnOutcome {
+                status: AgentStatus::Failed,
+                result: None,
+                error: Some(format!("{error:#}")),
+                usage: Default::default(),
+                tool_uses: 0,
+                duration: Default::default(),
+            };
+            let _starting = self.starting.lock().unwrap();
+            self.close_run(record, &outcome, None, handle.take());
+            return outcome;
+        }
+        let run = ChildRun::begin(session, Some(stop), None);
+        run.prompt(session, prompt).await;
+        loop {
+            let kept = settle_worktree(record).await;
+            #[cfg(test)]
+            if let Some(hook) = self.before_close.lock().unwrap().take() {
+                hook();
+            }
+            {
+                // `send` decides under this lock whether the agent runs.
+                let _starting = self.starting.lock().unwrap();
+                if run.is_stopped() || session.has_nothing_to_do() {
+                    let outcome = run.end(&self.owner, session);
+                    self.close_run(record, &outcome, kept, handle.take());
+                    return outcome;
+                }
+            }
+            // A message reached the agent after its last turn: the run goes
+            // on until it is answered, in its worktree again if the check
+            // above removed it (if it cannot be made, the agent's tools say
+            // what is wrong).
+            let _ = prepare_worktree(record).await;
+            run.settle(session).await;
+        }
+    }
+
+    /// Record the end of a run of `record` in its state and its session,
+    /// tell the owner's observer, and end its background task with a notice
+    /// that names the worktree `kept`, when one is. Called with the
+    /// `starting` lock held.
+    fn close_run(
         &self,
         record: &AgentRecord,
         outcome: &ChildTurnOutcome,
-    ) -> Option<Worktree> {
-        let kept = settle_worktree(record).await;
+        kept: Option<Worktree>,
+        handle: Option<TaskHandle>,
+    ) {
         record.end_run(outcome);
         record.save_run();
         if let Some(observer) = self
@@ -708,7 +748,13 @@ impl AgentRegistry {
         {
             observer.agent_settled(&record.id);
         }
-        kept
+        if let Some(handle) = handle {
+            let mut ended = task_outcome(&record.name, outcome);
+            if let Some(worktree) = kept {
+                ended = ended.with_worktree(worktree);
+            }
+            handle.finish(ended);
+        }
     }
 }
 

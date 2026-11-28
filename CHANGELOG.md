@@ -185,8 +185,10 @@
   system prompt's section on agents are placeholders until their text is
   written.
 - A child agent's run, and a workflow agent's or a loop's, lasts until the
-  child's own background commands and the turns their notices start are
-  done.
+  child's own background commands and monitors have ended and the turns
+  their notices and events start are done. A message that reaches a child
+  after its last turn, before its end is recorded, belongs to that run, so
+  the parent's notice carries the child's answer to it.
 - An agent type whose definition file lists its `tools` gives its children
   those tools and no other: the tools a session adds itself, such as
   `SendMessage`, `Skill`, `Monitor` and `TaskStop`, come only when the list

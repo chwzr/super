@@ -55,59 +55,121 @@ pub(crate) async fn run_child_turn(
     cancel: Option<CancellationToken>,
     timeout_ms: Option<u64>,
 ) -> ChildTurnOutcome {
-    let stop = CancellationToken::new();
-    let guard = (cancel.is_some() || timeout_ms.is_some()).then(|| {
-        let guard_child = child.clone();
-        let stop = stop.clone();
-        tokio::spawn(async move {
-            match (cancel, timeout_ms) {
-                (Some(cancel), Some(ms)) => {
-                    tokio::select! {
-                        _ = cancel.cancelled() => {}
-                        _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
-                    }
-                }
-                (Some(cancel), None) => cancel.cancelled().await,
-                (None, Some(ms)) => tokio::time::sleep(Duration::from_millis(ms)).await,
-                (None, None) => return,
-            }
-            stop.cancel();
-            guard_child.abort();
-            guard_child.stop_background_tasks();
-        })
-    });
+    let run = ChildRun::begin(child, cancel, timeout_ms);
+    run.prompt(child, prompt).await;
+    run.end(parent, child)
+}
 
-    let started = Instant::now();
-    let usage_before = child.totals();
-    let tool_uses_before = tool_results(child);
-    child.prompt(vec![prompt]).await;
-    if !stop.is_cancelled() {
-        // The notices of the child's own background work start turns of
-        // their own; the run is over when the last of them is.
-        tokio::select! {
-            _ = child.wait_for_background_work() => {}
-            _ = stop.cancelled() => {}
+/// One run of a child, from its prompt until it has nothing left to do:
+/// [`run_child_turn`] in steps, for a caller that decides under a lock of
+/// its own when the run is over (a message may reach the child after its
+/// last turn and before the caller records the end).
+pub(crate) struct ChildRun {
+    /// Fired by the run's cancel token or its time limit.
+    stop: CancellationToken,
+    guard: Option<tokio::task::JoinHandle<()>>,
+    started: Instant,
+    usage_before: Usage,
+    tool_uses_before: u64,
+}
+
+impl ChildRun {
+    /// Start a run of `child`. When `cancel` fires or `timeout_ms` passes,
+    /// the child is told to abort and its own background tasks are stopped.
+    pub(crate) fn begin(
+        child: &Arc<AgentSession>,
+        cancel: Option<CancellationToken>,
+        timeout_ms: Option<u64>,
+    ) -> ChildRun {
+        let stop = CancellationToken::new();
+        let guard = (cancel.is_some() || timeout_ms.is_some()).then(|| {
+            let guard_child = child.clone();
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                match (cancel, timeout_ms) {
+                    (Some(cancel), Some(ms)) => {
+                        tokio::select! {
+                            _ = cancel.cancelled() => {}
+                            _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
+                        }
+                    }
+                    (Some(cancel), None) => cancel.cancelled().await,
+                    (None, Some(ms)) => tokio::time::sleep(Duration::from_millis(ms)).await,
+                    (None, None) => return,
+                }
+                stop.cancel();
+                guard_child.abort();
+                guard_child.stop_background_tasks();
+            })
+        });
+        ChildRun {
+            stop,
+            guard,
+            started: Instant::now(),
+            usage_before: child.totals(),
+            tool_uses_before: tool_results(child),
         }
     }
-    if let Some(guard) = guard {
-        guard.abort();
+
+    /// Give the child `prompt`, then wait until it has nothing left to do.
+    pub(crate) async fn prompt(&self, child: &Arc<AgentSession>, prompt: AgentMessage) {
+        child.prompt(vec![prompt]).await;
+        self.settle(child).await;
     }
-    let usage = usage_delta(child.totals(), usage_before);
-    if let Some(parent) = parent.upgrade() {
-        parent.record_subagent_usage(usage);
+
+    /// Wait until the child has nothing left to do, or the run is stopped.
+    /// The notices of the child's own background work start turns of their
+    /// own; the run is over when the last of them is.
+    pub(crate) async fn settle(&self, child: &AgentSession) {
+        if self.stop.is_cancelled() {
+            return;
+        }
+        tokio::select! {
+            _ = child.wait_for_background_work() => {}
+            _ = self.stop.cancelled() => {}
+        }
     }
-    let (status, result, error) = if stop.is_cancelled() {
-        (AgentStatus::Interrupted, None, Some("interrupted".into()))
-    } else {
-        turn_outcome(child)
-    };
-    ChildTurnOutcome {
-        status,
-        result,
-        error,
-        usage,
-        tool_uses: tool_results(child).saturating_sub(tool_uses_before),
-        duration: started.elapsed(),
+
+    /// Whether the run's cancel token or its time limit stopped it.
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.is_cancelled()
+    }
+
+    /// End the run: account for its cost in the parent and read the
+    /// child's final answer.
+    pub(crate) fn end(
+        mut self,
+        parent: &Weak<AgentSession>,
+        child: &AgentSession,
+    ) -> ChildTurnOutcome {
+        if let Some(guard) = self.guard.take() {
+            guard.abort();
+        }
+        let usage = usage_delta(child.totals(), self.usage_before);
+        if let Some(parent) = parent.upgrade() {
+            parent.record_subagent_usage(usage);
+        }
+        let (status, result, error) = if self.stop.is_cancelled() {
+            (AgentStatus::Interrupted, None, Some("interrupted".into()))
+        } else {
+            turn_outcome(child)
+        };
+        ChildTurnOutcome {
+            status,
+            result,
+            error,
+            usage,
+            tool_uses: tool_results(child).saturating_sub(self.tool_uses_before),
+            duration: self.started.elapsed(),
+        }
+    }
+}
+
+impl Drop for ChildRun {
+    fn drop(&mut self) {
+        if let Some(guard) = self.guard.take() {
+            guard.abort();
+        }
     }
 }
 

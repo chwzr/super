@@ -309,8 +309,10 @@ the advanced mode; see [Mode](#mode).
   them and `SendMessage` resumes one where it left off. A child whose folder
   is gone since, such as a worktree the session worked in and removed, goes
   on in the session's folder.
-- A child's own background commands belong to its run: their notices reach
-  the child, and its report comes when the last of them is done.
+- A child's own background commands and monitors belong to its run: their
+  notices and events reach the child, and so does a message sent to it in
+  the meantime. Its report comes when it has answered the last of them and
+  nothing of its own runs any more.
 - At most 20 children of a session run at once, and children nest three
   levels deep.
 - `Esc` and `Ctrl+C` stop the turn and the child the main agent waits for.

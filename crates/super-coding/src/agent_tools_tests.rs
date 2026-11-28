@@ -1670,3 +1670,257 @@ async fn the_hosts_tool_list_chooses_among_the_tools_a_session_adds() {
             .any(|name| name == "Monitor")
     );
 }
+
+/// The notices queued so far in a quiet session, and the next one.
+async fn next_parent_notice(
+    session: &AgentSession,
+    collected: &Mutex<Vec<AgentMessage>>,
+) -> String {
+    let before = collected
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|message| notice_text(message).is_some())
+        .count();
+    for _ in 0..2_000 {
+        let notices: Vec<String> = queued(session, collected)
+            .iter()
+            .filter_map(notice_text)
+            .collect();
+        if notices.len() > before {
+            return notices[before].clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("no notice came");
+}
+
+fn notices_in(collected: &Mutex<Vec<AgentMessage>>) -> usize {
+    collected
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|message| notice_text(message).is_some())
+        .count()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_background_agent_is_done_only_when_its_own_background_command_is_answered() {
+    let fixture = fixture_with(
+        core_tools,
+        vec![(
+            "child task",
+            vec![
+                Some(tool_call(
+                    "b1",
+                    "Bash",
+                    json!({"command": "sleep 0.4; echo built", "run_in_background": true}),
+                )),
+                Some(text("started the build")),
+                Some(text("the build finished")),
+            ],
+        )],
+    )
+    .quiet();
+    let registry = fixture.registry();
+    registry
+        .start(
+            request("Build", "child task", true),
+            "call_1",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let seen = fixture.seen.clone();
+    eventually("the agent's first turn ends", || {
+        seen.count("child task") == 2
+    })
+    .await;
+    // Its turn ended while its command runs: the agent still runs, and the
+    // parent has heard nothing yet.
+    let collected = Mutex::new(Vec::new());
+    assert_eq!(registry.list()[0].status, TaskStatus::Running);
+    queued(&fixture.session, &collected);
+    assert_eq!(notices_in(&collected), 0);
+
+    let notice = next_parent_notice(&fixture.session, &collected).await;
+    assert!(
+        notice.contains("<result>the build finished</result>"),
+        "{notice}"
+    );
+    // The command's notice reached the agent, not the parent.
+    let child = fixture.seen.of("child task");
+    assert_eq!(child.len(), 3);
+    let last = user_text(child[2].context.messages.last().unwrap()).unwrap();
+    assert!(last.starts_with(&notice_header()), "{last}");
+    assert!(last.contains("(exit code 0)"), "{last}");
+    assert_eq!(registry.list()[0].status, TaskStatus::Completed);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    queued(&fixture.session, &collected);
+    assert_eq!(notices_in(&collected), 1, "one notice for the agent");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_background_agent_is_done_only_when_its_monitor_ended_and_its_events_are_answered() {
+    let fixture = fixture_with(
+        core_tools,
+        vec![(
+            "child task",
+            vec![
+                Some(tool_call(
+                    "m1",
+                    "Monitor",
+                    json!({"description": "watch the build", "timeout_ms": 10000, "command": "echo ready; sleep 0.6"}),
+                )),
+                Some(text("watching")),
+                Some(text("saw ready")),
+                Some(text("all done")),
+            ],
+        )],
+    )
+    .quiet();
+    let registry = fixture.registry();
+    registry
+        .start(
+            request("Watch", "child task", true),
+            "call_1",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let seen = fixture.seen.clone();
+    eventually("the monitor's event is answered", || {
+        seen.count("child task") == 3
+    })
+    .await;
+    let collected = Mutex::new(Vec::new());
+    queued(&fixture.session, &collected);
+    assert_eq!(notices_in(&collected), 0, "the monitor still runs");
+    assert_eq!(registry.list()[0].status, TaskStatus::Running);
+
+    let notice = next_parent_notice(&fixture.session, &collected).await;
+    assert!(notice.contains("<result>all done</result>"), "{notice}");
+    let child = fixture.seen.of("child task");
+    assert_eq!(child.len(), 4);
+    let event = child[2].context.messages.last().unwrap();
+    assert!(
+        user_text(event).unwrap().contains("<event>ready</event>"),
+        "{:?}",
+        user_text(event)
+    );
+    let ended = user_text(child[3].context.messages.last().unwrap()).unwrap();
+    assert!(ended.starts_with(&notice_header()), "{ended}");
+    assert!(ended.contains("watch the build (exit code 0)"), "{ended}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_message_to_an_agent_that_waits_for_its_command_is_answered_in_the_same_run() {
+    let fixture = fixture_with(
+        core_tools,
+        vec![(
+            "child task",
+            vec![
+                Some(tool_call(
+                    "b1",
+                    "Bash",
+                    json!({"command": "sleep 0.5; echo built", "run_in_background": true}),
+                )),
+                Some(text("started the build")),
+                Some(text("halfway")),
+                Some(text("the build finished")),
+            ],
+        )],
+    )
+    .quiet();
+    let registry = fixture.registry();
+    registry
+        .start(
+            request("Build", "child task", true),
+            "call_1",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let seen = fixture.seen.clone();
+    eventually("the agent's first turn ends", || {
+        seen.count("child task") == 2
+    })
+    .await;
+    let id = registry.list()[0].id.clone();
+    let sent = fixture
+        .tool("SendMessage")
+        .execute(
+            "call_2",
+            json!({"to": id, "message": "how far are you?"}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sent.output_text(),
+        format!("Agent {id} runs; the message reaches it at its next step.")
+    );
+    let collected = Mutex::new(Vec::new());
+    let notice = next_parent_notice(&fixture.session, &collected).await;
+    assert!(
+        notice.contains("<result>the build finished</result>"),
+        "{notice}"
+    );
+    let child = fixture.seen.of("child task");
+    assert_eq!(child.len(), 4);
+    assert!(
+        user_text(child[2].context.messages.last().unwrap())
+            .unwrap()
+            .contains("<message>how far are you?</message>")
+    );
+}
+
+#[tokio::test]
+async fn a_message_that_reaches_an_agent_after_its_last_turn_belongs_to_its_run() {
+    let fixture = fixture(vec![(
+        "child task",
+        vec![
+            Some(tool_call("g1", "Gate", json!({}))),
+            Some(text("first answer")),
+            Some(text("the answer to the late message")),
+        ],
+    )])
+    .quiet();
+    let registry = fixture.registry();
+    registry
+        .start(
+            request("Late", "child task", true),
+            "call_1",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let id = registry.list()[0].id.clone();
+    // The message comes after the agent's last turn, while its run's end is
+    // being decided.
+    let weak = Arc::downgrade(&registry);
+    let to = id.clone();
+    *registry.before_close.lock().unwrap() = Some(Box::new(move || {
+        let registry = weak.upgrade().unwrap();
+        assert!(matches!(
+            registry.send(&to, None, "one more thing", "call_2"),
+            Ok(crate::agents::registry::Delivery::Queued(_))
+        ));
+    }));
+    fixture.gate.notify_one();
+    let collected = Mutex::new(Vec::new());
+    let notice = next_parent_notice(&fixture.session, &collected).await;
+    assert!(
+        notice.contains("<result>the answer to the late message</result>"),
+        "{notice}"
+    );
+    assert_eq!(fixture.seen.count("child task"), 3);
+    assert_eq!(registry.list()[0].status, TaskStatus::Completed);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    queued(&fixture.session, &collected);
+    assert_eq!(notices_in(&collected), 1);
+}

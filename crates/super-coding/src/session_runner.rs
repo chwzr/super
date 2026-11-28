@@ -1582,19 +1582,24 @@ impl AgentSession {
         let mut activity = self.activity.subscribe();
         loop {
             activity.borrow_and_update();
-            // In the order work moves through: a task counts as running
-            // until its notice is queued, and a queued entry until the run
-            // that takes it holds the running flag.
-            let idle = !self.background_tasks().has_running()
-                && !self.has_queued_entries()
-                && !*self.running.lock().unwrap();
-            if idle {
+            if self.has_nothing_to_do() {
                 return;
             }
             if activity.changed().await.is_err() {
                 return;
             }
         }
+    }
+
+    /// Whether no run is in flight, no background task runs and no queued
+    /// entry waits, as [`AgentSession::wait_for_background_work`] waits for.
+    pub(crate) fn has_nothing_to_do(&self) -> bool {
+        // In the order work moves through: a task counts as running until
+        // its notice is queued, and a queued entry until the run that takes
+        // it holds the running flag.
+        !self.background_tasks().has_running()
+            && !self.has_queued_entries()
+            && !*self.running.lock().unwrap()
     }
 
     /// Drain both queues back to the caller (Escape restores to editor).
