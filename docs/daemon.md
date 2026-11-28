@@ -40,6 +40,7 @@ older daemon.
 | `~/.super/agent/sessions/` | The session files, shared with the terminal. |
 | `~/.super/agent/machine.json` | `{"machineId": "01J…", "name": "mbp", "platform": "macos"}`: which machine this is, created when the daemon or a signed-in `super` first starts and shared between them. `/remote name <name>` changes the name. When only `host.json`, the file of earlier versions, exists, its id is taken over once and `host.json` is left where it is. |
 | `~/.super/agent/settings.json` | `{"daemon": {"idleUnloadMinutes": 60, "attach": true}}`: minutes an idle, unattached session stays loaded (`0` keeps sessions loaded until stopped); whether `super` in a terminal attaches to the daemon when signed in. `mode` (`advanced` or `basic`, with the `subagents` and `workflows` switches) is read when the daemon creates or loads a session; a session it holds keeps the mode it was loaded with, also when an attached terminal changes it in `/settings`. |
+| `~/.super/agent/agents/`, `.super/agents/` | Agent type definition files, the project's only in a trusted project: read when the daemon creates or loads a session. |
 | `~/.config/systemd/user/super-daemon.service` | Linux: the unit `super install` writes (`$XDG_CONFIG_HOME/systemd/user` when that is set). |
 
 The daemon is started by launchd or systemd with a bare environment, so it

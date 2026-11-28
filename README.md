@@ -261,14 +261,42 @@ to manage jobs.
 
 ### Subagents
 
-Subagents let one task branch into focused child sessions. Open `/settings`
-and set `Subagents` to `on`. SUPER then gives the main agent tools to start,
-guide, wait for, and stop child agents. Subagents need the advanced mode; see
-[Mode](#mode).
+Subagents let one task branch into focused child agents. Open `/settings` and
+set `Subagents` to `on`. SUPER then gives the main agent `Agent`, which starts
+a child agent, `SendMessage`, which writes to one, and `ListAgents`, which
+lists them; `TaskStop` stops one that runs in the background. Subagents need
+the advanced mode; see [Mode](#mode).
 
-Each child uses the same working directory. SUPER allows four active child turns
-and one child level. Project settings cannot enable subagents, and `--no-tools`
-keeps them off.
+- A child runs in the background by default. When it ends, its report
+  reaches the main agent in a notice, which starts a new turn if the main
+  agent is idle. With `run_in_background` set to `false`, the main agent waits
+  for the report instead.
+- `subagent_type` chooses the kind of child: `general-purpose`, the default;
+  `Explore` and `Plan`, which read but do not edit files and start no agents;
+  and `fork`, which starts with a copy of the whole conversation, tool calls
+  and their results included, and runs on the same model and thinking level.
+- More types come from Markdown files in `.super/agents/` of a trusted
+  project and in `~/.super/agent/agents/`. The frontmatter gives `name`,
+  `description`, `model`, `effort` and `tools`, and the text below it is the
+  type's instructions. A project's file wins over yours of the same name, and
+  a file can replace a built-in type except `fork`.
+- `model` takes any model SUPER knows, and `effort` a thinking level that the
+  model accepts; a call with one it does not accept fails and names the
+  levels it does.
+- `SendMessage` reaches a running child at its next step and resumes one that
+  has ended, in the background. A child writes to the agent that started it
+  with `to` set to `main`.
+- A child's own background commands belong to its run: their notices reach
+  the child, and its report comes when the last of them is done.
+- At most 20 children of a session run at once, and children nest three
+  levels deep.
+- `Esc` and `Ctrl+C` stop the turn and the child the main agent waits for.
+  Children in the background keep running; `/tasks` and `TaskStop` stop them.
+- `isolation` is accepted, but neither `worktree` nor `remote` is available
+  yet.
+
+Each child uses the same working directory. Project settings cannot enable
+subagents, and `--no-tools` keeps them off.
 
 ### Dynamic workflows
 
@@ -805,7 +833,9 @@ The release module is 574,734 bytes raw and 209,375 bytes gzip. It starts with
 ### Agent automation
 
 Subagents are off by default. Session setup had no measured slowdown when they
-were enabled. Their six control tools added 71 ns to request preparation.
+were enabled. The six control tools of an earlier version added 71 ns to
+request preparation; the three agent tools that replaced them have not been
+measured yet.
 
 | Measure                    | State or size         |        p95 |
 | -------------------------- | --------------------- | ---------: |

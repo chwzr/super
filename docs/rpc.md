@@ -111,7 +111,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### Tools and shell
 
-- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Monitor` or `TaskStop` tools.
+- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`, and with the Subagents switch on `Agent`, `SendMessage`, `ListAgents` and `TaskStop` are there. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Monitor` or `TaskStop` tools.
 - `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
 
@@ -214,6 +214,20 @@ its events is a `custom` message with `customType: "monitor_event"`, queued
 and delivered the way a notice is. Its `details` carry the `task`, the
 `event` (the lines of the event) and `omittedLines` (lines left out of a
 long event, which are in the task's output file). Show it as a notice too.
+
+A message between agents (`SendMessage`) is a `custom` message with
+`customType: "agent_message"`, queued and delivered the same way. Its
+`details` carry `from` (`main`, or the id of the agent that sent it), `to`,
+`summary` (or `null`) and `message`. The main session gets one when one of
+its agents writes to `main`. Show it as a notice too.
+
+An agent in the background (`kind: "agent"`) is a task with the agent's id;
+its notice's `result` is the agent's report and `outputFile` its stored
+transcript. A message that resumes an agent that had ended starts a new run
+of the same task id. An `Agent` call's `details` carry the `agent` (`id`,
+`name`, `type`, `status`, `background`, `sessionFile`) and, for an agent the
+call waited for, its `usage`; a `SendMessage` call's carry `to` and, for an
+agent, the `agent` and `resumed`.
 
 A `Bash` call with `run_in_background` answers at once; its `details` carry
 `backgroundTaskId` and `outputFile`. A `Bash` call in the foreground has

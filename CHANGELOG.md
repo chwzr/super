@@ -66,8 +66,39 @@
   main session's shell folder and the session's background tasks
   (`super_agent::TaskHost`); `BackgroundTasks::new_id` and
   `super_coding::monitor_event` are new.
+- Subagents, in the advanced mode with the `Subagents` switch on, are
+  started with `Agent`, written to with `SendMessage` and listed with
+  `ListAgents`; `TaskStop` stops one in the background. A child runs in the
+  background by default, and its report reaches the agent in a notice that
+  starts a new turn if it is idle; with `run_in_background` set to `false`
+  the agent waits for the report. `subagent_type` takes `general-purpose`,
+  `Explore`, `Plan` or `fork`, a copy of the whole conversation on the same
+  model, or a type from a Markdown file in `.super/agents/` of a trusted
+  project or in `~/.super/agent/agents/`. `model` takes any model of the
+  catalog and `effort` a thinking level the model accepts. `SendMessage`
+  reaches a running child at its next step, resumes one that has ended, and
+  lets a child write to `main`. At most 20 children of a session run at
+  once, and they nest three levels deep. `Esc` stops the child the agent
+  waits for and leaves the ones in the background running. A message
+  between agents is a `custom` message of type `agent_message`.
+- Rust SDK: `AgentSession::agent_registry`, `agent_types`,
+  `agent_type_list`, `agent_link` and `set_agent_resources`,
+  `super_coding::agents`, `super_coding::agent_message` and
+  `super_coding::system_prompt::prompt_context` are new.
 
 ### Changed
+
+- The six earlier agent tools, `spawn_agent`, `send_message`,
+  `followup_task`, `wait_agent`, `list_agents` and `interrupt_agent`, are
+  gone, and so are their paragraph in the system prompt and the Rust module
+  `super_coding::subagents`. `TaskStop` comes with the agent tools as well
+  as with `Bash`. The descriptions of `Agent`, `SendMessage` and
+  `ListAgents`, the instructions and descriptions of the agent types and the
+  system prompt's section on agents are placeholders until their text is
+  written.
+- A child agent's run, and a workflow agent's or a loop's, lasts until the
+  child's own background commands and the turns their notices start are
+  done.
 
 - The four core tools are named `Read`, `Write`, `Edit` and `Bash`. The
   model sees these names, and `defaultTools`, `--tools`, `--exclude-tools`

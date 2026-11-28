@@ -258,12 +258,41 @@ events go this way, as `super_coding::monitor_event` messages. A tool in
 `ToolSession::tasks` (`super_agent::TaskHost`), as `Bash` does with
 `run_in_background`.
 
+## Agents
+
+In the advanced mode with the Subagents switch on, a session offers `Agent`,
+`SendMessage` and `ListAgents` ([README](../README.md#subagents)). A child
+agent that runs in the background is a background task of kind `agent` whose
+id is the agent's id; its notice's `result` is the agent's report.
+
+In Rust, `AgentSession::agent_registry` returns the session's
+`super_coding::AgentRegistry`, the agents it started, with `list` and `find`
+returning `AgentInfo` (`id`, `name`, `type`, `status`, `background`,
+`sessionFile`) and `session_of` an agent's own `AgentSession`.
+`AgentSession::agent_types` returns the agent types (`super_coding::AgentType`)
+and `AgentSession::agent_type_list` their names and descriptions. An agent's
+session knows who started it from `AgentSession::agent_link`.
+
+An agent's system prompt is its type's instructions followed by the part of
+the session's prompt after its body: the appended text, the project context,
+the skills and the working directory. `SessionOptions` hands a session that
+part and the types of the definition files. An embedder that builds its own
+`AgentSession` does so with
+`AgentSession::set_agent_resources(AgentResources { definitions,
+prompt_context })`, using `super_coding::agents::discover(cwd, trusted)` and
+`super_coding::system_prompt::prompt_context`; without it an agent's prompt
+ends with the working directory only, and only the built-in types exist. A
+message between agents is a `super_coding::agent_message`.
+
+The module `super_coding::subagents` and its six tools are gone.
+
 ## Tools and safety
 
 Defaults are `Read`, `Write`, `Edit`, and `Bash`. Optional built-ins are `grep`,
 `find`, `ls`, and `mcp`. In the advanced mode a session with `Bash` also offers
 `Monitor` and `TaskStop`, which work on its background tasks; leave `Bash` out
-and they are gone too. Set a read-only allowlist for untrusted prompts. Project
+and they are gone too, unless the agent tools are offered, which bring
+`TaskStop`. Set a read-only allowlist for untrusted prompts. Project
 resource loading is off by default in SDK sessions. Explicitly enable
 `trust_project_files` only for a trusted directory.
 
