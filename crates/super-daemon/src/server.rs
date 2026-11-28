@@ -459,6 +459,10 @@ fn dispatch(ctx: &Arc<ServerContext>, client: &Arc<Client>, line: &str) {
                     .with_id(request.id);
                 let _ = client.out.send(encode(&response));
             }
+            Some(_) if let Some(refusal) = refused_in_the_daemon(&request.command) => {
+                let response = Response::err(request.command.name(), refusal).with_id(request.id);
+                let _ = client.out.send(encode(&response));
+            }
             Some(hosted) => {
                 hosted.touch();
                 let sender = super_sdk::CommandSender {
@@ -475,6 +479,24 @@ fn dispatch(ctx: &Arc<ServerContext>, client: &Arc<Client>, line: &str) {
                 });
             }
         },
+    }
+}
+
+/// Why a session command does not go to a session the daemon hosts, or
+/// `None`. `switch_session` and `new_session` would put another file, or
+/// none, under the hosted session's id and lock: the first could open a file
+/// another SUPER process writes, the second keeps nothing it is told. A
+/// client opens another session and starts a new one with the daemon's own
+/// commands instead.
+fn refused_in_the_daemon(command: &super_sdk::protocol::Command) -> Option<&'static str> {
+    match command {
+        super_sdk::protocol::Command::SwitchSession { .. } => Some(
+            "switch_session does not work in a session the SUPER daemon hosts; attach to the other session with resume_session or attach.",
+        ),
+        super_sdk::protocol::Command::NewSession {} => Some(
+            "new_session does not work in a session the SUPER daemon hosts; start a new session with create_session and attach to it.",
+        ),
+        _ => None,
     }
 }
 

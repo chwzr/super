@@ -484,6 +484,11 @@
   as the daemon and the terminal do. A plain RPC session started every run
   without asking, which mattered once `Workflow` was offered with every
   request.
+- The daemon refuses `switch_session` and `new_session` from a client of a
+  hosted session and names its own commands for them (`resume_session`,
+  `attach`, `create_session`). `switch_session` opened a file another SUPER
+  process held, so both appended to it, and the session went on under its
+  old id and lock; after `new_session` its turns were stored nowhere.
 - In ACP the client is asked with `session/request_permission` before a
   workflow run starts while `workflows.confirm` is on ("Run workflow …?",
   with `Run it` and `Cancel`), and the run waits for the answer; it started

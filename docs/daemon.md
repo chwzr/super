@@ -148,7 +148,10 @@ and its clients are updated together.
 A connection is attached to at most one session. After `attach`, session
 commands (`prompt`, `get_state`, `get_entries`, `answer_approval`, ...) go to
 that session unchanged and its events come back unchanged. A session command
-on an unattached connection fails with `not attached to a session`.
+on an unattached connection fails with `not attached to a session`. The
+daemon refuses `switch_session` and `new_session`, which would put another
+file, or none, under the hosted session: a client opens another session with
+`resume_session` or `attach` and starts one with `create_session`.
 Daemon-level commands work at any time; daemon-level events reach every
 connection.
 
@@ -238,7 +241,8 @@ platform`: a remote client follows the agent's nested `events` stream.
   `--mode json`, `--mode rpc`, `super acp`) holds the same lock on the file
   it writes, so the two never append to one file: it refuses to start on a
   file the daemon hosts, and the session picker, `switch_session` and ACP
-  `session/load` refuse to open one.
+  `session/load` refuse to open one. A session the daemon hosts takes no
+  `switch_session`, so it never opens a file another process holds.
 - `shutdown`, SIGTERM and SIGINT abort in-flight turns, unload every session
   and exit 0. After a restart nothing is hosted; sessions load lazily.
 - Workflow approvals are asked as `approval_request` events and answered with
@@ -351,7 +355,7 @@ Every terminal shows a command another client ran exactly as the same
 command typed there: a prompt that started a run is the user message, a
 queued one appears when the run takes it, `set_thinking_level` reads
 `thinking level set to low` as after `/thinking low`, `set_session_name` as
-after `/name`, `bash` as after `!`, `new_session` as after `/new`; model
+after `/name`, `bash` as after `!`; model
 changes, compactions and aborts show through their events, as typed ones do.
 The title a terminal generates from the first prompt goes to the daemon as
 `set_session_name` with `auto: true`; the other terminals take it as the
