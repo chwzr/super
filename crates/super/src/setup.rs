@@ -458,6 +458,18 @@ pub fn session_file_guard(session: &Arc<AgentSession>) -> super_sdk::SessionFile
 
 /// `Err` when `path` is not the file this process has open and another
 /// process holds its lock.
+/// A guard for [`super_sdk::SessionOptions::file_guard`]: a file another
+/// process holds is refused before a session is built from it.
+pub fn held_file_guard() -> super_sdk::SessionFileGuard {
+    std::sync::Arc::new(|path: &std::path::Path| {
+        refuse_held_file(None, path).map_err(|held| {
+            format!(
+                "{held}. Close it there, or run `super` signed in to attach to it through the daemon"
+            )
+        })
+    })
+}
+
 fn refuse_held_file(
     current: Option<&std::path::Path>,
     path: &std::path::Path,

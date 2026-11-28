@@ -214,7 +214,9 @@ pub(crate) fn background_line(message: &super_agent::AgentMessage) -> Option<Str
 /// The transcript line for an entry of the session's own state
 /// ([`super_coding::stored_state`]): a worktree whose folder was gone when
 /// the session was loaded again, so that it works in `folder`, its own
-/// folder; `None` for any other entry.
+/// folder; `None` for any other entry. A terminal attached to the daemon
+/// shows it from the transcript, since the daemon said it when it loaded
+/// the session; the terminal that runs the session shows it as it happens.
 pub(crate) fn state_line(
     entry: &super_coding::SessionEntry,
     folder: &std::path::Path,
@@ -231,10 +233,17 @@ pub(crate) fn state_line(
         return None;
     }
     let missing = data.get("missing")?.as_str()?;
-    Some(format!(
-        "worktree {missing} is gone · the session works in {}",
+    Some(worktree_gone_line(std::path::Path::new(missing), folder))
+}
+
+/// The line for a worktree whose folder was gone when the session was
+/// loaded again, so that the session works in `folder`.
+pub(crate) fn worktree_gone_line(missing: &std::path::Path, folder: &std::path::Path) -> String {
+    format!(
+        "worktree {} is gone · the session works in {}",
+        missing.display(),
         folder.display()
-    ))
+    )
 }
 
 #[cfg(test)]

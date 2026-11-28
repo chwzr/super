@@ -231,12 +231,17 @@ mod worktrees {
         let third = loaded(&file, &project.root, &events, None);
         assert_eq!(third.worktree(), None);
         assert_eq!(third.working_folder(), project.root);
+        // Written down and said once its host holds the file.
+        assert!(moves(&events.take()).is_empty());
+        assert_eq!(state_entries(&file, stored_state::WORKTREE_ENTRY).len(), 1);
+        third.resume_stored_work();
         assert_eq!(
             moves(&events.take()),
             [(project.root.clone(), None, Some(worktree.clone()))]
         );
         drop(third);
         let fourth = loaded(&file, &project.root, &events, None);
+        fourth.resume_stored_work();
         assert_eq!(fourth.worktree(), None);
         assert!(moves(&events.take()).is_empty(), "said once");
         let written = state_entries(&file, stored_state::WORKTREE_ENTRY);

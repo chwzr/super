@@ -50,6 +50,9 @@ pub fn options_from_args(args: &Args) -> Result<SessionOptions> {
         session_name: args.name.clone(),
         trust_project_files: args.approve && !args.no_approve,
         no_context_files: args.no_context_files,
+        // A file another process holds is refused before the session
+        // starts what it stored.
+        file_guard: Some(crate::setup::held_file_guard()),
         ..Default::default()
     })
 }

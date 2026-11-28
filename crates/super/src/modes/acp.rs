@@ -137,6 +137,9 @@ impl SuperAcpAgent {
                 return Err(agent_client_protocol::Error::invalid_params().data(error.to_string()));
             }
         };
+        // What a loaded session stored (a wake-up, the notice of a workflow
+        // run that was cut off) waits for the next prompt the same way.
+        built.session.resume_stored_work();
         let id = SessionId::new(
             built
                 .session

@@ -169,8 +169,10 @@
   when the worktree's folder is gone it works in its own folder and says so
   once. RPC: `get_state` reports the session's `cwd` and its `worktree`, and
   the event `worktree_changed` tells clients when the session moves. Rust
-  SDK: `super_coding::stored_state`, `SessionEvent::WorktreeChanged` and
-  `AgentSession::resume_stored_work`.
+  SDK: `super_coding::stored_state`, `SessionEvent::WorktreeChanged`,
+  `AgentSession::resume_stored_work` and `SessionOptions::file_guard`, which
+  `--mode rpc` uses to refuse a session file another process holds before it
+  builds the session.
 - A pending wake-up and a running self-paced loop are stored with the
   session and come back when it is opened again: a wake-up whose time has
   passed comes at once, a later one at its time, and the loop goes on in the

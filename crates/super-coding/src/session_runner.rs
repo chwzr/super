@@ -488,11 +488,14 @@ pub struct AgentSession {
     prompt_builder: Mutex<Option<PromptBuilder>>,
 }
 
-/// What [`AgentSession::resume_stored_work`] starts.
+/// What [`AgentSession::resume_stored_work`] does with what the session
+/// stored, once its host is ready and holds the session's file.
 #[derive(Default)]
 struct StoredWork {
-    /// The notices of workflow runs that were cut off.
-    notices: Vec<AgentMessage>,
+    /// It was brought back and not started yet.
+    waiting: bool,
+    /// The worktree whose folder was gone: written down and announced.
+    missing_worktree: Option<std::path::PathBuf>,
 }
 
 struct ReasoningRunState {
@@ -1242,6 +1245,35 @@ impl AgentSession {
         if let Some(stored) = wakeups {
             self.wakeups().restore(stored);
         }
+        self.stored_work.lock().unwrap().waiting = true;
+    }
+
+    /// Start what [`AgentSession::restore_stored_state`] brought back and
+    /// what needs the session's host: a worktree whose folder was gone is
+    /// written down and announced, a wake-up whose time has passed fires now
+    /// and a later one at its time, a self-paced loop goes on, and each
+    /// workflow run that was cut off is marked and its notice queued. This
+    /// writes the session's file, so a host calls it once the session is
+    /// set up and the file is its own (the SDK when it wraps the session,
+    /// print and JSON mode before their prompt, the terminal and ACP after
+    /// they took the file's lock); a session that moves to another
+    /// conversation calls it itself. Calling it again does nothing.
+    pub fn resume_stored_work(self: &Arc<Self>) {
+        if self.child || self.is_remote() {
+            return;
+        }
+        let work = std::mem::take(&mut *self.stored_work.lock().unwrap());
+        if !work.waiting {
+            return;
+        }
+        if let Some(missing) = work.missing_worktree {
+            self.record_worktree(None, Some(&missing));
+            (self.sink)(SessionEvent::WorktreeChanged {
+                folder: self.working_folder(),
+                worktree: None,
+                missing: Some(missing),
+            });
+        }
         // Workflow runs the end of their process cut off are announced once.
         let runtime = self.workflows();
         let known = |run_id: &str| {
@@ -1250,22 +1282,7 @@ impl AgentSession {
                 .is_some_and(|runtime| runtime.find(run_id).is_some())
         };
         let notices = crate::workflows::cut_off_runs(&mut self.manager.lock().unwrap(), known);
-        self.stored_work.lock().unwrap().notices.extend(notices);
-    }
-
-    /// Start what [`AgentSession::restore_stored_state`] brought back and
-    /// what needs the session's host: a wake-up whose time has passed fires
-    /// now and a later one at its time, a self-paced loop goes on, and the
-    /// notice of each workflow run that was cut off is queued. A host calls
-    /// this once the session is set up (the SDK when it wraps the session,
-    /// print and JSON mode before their prompt); a session that moves to
-    /// another conversation calls it itself. Calling it again does nothing.
-    pub fn resume_stored_work(self: &Arc<Self>) {
-        if self.child || self.is_remote() {
-            return;
-        }
-        let work = std::mem::take(&mut *self.stored_work.lock().unwrap());
-        for notice in work.notices {
+        for notice in notices {
             self.queue_entry(notice, Priority::Next);
         }
         if let Some(restored) = self.wakeups().resume()
@@ -1278,7 +1295,8 @@ impl AgentSession {
 
     /// The worktree the session worked in, when the session is loaded
     /// again: it works there again, or in its own folder when the
-    /// worktree's folder is gone, which it writes down and announces.
+    /// worktree's folder is gone, which [`AgentSession::resume_stored_work`]
+    /// writes down and announces.
     fn restore_worktree(&self) {
         let stored = {
             let manager = self.manager.lock().unwrap();
@@ -1296,13 +1314,7 @@ impl AgentSession {
             self.moved();
             return;
         }
-        let missing = entered.worktree.path;
-        self.record_worktree(None, Some(&missing));
-        (self.sink)(SessionEvent::WorktreeChanged {
-            folder: self.working_folder(),
-            worktree: None,
-            missing: Some(missing),
-        });
+        self.stored_work.lock().unwrap().missing_worktree = Some(entered.worktree.path);
     }
 
     /// Say that the session's host is ending it: what its background work

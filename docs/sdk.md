@@ -416,13 +416,17 @@ What a session keeps besides its conversation is stored in its file as
 `custom` entries (`super_coding::stored_state`: `session_worktree`,
 `session_wakeup`, `workflow_run`; the last entry of a type is the state, and
 a fork copies none of them). `AgentSession` brings them back when it is built
-from a stored session and in `replace_manager`: the worktree (or, when its
-folder is gone, its own folder, with `WorktreeChanged { missing }` and a
-stored line). What starts turns waits for
-`AgentSession::resume_stored_work()`, which `Session::create` and
-`Session::attach` call once the session's turn starter is installed; an
-embedder that drives an `AgentSession` without the SDK calls it when it is
-ready.
+from a stored session and in `replace_manager`, reading only: the worktree
+it worked in, what it had read, its wake-up and self-paced loop. What writes
+the file or starts turns waits for `AgentSession::resume_stored_work()`: a
+worktree whose folder is gone is written down and announced
+(`WorktreeChanged { missing }`), a wake-up is armed, the loop goes on, and a
+workflow run that was cut off is marked and announced. `Session::create` and
+`Session::attach` call it once the session's turn starter is installed; an
+embedder that drives an `AgentSession` without the SDK calls it once it is
+ready and holds the session's file. `SessionOptions::file_guard` is asked
+about the session's file before the session is built from it, so a host can
+refuse a file another process holds (`--mode rpc` does).
 
 A session that ends in a worktree it made asks whether to keep or remove it:
 `Session::settle_worktree(wait)` opens the question

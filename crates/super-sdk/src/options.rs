@@ -91,6 +91,11 @@ pub struct SessionOptions {
     pub event_capacity: usize,
     /// Replace the provider transport. Used by tests and custom transports.
     pub stream_fn: Option<StreamFn>,
+    /// Checked with the session's file before the session is built from
+    /// it: an `Err` refuses the file, for example one another process
+    /// holds, before anything of the session (its stored wake-up, the
+    /// workflow runs it announces) touches it.
+    pub file_guard: Option<crate::session::SessionFileGuard>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -114,6 +119,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("no_context_files", &self.no_context_files)
             .field("event_capacity", &self.event_capacity)
             .field("stream_fn", &self.stream_fn.is_some())
+            .field("file_guard", &self.file_guard.is_some())
             .finish()
     }
 }
@@ -142,6 +148,7 @@ impl Default for SessionOptions {
             no_context_files: false,
             event_capacity: 1024,
             stream_fn: None,
+            file_guard: None,
         }
     }
 }
@@ -263,6 +270,9 @@ impl SessionOptions {
         all_names.dedup();
 
         let mut manager = self.open_manager(&cwd, &settings)?;
+        if let (Some(guard), Some(file)) = (&self.file_guard, manager.session_file()) {
+            guard(file).map_err(anyhow::Error::msg)?;
+        }
         if let Some(name) = &self.session_name {
             manager.append_session_info(name)?;
         }
@@ -438,6 +448,43 @@ mod tests {
         let restored = options.open_manager(cwd, &Settings::default()).unwrap();
         assert_eq!(restored.build_session_context().messages.len(), 1);
         assert!(!restored.is_persisted());
+    }
+
+    #[test]
+    fn a_file_guard_refuses_a_stored_session_before_anything_is_built_from_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut manager =
+            SessionManager::create(directory.path(), Some(directory.path().join("s"))).unwrap();
+        manager
+            .append_message(super_agent::AgentMessage::user("hi"))
+            .unwrap();
+        let file = manager.session_file().unwrap().to_path_buf();
+        let before = std::fs::read_to_string(&file).unwrap();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        let options = SessionOptions {
+            cwd: directory.path().into(),
+            settings: Some(Settings::default()),
+            session: SessionSource::Open(file.clone()),
+            file_guard: Some(Arc::new(move |path: &Path| {
+                seen.lock().unwrap().push(path.to_path_buf());
+                Err("session a1b2 is open in another SUPER process".to_string())
+            })),
+            ..Default::default()
+        };
+        let error = match options.build(Arc::new(|_| {})) {
+            Ok(_) => panic!("the guard refuses the file"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "session a1b2 is open in another SUPER process"
+        );
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            std::slice::from_ref(&file)
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
     }
 
     #[test]

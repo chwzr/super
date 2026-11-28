@@ -2333,9 +2333,17 @@ fn handle_session_event(
         SessionEvent::TaskStarted(_)
         | SessionEvent::TaskUpdated(_)
         | SessionEvent::TaskEnded(_) => {}
-        // A worktree that was gone at load is a line of the transcript,
-        // drawn from the session's entries.
-        SessionEvent::WorktreeChanged { .. } => refresh_git_branch(app, session),
+        SessionEvent::WorktreeChanged {
+            folder, missing, ..
+        } => {
+            // The worktree the session worked in was gone when it was
+            // loaded: said once, as it happens.
+            if let Some(missing) = missing {
+                app.cells
+                    .push(Cell::Notice(task_ui::worktree_gone_line(&missing, &folder)));
+            }
+            refresh_git_branch(app, session);
+        }
         SessionEvent::AccountSwitched(switch) => {
             app.cells.push(Cell::Notice(format!(
                 "{}: {} hit its rate limit (ready again in {}); switched to account {}/{} ({})",
@@ -7797,9 +7805,6 @@ fn session_cells(session: &Arc<super_coding::AgentSession>) -> Vec<Cell> {
     let manager = session.manager.lock().unwrap();
     let mut cells = Vec::new();
     for entry in manager.branch_entries(None) {
-        if let Some(line) = task_ui::state_line(entry, manager.cwd()) {
-            cells.push(Cell::Notice(line));
-        }
         if let super_coding::SessionEntry::Message { message, .. } = entry {
             match message {
                 AgentMessage::User(user) => {
