@@ -330,7 +330,9 @@ runs that round again.
 When a wake-up outside a loop is due, the session queues a `custom` message
 with `customType: "wakeup"`: its text is the wake-up's `prompt`, and its
 `details.wakeup` is the wake-up. It starts a run like a notice when the agent
-is idle, and waits for the end of the run that works otherwise. A round of a
+is idle. While the agent works it waits until the run's last turn has ended
+and then comes as one more turn of that run, before its `agent_settled`, as
+a message queued with `follow_up` does. A round of a
 self-paced loop (the terminal's `/loop` without an interval in the advanced
 mode) is a `custom` message with `customType: "loop_round"`, whose
 `details` carry `job`, `round`, `maxRounds`, `prompt` (the loop's goal) and
