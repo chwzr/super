@@ -375,7 +375,10 @@ also offers `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`.
 due its prompt is queued with `Priority::Later`, as a `custom` message of type
 `wakeup`, which starts a run of an idle session like a notice does. It holds
 the session (`has_background_work`) until then, but `wait_for_background_work`
-does not wait for it. A self-paced loop
+does not wait for it (`Wakeups::is_waiting` and `changes` tell a host that
+waits). The pending wake-up and the self-paced loop are stored with the
+session (`Wakeups::stored`, `super_coding::wakeup::StoredWakeups`) and come
+back with it; `resume_stored_work` starts them. A self-paced loop
 (`IterativeRuntime::start_self_paced`, which the terminal's `/loop` without an
 interval uses in the advanced mode) runs its rounds as turns of the session
 itself, each a `custom` message of type `loop_round`; the model continues it

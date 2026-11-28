@@ -1186,6 +1186,15 @@ impl AgentSession {
             return;
         }
         self.restore_worktree();
+        let wakeups = {
+            let manager = self.manager.lock().unwrap();
+            crate::stored_state::latest(&manager, crate::stored_state::WAKEUP_ENTRY).and_then(
+                |data| serde_json::from_value::<crate::wakeup::StoredWakeups>(data.clone()).ok(),
+            )
+        };
+        if let Some(stored) = wakeups {
+            self.wakeups().restore(stored);
+        }
     }
 
     /// Start what [`AgentSession::restore_stored_state`] brought back and
@@ -1202,6 +1211,12 @@ impl AgentSession {
         let work = std::mem::take(&mut *self.stored_work.lock().unwrap());
         for notice in work.notices {
             self.queue_entry(notice, Priority::Next);
+        }
+        if let Some(restored) = self.wakeups().resume()
+            && let Some(runtime) = self.iterative_jobs()
+        {
+            // A session that cannot run loops (no tools) leaves it stored.
+            let _ = runtime.resume_self_paced(restored);
         }
     }
 

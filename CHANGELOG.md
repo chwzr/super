@@ -144,8 +144,7 @@
 - `ScheduleWakeup`, in the advanced mode, brings the agent back after a
   delay of one minute to one hour, with the prompt it gave or with the next
   round of a self-paced loop, or ends the loop. A session has one pending
-  wake-up, which lives as long as its process and keeps a session in the
-  daemon loaded.
+  wake-up, which keeps a session in the daemon loaded.
 - `EnterWorktree` and `ExitWorktree`, in the advanced mode, move the session
   into a git worktree and back: a new one under `.super/worktrees/` on a new
   branch, or one of the repository that exists. While the session is there,
@@ -172,6 +171,11 @@
   the event `worktree_changed` tells clients when the session moves. Rust
   SDK: `super_coding::stored_state`, `SessionEvent::WorktreeChanged` and
   `AgentSession::resume_stored_work`.
+- A pending wake-up and a running self-paced loop are stored with the
+  session and come back when it is opened again: a wake-up whose time has
+  passed comes at once, a later one at its time, and the loop goes on in the
+  round it was in. A daemon that shuts down while wake-ups are pending loads
+  those sessions again, after its restart, when the wake-ups are due.
 
 ### Changed
 

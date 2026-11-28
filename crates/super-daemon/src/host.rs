@@ -25,6 +25,13 @@ use tokio::sync::broadcast;
 /// whether to keep or remove the worktree it works in.
 pub const WORKTREE_QUESTION_WAIT: Duration = Duration::from_secs(60);
 
+/// The file in the folder of sessions in which the daemon keeps, from its
+/// shutdown to its next start, when the wake-ups of the sessions it hosted
+/// are due: `{"<session id>": <due, ms since the epoch>}`. The next daemon
+/// loads each session again at that time, and the session's own stored
+/// wake-up then fires.
+pub const WAKEUPS_FILE: &str = "daemon-wakeups.json";
+
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub session_dir: PathBuf,
@@ -103,6 +110,9 @@ pub struct SessionHost {
     config: HostConfig,
     hosted: Mutex<BTreeMap<String, Arc<Hosted>>>,
     events: broadcast::Sender<DaemonEvent>,
+    /// Sessions this daemon loads again when their wake-up is due, by id:
+    /// those a daemon before it unloaded at its shutdown.
+    due: Mutex<BTreeMap<String, i64>>,
 }
 
 impl SessionHost {
@@ -112,7 +122,46 @@ impl SessionHost {
             config,
             hosted: Mutex::new(BTreeMap::new()),
             events,
+            due: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Load again, each at its time, the sessions whose wake-ups were
+    /// pending when the daemon before this one shut down
+    /// ([`WAKEUPS_FILE`]). Returns how many are waiting.
+    pub fn resume_wakeups(self: &Arc<Self>) -> usize {
+        let path = self.config.session_dir.join(WAKEUPS_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return 0;
+        };
+        let _ = std::fs::remove_file(&path);
+        let due: BTreeMap<String, i64> = serde_json::from_str(&text).unwrap_or_default();
+        let count = due.len();
+        for (session_id, due_at) in due {
+            self.due.lock().unwrap().insert(session_id.clone(), due_at);
+            let host = Arc::downgrade(self);
+            tokio::spawn(async move {
+                let wait = due_at.saturating_sub(super_ai::now_ms()).max(0) as u64;
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+                let Some(host) = host.upgrade() else {
+                    return;
+                };
+                if host.due.lock().unwrap().remove(&session_id).is_none() {
+                    return;
+                }
+                match host.load(&session_id).await {
+                    Ok(_) => log::info(
+                        "host",
+                        format!("loaded session {session_id} for its wake-up"),
+                    ),
+                    Err(error) => log::info(
+                        "host",
+                        format!("could not load session {session_id} for its wake-up: {error}"),
+                    ),
+                }
+            });
+        }
+        count
     }
 
     pub fn config(&self) -> &HostConfig {
@@ -359,6 +408,25 @@ impl SessionHost {
     }
 
     pub async fn shutdown(&self) {
+        // The next daemon loads the sessions whose wake-ups are pending.
+        let mut due = self.due.lock().unwrap().clone();
+        for (id, hosted) in self.hosted.lock().unwrap().iter() {
+            if let Some(wakeup) = hosted.session.agent_session().wakeups().pending() {
+                due.insert(id.clone(), wakeup.due_at);
+            }
+        }
+        let path = self.config.session_dir.join(WAKEUPS_FILE);
+        if due.is_empty() {
+            let _ = std::fs::remove_file(&path);
+        } else if let Ok(text) = serde_json::to_string(&due) {
+            let _ = std::fs::create_dir_all(&self.config.session_dir);
+            if let Err(error) = std::fs::write(&path, text) {
+                log::info(
+                    "host",
+                    format!("could not write {}: {error}", path.display()),
+                );
+            }
+        }
         let ids: Vec<String> = self.hosted.lock().unwrap().keys().cloned().collect();
         for id in ids {
             let _ = self.stop(&id, EndReason::Shutdown).await;
@@ -941,6 +1009,73 @@ mod tests {
         wakeups.stop();
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(fixture.host.sweep_idle().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_wake_up_is_pending_at_shutdown_is_loaded_again_when_it_is_due() {
+        let fixture = fixture(Duration::ZERO).await;
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        hosted.session.prompt("hi").await.expect("prompt");
+        hosted
+            .session
+            .agent_session()
+            .wakeups()
+            .schedule(super_coding::wakeup::WakeupRequest {
+                delay_seconds: 600.0,
+                prompt: Some("look again".into()),
+                ..Default::default()
+            })
+            .expect("scheduled");
+        let id = hosted.session_id.clone();
+        drop(hosted);
+        fixture.host.shutdown().await;
+        assert_eq!(fixture.host.hosted_count(), 0);
+        let path = fixture.dir.path().join("sessions").join(WAKEUPS_FILE);
+        let due: BTreeMap<String, i64> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(due[&id] > super_ai::now_ms() + 500_000, "{due:?}");
+
+        // The next daemon loads it at that time; here the time has come.
+        std::fs::write(&path, json!({ id.clone(): super_ai::now_ms() }).to_string()).unwrap();
+        let next = SessionHost::new(fixture.host.config().clone());
+        assert_eq!(next.resume_wakeups(), 1);
+        assert!(!path.exists(), "taken");
+        for _ in 0..500 {
+            if next.get(&id).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let loaded = next.get(&id).expect("loaded for its wake-up");
+        let wakeup = loaded
+            .session
+            .agent_session()
+            .wakeups()
+            .pending()
+            .expect("its wake-up is pending again");
+        assert_eq!(wakeup.prompt.as_deref(), Some("look again"));
+
+        // A wake-up that is not due yet when this daemon shuts down too is
+        // kept for the one after it.
+        let other = SessionHost::new(fixture.host.config().clone());
+        std::fs::write(
+            &path,
+            json!({"later": super_ai::now_ms() + 600_000}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(other.resume_wakeups(), 1);
+        other.shutdown().await;
+        let due: BTreeMap<String, i64> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(due.contains_key("later"));
+        assert_eq!(
+            SessionHost::new(fixture.host.config().clone()).resume_wakeups(),
+            1
+        );
     }
 
     #[cfg(unix)]

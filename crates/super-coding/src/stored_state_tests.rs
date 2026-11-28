@@ -278,3 +278,250 @@ mod worktrees {
         assert_eq!(session.worktree().unwrap().worktree.path, worktree);
     }
 }
+
+mod wakeups {
+    use super::*;
+    use crate::notifications::{LOOP_ROUND, WAKEUP, looped, woken};
+    use std::time::Duration;
+    use super_agent::placeholder::prompt_todo;
+
+    /// Let the paused clock run `seconds` forward, and every task that is
+    /// due run with it.
+    async fn pass(seconds: u64) {
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn custom(session: &AgentSession, kind: &str) -> Vec<AgentMessage> {
+        session
+            .manager
+            .lock()
+            .unwrap()
+            .build_session_context()
+            .messages
+            .into_iter()
+            .filter(|message| {
+                matches!(message, AgentMessage::Custom(custom) if custom.custom_type == kind)
+            })
+            .collect()
+    }
+
+    fn round_text(goal: &str) -> String {
+        format!("{goal}\n\n{}", prompt_todo("Loop.self_paced_instructions"))
+    }
+
+    struct Stored {
+        root: PathBuf,
+        sessions: PathBuf,
+        _directory: tempfile::TempDir,
+    }
+
+    fn stored() -> Stored {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        Stored {
+            sessions: directory.path().join("sessions"),
+            root,
+            _directory: directory,
+        }
+    }
+
+    impl Stored {
+        fn session(&self, stream: Option<StreamFn>) -> Arc<AgentSession> {
+            session_of(
+                SessionManager::create(&self.root, Some(self.sessions.clone())).unwrap(),
+                &self.root,
+                quiet_settings(),
+                &Events::default(),
+                stream,
+            )
+        }
+
+        /// A stored session whose last state is `wakeups`.
+        fn with_state(&self, wakeups: Value) -> PathBuf {
+            let mut manager =
+                SessionManager::create(&self.root, Some(self.sessions.clone())).unwrap();
+            manager.append_message(AgentMessage::user("go")).unwrap();
+            stored_state::record(&mut manager, stored_state::WAKEUP_ENTRY, wakeups);
+            manager.session_file().unwrap().to_path_buf()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pending_wake_up_comes_back_when_the_session_is_loaded_and_fires_at_its_time() {
+        let stored = stored();
+        let (stream, _) = lanes(vec![(
+            "go",
+            vec![
+                Some(tool_call(
+                    "w1",
+                    "ScheduleWakeup",
+                    json!({"delaySeconds": 600, "prompt": "check the build", "reason": "the build is slow"}),
+                )),
+                Some(text("waiting")),
+            ],
+        )]);
+        let session = stored.session(Some(stream));
+        session.prompt(vec![AgentMessage::user("go")]).await;
+        let pending = session.wakeups().pending().unwrap();
+        let file = file_of(&session);
+        let written = state_entries(&file, stored_state::WAKEUP_ENTRY);
+        assert_eq!(
+            written.last().unwrap()["wakeup"]["prompt"],
+            "check the build"
+        );
+        assert_eq!(written.last().unwrap()["loop"], Value::Null);
+        drop(session);
+
+        let (stream, seen) = lanes(vec![("go", vec![Some(text("the build passed"))])]);
+        let again = loaded(&file, &stored.root, &Events::default(), Some(stream));
+        pass(700).await;
+        assert_eq!(
+            seen.count("go"),
+            0,
+            "nothing starts before its host is ready"
+        );
+        assert_eq!(again.wakeups().pending(), None);
+
+        let (stream, seen) = lanes(vec![("go", vec![Some(text("the build passed"))])]);
+        let again = loaded(&file, &stored.root, &Events::default(), Some(stream));
+        again.resume_stored_work();
+        let restored = again.wakeups().pending().expect("pending again");
+        assert_eq!(restored, pending);
+        assert!(again.has_background_work(), "it keeps the session loaded");
+        // The clock started when it was scheduled, not when it was loaded:
+        // the first session waited 700 of the paused seconds, which the
+        // wall clock did not, so it is still about 600 seconds away.
+        pass(590).await;
+        assert_eq!(seen.count("go"), 0, "not due yet");
+        pass(20).await;
+        again.wait_for_background_work().await;
+        assert_eq!(seen.count("go"), 1);
+        let wakeup = woken(&custom(&again, WAKEUP)[0]).unwrap();
+        assert_eq!(wakeup.prompt.as_deref(), Some("check the build"));
+        assert_eq!(again.wakeups().pending(), None);
+        let written = state_entries(&file, stored_state::WAKEUP_ENTRY);
+        assert_eq!(written.last().unwrap()["wakeup"], Value::Null);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wake_up_whose_time_has_passed_fires_at_once_when_the_session_is_loaded() {
+        let stored = stored();
+        let file = stored.with_state(json!({
+            "wakeup": {
+                "id": 3,
+                "delaySeconds": 60,
+                "dueAt": super_ai::now_ms() - 3_600_000,
+                "reason": "an hour ago",
+                "noop": false,
+                "prompt": "look again",
+                "job": null,
+                "round": null,
+            },
+            "loop": null,
+        }));
+        let (stream, seen) = lanes(vec![("go", vec![Some(text("looked"))])]);
+        let session = loaded(&file, &stored.root, &Events::default(), Some(stream));
+        session.resume_stored_work();
+        pass(1).await;
+        session.wait_for_background_work().await;
+        assert_eq!(seen.count("go"), 1);
+        let wakeup = woken(&custom(&session, WAKEUP)[0]).unwrap();
+        assert_eq!(wakeup.reason.as_deref(), Some("an hour ago"));
+        // Started once only.
+        session.resume_stored_work();
+        pass(4_000).await;
+        assert_eq!(seen.count("go"), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_self_paced_loop_goes_on_from_its_round_when_the_session_is_loaded() {
+        let stored = stored();
+        let goal = "tidy the docs";
+        let lane = round_text(goal);
+        let (stream, _) = lanes(vec![(
+            &lane,
+            vec![
+                Some(tool_call(
+                    "w1",
+                    "ScheduleWakeup",
+                    json!({"delaySeconds": 300, "reason": "wait for CI"}),
+                )),
+                Some(text("round 1 done")),
+            ],
+        )]);
+        let session = stored.session(Some(stream));
+        let job = session
+            .iterative_jobs()
+            .unwrap()
+            .start_self_paced(goal, Some(5))
+            .unwrap();
+        pass(1).await;
+        assert_eq!(job.snapshot().iteration, 1);
+        let file = file_of(&session);
+        let written = state_entries(&file, stored_state::WAKEUP_ENTRY);
+        let last = written.last().unwrap();
+        assert_eq!(last["loop"]["goal"], goal);
+        assert_eq!(last["loop"]["round"], 1);
+        assert_eq!(last["loop"]["maxRounds"], 5);
+        assert_eq!(last["wakeup"]["round"], 2);
+        drop(job);
+        drop(session);
+
+        // Loaded again, round 2 comes when the wake-up is due.
+        let (stream, seen) = lanes(vec![(&lane, vec![Some(text("round 2 done"))])]);
+        let again = loaded(&file, &stored.root, &Events::default(), Some(stream));
+        again.resume_stored_work();
+        let (job_id, round, max_rounds) = again.wakeups().running_loop().unwrap();
+        assert_eq!((round, max_rounds), (1, 5));
+        let job = again.iterative_jobs().unwrap().get(job_id).unwrap();
+        assert!(job.is_self_paced());
+        pass(290).await;
+        assert_eq!(seen.count(&lane), 0);
+        pass(20).await;
+        let mut updates = job.subscribe();
+        while !job.snapshot().status.is_finished() {
+            updates.changed().await.unwrap();
+        }
+        assert_eq!(seen.count(&lane), 1);
+        assert_eq!(job.snapshot().iteration, 2);
+        let rounds = custom(&again, LOOP_ROUND);
+        let (round, max_rounds, prompt, woken_by) = looped(rounds.last().unwrap()).unwrap();
+        assert_eq!((round, max_rounds, prompt.as_str()), (2, 5, goal));
+        assert_eq!(woken_by.unwrap().reason.as_deref(), Some("wait for CI"));
+        assert_eq!(again.wakeups().running_loop(), None);
+        let written = state_entries(&file, stored_state::WAKEUP_ENTRY);
+        assert_eq!(written.last().unwrap()["loop"], Value::Null);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_loop_cut_off_in_its_round_runs_that_round_again() {
+        let stored = stored();
+        let goal = "watch the deploy";
+        let lane = round_text(goal);
+        let file = stored.with_state(json!({
+            "wakeup": null,
+            "loop": {"job": 7, "goal": goal, "round": 2, "maxRounds": 4},
+        }));
+        let (stream, seen) = lanes(vec![("go", vec![Some(text("deployed"))])]);
+        let session = loaded(&file, &stored.root, &Events::default(), Some(stream));
+        session.resume_stored_work();
+        pass(1).await;
+        session.wait_for_background_work().await;
+        pass(1).await;
+        assert_eq!(seen.count("go"), 1, "{:?}", seen.count(&lane));
+        let rounds = custom(&session, LOOP_ROUND);
+        assert_eq!(rounds.len(), 1);
+        let (round, max_rounds, prompt, woken_by) = looped(&rounds[0]).unwrap();
+        assert_eq!((round, max_rounds, prompt.as_str()), (2, 4, goal));
+        assert!(woken_by.is_none());
+        assert_eq!(
+            session.wakeups().running_loop(),
+            None,
+            "nothing continued it"
+        );
+    }
+}

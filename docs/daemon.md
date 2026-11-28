@@ -252,8 +252,13 @@ platform`: a remote client follows the agent's nested `events` stream.
   advanced mode the model loads them with `Skill`.
 - A wake-up the model schedules with `ScheduleWakeup` runs in the daemon's
   session: it keeps the session loaded until it is due, then queues its
-  prompt, which starts a run that every attached client sees. It lives as
-  long as the daemon; after a restart it is gone.
+  prompt, which starts a run that every attached client sees. It is stored
+  with the session, and so is a self-paced loop. When the daemon shuts down
+  while wake-ups are pending, it writes when each is due to
+  `daemon-wakeups.json` in the folder of sessions; the next daemon loads each
+  of those sessions at that time (at once when it has passed), and the
+  session's wake-up fires. A session a client loads again brings its
+  wake-up back too.
 - A session that moved into a worktree with `EnterWorktree` works there
   until `ExitWorktree`. When a client stops it with `stop_session` while it
   works in a worktree it made, the daemon first asks every client an

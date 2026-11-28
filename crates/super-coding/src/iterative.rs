@@ -372,8 +372,56 @@ impl IterativeRuntime {
         let limit = limit.unwrap_or(MAX_ITERATIONS).clamp(1, MAX_ITERATIONS);
         parent
             .wakeups()
-            .begin_loop(id, limit)
+            .begin_loop(id, limit, &goal)
             .map_err(anyhow::Error::msg)?;
+        self.spawn_self_paced(&parent, id, goal, limit, Start::Round(1))
+    }
+
+    /// Start the self-paced loop the session stored again, when it was
+    /// loaded again ([`crate::wakeup::Wakeups::restore`]): with a new job
+    /// id, in the round it was in. The wake-up that would have continued
+    /// it does so when it is due (at once when its time has passed); a
+    /// loop cut off before its round scheduled one runs that round again.
+    pub(crate) fn resume_self_paced(
+        self: &Arc<Self>,
+        restored: crate::wakeup::RestoredLoop,
+    ) -> anyhow::Result<Arc<JobRecord>> {
+        let parent = self
+            .parent
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("the parent session has closed"))?;
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let limit = restored.max_rounds.clamp(1, MAX_ITERATIONS);
+        let round = restored.round.clamp(1, limit);
+        let waiting = parent
+            .wakeups()
+            .resume_loop(
+                id,
+                &crate::wakeup::RestoredLoop {
+                    round,
+                    max_rounds: limit,
+                    ..restored.clone()
+                },
+            )
+            .map_err(anyhow::Error::msg)?;
+        let start = if waiting {
+            Start::Waiting(round)
+        } else {
+            Start::Round(round)
+        };
+        self.spawn_self_paced(&parent, id, restored.goal, limit, start)
+    }
+
+    /// The job of a self-paced loop whose state the session's wake-ups
+    /// hold already, and its driver.
+    fn spawn_self_paced(
+        &self,
+        parent: &Arc<AgentSession>,
+        id: JobId,
+        goal: String,
+        limit: u32,
+        start: Start,
+    ) -> anyhow::Result<Arc<JobRecord>> {
         let session_id = parent.manager.lock().unwrap().session_id().to_string();
         let (version, _) = watch::channel(0);
         let record = Arc::new(JobRecord {
@@ -402,7 +450,7 @@ impl IterativeRuntime {
             return Err(error);
         }
         let running = record.clone();
-        tokio::spawn(async move { run_self_paced(running).await });
+        tokio::spawn(async move { run_self_paced(running, start).await });
         record.signal();
         Ok(record)
     }
@@ -552,6 +600,15 @@ impl IterativeRuntime {
     }
 }
 
+/// Where the driver of a self-paced loop starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// With this round's turn: the first, or one that was cut off.
+    Round(u32),
+    /// In this round, whose turns ran already: a wake-up continues it.
+    Waiting(u32),
+}
+
 /// How a round of a self-paced loop ended.
 enum RoundEnd {
     /// The wake-up came due: the next round starts.
@@ -564,23 +621,30 @@ enum RoundEnd {
 }
 
 /// The rounds of a self-paced loop: see [`IterativeRuntime::start_self_paced`].
-async fn run_self_paced(job: Arc<JobRecord>) {
+async fn run_self_paced(job: Arc<JobRecord>, start: Start) {
     let Some(wakeups) = job.parent.upgrade().map(|session| session.wakeups()) else {
         job.set_status(JobStatus::Stopped);
         return;
     };
     let limit = job.limit.unwrap_or(MAX_ITERATIONS);
     let mut changes = wakeups.subscribe();
-    let mut round = 0_u32;
+    let (mut round, mut waiting) = match start {
+        Start::Round(round) => (round.saturating_sub(1), false),
+        Start::Waiting(round) => (round, true),
+    };
     let status = loop {
         if !job.wait_until_ready().await {
             break JobStatus::Stopped;
         }
-        round += 1;
-        let woken_by = wakeups.begin_round(job.id, round);
         let Some(session) = job.parent.upgrade() else {
             break JobStatus::Stopped;
         };
+        // A loop loaded again in a round whose turns ran waits for the
+        // wake-up that continues it.
+        let resumed = std::mem::take(&mut waiting);
+        if !resumed {
+            round += 1;
+        }
         {
             let mut state = job.state.lock().unwrap();
             state.status = JobStatus::Running;
@@ -589,10 +653,19 @@ async fn run_self_paced(job: Arc<JobRecord>) {
         job.signal();
         let tokens_before = session.totals().total_tokens;
         let entries_before = session.manager.lock().unwrap().entries().len();
-        session.queue_entry(
-            crate::notifications::loop_round(job.id, &job.goal, round, limit, woken_by.as_ref()),
-            Priority::Later,
-        );
+        if !resumed {
+            let woken_by = wakeups.begin_round(job.id, round);
+            session.queue_entry(
+                crate::notifications::loop_round(
+                    job.id,
+                    &job.goal,
+                    round,
+                    limit,
+                    woken_by.as_ref(),
+                ),
+                Priority::Later,
+            );
+        }
         drop(session);
 
         let end = round_end(&job, &wakeups, &mut changes).await;

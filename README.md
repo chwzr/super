@@ -1232,10 +1232,12 @@ or `Bash`. A subagent has none of them.
   its `prompt`, and `stop` cancels it. A session has one pending wake-up at a
   time, and a new one replaces it. When it comes due it starts a turn, or
   waits for the turn that runs. `reason` and `noop` are shown in the
-  transcript and kept in the session; they change nothing else. A wake-up
-  lives as long as the process that runs the session. The daemon keeps a
-  session loaded while its wake-up is pending; `super -p` does not wait for
-  one.
+  transcript and kept in the session; they change nothing else. The
+  session remembers its wake-up and its self-paced loop: opened again, a
+  wake-up whose time has passed comes at once and a later one at its time,
+  and the loop goes on. The daemon keeps a session loaded while its wake-up
+  is pending, and after a restart loads it again when the wake-up is due;
+  `super -p` does not wait for one.
 - `EnterWorktree` moves the session into a git worktree. With `name`, or with
   neither `name` nor `path`, it makes one, `.super/worktrees/<name>` in the
   project, on the new branch `worktree-<name>`; without a name it gets eight

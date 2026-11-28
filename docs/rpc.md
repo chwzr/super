@@ -305,8 +305,13 @@ wake-up: `id`, `delaySeconds` (kept between 60 and 3600), `dueAt`
 self-paced loop of the terminal, `job` and `round`; `details.requestedDelaySeconds`
 is the delay the model asked for. A call with `stop` has `details.stopped`
 (`loop` with its `round`, or the cancelled `wakeup`, or `null`). A session has
-one pending wake-up; it is not stored, so it lives as long as the process
-that runs the session.
+one pending wake-up. It is stored in the session with its self-paced loop (a
+`custom` entry with `customType: "session_wakeup"`: `wakeup` and `loop`, with
+the loop's `job`, `goal`, `round` and `maxRounds`), and comes back when the
+session is loaded again: a wake-up whose time has passed fires at once, a
+later one at its time, and the loop goes on in the round it was in (with a
+new `job` id); a loop that was cut off before its round scheduled a wake-up
+runs that round again.
 
 When a wake-up outside a loop is due, the session queues a `custom` message
 with `customType: "wakeup"`: its text is the wake-up's `prompt`, and its

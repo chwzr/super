@@ -6,10 +6,16 @@
 //! between [`MIN_DELAY_SECONDS`] and [`MAX_DELAY_SECONDS`]. When it is due
 //! it goes through the session's queue ([`AgentSession::queue_entry`]) at
 //! [`Priority::Later`]: an idle session starts a turn with it, a busy one
-//! takes it once its turn is over. It lives only as long as the session's
-//! process; nothing of it is stored. While it waits it holds the session
+//! takes it once its turn is over. While it waits it holds the session
 //! ([`crate::BackgroundTasks::hold`]), so the daemon keeps the session
 //! loaded.
+//!
+//! The pending wake-up and the self-paced loop are stored in the session
+//! ([`crate::stored_state::WAKEUP_ENTRY`]) whenever they change, and come
+//! back when the session is loaded again ([`Wakeups::restore`], started by
+//! [`crate::AgentSession::resume_stored_work`]): a wake-up whose time has
+//! passed fires at once, a later one at its time, and the loop goes on
+//! from the round it was in.
 //!
 //! A self-paced loop (`/loop` without an interval in the advanced mode, see
 //! [`crate::iterative`]) runs in the session itself. Each round is a turn
@@ -116,6 +122,8 @@ struct Pending {
 
 struct LoopState {
     job: JobId,
+    /// The loop's prompt, for the session's stored state.
+    goal: String,
     round: u32,
     max_rounds: u32,
     decision: Decision,
@@ -129,6 +137,40 @@ struct State {
     next_id: u64,
     pending: Option<Pending>,
     running_loop: Option<LoopState>,
+    /// What the session stored, brought back when it was loaded and not
+    /// started yet.
+    restored: Option<StoredWakeups>,
+}
+
+/// A self-paced loop as the session stores it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredLoop {
+    pub job: JobId,
+    pub goal: String,
+    /// The round it is in; 0 before its first.
+    pub round: u32,
+    pub max_rounds: u32,
+}
+
+/// The pending wake-up and the self-paced loop as the session stores them
+/// ([`crate::stored_state::WAKEUP_ENTRY`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoredWakeups {
+    pub wakeup: Option<WakeupInfo>,
+    #[serde(rename = "loop")]
+    pub running_loop: Option<StoredLoop>,
+}
+
+/// What [`Wakeups::restore`] gives back to start: the loop that goes on, and
+/// the wake-up that continues it (with the loop's new job id), if one was
+/// pending.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestoredLoop {
+    pub goal: String,
+    pub round: u32,
+    pub max_rounds: u32,
+    pub wakeup: Option<WakeupInfo>,
 }
 
 /// The pending wake-up and the self-paced loop of one session: see
@@ -138,6 +180,9 @@ pub struct Wakeups {
     state: Mutex<State>,
     /// Bumped whenever the loop's state changes, for its driver.
     changes: watch::Sender<u64>,
+    /// Held while the state is written down, so that writes come in the
+    /// order of the changes.
+    recording: Mutex<()>,
 }
 
 impl Wakeups {
@@ -146,6 +191,7 @@ impl Wakeups {
             session,
             state: Mutex::new(State::default()),
             changes: watch::channel(0).0,
+            recording: Mutex::new(()),
         })
     }
 
@@ -191,6 +237,7 @@ impl Wakeups {
                 state.pending = None;
                 drop(state);
                 self.changed();
+                self.record();
                 return Ok(ended);
             }
             Some(running) => {
@@ -216,6 +263,15 @@ impl Wakeups {
             job,
             round,
         };
+        state.pending = Some(self.arm(&session, info.clone(), Duration::from_secs(delay)));
+        drop(state);
+        self.changed();
+        self.record();
+        Ok(Scheduled::Pending(info))
+    }
+
+    /// The pending wake-up `info`, whose timer fires after `delay`.
+    fn arm(self: &Arc<Self>, session: &AgentSession, info: WakeupInfo, delay: Duration) -> Pending {
         let timer = CancellationToken::new();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let token = timer.clone();
@@ -224,7 +280,7 @@ impl Wakeups {
             runtime.spawn(async move {
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = tokio::time::sleep(Duration::from_secs(delay)) => {
+                    _ = tokio::time::sleep(delay) => {
                         if let Some(wakeups) = wakeups.upgrade() {
                             wakeups.fire(id);
                         }
@@ -232,14 +288,11 @@ impl Wakeups {
                 }
             });
         }
-        state.pending = Some(Pending {
-            info: info.clone(),
+        Pending {
+            info,
             _timer: timer.drop_guard(),
             _hold: session.background_tasks().hold(),
-        });
-        drop(state);
-        self.changed();
-        Ok(Scheduled::Pending(info))
+        }
     }
 
     /// End the self-paced loop, or cancel the pending wake-up outside a
@@ -260,6 +313,9 @@ impl Wakeups {
         };
         drop(state);
         self.changed();
+        if stopped != Stopped::Nothing {
+            self.record();
+        }
         stopped
     }
 
@@ -286,11 +342,14 @@ impl Wakeups {
 
     /// Forget the pending wake-up and the loop, for a session that moves to
     /// another conversation; the loop's job is stopped by its runtime.
+    /// The stored state is not written: the conversation that is left keeps
+    /// it for when it is loaded again.
     pub(crate) fn reset(&self) {
         {
             let mut state = self.state.lock().unwrap();
             state.pending = None;
             state.running_loop = None;
+            state.restored = None;
         }
         self.changed();
     }
@@ -298,31 +357,168 @@ impl Wakeups {
     /// A wake-up came due: queue it, or let the loop it continues go on.
     fn fire(&self, id: u64) {
         let mut state = self.state.lock().unwrap();
-        if state.pending.as_ref().map(|pending| pending.info.id) != Some(id) {
+        let Some(info) = state
+            .pending
+            .as_ref()
+            .filter(|pending| pending.info.id == id)
+            .map(|pending| pending.info.clone())
+        else {
             return;
-        }
-        let pending = state.pending.take().expect("checked above");
-        match pending.info.job {
+        };
+        match info.job {
             Some(job) => {
+                let pending = state.pending.take();
                 if let Some(running) = state.running_loop.as_mut()
                     && running.job == job
                     && running.decision == Decision::Continue
                 {
                     running.due = true;
-                    running.woken = Some(pending.info.clone());
+                    running.woken = Some(info);
                 }
                 drop(state);
                 self.changed();
+                self.record();
+                drop(pending);
             }
             None => {
                 drop(state);
+                // Queued before it stops being pending, so that whoever
+                // waits for the session's work always sees one of the two.
                 if let Some(session) = self.session.upgrade() {
-                    session.queue_entry(wakeup_message(&pending.info), Priority::Later);
+                    session.queue_entry(wakeup_message(&info), Priority::Later);
                 }
+                let mut state = self.state.lock().unwrap();
+                let pending = state.pending.take_if(|pending| pending.info.id == id);
+                drop(state);
+                self.changed();
+                self.record();
+                // Released only now: the queued entry keeps the session.
+                drop(pending);
             }
         }
-        // Released only now: the queued entry keeps the session from here.
-        drop(pending);
+    }
+
+    /// Whether a wake-up is pending or a self-paced loop runs: work that
+    /// will reach the agent later, which `super -p` waits for.
+    pub fn is_waiting(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.pending.is_some() || state.running_loop.is_some()
+    }
+
+    /// Changes of the pending wake-up and of the loop.
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    /// The pending wake-up and the loop as the session stores them.
+    pub fn stored(&self) -> StoredWakeups {
+        let state = self.state.lock().unwrap();
+        StoredWakeups {
+            wakeup: state.pending.as_ref().map(|pending| pending.info.clone()),
+            running_loop: state.running_loop.as_ref().map(|running| StoredLoop {
+                job: running.job,
+                goal: running.goal.clone(),
+                round: running.round,
+                max_rounds: running.max_rounds,
+            }),
+        }
+    }
+
+    /// Write the state down in the session ([`crate::stored_state`]).
+    fn record(&self) {
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        if session.is_remote() {
+            return;
+        }
+        let _order = self.recording.lock().unwrap();
+        let stored = self.stored();
+        let data = serde_json::to_value(&stored).unwrap_or_default();
+        crate::stored_state::record(
+            &mut session.manager.lock().unwrap(),
+            crate::stored_state::WAKEUP_ENTRY,
+            data,
+        );
+    }
+
+    /// Take what the session stored, when it is loaded again; it waits
+    /// until [`Wakeups::resume`].
+    pub(crate) fn restore(&self, stored: StoredWakeups) {
+        let empty = stored.wakeup.is_none() && stored.running_loop.is_none();
+        self.state.lock().unwrap().restored = (!empty).then_some(stored);
+    }
+
+    /// Start what [`Wakeups::restore`] took: the pending wake-up outside a
+    /// loop is pending again, due at its time (at once when that has
+    /// passed). The loop is handed back for its runtime to start again
+    /// with the new job id `job_id` ([`Wakeups::resume_loop`]); without a
+    /// runtime it is gone.
+    pub(crate) fn resume(self: &Arc<Self>) -> Option<RestoredLoop> {
+        let session = self.session.upgrade()?;
+        let restored = self.state.lock().unwrap().restored.take()?;
+        let running_loop = restored.running_loop.map(|stored| RestoredLoop {
+            goal: stored.goal,
+            round: stored.round,
+            max_rounds: stored.max_rounds,
+            wakeup: restored
+                .wakeup
+                .clone()
+                .filter(|wakeup| wakeup.job == Some(stored.job)),
+        });
+        if let Some(wakeup) = restored.wakeup.filter(|wakeup| wakeup.job.is_none()) {
+            let mut state = self.state.lock().unwrap();
+            if state.pending.is_none() {
+                state.next_id = state.next_id.max(wakeup.id);
+                let delay = due_in(wakeup.due_at);
+                state.pending = Some(self.arm(&session, wakeup, delay));
+            }
+            drop(state);
+            self.changed();
+        }
+        running_loop
+    }
+
+    /// Start the loop `restored` again as the job `job`: in its round, which
+    /// the wake-up it had continues when it is due. Returns whether that
+    /// wake-up is pending; without one the round runs again.
+    pub(crate) fn resume_loop(
+        self: &Arc<Self>,
+        job: JobId,
+        restored: &RestoredLoop,
+    ) -> Result<bool, String> {
+        let session = self
+            .session
+            .upgrade()
+            .ok_or("The session has ended, so its loop cannot go on.")?;
+        let mut state = self.state.lock().unwrap();
+        if state.running_loop.is_some() {
+            return Err("a self-paced loop runs in this session already".into());
+        }
+        let waiting = restored.wakeup.is_some();
+        state.running_loop = Some(LoopState {
+            job,
+            goal: restored.goal.clone(),
+            round: restored.round,
+            max_rounds: restored.max_rounds,
+            decision: if waiting {
+                Decision::Continue
+            } else {
+                Decision::Undecided
+            },
+            due: false,
+            woken: None,
+        });
+        if let Some(mut wakeup) = restored.wakeup.clone() {
+            wakeup.job = Some(job);
+            state.next_id = state.next_id.max(wakeup.id);
+            let delay = due_in(wakeup.due_at);
+            state.pending = Some(self.arm(&session, wakeup, delay));
+        }
+        drop(state);
+        self.changed();
+        self.record();
+        Ok(waiting)
     }
 
     fn changed(&self) {
@@ -335,13 +531,14 @@ impl Wakeups {
     // ----------------------------------------------------------------
 
     /// Start the self-paced loop `job`; a session runs one at a time.
-    pub(crate) fn begin_loop(&self, job: JobId, max_rounds: u32) -> Result<(), String> {
+    pub(crate) fn begin_loop(&self, job: JobId, max_rounds: u32, goal: &str) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         if state.running_loop.is_some() {
             return Err("a self-paced loop runs in this session already".into());
         }
         state.running_loop = Some(LoopState {
             job,
+            goal: goal.to_string(),
             round: 0,
             max_rounds,
             decision: Decision::Undecided,
@@ -350,6 +547,7 @@ impl Wakeups {
         });
         drop(state);
         self.changed();
+        self.record();
         Ok(())
     }
 
@@ -364,7 +562,10 @@ impl Wakeups {
         running.round = round;
         running.decision = Decision::Undecided;
         running.due = false;
-        running.woken.take()
+        let woken = running.woken.take();
+        drop(state);
+        self.record();
+        woken
     }
 
     /// Where the current round of `job` stands; `None` once the loop is gone.
@@ -390,11 +591,11 @@ impl Wakeups {
     /// it.
     pub(crate) fn end_loop(&self, job: JobId) {
         let mut state = self.state.lock().unwrap();
-        if state
+        let ended = state
             .running_loop
             .as_ref()
-            .is_some_and(|running| running.job == job)
-        {
+            .is_some_and(|running| running.job == job);
+        if ended {
             state.running_loop = None;
             if state
                 .pending
@@ -406,7 +607,16 @@ impl Wakeups {
         }
         drop(state);
         self.changed();
+        if ended {
+            self.record();
+        }
     }
+}
+
+/// How long until `due_at` (milliseconds since the epoch); nothing once it
+/// has passed.
+fn due_in(due_at: i64) -> Duration {
+    Duration::from_millis(due_at.saturating_sub(super_ai::now_ms()).max(0) as u64)
 }
 
 #[cfg(test)]
