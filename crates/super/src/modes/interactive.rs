@@ -9562,6 +9562,24 @@ mod tests {
         let id = handle.id().to_string();
         drop(handle);
         assert!(!remote_handover::busy(&app, &session));
+        // A pending wake-up comes along to the daemon, which finds it in the
+        // session's file; the terminal lets go of it first.
+        let wakeups = session.wakeups();
+        wakeups
+            .schedule(super_coding::wakeup::WakeupRequest {
+                delay_seconds: 600.0,
+                prompt: Some("look again".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(session.has_background_work());
+        assert!(!remote_handover::busy(&app, &session));
+        let parked = wakeups.park().expect("the pending wake-up");
+        assert_eq!(wakeups.pending(), None);
+        assert!(!session.has_background_work());
+        wakeups.unpark(parked.clone());
+        assert_eq!(wakeups.pending(), Some(parked));
+        wakeups.stop();
 
         let mut task = tasks.find(&id).unwrap();
         task.status = super_coding::TaskStatus::Completed;

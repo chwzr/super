@@ -198,6 +198,8 @@
   `--mode rpc` with a last `worktree_kept` event. The session is in the
   worktree again when it is opened again, and so is a session the daemon
   unloaded while idle.
+- `/remote` no longer waits for a pending wake-up: the daemon takes it over
+  from the session's file. Rust SDK: `Wakeups::park` and `unpark`.
 - A workflow run's journal is written call by call as the run goes
   (`<run id>.journal.jsonl`), so a run cut off by the end of its process can
   be resumed with `resumeFromRunId` after a restart. Such a run is announced

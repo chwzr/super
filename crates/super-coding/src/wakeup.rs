@@ -398,6 +398,41 @@ impl Wakeups {
         }
     }
 
+    /// Take the pending wake-up outside a loop away from this process
+    /// without writing anything down, for a session another process takes
+    /// over (the terminal's `/remote`): it comes back there from what the
+    /// session stored. [`Wakeups::unpark`] gives it back when the session
+    /// stays here after all.
+    pub fn park(&self) -> Option<WakeupInfo> {
+        let mut state = self.state.lock().unwrap();
+        if state
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.info.job.is_some())
+        {
+            return None;
+        }
+        let parked = state.pending.take().map(|pending| pending.info.clone());
+        drop(state);
+        self.changed();
+        parked
+    }
+
+    /// Make the wake-up [`Wakeups::park`] took pending again, due at its
+    /// time, unless another one is pending meanwhile.
+    pub fn unpark(self: &Arc<Self>, wakeup: WakeupInfo) {
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let mut state = self.state.lock().unwrap();
+        if state.pending.is_none() {
+            let delay = due_in(wakeup.due_at);
+            state.pending = Some(self.arm(&session, wakeup, delay));
+        }
+        drop(state);
+        self.changed();
+    }
+
     /// Whether a wake-up is pending or a self-paced loop runs: work that
     /// will reach the agent later, which `super -p` waits for.
     pub fn is_waiting(&self) -> bool {

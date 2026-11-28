@@ -240,13 +240,16 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
 }
 
 /// A turn, a queued message, a background request that writes the session,
-/// a background task (it would not come along), or a question on screen: the
-/// hand-over waits for all of them.
+/// a background task (it would not come along), a self-paced loop, or a
+/// question on screen: the hand-over waits for all of them. A pending
+/// wake-up comes along: the daemon finds it in the session's file.
 pub(super) fn busy(app: &App, session: &AgentSession) -> bool {
     !matches!(
         terminal_host_state(app, session),
         crate::terminal_hosts::State::Idle
-    ) || session.has_background_work()
+    ) || session.background_tasks().has_running()
+        || session.has_queued_entries()
+        || session.wakeups().running_loop().is_some()
         || app.picker.is_some()
         || app.secret_prompt.is_some()
         || app.btw_panel.is_some()
@@ -351,6 +354,9 @@ pub(super) async fn finish(
     app.remote_record_key = None;
     // Only daemon-level news queued up while waiting; none of it is ours.
     while events.try_recv().is_ok() {}
+    // The daemon brings the wake-up back from the session's file; it must
+    // not come due here as well.
+    let parked = session.wakeups().park();
     match handover::hand_over(&client, &target, lock, session).await {
         Ok(attached) => {
             show(
@@ -370,6 +376,9 @@ pub(super) async fn finish(
             }))
         }
         Err(handover::Failure::StaysHere(error)) => {
+            if let Some(wakeup) = parked {
+                session.wakeups().unpark(wakeup);
+            }
             if mirrored {
                 super::start_remote(app, session, &resources.settings, command_tx);
             }
