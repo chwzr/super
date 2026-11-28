@@ -284,6 +284,7 @@ pub(super) fn transcript_cells(session: &Arc<super_coding::AgentSession>) -> Vec
                         if let ContentBlock::ToolCall(call) = block {
                             let result = results.get(call.id.as_str());
                             cells.push(Cell::ToolCall {
+                                id: call.id.clone(),
                                 title: tool_title(&call.name, &call.arguments, manager.cwd()),
                                 output: result
                                     .map(|result| {
@@ -975,6 +976,7 @@ mod tests {
                     output,
                     done,
                     is_error,
+                    ..
                 } => {
                     assert_eq!(title, &format!("{name} ls"));
                     assert_eq!(output, "a.rs");

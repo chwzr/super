@@ -441,6 +441,10 @@
   request.
 - The terminal's question at quitting in a worktree names the worktree's
   folder beside `keep` and `remove`.
+- When one answer makes several tool calls, the full-screen terminal shows
+  each call's output and result under that call, also in a terminal attached
+  to the daemon. They went to the latest unfinished call in the order they
+  ended, so a background command's task id could stand under another call.
 
 ## 0.0.42 - 2026-11-27
 

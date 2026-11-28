@@ -50,6 +50,8 @@ enum Cell {
     AssistantFinal(String),
     Thinking(String),
     ToolCall {
+        /// The id of the call, which its updates and its result name.
+        id: String,
         title: String,
         output: String,
         is_error: bool,
@@ -724,6 +726,7 @@ impl App {
                     output,
                     is_error,
                     done,
+                    ..
                 } => {
                     let marker = if !*done {
                         self.theme.fg("warning", "●")
@@ -1082,6 +1085,7 @@ fn cell_render_key(
             output,
             is_error,
             done,
+            ..
         } => {
             title.hash(&mut hasher);
             output.hash(&mut hasher);
@@ -2208,42 +2212,42 @@ fn handle_session_event(
                 }
             }
             AgentEvent::ToolExecutionStart {
-                tool_name, args, ..
+                tool_call_id,
+                tool_name,
+                args,
             } => {
                 let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
                 app.cells.push(Cell::ToolCall {
+                    id: tool_call_id,
                     title: tool_title(&tool_name, &args, &cwd),
                     output: String::new(),
                     is_error: false,
                     done: false,
                 });
             }
-            AgentEvent::ToolExecutionUpdate { partial, .. } => {
-                if let Some(Cell::ToolCall { output, .. }) = app
-                    .cells
-                    .iter_mut()
-                    .rev()
-                    .find(|c| matches!(c, Cell::ToolCall { done: false, .. }))
+            AgentEvent::ToolExecutionUpdate {
+                tool_call_id,
+                partial,
+                ..
+            } => {
+                if let Some(Cell::ToolCall { output, .. }) =
+                    running_tool_call(&mut app.cells, &tool_call_id)
                 {
                     *output = partial.output_text();
                 }
             }
             AgentEvent::ToolExecutionEnd {
+                tool_call_id,
                 tool_name,
                 result,
                 is_error,
-                ..
             } => {
                 if let Some(Cell::ToolCall {
                     output,
                     is_error: err_slot,
                     done,
                     ..
-                }) = app
-                    .cells
-                    .iter_mut()
-                    .rev()
-                    .find(|c| matches!(c, Cell::ToolCall { done: false, .. }))
+                }) = running_tool_call(&mut app.cells, &tool_call_id)
                 {
                     *output = result.output_text();
                     *err_slot = is_error;
@@ -7540,6 +7544,23 @@ fn apply_picker_selection(
 /// `EnterWorktree` asks whether to keep or remove it, as a picker that
 /// remote controllers see and may answer too. Returns whether the question
 /// is open, so quitting waits for its answer.
+/// The line of the running tool call `id`: the calls of one answer run at
+/// the same time, so each update and result goes to the call it names. A
+/// call without an id goes to the latest running one.
+fn running_tool_call<'a>(cells: &'a mut [Cell], id: &str) -> Option<&'a mut Cell> {
+    let named = cells.iter().rposition(
+        |cell| matches!(cell, Cell::ToolCall { id: known, done: false, .. } if known == id),
+    );
+    let position = match named {
+        Some(position) => position,
+        None if id.is_empty() => cells
+            .iter()
+            .rposition(|cell| matches!(cell, Cell::ToolCall { done: false, .. }))?,
+        None => return None,
+    };
+    cells.get_mut(position)
+}
+
 fn ask_before_quitting(app: &mut App, session: &super_coding::AgentSession) -> bool {
     if is_attached(app) || app.worktree_settled {
         return false;
@@ -9651,6 +9672,91 @@ mod tests {
     }
 
     #[test]
+    fn each_tool_result_goes_to_the_call_it_belongs_to() {
+        let mut app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut search = FileSearchService::new(tx);
+        let mut send = |event: AgentEvent| {
+            handle_session_event(
+                &mut app,
+                SessionEvent::Agent(Box::new(event)),
+                &mut search,
+                &session,
+            );
+        };
+        for (id, command) in [("call_a", "echo one"), ("call_b", "sleep 1; echo two")] {
+            send(AgentEvent::ToolExecutionStart {
+                tool_call_id: id.into(),
+                tool_name: "Bash".into(),
+                args: serde_json::json!({"command": command}),
+            });
+        }
+        // The second call's output and the first call's result come first.
+        send(AgentEvent::ToolExecutionUpdate {
+            tool_call_id: "call_b".into(),
+            tool_name: "Bash".into(),
+            args: serde_json::json!({}),
+            partial: super_agent::ToolResult::text("tw"),
+        });
+        send(AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call_a".into(),
+            tool_name: "Bash".into(),
+            result: super_agent::ToolResult::text("one"),
+            is_error: false,
+        });
+        let shown = |app: &App| -> Vec<(String, String, bool)> {
+            app.cells
+                .iter()
+                .filter_map(|cell| match cell {
+                    Cell::ToolCall {
+                        title,
+                        output,
+                        done,
+                        ..
+                    } => Some((title.clone(), output.clone(), *done)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            shown(&app),
+            [
+                ("Bash echo one".to_string(), "one".to_string(), true),
+                (
+                    "Bash sleep 1; echo two".to_string(),
+                    "tw".to_string(),
+                    false
+                ),
+            ]
+        );
+        let mut send = |event: AgentEvent| {
+            handle_session_event(
+                &mut app,
+                SessionEvent::Agent(Box::new(event)),
+                &mut search,
+                &session,
+            );
+        };
+        send(AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call_b".into(),
+            tool_name: "Bash".into(),
+            result: super_agent::ToolResult::text("two"),
+            is_error: false,
+        });
+        assert_eq!(
+            shown(&app)[1],
+            (
+                "Bash sleep 1; echo two".to_string(),
+                "two".to_string(),
+                true
+            )
+        );
+    }
+
+    #[test]
     fn terminal_hosts_follow_compaction_queue_and_required_decisions() {
         use crate::terminal_hosts::State;
         let mut app = test_app();
@@ -10318,6 +10424,7 @@ mod tests {
     fn ctrl_r_expands_collapsed_tool_output() {
         let mut app = test_app();
         app.cells.push(Cell::ToolCall {
+            id: "call_1".into(),
             title: "mcp".into(),
             output: (1..=9)
                 .map(|line| format!("line {line}"))

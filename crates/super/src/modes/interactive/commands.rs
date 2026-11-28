@@ -336,6 +336,7 @@ mod tests {
                 output,
                 is_error,
                 done,
+                ..
             } => format!("tool {title} {output} {is_error} {done}"),
             Cell::Notice(text) => format!("notice {text}"),
             Cell::ReasoningEffort { level, generations } => {
