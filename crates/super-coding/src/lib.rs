@@ -4,6 +4,9 @@
 
 mod account_failover;
 #[cfg(test)]
+mod agent_tools_tests;
+pub mod agents;
+#[cfg(test)]
 mod background_tests;
 mod child_turn;
 pub mod compaction;
@@ -21,14 +24,14 @@ pub mod settings;
 #[cfg(test)]
 mod shell_tasks_tests;
 pub mod skills;
-pub mod subagents;
 pub mod system_prompt;
 pub mod tasks;
 pub mod tools;
 pub mod trust;
 pub mod workflows;
 
-pub use notifications::{Priority, monitor_event, task_notification};
+pub use agents::{AgentInfo, AgentRegistry, AgentResources, AgentType, AgentTypeSummary};
+pub use notifications::{Priority, agent_message, monitor_event, task_notification};
 pub use session::entry::{SessionEntry, SessionHeader};
 pub use session::manager::{SessionListing, SessionManager, default_session_dir};
 pub use session_runner::{

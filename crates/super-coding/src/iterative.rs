@@ -1,8 +1,8 @@
 //! Bounded loop and autoresearch jobs in persistent child sessions.
 
 use crate::child_turn;
+use crate::child_turn::{AgentStatus, ForkTurns};
 use crate::session_runner::AgentSession;
-use crate::subagents::{AgentStatus, ForkTurns};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -359,7 +359,9 @@ impl IterativeRuntime {
             let outcome = child_turn::run_child_turn(
                 &job.parent,
                 &job.child,
-                iteration_prompt(job.kind, &job.goal, iteration, job.limit),
+                super_agent::AgentMessage::user(iteration_prompt(
+                    job.kind, &job.goal, iteration, job.limit,
+                )),
                 Some(job.cancel.clone()),
                 None,
             )

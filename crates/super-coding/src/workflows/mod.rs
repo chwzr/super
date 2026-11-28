@@ -1,10 +1,10 @@
 //! Dynamic workflows: many child agents orchestrated by a script the model
 //! writes.
 //!
-//! A workflow is built on the same child sessions `spawn_agent` uses, so it is
-//! available only when subagents are on. The difference is where the plan
-//! lives: with `spawn_agent` the model decides what to start next on every
-//! turn, and every result lands in its context. With a workflow the plan is a
+//! A workflow is built on the same child sessions the `Agent` tool uses, so it
+//! is available only when subagents are on. The difference is where the plan
+//! lives: with `Agent` the model decides what to start next on every turn,
+//! and every result lands in its context. With a workflow the plan is a
 //! script, and only the final answer comes back.
 
 mod prompt;

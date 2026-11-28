@@ -2,11 +2,11 @@
 //! with the session's own queue and task registry.
 
 use crate::background_tests::{eventually, model, scripted, text, tool_call, user_text};
+use crate::child_turn::ForkTurns;
 use crate::notifications::{MONITOR_EVENT, TASK_NOTIFICATION, monitored_event, notified_task};
 use crate::session::manager::SessionManager;
 use crate::session_runner::AgentSession;
 use crate::settings::{Mode, Settings};
-use crate::subagents::ForkTurns;
 use crate::tasks::{TaskKind, TaskSpec, TaskStatus};
 use crate::tools::monitor::{Limits, MonitorTool};
 use crate::tools::task_stop::TaskStopTool;

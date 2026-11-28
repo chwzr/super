@@ -1,8 +1,8 @@
 //! Running one workflow agent as a real SUPER child session.
 
 use crate::child_turn;
+use crate::child_turn::{AgentStatus, ForkTurns};
 use crate::session_runner::AgentSession;
-use crate::subagents::ForkTurns;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Starts each workflow agent as a fresh child session of the parent.
 ///
-/// Workflow agents get their own concurrency budget rather than sharing the
-/// four permits the `spawn_agent` runtime uses: a fan-out wants up to sixteen
+/// Workflow agents get their own concurrency budget rather than counting
+/// against the agents the `Agent` tool starts: a fan-out wants up to sixteen
 /// at once and would otherwise starve behind hand-started children.
 pub(crate) struct SessionAgentRunner {
     parent: Weak<AgentSession>,
@@ -69,7 +69,7 @@ impl AgentRunner for SessionAgentRunner {
         let outcome = child_turn::run_child_turn(
             &self.parent,
             &child,
-            prompt,
+            super_agent::AgentMessage::user(prompt),
             Some(cancel.clone()),
             request.timeout_ms,
         )
@@ -82,7 +82,7 @@ impl AgentRunner for SessionAgentRunner {
             return AgentOutcome::Stopped;
         }
         match outcome.status {
-            crate::subagents::AgentStatus::Completed => {
+            AgentStatus::Completed => {
                 let text = outcome.result.unwrap_or_default();
                 match &request.schema {
                     Some(schema) => match parse_structured(&text, schema) {
@@ -94,7 +94,7 @@ impl AgentRunner for SessionAgentRunner {
                     None => AgentOutcome::Done(Value::String(text)),
                 }
             }
-            crate::subagents::AgentStatus::Interrupted => AgentOutcome::Stopped,
+            AgentStatus::Interrupted => AgentOutcome::Stopped,
             _ => AgentOutcome::Failed(outcome.error.unwrap_or_else(|| "the agent failed".into())),
         }
     }
@@ -108,7 +108,8 @@ impl AgentRunner for SessionAgentRunner {
     }
 }
 
-/// A task name for the child session, within the name rules `spawn_agent` uses.
+/// A task name for the child session: lower-case letters, digits and
+/// underscores, at most 64.
 fn task_name_for(request: &AgentRequest) -> String {
     let mut name = String::from("wf_");
     for character in request.phase.chars() {
@@ -188,9 +189,9 @@ mod tests {
 
     #[test]
     fn task_names_follow_the_subagent_naming_rules() {
-        // `spawn_agent` accepts 1 to 64 lower-case letters, digits, and
-        // underscores, and a workflow child must not be the thing that breaks
-        // that rule.
+        // A child's task name is 1 to 64 lower-case letters, digits, and
+        // underscores, the form the session files and the workflow view
+        // expect.
         for phase in ["Discover", "Audit files!", "Report / summary", ""] {
             let name = task_name_for(&request(phase, 7));
             assert!(!name.is_empty() && name.len() <= 64, "{name}");
