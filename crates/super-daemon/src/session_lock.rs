@@ -44,7 +44,10 @@ static HELD_HERE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 pub fn held_by_this_process(session_file: &Path) -> bool {
     let canonical = std::fs::canonicalize(session_file).ok();
     HELD_HERE.lock().unwrap().iter().any(|held| {
-        held == session_file || canonical.as_ref().is_some_and(|canonical| held == canonical)
+        held == session_file
+            || canonical
+                .as_ref()
+                .is_some_and(|canonical| held == canonical)
     })
 }
 
