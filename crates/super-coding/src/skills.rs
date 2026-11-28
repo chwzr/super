@@ -121,15 +121,50 @@ pub fn split_frontmatter(text: &str) -> (Option<&str>, &str) {
     (None, text)
 }
 
+/// The YAML of a frontmatter. A value written without quotes that YAML does
+/// not take as it stands, such as `description: Reviews code: read only`,
+/// is read as the text it is: when the whole does not parse, each
+/// `key: value` line whose value holds `: ` or ` #` is read again with the
+/// value quoted. `None` when even that is not YAML.
+pub fn frontmatter_value(frontmatter: &str) -> Option<serde_yaml::Value> {
+    if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) {
+        return Some(value);
+    }
+    let quoted: Vec<String> = frontmatter
+        .lines()
+        .map(|line| {
+            let Some((key, value)) = line.split_once(": ") else {
+                return line.to_string();
+            };
+            let plain_key = !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            let value = value.trim();
+            let needs_quotes = value.contains(": ") || value.contains(" #");
+            let structured = value.starts_with(['"', '\'', '[', '{', '|', '>', '&', '*', '!']);
+            if plain_key && needs_quotes && !structured {
+                let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("{key}: \"{escaped}\"")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    serde_yaml::from_str(&quoted.join("\n")).ok()
+}
+
+/// A skill's file; `None` when it cannot be read or its frontmatter is not
+/// YAML ([`frontmatter_value`]), so that a skill whose frontmatter keeps it
+/// from the model is never offered to it.
 fn parse_skill(path: &Path) -> Option<Skill> {
     let text = std::fs::read_to_string(path).ok()?;
     let (frontmatter, _body) = split_frontmatter(&text);
     let mut name = None;
     let mut description = None;
     let mut disable_model_invocation = false;
-    if let Some(fm) = frontmatter
-        && let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(fm)
-    {
+    if let Some(fm) = frontmatter {
+        let value = frontmatter_value(fm)?;
         name = value["name"].as_str().map(String::from);
         description = value["description"].as_str().map(String::from);
         disable_model_invocation = value["disable-model-invocation"].as_bool().unwrap_or(false);
@@ -316,7 +351,7 @@ pub fn load(skill: &Skill) -> Result<LoadedSkill> {
 fn parse_loaded(text: &str) -> LoadedSkill {
     let (frontmatter, body) = split_frontmatter(text);
     let value = frontmatter
-        .and_then(|frontmatter| serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok())
+        .and_then(frontmatter_value)
         .unwrap_or(serde_yaml::Value::Null);
     let text_of = |key: &str| {
         value[key]
@@ -415,6 +450,33 @@ mod tests {
             .find(|skill| skill.name == "pdf-tools")
             .unwrap();
         assert_eq!(loaded.file_path, root.join("pdf-tools/SKILL.md"));
+    }
+
+    /// A skill whose description has `: ` in it keeps its other fields,
+    /// such as the one that keeps it from the model; one whose frontmatter
+    /// is no YAML is left out.
+    #[test]
+    fn a_skill_with_a_colon_in_a_value_keeps_its_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("mine.md"),
+            "---\ndescription: Deploys: only by hand\ndisable-model-invocation: true\n---\nGo",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("broken.md"),
+            "---\ndescription: [never closed\n---\nGo",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        scan_dir(root, true, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].name, "mine");
+        assert_eq!(out[0].description, "Deploys: only by hand");
+        assert!(out[0].disable_model_invocation);
+        let loaded = parse_loaded("---\ncontext: fork\nagent: Explore\ndescription: a: b\n---\nBody");
+        assert_eq!(loaded.run.unwrap().agent.as_deref(), Some("Explore"));
     }
 
     #[test]

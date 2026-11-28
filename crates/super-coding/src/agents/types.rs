@@ -188,13 +188,16 @@ pub fn discover_in(user: Option<&Path>, project: Option<&Path>) -> Vec<AgentType
 
 /// The type a definition file describes. The name falls back to the file's
 /// stem, the description to nothing; `tools` is a list or a comma-separated
-/// string, `*` or no `tools` meaning every tool. A file named `fork` or with
-/// a name that is not one line is skipped.
+/// string, `*` or no `tools` meaning every tool. A file named `fork`, with a
+/// name that is not one line, or with a frontmatter that is not YAML (see
+/// [`frontmatter_value`](crate::skills::frontmatter_value)) is skipped, so
+/// that a type never gets every tool because its `tools` could not be read.
 pub fn parse_definition(path: &Path, text: &str, source: AgentTypeSource) -> Option<AgentType> {
     let (frontmatter, body) = crate::skills::split_frontmatter(text);
-    let value = frontmatter
-        .and_then(|frontmatter| serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok())
-        .unwrap_or(serde_yaml::Value::Null);
+    let value = match frontmatter {
+        Some(frontmatter) => crate::skills::frontmatter_value(frontmatter)?,
+        None => serde_yaml::Value::Null,
+    };
     let text_of = |key: &str| {
         value[key]
             .as_str()
@@ -345,6 +348,44 @@ mod tests {
                 Path::new("/u/fork.md"),
                 "no frontmatter",
                 AgentTypeSource::User("/u/fork.md".into())
+            )
+            .is_none()
+        );
+    }
+
+    /// A value YAML does not take as it stands, such as a description with
+    /// `: ` in it, is read as its text, and the other fields keep theirs;
+    /// a frontmatter that is no YAML even so leaves the file out.
+    #[test]
+    fn a_value_with_a_colon_is_read_as_text_and_broken_frontmatter_is_left_out() {
+        let path = Path::new("/u/t_colon.md");
+        let definition = parse_definition(
+            path,
+            "---\nname: t_colon\ndescription: Reviews code: read only\ntools: Read\nmodel: thinker\neffort: low\n---\nMY-COLON\n",
+            AgentTypeSource::User(path.into()),
+        )
+        .unwrap();
+        assert_eq!(definition.description, "Reviews code: read only");
+        assert_eq!(definition.tools, ToolChoice::Only(vec!["Read".into()]));
+        assert_eq!(definition.model.as_deref(), Some("thinker"));
+        assert_eq!(definition.effort.as_deref(), Some("low"));
+        assert_eq!(definition.instructions, "MY-COLON");
+        let flow = parse_definition(
+            path,
+            "---\ndescription: \"quoted: fine\"\ntools: [Read, Bash]\n---\nX",
+            AgentTypeSource::User(path.into()),
+        )
+        .unwrap();
+        assert_eq!(flow.description, "quoted: fine");
+        assert_eq!(
+            flow.tools,
+            ToolChoice::Only(vec!["Read".into(), "Bash".into()])
+        );
+        assert!(
+            parse_definition(
+                path,
+                "---\ntools: [Read\ndescription: broken\n---\nX",
+                AgentTypeSource::User(path.into()),
             )
             .is_none()
         );

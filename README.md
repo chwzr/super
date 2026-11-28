@@ -309,7 +309,11 @@ the advanced mode; see [Mode](#mode).
   `Monitor` and `TaskStop` come when the list names them, also without
   `Bash`; `ListAgents` only with `Agent`, since a child that starts no agents
   has none to list. Without `tools`, or with `*`, a child gets every tool its
-  parent has.
+  parent has. A value written without quotes that has `: ` in it, such as
+  `description: Reviews code: read only`, is read as its text; a file whose
+  frontmatter is not YAML even so is left out, so that a type never gets
+  every tool because its `tools` could not be read. Skills read their
+  frontmatter the same way.
 - `model` takes any model SUPER knows, and `effort` a thinking level that the
   model accepts; a call with one it does not accept fails and names the
   levels it does.
