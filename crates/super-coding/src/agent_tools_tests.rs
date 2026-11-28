@@ -640,6 +640,19 @@ async fn each_agent_type_gets_its_tools() {
         child_of(&session, &watcher, 1).available_tool_names(),
         ["Bash", "Monitor", "TaskStop"]
     );
+    // Monitor and TaskStop come when the type names them, also without
+    // Bash; ListAgents only with Agent, as an agent that starts none has
+    // none to list.
+    let observer = definition("---\nname: observer\ntools: Read, Monitor, TaskStop\n---\nWatch.");
+    assert_eq!(
+        child_of(&session, &observer, 1).available_tool_names(),
+        ["Read", "Monitor", "TaskStop"]
+    );
+    let stopper = definition("---\nname: stopper\ntools: Read, TaskStop, ListAgents\n---\nStop.");
+    assert_eq!(
+        child_of(&session, &stopper, 1).available_tool_names(),
+        ["Read", "TaskStop"]
+    );
     let delegator = definition("---\nname: delegator\ntools: [Read, Agent]\n---\nDelegate.");
     assert_eq!(
         child_of(&session, &delegator, 1).available_tool_names(),

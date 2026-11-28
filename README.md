@@ -304,7 +304,10 @@ the advanced mode; see [Mode](#mode).
   a file can replace a built-in type except `fork`. A type whose `tools`
   names its tools gets those and no other: `tools: Read, Bash` gives a child
   `Read` and `Bash`, without `SendMessage`, `Skill`, `Monitor` or `TaskStop`.
-  Without `tools`, or with `*`, a child gets every tool its parent has.
+  `Monitor` and `TaskStop` come when the list names them, also without
+  `Bash`; `ListAgents` only with `Agent`, since a child that starts no agents
+  has none to list. Without `tools`, or with `*`, a child gets every tool its
+  parent has.
 - `model` takes any model SUPER knows, and `effort` a thinking level that the
   model accepts; a call with one it does not accept fails and names the
   levels it does.
@@ -1149,8 +1152,9 @@ two tools.
 Tool names are case-sensitive. `Read`, `Write`, `Edit`, and `Bash` start with a
 capital letter, and their lower-case names from earlier versions are no longer
 recognized: SUPER leaves out a name no tool has and says so on standard error
-when it starts, with the tool's name in its new case. The other tools of the advanced mode are not added here: `Monitor`
-and `TaskStop` come with `Bash` (see [Shell tools](#shell-tools)), `Skill`,
+when it starts, with the tool's name in its new case. The other tools of the
+advanced mode are not added here: `Monitor` and `TaskStop` come with `Bash`
+(see [Shell tools](#shell-tools)), or when `--tools` names them, `Skill`,
 `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` with `Read` or `Bash`
 (see [Wake-ups and worktrees](#wake-ups-and-worktrees)), and the agent tools
 and `Workflow` with their switches. A `-` entry such as `"-Monitor"` leaves

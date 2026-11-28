@@ -112,7 +112,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### Tools and shell
 
-- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`, `Skill` comes with `Read` or `Bash`, and so do `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` in a session that is no agent's, with the Subagents switch on `Agent`, `SendMessage`, `ListAgents` and `TaskStop` are there, and with the Dynamic workflows switch on too, `Workflow` and `Skill`. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Skill`, `Monitor`, `TaskStop`, `ScheduleWakeup`, `EnterWorktree` or `ExitWorktree` tools.
+- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`, or when the tool allowlist names them, `Skill` comes with `Read` or `Bash`, and so do `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` in a session that is no agent's, with the Subagents switch on `Agent`, `SendMessage`, `ListAgents` and `TaskStop` are there, and with the Dynamic workflows switch on too, `Workflow` and `Skill`. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Skill`, `Monitor`, `TaskStop`, `ScheduleWakeup`, `EnterWorktree` or `ExitWorktree` tools.
 - `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
 

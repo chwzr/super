@@ -365,6 +365,13 @@ pub struct ToolSelection {
 }
 
 impl ToolSelection {
+    /// Whether the allowlist names the tool `name`.
+    pub fn names(&self, name: &str) -> bool {
+        self.allow
+            .as_ref()
+            .is_some_and(|allow| allow.iter().any(|allowed| allowed == name))
+    }
+
     /// Whether the tool `name` may be offered.
     pub fn admits(&self, name: &str) -> bool {
         self.allow
@@ -1073,15 +1080,20 @@ impl AgentSession {
             }
         }
         // Monitor runs commands as Bash does, and TaskStop stops what they
-        // or the agents leave running.
+        // or the agents leave running. A host or an agent type that names
+        // one of them gets it without Bash too.
         let has_bash = tools.iter().any(|tool| tool.name() == "Bash");
+        let selection = self.tool_selection();
         if let Some(task_tools) = self.task_tools.get() {
             tools.extend(
                 task_tools
                     .iter()
-                    .filter(|tool| match tool.name() {
-                        "Monitor" => has_bash,
-                        _ => has_bash || agents_offered,
+                    .filter(|tool| {
+                        selection.names(tool.name())
+                            || match tool.name() {
+                                "Monitor" => has_bash,
+                                _ => has_bash || agents_offered,
+                            }
                     })
                     .cloned(),
             );
@@ -1111,7 +1123,6 @@ impl AgentSession {
         {
             tools.extend(session_folder_tools.iter().cloned());
         }
-        let selection = self.tool_selection();
         let mut position = 0;
         tools.retain(|tool| {
             position += 1;

@@ -420,6 +420,10 @@
   main session with every tool and wrote into the agent's transcript, and a
   fork copied its `subagent` entry, which hid the new session from every list.
   Rust SDK: `SessionManager::is_agent_session` and `refuse_agent_session`.
+- An agent type whose `tools` names `Monitor` or `TaskStop` gives its agents
+  those tools without `Bash` too, and `--tools` that names them offers them
+  without `Bash`; they were left out without a word. `ListAgents` still comes
+  only with `Agent`, as the README now says. Rust SDK: `ToolSelection::names`.
 
 ## 0.0.42 - 2026-11-27
 
