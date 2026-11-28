@@ -126,6 +126,30 @@
   `WorkflowRuntime::find`, `journal_for` and `directory`,
   `super_coding::session::manager::workflows_dir` and
   `super_workflow::Journal::completed`.
+- `ScheduleWakeup`, in the advanced mode, brings the agent back after a
+  delay of one minute to one hour, with the prompt it gave or with the next
+  round of a self-paced loop, or ends the loop. A session has one pending
+  wake-up, which lives as long as its process and keeps a session in the
+  daemon loaded.
+- `EnterWorktree` and `ExitWorktree`, in the advanced mode, move the session
+  into a git worktree and back: a new one under `.super/worktrees/` on a new
+  branch, or one of the repository that exists. While the session is there,
+  `Bash`, the file tools, its agents and the working directory in its system
+  prompt use the worktree. `ExitWorktree` keeps or removes a worktree it
+  made, and does not remove one with uncommitted files or new commits unless
+  told to discard them, nor one where a background task still runs.
+- The `worktree.baseRef` setting: `fresh`, the default, starts a new
+  worktree's branch from the remote's default branch, fetched first; `head`
+  from `HEAD`. Agents with `isolation: "worktree"` follow it too.
+- When the terminal quits, or a client stops a session in the daemon, while
+  the session works in a worktree it made, SUPER asks whether to keep or
+  remove the worktree; the terminal and the apps both show the question
+  (`approval_request` of kind `worktree`, choices `keep` and `remove`).
+- Rust SDK: `AgentSession::wakeups`, `worktree`, `working_folder`,
+  `enter_worktree` and `leave_worktree`, `IterativeRuntime::start_self_paced`,
+  `Session::settle_worktree`, `super_sdk::worktree_exit_request`,
+  `super_coding::worktree::{start_point, changes, list, describe, top}`, and
+  the messages `wakeup` and `loop_round` (`super_coding::notifications`).
 
 ### Changed
 
@@ -204,6 +228,19 @@
 - The descriptions of `Bash`, `Monitor` and `TaskStop` and of their
   parameters are placeholders until their text is written; `Bash` has one
   for each shell family.
+
+- In the advanced mode `/loop` without an interval runs self-paced in the
+  session itself: each round is a turn with the goal, the model schedules the
+  next one with `ScheduleWakeup` or ends the loop, a round that leaves nothing
+  running and nothing scheduled ends it, and it stops after 100 rounds at
+  most (`--iterations` sets fewer). It no longer runs its iterations back to
+  back in a child session there. `/loop` with an interval, `/loop` in the
+  basic mode and `/autoresearch` work as before. The `/loop` command's
+  description in the command list reads "Run a goal loop".
+- The descriptions of `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`
+  and of their parameters, the instructions a loop's round carries and the
+  question about a worktree at a session's end are placeholders until their
+  text is written.
 
 ## 0.0.42 - 2026-11-27
 

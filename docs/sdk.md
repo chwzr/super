@@ -346,9 +346,49 @@ An agent with `isolation: "worktree"` works in a git worktree made by
 `super_coding::worktree` (`create`, `has_changes`, `remove`, `recreate`),
 with its built-in tools copied to that folder through
 `AgentTool::in_directory`; a custom tool keeps the folder it was built for
-unless it implements that method.
+unless it implements that method. Its branch starts where the
+`worktree.baseRef` setting says (`worktree::start_point`).
 
 The module `super_coding::subagents` and its six tools are gone.
+
+## Wake-ups and worktrees
+
+In the advanced mode a session that is no agent's, with `Read` or `Bash`,
+also offers `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`.
+
+`ScheduleWakeup` schedules the session's one pending wake-up
+(`AgentSession::wakeups()`, `super_coding::Wakeups`: `pending`, `stop`,
+`running_loop`). Its delay is kept between 60 and 3,600 seconds. When it is
+due its prompt is queued with `Priority::Later`, as a `custom` message of type
+`wakeup`, which starts a run of an idle session like a notice does. It holds
+the session (`has_background_work`) until then, but `wait_for_background_work`
+does not wait for it. A self-paced loop
+(`IterativeRuntime::start_self_paced`, which the terminal's `/loop` without an
+interval uses in the advanced mode) runs its rounds as turns of the session
+itself, each a `custom` message of type `loop_round`; the model continues it
+with `ScheduleWakeup` and ends it with `stop`, and it ends by itself when the
+session has nothing left to do and no wake-up is pending, or after 100 rounds.
+
+`EnterWorktree` moves the session into a git worktree: its tools are copied
+there with `AgentTool::in_directory`, the working directory in its system
+prompt names it, and the agents, workflow agents and loop children it starts
+work there. `AgentSession::worktree()` returns the `EnteredWorktree`
+(`worktree`, `created`, `original`, `enteredAt`), `working_folder()` the
+folder it works in, and a host can move a session itself with
+`enter_worktree` and `leave_worktree`. `ExitWorktree` goes back, keeping or
+removing the worktree (`super_coding::tools::worktree::exit_worktree`). A
+new conversation (`replace_manager`) starts in the session folder again; the
+worktree stays on disk.
+
+A session that ends in a worktree it made asks whether to keep or remove it:
+`Session::settle_worktree(wait)` opens the question
+(`super_sdk::worktree_exit_request`, an `ApprovalRequest` of kind
+`Worktree` whose title is a placeholder and whose choices are
+`WORKTREE_KEEP` and `WORKTREE_REMOVE`), waits at most `wait` for an answer
+from any surface (`answer_approval`), and does what was chosen; without an
+answer it keeps the worktree. The daemon calls it when a client stops a
+session. An embedder that ends a session itself calls it before `close` if
+it wants the question asked.
 
 ## Tools and safety
 

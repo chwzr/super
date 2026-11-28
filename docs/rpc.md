@@ -111,7 +111,7 @@ An image is `{"type":"image","data":"<base64>","mimeType":"image/png"}`.
 
 ### Tools and shell
 
-- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`, `Skill` comes with `Read` or `Bash`, with the Subagents switch on `Agent`, `SendMessage`, `ListAgents` and `TaskStop` are there, and with the Dynamic workflows switch on too, `Workflow` and `Skill`. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Skill`, `Monitor` or `TaskStop` tools.
+- `get_tools`: enabled tool names, such as `Read`, `Write`, `Edit`, and `Bash`. In the advanced mode `Monitor` and `TaskStop` come with `Bash`, `Skill` comes with `Read` or `Bash`, and so do `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` in a session that is no agent's, with the Subagents switch on `Agent`, `SendMessage`, `ListAgents` and `TaskStop` are there, and with the Dynamic workflows switch on too, `Workflow` and `Skill`. A session in the basic mode (the `mode` setting) lists no agent, workflow, `Skill`, `Monitor`, `TaskStop`, `ScheduleWakeup`, `EnterWorktree` or `ExitWorktree` tools.
 - `bash` with `command`: runs immediately, streams `bash_execution_update`, returns output/exitCode/cancelled/truncated/fullOutputPath, and records a `bashExecution` message for the next model request.
 - `abort_bash`.
 
@@ -178,10 +178,14 @@ Session: `queue_update`, `compaction_start`, `compaction_end`, `retry`,
 Background tasks: `task_started`, `task_updated` (its `progress` line
 changed) and `task_ended`, each with `task`.
 
-Approvals: `approval_request` with `approvalId`, `kind`, `title`, `detail`,
-and `choices` (`[{id, label, detail}]`); `approval_resolved` with
-`approvalId`, `choice`, and `by` (`local` for the terminal, `rpc` for a direct
-client, otherwise the remote device name).
+Approvals: `approval_request` with `approvalId`, `kind` (`workflow`,
+`trust`, `login`, `worktree` or `other`), `title`, `detail`, and `choices`
+(`[{id, label, detail}]`); `approval_resolved` with `approvalId`, `choice`,
+and `by` (`local` for the terminal, `rpc` for a direct client, otherwise the
+remote device name). A `worktree` question comes when a session that works
+in a worktree it made with `EnterWorktree` ends: its `detail` is the
+worktree's folder and its choices are `keep` and `remove`; see
+[Wake-ups, loops and worktrees](#wake-ups-loops-and-worktrees).
 
 Commands from another surface: `command_applied` with `origin` (the name
 that surface gave itself: a daemon client's `hello.name`, the device a
@@ -275,6 +279,46 @@ on the client: one that shows a stop control for each task (`initialize`
 with `taskControls: true`, or `hello.taskControls` on the daemon) keeps them
 running and stops them one by one with `stop_task`; any other client stops
 them all with `abort`, since it has no other way to.
+
+## Wake-ups, loops and worktrees
+
+A `ScheduleWakeup` call answers at once. Its `details.wakeup` is the pending
+wake-up: `id`, `delaySeconds` (kept between 60 and 3600), `dueAt`
+(milliseconds since the Unix epoch), `reason`, `noop`, `prompt` and, during a
+self-paced loop of the terminal, `job` and `round`; `details.requestedDelaySeconds`
+is the delay the model asked for. A call with `stop` has `details.stopped`
+(`loop` with its `round`, or the cancelled `wakeup`, or `null`). A session has
+one pending wake-up; it is not stored, so it lives as long as the process
+that runs the session.
+
+When a wake-up outside a loop is due, the session queues a `custom` message
+with `customType: "wakeup"`: its text is the wake-up's `prompt`, and its
+`details.wakeup` is the wake-up. It starts a run like a notice when the agent
+is idle, and waits for the end of the run that works otherwise. A round of a
+self-paced loop (the terminal's `/loop` without an interval in the advanced
+mode) is a `custom` message with `customType: "loop_round"`, whose
+`details` carry `job`, `round`, `maxRounds`, `prompt` (the loop's goal) and
+`wakeup` (the wake-up that started it, or `null` for the first round). Show
+both as notices; `reason` and `noop` are worth showing with them.
+
+An `EnterWorktree` call's `details.worktree` has `worktree` (`path`,
+`branch`, `base`, `project`), `created` (`false` for a worktree entered by
+its `path`), `original` (the folder the session goes back to) and
+`enteredAt`, and `details.start` is the ref a new branch started from
+(`refs/remotes/origin/<branch>`, or `null` for `HEAD`). An `ExitWorktree`
+call's `details` carry `action`, `left` (whether the session left a
+worktree) and `worktree`, and `removed` for a removed one. While a session
+works in a worktree, its tools, the agents it starts and the working
+directory in its system prompt use the worktree. The worktree is not
+stored: a session loaded again works in its own folder.
+
+A session that ends in a worktree it made asks its clients whether to keep
+or remove it, with an `approval_request` of kind `worktree` (above). Answer
+it with `answer_approval` and `keep` or `remove`; `remove` stops the
+session's background tasks and deletes the worktree with its branch and its
+changes. The interactive terminal asks when it quits; the daemon asks when a
+client stops the session with `stop_session`, and keeps the worktree when no
+answer comes within a minute.
 
 ## Agents
 

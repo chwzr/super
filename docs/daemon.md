@@ -164,7 +164,7 @@ connection.
 | `resume_session` | `sessionId` | `session`; loads a stored session |
 | `attach` | `sessionId` | `session`, `previousSessionId`; loads the session when stored, switches when already attached |
 | `detach` | | `sessionId` |
-| `stop_session` | `sessionId` | `sessionId`; aborts the turn and unloads, the file stays |
+| `stop_session` | `sessionId` | `sessionId`; aborts the turn and unloads, the file stays; a session in a worktree it made asks first (below) |
 | `shutdown` | | the daemon exits 0 |
 
 A session:
@@ -222,6 +222,19 @@ null for a stored session.
   the session started before it was loaded again can be resumed from there.
 - The daemon builds a session's skills with it, as the terminal does; in the
   advanced mode the model loads them with `Skill`.
+- A wake-up the model schedules with `ScheduleWakeup` runs in the daemon's
+  session: it keeps the session loaded until it is due, then queues its
+  prompt, which starts a run that every attached client sees. It lives as
+  long as the daemon; after a restart it is gone.
+- A session that moved into a worktree with `EnterWorktree` works there
+  until `ExitWorktree`. When a client stops it with `stop_session` while it
+  works in a worktree it made, the daemon first asks every client an
+  `approval_request` of kind `worktree` with the choices `keep` and
+  `remove`, and unloads the session once one answers or after a minute
+  without an answer, keeping the worktree then. A session unloaded while
+  idle, or by `shutdown`, keeps its worktree without asking. The worktree is
+  not stored with the session: loaded again, the session works in its own
+  folder, and the worktree stays on disk.
 - The agents a hosted session starts run inside it, in the daemon, and are
   stored in the folder beside its file (`<file without .jsonl>/agents/`).
   They are not sessions of their own: `list_sessions`, `status`'s
@@ -302,8 +315,9 @@ The title a terminal generates from the first prompt goes to the daemon as
 title without a line, as a title generated in-process never shows one.
 The internal command name and the origin never appear in the transcript, so
 a resumed session, whose file records no origins, reads like the live one.
-An approval the daemon asks (a workflow's cost gate) opens as a picker in
-every attached terminal; the first answer wins, the daemon names the
+An approval the daemon asks (a workflow's cost gate, or the question whether
+to keep a session's worktree when a client stops the session) opens as a
+picker in every attached terminal; the first answer wins, the daemon names the
 answering client in `approval_resolved.by`, and every terminal closes its
 picker and shows the answer the same way (`workflow cancelled`). Esc on the
 picker answers `cancel`.

@@ -211,12 +211,23 @@ environment, SUPER prints
 
 ### Loop and autoresearch
 
-Use a loop for repeated work. With no limit, it runs until the goal is complete
-or you stop it:
+Use a loop for repeated work:
 
 ```text
 /loop make the parser tests pass
 ```
+
+In the advanced mode, a loop without an interval is self-paced and runs in the
+session itself. Each round is a turn with your goal. At the end of a round the
+agent calls `ScheduleWakeup` to say when the next round starts, between one
+minute and one hour later, or that the loop is over. The loop also ends when a
+round leaves nothing running and no wake-up pending, and after 100 rounds at
+most. Your own prompts and the notices of background tasks can come between
+rounds; a wake-up scheduled in them continues the loop too. See
+[Wake-ups and worktrees](#wake-ups-and-worktrees).
+
+In the basic mode, a loop without an interval runs its iterations back to back
+until the goal is complete or you stop it.
 
 Put an interval before the goal to wait between turns. The first turn starts
 immediately. Compound intervals support days, hours, minutes, seconds,
@@ -227,7 +238,8 @@ milliseconds, microseconds, and nanoseconds:
 /loop 2d4h review dependency updates
 ```
 
-Use `--iterations` for a fixed number of turns:
+Use `--iterations` for a fixed number of turns; a self-paced loop runs at most
+that many rounds:
 
 ```text
 /loop make the parser tests pass --iterations 8
@@ -247,9 +259,11 @@ Limits:
 - Autoresearch does not accept an interval.
 - The maximum explicit iteration limit is 100.
 
-Each job branches from the current conversation into a persistent SUPER
-session. Run `/jobs`, `/loop` without a goal, or `/autoresearch` without a goal
-to manage jobs.
+Each job with an interval, every job in the basic mode and every autoresearch
+job branches from the current conversation into a persistent SUPER session. A
+self-paced loop runs in the session itself, one at a time. Run `/jobs`, `/loop`
+without a goal, or `/autoresearch` without a goal to manage jobs; stopping a
+self-paced loop there cancels its pending wake-up.
 
 | Key            | Action                                   |
 | -------------- | ---------------------------------------- |
@@ -298,9 +312,10 @@ the advanced mode; see [Mode](#mode).
   Children in the background keep running; `/tasks` and `TaskStop` stop them.
 - With `isolation` set to `worktree`, a child works in a git worktree of its
   own, `.super/worktrees/agent-<id>` in the project, on the new branch
-  `worktree-agent-<id>`. When it ends with nothing changed, the worktree and
-  the branch are removed; otherwise they stay, and its report names them.
-  `remote` is not available.
+  `worktree-agent-<id>`, which starts where `worktree.baseRef` says (see
+  [Wake-ups and worktrees](#wake-ups-and-worktrees)). When it ends with
+  nothing changed, the worktree and the branch are removed; otherwise they
+  stay, and its report names them. `remote` is not available.
 
 Every other child uses the same working directory. Project settings cannot
 enable subagents, and `--no-tools` keeps them off.
@@ -1109,7 +1124,10 @@ two tools.
 Tool names are case-sensitive. `Read`, `Write`, `Edit`, and `Bash` start with a
 capital letter, and their lower-case names from earlier versions are no longer
 recognized. `Monitor` and `TaskStop` are not chosen here: in the advanced mode
-they come with `Bash` (see [Shell tools](#shell-tools)).
+they come with `Bash` (see [Shell tools](#shell-tools)). Neither are
+`ScheduleWakeup`, `EnterWorktree` and `ExitWorktree`, which the main session
+gets in the advanced mode alongside `Read` or `Bash` (see
+[Wake-ups and worktrees](#wake-ups-and-worktrees)).
 
 To adjust the default selection, use `+` to add a tool and `-` to remove one.
 For example, `["+grep", "-Write"]` adds search and removes the Write tool. Add
@@ -1185,6 +1203,58 @@ In the advanced mode two tools come with `Bash`:
 - `TaskStop` stops a background task by its id or its name: a command, a
   monitor, an agent or a workflow run. It does not touch `/loop` and
   `/autoresearch` jobs.
+
+### Wake-ups and worktrees
+
+In the advanced mode the main session has three more tools alongside `Read`
+or `Bash`. A subagent has none of them.
+
+- `ScheduleWakeup` brings the agent back later. `delaySeconds` is kept
+  between 60 and 3,600. During a self-paced `/loop` the wake-up starts the
+  loop's next round, and `stop` ends the loop; outside a loop it brings back
+  its `prompt`, and `stop` cancels it. A session has one pending wake-up at a
+  time, and a new one replaces it. When it comes due it starts a turn, or
+  waits for the turn that runs. `reason` and `noop` are shown in the
+  transcript and kept in the session; they change nothing else. A wake-up
+  lives as long as the process that runs the session. The daemon keeps a
+  session loaded while its wake-up is pending; `super -p` does not wait for
+  one.
+- `EnterWorktree` moves the session into a git worktree. With `name`, or with
+  neither `name` nor `path`, it makes one, `.super/worktrees/<name>` in the
+  project, on the new branch `worktree-<name>`; without a name it gets eight
+  random letters and digits. With `path` it enters a worktree of the same
+  repository that exists. From then on `Bash`, the file tools and the
+  working directory in the system prompt use the worktree, and so do the
+  subagents the session starts. A session in a worktree cannot enter another
+  one.
+- `ExitWorktree` takes the session back to its folder. It acts only on a
+  worktree `EnterWorktree` made in this session; for one it entered by its
+  path it does nothing. `action` `keep` leaves the worktree and its branch;
+  `remove` deletes both. `remove` is refused while the worktree has
+  uncommitted files or commits after the one it started from, unless
+  `discard_changes` is set, and while a background task started in it still
+  runs.
+
+`worktree.baseRef` chooses where a new worktree's branch starts, for
+`EnterWorktree` and for subagents with `isolation` set to `worktree`:
+
+- `fresh`, the default, starts from the default branch of the `origin`
+  remote, which SUPER fetches first for at most 30 seconds. A repository
+  without such a branch starts from `HEAD`.
+- `head` starts from `HEAD`, the state your folder is in.
+
+```json
+{ "worktree": { "baseRef": "head" } }
+```
+
+When you quit the terminal while the session works in a worktree it made,
+SUPER asks whether to keep or remove the worktree; `Esc` goes back to the
+session. Remote controllers see the same question and may answer it. A
+session stopped from an app or with `stop_session` asks its clients the same
+way and keeps the worktree when nobody answers within a minute. A session
+the daemon unloads while idle, `super -p`, `--mode rpc` and the editor mode
+keep the worktree without asking. A new conversation, and a session opened
+again, start in the session folder.
 
 ## Experimental context file
 
