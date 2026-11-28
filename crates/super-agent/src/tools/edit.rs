@@ -194,6 +194,13 @@ impl AgentTool for EditTool {
         }))
     }
 
+    fn in_directory(&self, cwd: &std::path::Path) -> Option<DynTool> {
+        Some(Arc::new(EditTool {
+            cwd: cwd.to_path_buf(),
+            session: self.session.clone(),
+        }))
+    }
+
     async fn execute(
         &self,
         _id: &str,

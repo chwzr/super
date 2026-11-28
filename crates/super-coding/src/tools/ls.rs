@@ -19,6 +19,12 @@ impl AgentTool for LsTool {
         "ls"
     }
 
+    fn in_directory(&self, cwd: &std::path::Path) -> Option<super_agent::DynTool> {
+        Some(std::sync::Arc::new(LsTool {
+            cwd: cwd.to_path_buf(),
+        }))
+    }
+
     fn description(&self) -> String {
         "List directory contents. Directories are listed first with a trailing slash.".to_string()
     }

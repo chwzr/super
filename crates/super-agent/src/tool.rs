@@ -3,6 +3,7 @@
 use crate::background::{ShellDirectory, TaskHost};
 use crate::file_state::FileStates;
 use serde_json::Value;
+use std::path::Path;
 use std::sync::Arc;
 use super_ai::{ContentBlock, ToolDef, Usage};
 use tokio_util::sync::CancellationToken;
@@ -118,6 +119,13 @@ pub trait AgentTool: Send + Sync {
     /// calls this for every tool it offers; `None`, the default, means the
     /// tool has no such state and is used as it is.
     fn for_session(&self, _session: &ToolSession) -> Option<DynTool> {
+        None
+    }
+    /// A copy of this tool that works in the folder `cwd` instead of the
+    /// one it was built for, for a session that works somewhere else (an
+    /// agent in a worktree of its own). `None`, the default, means the tool
+    /// does not depend on a folder and is used as it is.
+    fn in_directory(&self, _cwd: &Path) -> Option<DynTool> {
         None
     }
     /// Execute. Return Err on failure. The loop converts it into an error

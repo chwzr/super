@@ -652,6 +652,15 @@ impl AgentTool for BashTool {
         }))
     }
 
+    fn in_directory(&self, cwd: &Path) -> Option<DynTool> {
+        Some(Arc::new(BashTool {
+            cwd: cwd.to_path_buf(),
+            shell_path: self.shell_path.clone(),
+            command_prefix: self.command_prefix.clone(),
+            session: self.session.clone(),
+        }))
+    }
+
     async fn execute(
         &self,
         tool_call_id: &str,

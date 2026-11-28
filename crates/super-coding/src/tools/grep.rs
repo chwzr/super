@@ -41,6 +41,12 @@ impl AgentTool for GrepTool {
         "grep"
     }
 
+    fn in_directory(&self, cwd: &std::path::Path) -> Option<super_agent::DynTool> {
+        Some(std::sync::Arc::new(GrepTool {
+            cwd: cwd.to_path_buf(),
+        }))
+    }
+
     fn description(&self) -> String {
         "Search file contents for a pattern (regex or literal string). Respects .gitignore. Returns matching lines with file paths and line numbers.".to_string()
     }
