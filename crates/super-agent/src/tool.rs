@@ -1,5 +1,6 @@
 //! The tool contract used by the agent runtime.
 
+use crate::background::{ShellDirectory, TaskHost};
 use crate::file_state::FileStates;
 use serde_json::Value;
 use std::sync::Arc;
@@ -68,6 +69,13 @@ pub struct ToolSession {
     /// The free room of the session's context, for a read that may fill
     /// more of it than the default limit (`Read` with `allow_large`).
     pub context_room: Option<ContextRoomFn>,
+    /// Where a `cd` left the shell, in a session whose `cd` carries over to
+    /// the next command: the main session. `None` everywhere else, where
+    /// every command starts in the session folder.
+    pub shell: Option<Arc<ShellDirectory>>,
+    /// The session's background tasks, for `Bash` with `run_in_background`.
+    /// `None` outside a session.
+    pub tasks: Option<Arc<dyn TaskHost>>,
 }
 
 impl ToolSession {

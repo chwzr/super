@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use super_agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, DynTool, EventSink, FileStates,
-    StreamFn, ToolSession, TurnUpdate,
+    ShellDirectory, StreamFn, ToolSession, TurnUpdate,
 };
 use super_ai::{Model, Registry, StopReason, ThinkingLevel, Usage};
 use tokio_util::sync::CancellationToken;
@@ -362,10 +362,41 @@ impl AgentSession {
         sink: SessionEventSink,
         subagents_allowed: bool,
     ) -> Arc<Self> {
+        Self::construct(
+            manager,
+            tools,
+            registry.into(),
+            settings,
+            system_prompt,
+            model,
+            thinking,
+            api_key_override,
+            sink,
+            subagents_allowed,
+            false,
+        )
+    }
+
+    /// A session; `child` for a child agent's, whose shell starts every
+    /// command in the session folder instead of where a `cd` left it.
+    #[allow(clippy::too_many_arguments)]
+    fn construct(
+        manager: SessionManager,
+        tools: Vec<DynTool>,
+        registry: Arc<Registry>,
+        settings: Settings,
+        system_prompt: String,
+        model: Model,
+        thinking: ThinkingLevel,
+        api_key_override: Option<(String, String)>,
+        sink: SessionEventSink,
+        subagents_allowed: bool,
+        child: bool,
+    ) -> Arc<Self> {
         let totals = manager.usage_totals();
         let session = Arc::new(AgentSession {
             manager: Mutex::new(manager),
-            registry: RwLock::new(registry.into()),
+            registry: RwLock::new(registry),
             base_tools: Mutex::new(tools.clone()),
             session_tools: Mutex::new(Vec::new()),
             tools: Mutex::new(tools),
@@ -411,6 +442,9 @@ impl AgentSession {
                 let (used, window) = session.context_usage();
                 Some(window.saturating_sub(used))
             })),
+            // A `cd` carries over in the main session only.
+            shell: (!child).then(|| Arc::new(ShellDirectory::new())),
+            tasks: Some(session.background_tasks().host()),
         };
         assert!(session.tool_session.set(tool_session).is_ok());
         if subagents_allowed {
@@ -706,7 +740,7 @@ impl AgentSession {
     }
 
     /// What this session's tools keep per session.
-    fn tool_session(&self) -> &ToolSession {
+    pub(crate) fn tool_session(&self) -> &ToolSession {
         self.tool_session
             .get()
             .expect("the tool session is set at construction")
@@ -784,6 +818,9 @@ impl AgentSession {
         // Background work and what it queued belong to the conversation
         // that is left, and so does what it read.
         self.file_state().clear();
+        if let Some(shell) = &self.tool_session().shell {
+            shell.reset();
+        }
         self.background_tasks().reset();
         self.remote_tasks.lock().unwrap().clear();
         for queue in [&self.steering, &self.follow_up] {
@@ -1695,7 +1732,7 @@ impl AgentSession {
             "\n\nYou are child agent {canonical_path}. Complete only the assigned task. Return a concise result to the parent agent."
         ));
 
-        let child = Self::new_with_subagents_allowed(
+        let child = Self::construct(
             manager,
             self.base_tools.lock().unwrap().clone(),
             self.registry(),
@@ -1706,6 +1743,7 @@ impl AgentSession {
             self.api_key_override.clone(),
             Arc::new(|_| {}),
             false,
+            true,
         );
         child.set_stream_fn(self.stream_fn.lock().unwrap().clone());
         // A fork carries on the parent's conversation and starts from what
@@ -3187,27 +3225,26 @@ mod ephemeral_tests {
         let mut model = session.model();
         model.provider = "cursor".into();
         session.set_model(model);
-        for (path, syntax) in [
-            ("pwsh.exe", "PowerShell 7"),
-            ("powershell.exe", "Windows PowerShell 5.1"),
-            ("cmd.exe", "cmd.exe syntax"),
-            ("bash", "POSIX shell syntax"),
+        // The description of Bash is the placeholder of its shell family.
+        for (path, key) in [
+            ("pwsh.exe", "Bash.description.pwsh"),
+            ("powershell.exe", "Bash.description.powershell"),
+            ("cmd.exe", "Bash.description.cmd"),
+            ("bash", "Bash.description"),
         ] {
             let mut tool = super_agent::tools::bash::BashTool::new("/test".into());
             tool.shell_path = Some(path.into());
             session.install_session_tool(Arc::new(tool));
             let context = session.build_context();
+            let placeholder = super_agent::placeholder::prompt_todo(key);
             assert!(
-                context.system_prompt.contains(path),
+                context
+                    .system_prompt
+                    .ends_with(&format!("SUPER shell tool (Bash): {placeholder}")),
                 "{}",
                 context.system_prompt
             );
-            assert!(
-                context.system_prompt.contains(syntax),
-                "{}",
-                context.system_prompt
-            );
-            assert!(context.tools[0].to_def().description.contains(syntax));
+            assert_eq!(context.tools[0].to_def().description, placeholder);
         }
         assert!(session.remove_session_tool("Bash"));
         assert_eq!(session.build_context().system_prompt, "root prompt");

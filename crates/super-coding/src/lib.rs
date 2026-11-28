@@ -18,6 +18,8 @@ pub mod prompts;
 pub mod session;
 pub mod session_runner;
 pub mod settings;
+#[cfg(test)]
+mod shell_tasks_tests;
 pub mod skills;
 pub mod subagents;
 pub mod system_prompt;

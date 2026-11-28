@@ -161,7 +161,8 @@ async fn prompting_while_streaming_requires_an_explicit_behavior() {
             vec![MockTurn::ToolCall {
                 id: "call_1".into(),
                 name: "Bash".into(),
-                arguments: json!({"command": "sleep 1"}),
+                // A lone sleep is refused in the foreground.
+                arguments: json!({"command": "sleep 1; echo slept"}),
             }],
             vec![MockTurn::Text("Finished.".into())],
         ],

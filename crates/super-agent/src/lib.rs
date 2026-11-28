@@ -2,6 +2,7 @@
 //! the four harness-core tools (Read, Bash, Edit, Write).
 
 pub mod agent_loop;
+pub mod background;
 pub mod config;
 pub mod events;
 pub mod file_state;
@@ -14,6 +15,7 @@ pub mod tools;
 pub mod validate;
 
 pub use agent_loop::{EventSink, run_agent_loop, run_agent_loop_continue};
+pub use background::{HostedTask, ShellDirectory, TaskEnd, TaskEndStatus, TaskHost};
 pub use config::{
     AgentContext, AgentLoopConfig, BeforeToolCallResult, StreamFn, TurnInfo, TurnUpdate,
 };

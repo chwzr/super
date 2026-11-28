@@ -413,12 +413,17 @@ async fn run(
                             (name, args.tool_call_id, decode_arguments(args.args)?, None)
                         }
                         Some(wire::exec_server_message::Message::Shell(args) | wire::exec_server_message::Message::ShellStream(args)) => {
-                            let mut arguments = serde_json::json!({"command": args.command});
-                            if !args.working_directory.is_empty() {
-                                arguments["cwd"] = args.working_directory.clone().into();
-                            }
+                            // Bash has no working-directory parameter: a folder
+                            // Cursor names is entered by the command itself.
+                            let command = if args.working_directory.is_empty() {
+                                args.command.clone()
+                            } else {
+                                format!("cd '{}' && {}", args.working_directory.replace('\'', r"'\''"), args.command)
+                            };
+                            let mut arguments = serde_json::json!({"command": command});
+                            // Both Cursor and Bash count the timeout in milliseconds.
                             if let Some(timeout) = [Some(args.timeout), args.hard_timeout].into_iter().flatten().filter(|value| *value > 0).min() {
-                                arguments["timeout"] = (f64::from(timeout) / 1000.0).into();
+                                arguments["timeout"] = timeout.into();
                             }
                             ("Bash".into(), args.tool_call_id.clone(), arguments, Some(args))
                         }
@@ -1895,7 +1900,7 @@ mod tests {
                     if shell_mode {
                         let call = result.tool_calls().next().unwrap();
                         assert_eq!(call.name, "Bash");
-                        assert_eq!(call.arguments, serde_json::json!({"command":"date", "cwd":"workspace", "timeout":1.5}));
+                        assert_eq!(call.arguments, serde_json::json!({"command":"cd 'workspace' && date", "timeout":1500}));
                     } else {
                         let call = result.tool_calls().next().unwrap();
                         assert_eq!(serde_json::from_value::<u64>(call.arguments["timeout_ms"].clone()).unwrap(), 60000);

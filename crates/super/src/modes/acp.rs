@@ -1359,7 +1359,8 @@ mod tests {
                     vec![MockTurn::ToolCall {
                         id: "slow".into(),
                         name: "Bash".into(),
-                        arguments: json!({"command": "sleep 5"}),
+                        // A lone sleep is refused in the foreground.
+                        arguments: json!({"command": "sleep 5; echo slept"}),
                     }],
                     vec![MockTurn::Text("should not finish".into())],
                 ],

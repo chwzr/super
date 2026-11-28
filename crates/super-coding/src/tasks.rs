@@ -23,9 +23,10 @@ use crate::notifications::{Priority, task_notification};
 use crate::session_runner::{AgentSession, SessionEvent};
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use super_agent::{HostedTask, TaskEnd, TaskEndStatus, TaskHost};
 use tokio_util::sync::CancellationToken;
 
 /// At most this many tasks are remembered; the oldest ended ones go first.
@@ -412,6 +413,25 @@ impl BackgroundTasks {
         self.holds.load(Ordering::SeqCst) > 0 || self.has_running()
     }
 
+    /// A new id for a task of `kind` that no remembered task has, for a tool
+    /// that needs the id before it registers the task (to name its output
+    /// file, say).
+    pub fn new_id(&self, kind: TaskKind) -> String {
+        loop {
+            let id = new_task_id(kind);
+            if self.record(&id).is_none() {
+                return id;
+            }
+        }
+    }
+
+    /// This registry as the tools of its session reach it, for `Bash` with
+    /// `run_in_background`; it goes into the session's
+    /// [`super_agent::ToolSession`].
+    pub(crate) fn host(self: &Arc<Self>) -> Arc<dyn TaskHost> {
+        Arc::new(ToolTaskHost(Arc::downgrade(self)))
+    }
+
     /// Where a task with this id writes its output when its tool has no
     /// better place: `<temp>/super-tasks/<session id>/<id>.output`. The
     /// folder is created.
@@ -608,6 +628,62 @@ impl Drop for TaskHandle {
         {
             tasks.finish(&self.id, None);
         }
+    }
+}
+
+/// The registry as a tool in `super-agent` sees it: `Bash` registers a
+/// command it leaves running here.
+struct ToolTaskHost(Weak<BackgroundTasks>);
+
+impl TaskHost for ToolTaskHost {
+    fn start_shell(
+        &self,
+        description: &str,
+        tool_use_id: &str,
+    ) -> Result<Box<dyn HostedTask>, String> {
+        let tasks = self.0.upgrade().ok_or_else(|| {
+            "The session has ended, so the command cannot run in the background.".to_string()
+        })?;
+        let id = tasks.new_id(TaskKind::Shell);
+        let output = tasks.output_file_for(&id);
+        let handle = tasks
+            .register(
+                TaskSpec::new(TaskKind::Shell, description)
+                    .with_id(id)
+                    .with_tool_use_id(tool_use_id)
+                    .with_output_file(&output),
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(Box::new(HostedShell { handle, output }))
+    }
+}
+
+/// A shell command `Bash` left running, with the handle of its task.
+struct HostedShell {
+    handle: TaskHandle,
+    output: PathBuf,
+}
+
+impl HostedTask for HostedShell {
+    fn id(&self) -> &str {
+        self.handle.id()
+    }
+
+    fn output_file(&self) -> &Path {
+        &self.output
+    }
+
+    fn stop_signal(&self) -> CancellationToken {
+        self.handle.stop_signal()
+    }
+
+    fn finish(self: Box<Self>, end: TaskEnd) {
+        let outcome = match end.status {
+            TaskEndStatus::Completed => TaskOutcome::completed(end.summary),
+            TaskEndStatus::Failed => TaskOutcome::failed(end.summary),
+            TaskEndStatus::Stopped => TaskOutcome::stopped(end.summary),
+        };
+        self.handle.finish(outcome);
     }
 }
 

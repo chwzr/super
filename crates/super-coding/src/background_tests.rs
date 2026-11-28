@@ -17,7 +17,7 @@ use super_ai::{
 };
 use tokio_util::sync::CancellationToken;
 
-fn model() -> Model {
+pub(crate) fn model() -> Model {
     Model {
         id: "scripted".into(),
         name: "Scripted".into(),
@@ -37,14 +37,14 @@ fn model() -> Model {
     }
 }
 
-fn text(reply: &str) -> AssistantMessage {
+pub(crate) fn text(reply: &str) -> AssistantMessage {
     let mut message = AssistantMessage::empty("openai-responses", "scripted", "scripted");
     message.content.push(ContentBlock::text(reply));
     message.stop_reason = StopReason::Stop;
     message
 }
 
-fn tool_call(id: &str, name: &str, arguments: Value) -> AssistantMessage {
+pub(crate) fn tool_call(id: &str, name: &str, arguments: Value) -> AssistantMessage {
     let mut message = AssistantMessage::empty("openai-responses", "scripted", "scripted");
     message.content.push(ContentBlock::ToolCall(ToolCall {
         id: id.into(),
@@ -58,17 +58,17 @@ fn tool_call(id: &str, name: &str, arguments: Value) -> AssistantMessage {
 
 /// What the scripted provider saw and what the test can do while it runs.
 #[derive(Default)]
-struct Script {
+pub(crate) struct Script {
     /// The messages of every request, in order.
     requests: Mutex<Vec<Vec<Message>>>,
 }
 
 impl Script {
-    fn requests(&self) -> Vec<Vec<Message>> {
+    pub(crate) fn requests(&self) -> Vec<Vec<Message>> {
         self.requests.lock().unwrap().clone()
     }
 
-    fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.requests.lock().unwrap().len()
     }
 }
@@ -76,7 +76,7 @@ impl Script {
 /// A provider that answers request `n` with `replies[n]`, and fails once
 /// the script runs out. `hold` makes a request wait until it is cancelled,
 /// for a turn that must still run when the test interrupts it.
-fn scripted(replies: Vec<Option<AssistantMessage>>) -> (StreamFn, Arc<Script>) {
+pub(crate) fn scripted(replies: Vec<Option<AssistantMessage>>) -> (StreamFn, Arc<Script>) {
     let script = Arc::new(Script::default());
     let seen = script.clone();
     let stream: StreamFn = Arc::new(move |_, context, options| {
@@ -238,7 +238,7 @@ fn fixture(replies: Vec<Option<AssistantMessage>>) -> Fixture {
     }
 }
 
-fn user_text(message: &Message) -> Option<String> {
+pub(crate) fn user_text(message: &Message) -> Option<String> {
     match message {
         Message::User(user) => Some(user.content.as_text()),
         _ => None,
@@ -251,7 +251,7 @@ fn is_notice_text(text: &str, task_id: &str) -> bool {
     )) && text.contains(&format!("<task-id>{task_id}</task-id>"))
 }
 
-async fn eventually(what: &str, check: impl Fn() -> bool) {
+pub(crate) async fn eventually(what: &str, check: impl Fn() -> bool) {
     for _ in 0..500 {
         if check() {
             return;

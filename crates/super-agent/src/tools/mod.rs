@@ -1,5 +1,6 @@
 pub mod arguments;
 pub mod bash;
+pub mod command_rules;
 pub mod edit;
 pub mod files;
 pub mod image;

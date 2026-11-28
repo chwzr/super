@@ -1,7 +1,138 @@
 //! Command arguments shared by the agent, SDK, and terminal shell runners.
 
-use std::path::PathBuf;
-use tokio::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use tokio::process::{Child, Command};
+
+/// The family a shell belongs to, which decides how a command is handed to
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellKind {
+    /// bash, zsh, sh, ksh, dash and their relatives.
+    Posix,
+    Fish,
+    /// PowerShell 7.
+    Pwsh,
+    /// Windows PowerShell 5.1.
+    PowerShell,
+    Cmd,
+    Other,
+}
+
+/// The family of the shell at `shell`, judged by its file name.
+pub fn kind(shell: &Path) -> ShellKind {
+    let name = shell
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "bash" | "sh" | "zsh" | "ksh" | "mksh" | "dash" | "ash" | "yash" => ShellKind::Posix,
+        "fish" => ShellKind::Fish,
+        "pwsh" => ShellKind::Pwsh,
+        "powershell" => ShellKind::PowerShell,
+        "cmd" => ShellKind::Cmd,
+        _ => ShellKind::Other,
+    }
+}
+
+/// `text` in single quotes for a POSIX shell.
+pub fn posix_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// How `Bash` and `Monitor` start a command: in `directory`, and for a POSIX
+/// shell or fish as a login shell, so the shell starts from the user's
+/// profile. A POSIX shell changes to `directory` again after the profile ran,
+/// in case the profile changed folder, and with `report_directory` writes the
+/// folder the command ends in to that file when it exits. PowerShell and cmd
+/// start as [`command`] starts them.
+pub fn script(
+    shell_path: Option<&str>,
+    source: &str,
+    prefix: Option<&str>,
+    directory: &Path,
+    report_directory: Option<&Path>,
+) -> Command {
+    let shell = resolve(shell_path);
+    let mut command = match kind(&shell) {
+        ShellKind::Posix => {
+            let mut text = format!(
+                "cd -- {} || exit 1\n",
+                posix_quote(&directory.to_string_lossy())
+            );
+            if let Some(file) = report_directory {
+                let body = format!("pwd -P >| {}", posix_quote(&file.to_string_lossy()));
+                text.push_str(&format!("trap {} EXIT\n", posix_quote(&body)));
+            }
+            if let Some(prefix) = prefix {
+                text.push_str(prefix);
+                text.push('\n');
+            }
+            text.push_str(source);
+            let mut command = Command::new(shell);
+            command.args(["-l", "-c"]).arg(text);
+            command
+        }
+        ShellKind::Fish => {
+            let mut command = Command::new(shell);
+            command.args(["-l", "-c"]).arg(match prefix {
+                Some(prefix) => format!("{prefix}\n{source}"),
+                None => source.to_string(),
+            });
+            command
+        }
+        _ => self::command(shell_path, source, prefix),
+    };
+    command.current_dir(directory);
+    command
+}
+
+/// A shell process started in a process group of its own, so that stopping
+/// it also stops everything it started.
+pub struct ShellProcess {
+    pub child: Child,
+    group: Option<i32>,
+}
+
+impl ShellProcess {
+    /// Start `command` with no input. Dropping the process kills it.
+    pub fn spawn(mut command: Command) -> std::io::Result<Self> {
+        command.stdin(Stdio::null()).kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
+        let child = command.spawn()?;
+        #[cfg(unix)]
+        let group = child.id().and_then(|pid| i32::try_from(pid).ok());
+        #[cfg(not(unix))]
+        let group = None;
+        Ok(ShellProcess { child, group })
+    }
+
+    /// Kill the shell and everything in its process group.
+    pub fn kill(&mut self) {
+        #[cfg(unix)]
+        if let Some(group) = self.group {
+            // SAFETY: killpg only sends a signal to the group the shell leads.
+            unsafe {
+                libc::killpg(group, libc::SIGKILL);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = self.group;
+        let _ = self.child.start_kill();
+    }
+}
+
+impl Drop for ShellProcess {
+    /// A shell still running when its owner goes away is killed with its
+    /// group. One that has ended is left alone: its group id may be reused.
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            self.kill();
+        }
+    }
+}
 
 pub fn resolve(shell_path: Option<&str>) -> PathBuf {
     shell_path
