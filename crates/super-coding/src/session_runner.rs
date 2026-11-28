@@ -971,15 +971,16 @@ impl AgentSession {
 
     /// Move the session into `entered`: from the next request on, its tools
     /// work there and its prompt's working-directory line names it, and the
-    /// shell starts there.
-    pub(crate) fn enter_worktree(&self, entered: crate::worktree::EnteredWorktree) {
+    /// shell starts there. `EnterWorktree` does this after it made or found
+    /// the worktree.
+    pub fn enter_worktree(&self, entered: crate::worktree::EnteredWorktree) {
         *self.worktree.lock().unwrap() = Some(entered);
         self.moved();
     }
 
     /// Move the session back to its own folder; returns the worktree it was
     /// in. The worktree itself stays as it is.
-    pub(crate) fn leave_worktree(&self) -> Option<crate::worktree::EnteredWorktree> {
+    pub fn leave_worktree(&self) -> Option<crate::worktree::EnteredWorktree> {
         let left = self.worktree.lock().unwrap().take();
         if left.is_some() {
             self.moved();

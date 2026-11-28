@@ -147,6 +147,14 @@ struct App {
     remote_signed_in: bool,
     /// The picker question remote controllers may answer too.
     open_approval: Option<OpenApproval>,
+    /// The question whether to keep or remove the worktree the session works
+    /// in was answered: quitting goes ahead.
+    worktree_settled: bool,
+    /// A remote controller answered the question at quitting; the terminal
+    /// quits.
+    quit_requested: bool,
+    /// What leaving the worktree did, printed once the terminal is restored.
+    exit_note: Option<String>,
     /// What the session state last sent to the registry was built from.
     remote_record_key: Option<RemoteRecordKey>,
     /// Flags and settings allow mirroring; a sign-in turns it on.
@@ -238,6 +246,8 @@ enum PickerKind {
     WorkflowRuns(Vec<super_coding::workflows::RunId>),
     /// Pick where to save a run's script.
     WorkflowSaveLocation(super_coding::workflows::RunId),
+    /// Keep or remove the worktree the session works in, before quitting.
+    WorktreeExit,
     /// A question of the SUPER daemon, or what to do once it is gone.
     #[cfg(unix)]
     Attached(attached::AttachedPicker),
@@ -1639,6 +1649,9 @@ async fn run_with_hosts(
         remote: None,
         remote_signed_in: false,
         open_approval: None,
+        worktree_settled: false,
+        quit_requested: false,
+        exit_note: None,
         remote_record_key: None,
         remote_allowed: false,
         command_tx: None,
@@ -1924,6 +1937,10 @@ async fn run_with_hosts(
                     let Ok(event) = command_rx.try_recv() else { break };
                     handle_command_event(&mut app, event, &mut resources, &mut file_search, &session);
                 }
+                // A remote controller answered the question before quitting.
+                if app.quit_requested {
+                    break 'main;
+                }
                 dirty = true;
             }
             Some(result) = file_search_rx.recv() => {
@@ -1951,7 +1968,11 @@ async fn run_with_hosts(
                     update_thinking_border(&mut app, session.thinking_level());
                     match flow {
                         Flow::Continue => {}
-                        Flow::Quit => break 'main,
+                        Flow::Quit => {
+                            if !ask_before_quitting(&mut app, &session) {
+                                break 'main;
+                            }
+                        }
                     }
                 }
                 close_dismissed_approval(&mut app);
@@ -1998,6 +2019,9 @@ async fn run_with_hosts(
         attached::finish(attached).await;
         return Ok(0);
     }
+    if let Some(note) = app.exit_note.take() {
+        println!("{note}");
+    }
     // Background tasks end with the process that runs them.
     session.stop_background_tasks();
     if let Some(remote) = app.remote.take() {
@@ -2027,6 +2051,7 @@ fn terminal_host_state(
     let blocked = match app.picker.as_ref().map(|picker| &picker.kind) {
         Some(PickerKind::WorkflowApproval(..)) => Some("Workflow approval required"),
         Some(PickerKind::Trust) => Some("Project trust decision required"),
+        Some(PickerKind::WorktreeExit) => Some("Worktree decision required"),
         _ if app.secret_prompt.is_some() => Some("Login input required"),
         _ => None,
     };
@@ -6140,6 +6165,10 @@ fn resolve_remote_approval(
                 },
             );
         }
+        (Some(ApprovalKind::Worktree), PickerKind::WorktreeExit) => {
+            settle_worktree_at_quit(app, session, choice);
+            app.quit_requested = true;
+        }
         (Some(ApprovalKind::Trust), PickerKind::Trust) => {
             let cwd = session.manager.lock().unwrap().cwd().to_path_buf();
             let trusted = choice == "trust";
@@ -7098,6 +7127,7 @@ fn handle_picker_key(
         let mut picker = app.picker.take().expect("picker is present");
         let value = picker.list.current().map(|item| item.value);
         let filter = std::mem::take(&mut picker.list.filter);
+        let quits = matches!(picker.kind, PickerKind::WorktreeExit) && value.is_some();
         if let Some(value) = value {
             apply_picker_selection(
                 app,
@@ -7112,7 +7142,7 @@ fn handle_picker_key(
                 command_tx,
             );
         }
-        return Flow::Continue;
+        return if quits { Flow::Quit } else { Flow::Continue };
     }
     match key.key {
         Key::Escape => {
@@ -7442,11 +7472,70 @@ fn apply_picker_selection(
                 value: suggested,
             });
         }
+        PickerKind::WorktreeExit => {
+            let choice = if value == 1 {
+                super_sdk::WORKTREE_REMOVE
+            } else {
+                super_sdk::WORKTREE_KEEP
+            };
+            answer_approval_locally(app, choice);
+            settle_worktree_at_quit(app, session, choice);
+        }
         #[cfg(unix)]
         PickerKind::Attached(picker) => {
             attached::apply_picker(app, session, picker, value, resources, command_tx)
         }
     }
+}
+
+/// Before the terminal quits: a session in a worktree it made with
+/// `EnterWorktree` asks whether to keep or remove it, as a picker that
+/// remote controllers see and may answer too. Returns whether the question
+/// is open, so quitting waits for its answer.
+fn ask_before_quitting(app: &mut App, session: &super_coding::AgentSession) -> bool {
+    if is_attached(app) || app.worktree_settled {
+        return false;
+    }
+    let Some(entered) = session.worktree().filter(|entered| entered.created) else {
+        return false;
+    };
+    let request = super_sdk::worktree_exit_request(&entered);
+    let items = request
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(value, choice)| SelectItem {
+            label: choice.label.clone(),
+            detail: None,
+            value,
+        })
+        .collect();
+    app.picker = Some(Picker {
+        kind: PickerKind::WorktreeExit,
+        list: SelectList::new(request.title.clone(), items, app.theme.clone()),
+    });
+    if app.open_approval.is_none() {
+        register_approval(app, request);
+    }
+    true
+}
+
+/// Do what the question before quitting chose; quitting goes ahead. `remove`
+/// stops the background tasks first and removes the worktree with whatever
+/// is in it.
+fn settle_worktree_at_quit(app: &mut App, session: &super_coding::AgentSession, choice: &str) {
+    use super_coding::tools::worktree::{ExitAction, exit_worktree};
+    let action = if choice == super_sdk::WORKTREE_REMOVE {
+        session.stop_background_tasks();
+        ExitAction::Remove
+    } else {
+        ExitAction::Keep
+    };
+    app.exit_note = Some(match exit_worktree(session, action, true) {
+        Ok(exited) => exited.message,
+        Err(error) => error,
+    });
+    app.worktree_settled = true;
 }
 
 fn keep_default_model_in_scope(
@@ -9333,6 +9422,9 @@ mod tests {
             remote: None,
             remote_signed_in: false,
             open_approval: None,
+            worktree_settled: false,
+            quit_requested: false,
+            exit_note: None,
             remote_record_key: None,
             remote_allowed: false,
             command_tx: None,
@@ -9711,6 +9803,155 @@ mod tests {
         assert!(matches!(flow, Flow::Continue));
         assert_eq!(app.editor.text(), "one ");
         assert!(app.workflow_view.is_none());
+    }
+
+    /// A repository with one commit, for a session that enters a worktree.
+    fn git_repository() -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let git = |arguments: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "git {arguments:?}");
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("README"), "hello\n").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "--quiet", "-m", "first"]);
+        (directory, root)
+    }
+
+    fn enter_worktree(session: &super_coding::AgentSession, root: &Path, name: &str) -> PathBuf {
+        let worktree = super_coding::worktree::create(root, name, None).unwrap();
+        let path = worktree.path.clone();
+        session.enter_worktree(super_coding::EnteredWorktree {
+            worktree,
+            created: true,
+            original: root.to_path_buf(),
+            entered_at: 0,
+        });
+        path
+    }
+
+    #[tokio::test]
+    async fn quitting_in_a_worktree_asks_first_to_keep_or_remove_it() {
+        let (_directory, root) = git_repository();
+        let session = test_session(super_coding::SessionManager::in_memory(&root));
+        let mut app = test_app();
+        let (_, events) = super_sdk::mirrored_sink(64, None);
+        let sdk = super_sdk::Session::attach(session.clone(), root.clone(), events);
+        app.sdk = Some(sdk.clone());
+        assert!(
+            !ask_before_quitting(&mut app, &session),
+            "in no worktree it quits at once"
+        );
+
+        let path = enter_worktree(&session, &root, "quit");
+        let args = Args::parse_from(["super"]);
+        let mut resources = test_resources();
+        let mut running_task = None;
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
+        let mut file_search = FileSearchService::new(file_tx);
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let mut key = |app: &mut App, key: KeyEvent| {
+            handle_input(
+                app,
+                &session,
+                &InputEvent::Key(key),
+                &args,
+                &mut resources,
+                &mut running_task,
+                &mut file_search,
+                &command_tx,
+            )
+        };
+        let open_questions = || async {
+            sdk.execute(super_sdk::Command::GetApprovals {})
+                .await
+                .data
+                .unwrap()["approvals"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+
+        assert!(ask_before_quitting(&mut app, &session));
+        let picker = app.picker.as_ref().unwrap();
+        assert!(matches!(picker.kind, PickerKind::WorktreeExit));
+        assert_eq!(
+            picker.list.title,
+            super_agent::placeholder::prompt_todo("Worktree.exit_question")
+        );
+        assert_eq!(
+            terminal_host_state(&app, &session),
+            crate::terminal_hosts::State::Blocked("Worktree decision required")
+        );
+        // The apps see the same question.
+        let questions = open_questions().await;
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0]["kind"], "worktree");
+        assert_eq!(questions[0]["choices"][1]["label"], "remove");
+
+        // Escape stays in the session and withdraws the question.
+        let flow = key(
+            &mut app,
+            KeyEvent {
+                key: Key::Escape,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(flow, Flow::Continue));
+        close_dismissed_approval(&mut app);
+        assert!(app.picker.is_none());
+        assert!(open_questions().await.is_empty());
+        assert!(path.exists());
+
+        // remove, chosen here: the worktree goes and the terminal quits.
+        assert!(ask_before_quitting(&mut app, &session));
+        key(
+            &mut app,
+            KeyEvent {
+                key: Key::Down,
+                ..Default::default()
+            },
+        );
+        let flow = key(
+            &mut app,
+            KeyEvent {
+                key: Key::Enter,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(flow, Flow::Quit));
+        assert!(!path.exists());
+        assert!(
+            app.exit_note.as_deref().unwrap().contains("are removed"),
+            "{:?}",
+            app.exit_note
+        );
+        assert!(open_questions().await.is_empty());
+        assert!(!ask_before_quitting(&mut app, &session));
+
+        // keep, chosen in an app: the terminal quits and the worktree stays.
+        app.worktree_settled = false;
+        let path = enter_worktree(&session, &root, "kept");
+        assert!(ask_before_quitting(&mut app, &session));
+        let id = app.open_approval.as_ref().unwrap().id.clone();
+        resolve_remote_approval(&mut app, &session, &id, "keep");
+        assert!(app.quit_requested);
+        assert!(path.exists());
+        assert_eq!(session.worktree(), None);
+        assert!(app.exit_note.as_deref().unwrap().contains("are kept"));
     }
 
     #[test]

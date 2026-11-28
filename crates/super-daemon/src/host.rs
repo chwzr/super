@@ -21,6 +21,10 @@ use super_sdk::{
 };
 use tokio::sync::broadcast;
 
+/// How long a session a client stops waits for an answer to the question
+/// whether to keep or remove the worktree it works in.
+pub const WORKTREE_QUESTION_WAIT: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub session_dir: PathBuf,
@@ -319,8 +323,20 @@ impl SessionHost {
         });
     }
 
-    /// Abort the running turn, unload the session, keep its file.
+    /// Abort the running turn, unload the session, keep its file. A session
+    /// a client stops while it works in a worktree it made asks its clients
+    /// first whether to keep or remove the worktree, for at most
+    /// [`WORKTREE_QUESTION_WAIT`]; without an answer, and when the session
+    /// is unloaded while idle or with the daemon, the worktree is kept.
     pub async fn stop(&self, session_id: &str, reason: EndReason) -> Result<(), HostError> {
+        if reason == EndReason::Stopped {
+            let asking = self.hosted.lock().unwrap().get(session_id).cloned();
+            if let Some(hosted) = asking
+                && let Some(done) = hosted.session.settle_worktree(WORKTREE_QUESTION_WAIT).await
+            {
+                log::info("host", format!("session {session_id}: {done}"));
+            }
+        }
         let hosted = self
             .hosted
             .lock()
@@ -898,6 +914,129 @@ mod tests {
         drop(wake_up);
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(fixture.host.sweep_idle().await, 1);
+    }
+
+    #[tokio::test]
+    async fn the_sweep_keeps_a_session_whose_wake_up_is_pending() {
+        let fixture = fixture(Duration::from_millis(10)).await;
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        let wakeups = hosted.session.agent_session().wakeups();
+        wakeups
+            .schedule(super_coding::wakeup::WakeupRequest {
+                delay_seconds: 600.0,
+                prompt: Some("look again".into()),
+                ..Default::default()
+            })
+            .expect("scheduled");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            fixture.host.sweep_idle().await,
+            0,
+            "a pending wake-up keeps the session"
+        );
+        wakeups.stop();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.host.sweep_idle().await, 1);
+    }
+
+    fn git(directory: &Path, arguments: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(arguments)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .expect("git runs")
+            .status;
+        assert!(status.success(), "git {arguments:?}");
+    }
+
+    /// Make `root` a repository with one commit, and move `hosted` into a
+    /// new worktree `name` of it, as `EnterWorktree` does.
+    fn enter_worktree(hosted: &Hosted, root: &Path, name: &str) -> PathBuf {
+        if !root.join(".git").exists() {
+            for arguments in [
+                vec!["init", "--quiet", "-b", "main"],
+                vec!["config", "user.name", "Test"],
+                vec!["config", "user.email", "test@example.com"],
+                vec!["config", "commit.gpgsign", "false"],
+            ] {
+                git(root, &arguments);
+            }
+            std::fs::write(root.join("README"), "hello\n").unwrap();
+            git(root, &["add", "README"]);
+            git(root, &["commit", "--quiet", "-m", "first"]);
+        }
+        let worktree = super_coding::worktree::create(root, name, None).unwrap();
+        let path = worktree.path.clone();
+        hosted
+            .session
+            .agent_session()
+            .enter_worktree(super_coding::EnteredWorktree {
+                worktree,
+                created: true,
+                original: root.to_path_buf(),
+                entered_at: 0,
+            });
+        path
+    }
+
+    #[tokio::test]
+    async fn a_session_stopped_in_its_worktree_asks_its_clients_and_an_idle_one_keeps_it() {
+        let fixture = fixture(Duration::from_millis(10)).await;
+        let root = fixture.dir.path().join("work").canonicalize().unwrap();
+        let hosted = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        let path = enter_worktree(&hosted, &root, "stopped");
+        let mut events = hosted.session.events();
+        let id = hosted.session_id.clone();
+        let host = fixture.host.clone();
+        let stopping = tokio::spawn(async move { host.stop(&id, EndReason::Stopped).await });
+        let question = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.expect("open");
+                if event.0["type"] == "approval_request" {
+                    return event.0;
+                }
+            }
+        })
+        .await
+        .expect("the question is asked");
+        assert_eq!(question["kind"], "worktree");
+        assert_eq!(fixture.host.hosted_count(), 1, "still loaded while it asks");
+        hosted
+            .session
+            .answer_approval(question["approvalId"].as_str().unwrap(), "remove", "Mac")
+            .unwrap();
+        stopping.await.unwrap().expect("stopped");
+        assert!(!path.exists());
+        assert_eq!(fixture.host.hosted_count(), 0);
+        drop(hosted);
+
+        // Unloaded while idle, nobody is asked and the worktree stays.
+        let idle = fixture
+            .host
+            .create(request(&fixture))
+            .await
+            .expect("create");
+        let path = enter_worktree(&idle, &root, "idle");
+        let mut events = idle.session.events();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.host.sweep_idle().await, 1);
+        assert!(path.exists());
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(50), events.recv()).await
+        {
+            assert_ne!(event.0["type"], "approval_request");
+        }
     }
 
     #[tokio::test]

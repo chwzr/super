@@ -766,6 +766,48 @@ impl Session {
         self.approvals.close(id);
     }
 
+    /// For a session that ends in a worktree it made with `EnterWorktree`:
+    /// ask every surface whether to keep or remove it
+    /// ([`crate::approvals::worktree_exit_request`]), wait at most `wait` for
+    /// an answer, and do what was chosen. Without an answer the worktree is
+    /// kept, and the question is answered `keep` so every surface closes it.
+    /// `remove` stops the session's background tasks first and removes the
+    /// worktree with its branch and its changes. Returns what was done, as
+    /// `ExitWorktree` says it; `None` when the session is in no worktree it
+    /// made.
+    pub async fn settle_worktree(&self, wait: std::time::Duration) -> Option<String> {
+        let entered = self.inner.worktree().filter(|entered| entered.created)?;
+        let (id, answer) = self.open_approval(crate::approvals::worktree_exit_request(&entered));
+        let choice = match tokio::time::timeout(wait, answer).await {
+            Ok(Ok(answer)) => answer.choice,
+            _ => {
+                if self
+                    .answer_approval(&id, crate::approvals::WORKTREE_KEEP, "local")
+                    .is_err()
+                {
+                    self.close_approval(&id);
+                }
+                crate::approvals::WORKTREE_KEEP.to_string()
+            }
+        };
+        let action = if choice == crate::approvals::WORKTREE_REMOVE {
+            self.inner.stop_background_tasks();
+            super_coding::tools::worktree::ExitAction::Remove
+        } else {
+            super_coding::tools::worktree::ExitAction::Keep
+        };
+        let session = self.inner.clone();
+        let exited = tokio::task::spawn_blocking(move || {
+            super_coding::tools::worktree::exit_worktree(&session, action, true)
+        })
+        .await
+        .ok()?;
+        Some(match exited {
+            Ok(exited) => exited.message,
+            Err(error) => error,
+        })
+    }
+
     /// Subscribe to the event stream. Each subscriber gets every event emitted
     /// after it subscribed.
     pub fn events(&self) -> EventStream {

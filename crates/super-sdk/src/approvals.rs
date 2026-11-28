@@ -1,7 +1,8 @@
 //! Human decisions a session is waiting for, answerable from any surface.
 //!
-//! The terminal shows a workflow approval, a project trust question or a login
-//! prompt as a picker. A remote controller sees the same question as an
+//! The terminal shows a workflow approval, a project trust question, a login
+//! prompt or the question what to do with a worktree at the session's end as a
+//! picker. A remote controller sees the same question as an
 //! `approval_request` event and may answer it with `answer_approval`. Whoever
 //! answers first wins; the other side is told through `approval_resolved`.
 
@@ -18,6 +19,9 @@ pub enum ApprovalKind {
     Workflow,
     Trust,
     Login,
+    /// Keep or remove the worktree a session ends in:
+    /// [`worktree_exit_request`].
+    Worktree,
     Other,
 }
 
@@ -135,6 +139,29 @@ impl Approvals {
     }
 }
 
+/// The answer that keeps the worktree a session ends in.
+pub const WORKTREE_KEEP: &str = "keep";
+
+/// The answer that removes the worktree a session ends in, with its branch
+/// and whatever is in it.
+pub const WORKTREE_REMOVE: &str = "remove";
+
+/// The question a session that ends in a worktree it made with
+/// `EnterWorktree` asks: keep it or remove it. Its wording is the
+/// placeholder `Worktree.exit_question`; the detail is the worktree's folder
+/// and the choices are [`WORKTREE_KEEP`] and [`WORKTREE_REMOVE`].
+pub fn worktree_exit_request(entered: &super_coding::EnteredWorktree) -> ApprovalRequest {
+    ApprovalRequest {
+        kind: ApprovalKind::Worktree,
+        title: super_agent::placeholder::prompt_todo("Worktree.exit_question"),
+        detail: Some(entered.worktree.path.display().to_string()),
+        choices: vec![
+            ApprovalChoice::new(WORKTREE_KEEP, WORKTREE_KEEP),
+            ApprovalChoice::new(WORKTREE_REMOVE, WORKTREE_REMOVE),
+        ],
+    }
+}
+
 /// The `approval_request` event.
 pub fn approval_request_event(id: &str, request: &ApprovalRequest) -> Value {
     json!({
@@ -193,6 +220,41 @@ mod tests {
             .expect_err("unknown choice");
         assert!(error.contains("not a choice"), "{error}");
         assert_eq!(approvals.list().len(), 1);
+    }
+
+    #[test]
+    fn the_worktree_question_is_a_placeholder_with_keep_and_remove() {
+        let entered = super_coding::EnteredWorktree {
+            worktree: super_coding::worktree::Worktree {
+                path: "/work/.super/worktrees/fix".into(),
+                branch: "worktree-fix".into(),
+                base: "0123abcd".into(),
+                project: "/work".into(),
+            },
+            created: true,
+            original: "/work".into(),
+            entered_at: 1,
+        };
+        let request = worktree_exit_request(&entered);
+        assert_eq!(request.kind, ApprovalKind::Worktree);
+        assert_eq!(
+            request.title,
+            super_agent::placeholder::prompt_todo("Worktree.exit_question")
+        );
+        assert_eq!(
+            request.detail.as_deref(),
+            Some("/work/.super/worktrees/fix")
+        );
+        assert_eq!(
+            request.choices,
+            [
+                ApprovalChoice::new("keep", "keep"),
+                ApprovalChoice::new("remove", "remove")
+            ]
+        );
+        let event = approval_request_event("ap2", &request);
+        assert_eq!(event["kind"], "worktree");
+        assert_eq!(event["choices"][1]["id"], "remove");
     }
 
     #[test]

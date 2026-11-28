@@ -76,7 +76,10 @@ pub mod rpc;
 // Re-exported so a binding crate needs only one dependency to name the types
 // that appear in this crate's public API.
 #[cfg(feature = "native")]
-pub use approvals::{ApprovalAnswer, ApprovalChoice, ApprovalKind, ApprovalRequest};
+pub use approvals::{
+    ApprovalAnswer, ApprovalChoice, ApprovalKind, ApprovalRequest, WORKTREE_KEEP, WORKTREE_REMOVE,
+    worktree_exit_request,
+};
 #[cfg(feature = "native")]
 pub use options::{SessionOptions, SessionSource};
 #[cfg(feature = "native")]
