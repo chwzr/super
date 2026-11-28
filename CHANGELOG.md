@@ -422,7 +422,11 @@
   though the conversation the model gets has no such read.
 - A read of the whole file and a read of a part of it in one answer leave
   the whole read in the record, whichever ends last, so a `Write` after them
-  no longer succeeds in one run and is refused in the next.
+  no longer succeeds in one run and is refused in the next. So do a whole
+  read and a later read of a part of the unchanged file in a session opened
+  again (`super -c`, `--session`, the daemon) or moved back with `/tree` or
+  `fork`, where only the last read of each file was taken back and a
+  `Write` over the file was refused.
 - A name in `--tools`, `--exclude-tools` or `defaultTools` that no tool has,
   such as `read` from an earlier version, is named in a warning on standard
   error when SUPER starts, with the tool's name in its new case (`read (use

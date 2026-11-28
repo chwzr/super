@@ -650,6 +650,62 @@ mod reads {
         .await
         .unwrap();
     }
+    /// A whole read and then a read of a part of the same unchanged file
+    /// leave the whole read in the record also when the session is loaded
+    /// again, as while it ran: `Write` may overwrite the file.
+    #[tokio::test]
+    async fn a_whole_read_before_a_part_read_still_counts_after_a_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let lines: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(root.join("f.txt"), lines).unwrap();
+        let f = root.join("f.txt").display().to_string();
+        let (stream, _) = lanes(vec![(
+            "read",
+            vec![
+                Some(tool_call("r1", "Read", json!({"file_path": f}))),
+                Some(tool_call("r2", "Read", json!({"file_path": f, "limit": 2}))),
+                Some(text("read")),
+            ],
+        )]);
+        let session = session_of(
+            SessionManager::create(&root, Some(root.join("sessions"))).unwrap(),
+            &root,
+            quiet_settings(),
+            &Events::default(),
+            Some(stream),
+        );
+        session.prompt(vec![AgentMessage::user("read")]).await;
+        assert!(
+            session
+                .file_state()
+                .get(&key(&root.join("f.txt")))
+                .unwrap()
+                .whole
+        );
+        let stored = file_of(&session);
+        drop(session);
+
+        let again = loaded(&stored, &root, &Events::default(), None);
+        assert!(
+            again
+                .file_state()
+                .get(&key(&root.join("f.txt")))
+                .unwrap()
+                .whole
+        );
+        call(
+            tool(&again, "Write").as_ref(),
+            json!({"file_path": f, "content": "new\n"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("f.txt")).unwrap(),
+            "new\n"
+        );
+    }
+
     /// Moving back to before a read, as `fork` over RPC and `/tree` do,
     /// leaves the read out of the record, in the session and when it is
     /// loaded again: the conversation the model gets has no such read.
