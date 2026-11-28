@@ -260,7 +260,11 @@ async fn the_dispatcher_answers_state_and_model_questions() {
     assert_eq!(state["isStreaming"], false);
     assert_eq!(state["thinkingLevel"], "off");
     let tools = state["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 4, "the four default tools: {tools:?}");
+    assert_eq!(
+        tools,
+        &["Read", "Write", "Edit", "Bash", "Monitor"],
+        "the four default tools, and Monitor, which comes with Bash in the advanced mode"
+    );
 
     let models = session
         .execute(Command::GetAvailableModels {

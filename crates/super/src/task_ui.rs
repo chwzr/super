@@ -122,6 +122,33 @@ pub(crate) fn notice_line(task: &TaskInfo) -> String {
     )
 }
 
+/// The transcript line for a monitor's event: which monitor, and the first
+/// line of the event.
+pub(crate) fn event_line(task: &TaskInfo, event: &str) -> String {
+    let first = event.lines().next().unwrap_or_default();
+    let first: String = first.chars().take(100).collect();
+    let more = event.lines().count().saturating_sub(1);
+    let mut line = format!(
+        "monitor {} · {first}",
+        task.name.as_deref().unwrap_or(&task.id)
+    );
+    if more > 0 {
+        line.push_str(&format!(" (+{more} lines)"));
+    }
+    line
+}
+
+/// The transcript line for a custom message that reached the agent from a
+/// background task, a task's notice or a monitor's event; `None` for any
+/// other message.
+pub(crate) fn background_line(message: &super_agent::AgentMessage) -> Option<String> {
+    if let Some(task) = super_coding::notifications::notified_task(message) {
+        return Some(notice_line(&task));
+    }
+    super_coding::notifications::monitored_event(message)
+        .map(|(task, event)| event_line(&task, &event))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +231,29 @@ mod tests {
             notice_line(&stopped),
             "task reviewer stopped · review the diff"
         );
+    }
+
+    #[test]
+    fn notices_and_monitor_events_have_a_transcript_line() {
+        let session = session();
+        let handle = session
+            .background_tasks()
+            .register(TaskSpec::new(TaskKind::Monitor, "watch the log"))
+            .unwrap();
+        let task = session.tasks().pop().unwrap();
+        let event = super_coding::monitor_event(&task, "error: disk full\nretrying", 0);
+        assert_eq!(
+            background_line(&event).unwrap(),
+            format!("monitor {} · error: disk full (+1 lines)", handle.id())
+        );
+        let mut ended = task.clone();
+        ended.status = TaskStatus::Completed;
+        let outcome = super_coding::TaskOutcome::completed("done");
+        let notice = super_coding::task_notification(&ended, &outcome);
+        assert_eq!(
+            background_line(&notice).unwrap(),
+            format!("task {} completed · watch the log", handle.id())
+        );
+        assert!(background_line(&super_agent::AgentMessage::user("hi")).is_none());
     }
 }

@@ -1018,7 +1018,7 @@ fn tool_kind(name: &str) -> ToolKind {
         "Read" | "ls" => ToolKind::Read,
         "Write" | "Edit" => ToolKind::Edit,
         "grep" | "find" => ToolKind::Search,
-        "Bash" => ToolKind::Execute,
+        "Bash" | "Monitor" => ToolKind::Execute,
         "mcp" => ToolKind::Fetch,
         _ => ToolKind::Other,
     }

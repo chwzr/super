@@ -254,6 +254,9 @@ pub struct AgentSession {
     /// What this session's tools keep per session (what was read of each
     /// file); set once at construction, and every tool is bound to it.
     tool_session: OnceLock<ToolSession>,
+    /// `Monitor`, which works on this session's background tasks; offered
+    /// alongside `Bash`.
+    task_tools: OnceLock<Vec<DynTool>>,
     /// What the session's process last reported about its tasks, while the
     /// engine runs elsewhere.
     remote_tasks: Mutex<Vec<TaskInfo>>,
@@ -424,6 +427,7 @@ impl AgentSession {
             backend: Mutex::new(None),
             tasks: OnceLock::new(),
             tool_session: OnceLock::new(),
+            task_tools: OnceLock::new(),
             remote_tasks: Mutex::new(Vec::new()),
             turn_starter: Mutex::new(None),
             activity: tokio::sync::watch::channel(0).0,
@@ -447,6 +451,10 @@ impl AgentSession {
             tasks: Some(session.background_tasks().host()),
         };
         assert!(session.tool_session.set(tool_session).is_ok());
+        let this = Arc::downgrade(&session);
+        let task_tools: Vec<DynTool> =
+            vec![Arc::new(crate::tools::monitor::MonitorTool::new(this))];
+        assert!(session.task_tools.set(task_tools).is_ok());
         if subagents_allowed {
             let runtime = SubagentRuntime::new(Arc::downgrade(&session));
             assert!(session.subagents.set(runtime).is_ok());
@@ -734,6 +742,12 @@ impl AgentSession {
             && let Some(runtime) = self.subagents.get()
         {
             tools.extend(runtime.control_tools());
+        }
+        // Monitor runs commands as Bash does, so it comes with Bash.
+        if tools.iter().any(|tool| tool.name() == "Bash")
+            && let Some(task_tools) = self.task_tools.get()
+        {
+            tools.extend(task_tools.iter().cloned());
         }
         let tools = self.bound_to_session(tools);
         *self.tools.lock().unwrap() = self.offered_in_mode(tools);

@@ -1,18 +1,22 @@
-//! Bash in the background, driven through sessions with the session's own
-//! queue and task registry.
+//! Bash in the background and Monitor, driven through sessions
+//! with the session's own queue and task registry.
 
 use crate::background_tests::{model, scripted, text, tool_call, user_text};
+use crate::notifications::{MONITOR_EVENT, TASK_NOTIFICATION, monitored_event, notified_task};
 use crate::session::manager::SessionManager;
 use crate::session_runner::AgentSession;
-use crate::settings::Settings;
+use crate::settings::{Mode, Settings};
 use crate::subagents::ForkTurns;
 use crate::tasks::{TaskKind, TaskStatus};
-use serde_json::json;
+use crate::tools::monitor::{Limits, MonitorTool};
+use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use super_agent::tools::bash::BashTool;
-use super_agent::{AgentMessage, DynTool};
+use super_agent::{AgentMessage, AgentTool, DynTool, ToolResult};
 use super_ai::{Registry, ThinkingLevel};
+use tokio_util::sync::CancellationToken;
 
 fn session_in(directory: &Path, settings: Settings) -> Arc<AgentSession> {
     let manager = SessionManager::create(directory, Some(directory.join(".sessions"))).unwrap();
@@ -38,6 +42,101 @@ fn test_settings() -> Settings {
         },
         ..Default::default()
     }
+}
+
+/// A session whose queued entries start no turn: the test collects them.
+fn quiet_session(directory: &Path) -> Arc<AgentSession> {
+    let session = session_in(directory, test_settings());
+    session.set_turn_starter(Some(Arc::new(|_turn| {})));
+    session
+}
+
+/// Everything the session has queued so far, collected into `seen`.
+fn collect(session: &AgentSession, seen: &Mutex<Vec<AgentMessage>>) -> Vec<AgentMessage> {
+    let mut seen = seen.lock().unwrap();
+    seen.extend(session.take_queued_for_test());
+    seen.clone()
+}
+
+fn events_of(messages: &[AgentMessage]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(monitored_event)
+        .map(|(_, event)| event)
+        .collect()
+}
+
+fn notices_of(messages: &[AgentMessage]) -> Vec<crate::TaskInfo> {
+    messages.iter().filter_map(notified_task).collect()
+}
+
+fn summary_of(message: &AgentMessage) -> String {
+    let AgentMessage::Custom(custom) = message else {
+        panic!("not a notice: {message:?}");
+    };
+    custom.details.as_ref().unwrap()["outcome"]["summary"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn call(tool: &dyn AgentTool, id: &str, args: Value) -> anyhow::Result<ToolResult> {
+    tool.execute(id, args, CancellationToken::new(), None).await
+}
+
+fn monitor(session: &Arc<AgentSession>, limits: Limits) -> MonitorTool {
+    MonitorTool::with_limits(Arc::downgrade(session), limits)
+}
+
+fn quick_limits() -> Limits {
+    Limits {
+        group_window: Duration::from_millis(200),
+        max_events: 60,
+        event_window: Duration::from_secs(60),
+    }
+}
+
+/// Wait until a notice of `task` is among the queued entries.
+async fn notice_of(
+    session: &AgentSession,
+    seen: &Mutex<Vec<AgentMessage>>,
+    task: &str,
+) -> AgentMessage {
+    for _ in 0..1_000 {
+        if let Some(message) = collect(session, seen)
+            .into_iter()
+            .find(|message| notified_task(message).is_some_and(|info| info.id == task))
+        {
+            return message;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no notice of {task}");
+}
+
+#[tokio::test]
+async fn monitor_comes_with_bash_in_the_advanced_mode() {
+    let directory = tempfile::tempdir().unwrap();
+    let session = session_in(directory.path(), test_settings());
+    assert_eq!(session.available_tool_names(), ["Bash", "Monitor"]);
+
+    let mut basic = session.settings();
+    basic.mode = Mode::Basic;
+    session.update_settings(basic);
+    assert_eq!(session.available_tool_names(), ["Bash"]);
+
+    let without_bash = AgentSession::new(
+        SessionManager::in_memory(directory.path()),
+        Vec::new(),
+        Registry::load(None),
+        test_settings(),
+        "test".into(),
+        model(),
+        ThinkingLevel::Off,
+        None,
+        Arc::new(|_| {}),
+    );
+    assert!(without_bash.available_tool_names().is_empty());
 }
 
 #[tokio::test]
@@ -99,4 +198,267 @@ async fn a_background_command_wakes_the_idle_agent_with_its_notice() {
     let written = std::fs::read_to_string(&output).unwrap();
     assert_eq!(written, "working\nfinished\n");
     assert_eq!(session.tasks()[0].status, TaskStatus::Failed);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn monitor_lines_within_the_window_form_one_event() {
+    let directory = tempfile::tempdir().unwrap();
+    let session = quiet_session(directory.path());
+    let seen = Mutex::new(Vec::new());
+    let tool = monitor(&session, quick_limits());
+    let result = call(
+        &tool,
+        "call_mon",
+        json!({"description": "Watch the build", "timeout_ms": 10_000, "command": "echo one; echo two; echo hidden 1>&2; sleep 0.6; echo three; echo; sleep 0.6"}),
+    )
+    .await
+    .unwrap();
+    let id = result.details["taskId"].as_str().unwrap().to_string();
+    assert!(id.starts_with('m'));
+    assert_eq!(
+        result.output_text(),
+        format!(
+            "The monitor runs as task {id} for up to 10000 ms. Its output is written to {}.",
+            result.details["outputFile"].as_str().unwrap()
+        )
+    );
+    let notice = notice_of(&session, &seen, &id).await;
+    let messages = collect(&session, &seen);
+    assert_eq!(events_of(&messages), ["one\ntwo", "three"]);
+    // Every event, then the one notice, all through the queue.
+    let kinds: Vec<String> = messages
+        .iter()
+        .map(|message| match message {
+            AgentMessage::Custom(custom) => custom.custom_type.clone(),
+            other => other.role().to_string(),
+        })
+        .collect();
+    assert_eq!(kinds, [MONITOR_EVENT, MONITOR_EVENT, TASK_NOTIFICATION]);
+    let (task, _) = monitored_event(&messages[0]).unwrap();
+    assert_eq!(task.id, id);
+    assert_eq!(task.tool_use_id.as_deref(), Some("call_mon"));
+    let AgentMessage::Custom(first) = &messages[0] else {
+        unreachable!()
+    };
+    let first = first.content.as_text();
+    assert!(first.starts_with(&super_agent::placeholder::prompt_todo(
+        "Notification.monitor_event"
+    )));
+    assert!(first.contains("<status>running</status>"));
+    assert!(first.contains("<event>one\ntwo</event>"));
+    assert_eq!(
+        notified_task(&notice).unwrap().status,
+        TaskStatus::Completed
+    );
+    assert_eq!(summary_of(&notice), "Watch the build (exit code 0)");
+    // stderr went to the output file only, with stdout.
+    let output = std::fs::read_to_string(result.details["outputFile"].as_str().unwrap()).unwrap();
+    for line in ["one", "two", "hidden", "three"] {
+        assert!(output.contains(line), "{output}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_monitor_with_too_many_events_is_stopped_with_a_notice() {
+    let directory = tempfile::tempdir().unwrap();
+    let session = quiet_session(directory.path());
+    let seen = Mutex::new(Vec::new());
+    let marker = directory.path().join("went-on");
+    let tool = monitor(
+        &session,
+        Limits {
+            group_window: Duration::from_millis(20),
+            max_events: 3,
+            event_window: Duration::from_secs(60),
+        },
+    );
+    let result = call(
+        &tool,
+        "call_flood",
+        json!({"description": "Flood", "timeout_ms": 20_000, "command": format!("for i in 1 2 3 4 5 6; do echo line $i; sleep 0.1; done; touch {}", marker.display())}),
+    )
+    .await
+    .unwrap();
+    let id = result.details["taskId"].as_str().unwrap().to_string();
+    let notice = notice_of(&session, &seen, &id).await;
+    let messages = collect(&session, &seen);
+    assert_eq!(events_of(&messages), ["line 1", "line 2", "line 3"]);
+    assert_eq!(notified_task(&notice).unwrap().status, TaskStatus::Stopped);
+    assert_eq!(
+        summary_of(&notice),
+        "Flood (stopped after more than 3 events within 60 seconds)"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!marker.exists(), "the script was not stopped");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_monitor_ends_at_its_time_limit_with_one_notice() {
+    let directory = tempfile::tempdir().unwrap();
+    let session = quiet_session(directory.path());
+    let seen = Mutex::new(Vec::new());
+    let tool = monitor(&session, quick_limits());
+    let started = std::time::Instant::now();
+    let result = call(
+        &tool,
+        "call_wait",
+        json!({"description": "Wait for a file", "timeout_ms": 1000, "command": "echo waiting; sleep 30"}),
+    )
+    .await
+    .unwrap();
+    let id = result.details["taskId"].as_str().unwrap().to_string();
+    let notice = notice_of(&session, &seen, &id).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(started.elapsed() >= Duration::from_millis(1000));
+    assert_eq!(notified_task(&notice).unwrap().status, TaskStatus::Stopped);
+    assert_eq!(
+        summary_of(&notice),
+        "Wait for a file (stopped at its time limit of 1000 ms)"
+    );
+    let messages = collect(&session, &seen);
+    assert_eq!(events_of(&messages), ["waiting"]);
+    assert_eq!(notices_of(&messages).len(), 1);
+
+    // timeout_ms is cut to ten minutes, and a source is needed.
+    let result = call(
+        &tool,
+        "call_long",
+        json!({"description": "Long", "timeout_ms": 3_600_000, "command": "true"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.details["timeoutMs"], 600_000);
+    for args in [
+        json!({"description": "Nothing", "timeout_ms": 5000}),
+        json!({"description": "Both", "timeout_ms": 5000, "command": "true", "ws": {"url": "ws://localhost:1"}}),
+        json!({"description": "Bad", "timeout_ms": 5000, "ws": {"url": "http://localhost:1"}}),
+        json!({"description": "", "timeout_ms": 5000, "command": "true"}),
+    ] {
+        assert!(
+            call(&tool, "call_bad", args.clone()).await.is_err(),
+            "{args}"
+        );
+    }
+    let schema = tool.parameters();
+    assert!(
+        super_agent::validate::validate_arguments(
+            &schema,
+            &json!({"description": "x", "timeout_ms": 500, "command": "true"})
+        )
+        .is_err()
+    );
+    assert!(
+        super_agent::validate::validate_arguments(
+            &schema,
+            &json!({"description": "x", "timeout_ms": 5000, "ws": {"url": "ws://h", "protocols": ["bad protocol"]}})
+        )
+        .is_err()
+    );
+}
+
+// The handshake callback's error type is the library's.
+#[allow(clippy::result_large_err)]
+#[tokio::test]
+async fn a_websocket_source_turns_frames_into_events_until_it_closes() {
+    use futures::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (asked_tx, asked_rx) = tokio::sync::oneshot::channel::<Option<String>>();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut asked_tx = Some(asked_tx);
+        let mut socket = tokio_tungstenite::accept_hdr_async(
+            stream,
+            |request: &Request, mut response: Response| {
+                let protocol = request
+                    .headers()
+                    .get("sec-websocket-protocol")
+                    .map(|value| value.to_str().unwrap().to_string());
+                if let Some(protocol) = &protocol {
+                    let first = protocol.split(',').next().unwrap().trim().to_string();
+                    response
+                        .headers_mut()
+                        .insert("sec-websocket-protocol", first.parse().unwrap());
+                }
+                let _ = asked_tx.take().unwrap().send(protocol);
+                Ok(response)
+            },
+        )
+        .await
+        .unwrap();
+        socket.send(Message::text("build started")).await.unwrap();
+        socket.send(Message::text("step 1 of 2")).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        socket.send(Message::binary(vec![1u8, 2, 3])).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        socket
+            .send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Normal,
+                reason: "done".into(),
+            })))
+            .await
+            .unwrap();
+        // Read until the client answers the close.
+        while let Some(Ok(_)) = socket.next().await {}
+    });
+
+    let directory = tempfile::tempdir().unwrap();
+    let session = quiet_session(directory.path());
+    let seen = Mutex::new(Vec::new());
+    let tool = monitor(&session, quick_limits());
+    let result = call(
+        &tool,
+        "call_ws",
+        json!({"description": "Build feed", "timeout_ms": 10_000, "ws": {"url": format!("ws://{address}/feed"), "protocols": ["build.v1", "build.v0"]}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        asked_rx.await.unwrap().as_deref(),
+        Some("build.v1, build.v0")
+    );
+    let id = result.details["taskId"].as_str().unwrap().to_string();
+    let notice = notice_of(&session, &seen, &id).await;
+    let messages = collect(&session, &seen);
+    assert_eq!(
+        events_of(&messages),
+        ["build started\nstep 1 of 2", "[binary frame of 3 bytes]"]
+    );
+    assert_eq!(
+        notified_task(&notice).unwrap().status,
+        TaskStatus::Completed
+    );
+    assert_eq!(
+        summary_of(&notice),
+        "Build feed (the server closed the connection with code 1000: done)"
+    );
+    let output = std::fs::read_to_string(result.details["outputFile"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        output,
+        "build started\nstep 1 of 2\n[binary frame of 3 bytes]\n"
+    );
+    server.await.unwrap();
+
+    // Nothing listens: the call fails and no task is left.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unused = closed.local_addr().unwrap();
+    drop(closed);
+    let before = session.tasks().len();
+    let error = call(
+        &tool,
+        "call_none",
+        json!({"description": "Nothing", "timeout_ms": 5_000, "ws": {"url": format!("ws://{unused}")}}),
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("Could not open the WebSocket"));
+    assert_eq!(session.tasks().len(), before);
 }

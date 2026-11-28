@@ -1214,6 +1214,7 @@ fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
         .or_else(|| args["path"].as_str())
         .or_else(|| args["pattern"].as_str())
         .or_else(|| args["command"].as_str())
+        .or_else(|| args["ws"]["url"].as_str())
         .unwrap_or("");
     let detail = detail.replace('\n', " ");
     let detail: String = detail.chars().take(80).collect();
@@ -2112,8 +2113,8 @@ fn handle_session_event(
             AgentEvent::MessageEnd {
                 message: message @ AgentMessage::Custom(_),
             } => {
-                if let Some(task) = super_coding::notifications::notified_task(&message) {
-                    app.cells.push(Cell::Notice(task_ui::notice_line(&task)));
+                if let Some(line) = task_ui::background_line(&message) {
+                    app.cells.push(Cell::Notice(line));
                 }
             }
             AgentEvent::MessageEnd {
@@ -7669,8 +7670,8 @@ fn session_cells(session: &Arc<super_coding::AgentSession>) -> Vec<Cell> {
                     exclude_from_context: bash.exclude_from_context,
                 }),
                 AgentMessage::Custom(_) => {
-                    if let Some(task) = super_coding::notifications::notified_task(message) {
-                        cells.push(Cell::Notice(task_ui::notice_line(&task)));
+                    if let Some(line) = task_ui::background_line(message) {
+                        cells.push(Cell::Notice(line));
                     }
                 }
                 _ => {}
@@ -9702,6 +9703,27 @@ mod tests {
         assert_eq!(
             tool_title("read", &serde_json::json!({"path": "file.rs"}), cwd),
             "read file.rs"
+        );
+    }
+
+    #[test]
+    fn monitor_titles_name_their_source() {
+        let cwd = Path::new("/work");
+        assert_eq!(
+            tool_title(
+                "Monitor",
+                &serde_json::json!({"description": "Watch", "timeout_ms": 1000, "command": "tail -f log"}),
+                cwd
+            ),
+            "Monitor tail -f log"
+        );
+        assert_eq!(
+            tool_title(
+                "Monitor",
+                &serde_json::json!({"description": "Watch", "timeout_ms": 1000, "ws": {"url": "ws://localhost:8080"}}),
+                cwd
+            ),
+            "Monitor ws://localhost:8080"
         );
     }
 

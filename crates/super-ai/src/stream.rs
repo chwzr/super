@@ -180,8 +180,10 @@ pub fn http_client() -> &'static reqwest::Client {
     })
 }
 
+/// Install the process's Rustls crypto provider once, for a TLS client
+/// built outside this crate, such as a WebSocket connection.
 #[cfg(feature = "native")]
-pub(crate) fn ensure_tls_crypto_provider() {
+pub fn ensure_tls_crypto_provider() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         if rustls::crypto::CryptoProvider::get_default().is_none() {

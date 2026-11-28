@@ -13,6 +13,11 @@
 //! [`TASK_NOTIFICATION`], so the session history records it as a notice and
 //! not as something the user typed, and a reloaded session shows it the same
 //! way.
+//!
+//! A monitor's event reaches the agent the same way, while the monitor still
+//! runs: [`monitor_event`] builds a message of type [`MONITOR_EVENT`] with its
+//! own header placeholder and the same block, whose status is `running` and
+//! which carries the event's lines in `<event>`.
 
 use crate::tasks::{TaskInfo, TaskOutcome};
 use serde::{Deserialize, Serialize};
@@ -37,9 +42,30 @@ pub enum Priority {
 /// `customType` of the message that announces the end of a background task.
 pub const TASK_NOTIFICATION: &str = "task_notification";
 
+/// `customType` of the message that brings an event of a monitor.
+pub const MONITOR_EVENT: &str = "monitor_event";
+
 /// Whether `message` is the notice of a background task.
 pub fn is_task_notification(message: &AgentMessage) -> bool {
     matches!(message, AgentMessage::Custom(custom) if custom.custom_type == TASK_NOTIFICATION)
+}
+
+/// Whether `message` brings an event of a monitor.
+pub fn is_monitor_event(message: &AgentMessage) -> bool {
+    matches!(message, AgentMessage::Custom(custom) if custom.custom_type == MONITOR_EVENT)
+}
+
+/// The monitor an event comes from and the event's lines, from the event's
+/// `details`: what clients show in place of its text.
+pub fn monitored_event(message: &AgentMessage) -> Option<(TaskInfo, String)> {
+    match message {
+        AgentMessage::Custom(custom) if custom.custom_type == MONITOR_EVENT => {
+            let details = custom.details.as_ref()?;
+            let task = serde_json::from_value(details.get("task")?.clone()).ok()?;
+            Some((task, details.get("event")?.as_str()?.to_string()))
+        }
+        _ => None,
+    }
 }
 
 /// The task a notice announces, from the notice's `details`: what clients
@@ -72,33 +98,77 @@ pub fn task_notification(task: &TaskInfo, outcome: &TaskOutcome) -> AgentMessage
     })
 }
 
+/// The message that brings an event of the running monitor `task`: the
+/// `Notification.monitor_event` placeholder, a line break and the
+/// `<task-notification>` block with the status `running`, the monitor's
+/// description as the summary and the event's lines in `<event>`. When the
+/// monitor left lines out of the event to keep it short, `<omitted-lines>`
+/// says how many. Its details carry the task and the event for clients.
+pub fn monitor_event(task: &TaskInfo, event: &str, omitted_lines: usize) -> AgentMessage {
+    let mut block = Block::new(task, "running", &task.description);
+    block.element("event", event);
+    if omitted_lines > 0 {
+        block.element("omitted-lines", &omitted_lines.to_string());
+    }
+    let text = format!(
+        "{}\n{}",
+        super_agent::placeholder::prompt_todo("Notification.monitor_event"),
+        block.finish()
+    );
+    AgentMessage::Custom(CustomMessage {
+        custom_type: MONITOR_EVENT.into(),
+        content: UserContent::Text(text),
+        display: true,
+        details: Some(json!({"task": task, "event": event, "omittedLines": omitted_lines})),
+        timestamp: super_ai::now_ms(),
+    })
+}
+
 /// The `<task-notification>` block. Every value is escaped, so a result that
 /// contains `</result>` or `</task-notification>` cannot end the block early.
 fn notification_block(task: &TaskInfo, outcome: &TaskOutcome) -> String {
-    let mut block = String::from("<task-notification>\n");
-    let mut element = |name: &str, value: &str| {
-        block.push_str(&format!("<{name}>{}</{name}>\n", escape(value)));
-    };
-    element("task-id", &task.id);
-    if let Some(tool_use_id) = &task.tool_use_id {
-        element("tool-use-id", tool_use_id);
-    }
-    if let Some(output_file) = &task.output_file {
-        element("output-file", &output_file.display().to_string());
-    }
-    element("status", outcome.status.as_str());
-    element("summary", &outcome.summary);
+    let mut block = Block::new(task, outcome.status.as_str(), &outcome.summary);
     if let Some(result) = &outcome.result {
-        element("result", result);
+        block.element("result", result);
     }
     if let Some(usage) = &outcome.usage {
-        block.push_str(&format!(
+        block.0.push_str(&format!(
             "<usage><subagent_tokens>{}</subagent_tokens><tool_uses>{}</tool_uses><duration_ms>{}</duration_ms></usage>\n",
             usage.subagent_tokens, usage.tool_uses, usage.duration_ms
         ));
     }
-    block.push_str("</task-notification>");
-    block
+    block.finish()
+}
+
+/// A `<task-notification>` block being written.
+struct Block(String);
+
+impl Block {
+    /// The block's first elements: the task's id, the tool call that started
+    /// it and its output file when known, `status` and `summary`.
+    fn new(task: &TaskInfo, status: &str, summary: &str) -> Self {
+        let mut block = Block(String::from("<task-notification>\n"));
+        block.element("task-id", &task.id);
+        if let Some(tool_use_id) = &task.tool_use_id {
+            block.element("tool-use-id", tool_use_id);
+        }
+        if let Some(output_file) = &task.output_file {
+            block.element("output-file", &output_file.display().to_string());
+        }
+        block.element("status", status);
+        block.element("summary", summary);
+        block
+    }
+
+    fn element(&mut self, name: &str, value: &str) {
+        self.0
+            .push_str(&format!("<{name}>{}</{name}>\n", escape(value)));
+    }
+
+    fn finish(mut self) -> String {
+        self.0.push_str("</task-notification>");
+        self.0
+    }
 }
 
 /// Escape the three characters that could open or close an element.
@@ -196,6 +266,36 @@ mod tests {
             "<result>&lt;/result&gt;&lt;/task-notification&gt;\n&lt;task-notification&gt;&lt;status&gt;failed&lt;/status&gt;</result>"
         ));
         assert!(text.contains("<summary>a &amp; b</summary>"));
+    }
+
+    #[test]
+    fn a_monitor_event_is_its_header_placeholder_and_the_block_with_the_lines() {
+        let mut monitor = task();
+        monitor.id = "m1".into();
+        monitor.kind = TaskKind::Monitor;
+        monitor.status = TaskStatus::Running;
+        monitor.description = "watch the <log>".into();
+        let message = monitor_event(&monitor, "error: a < b\nerror: c", 0);
+        assert!(is_monitor_event(&message));
+        assert!(!is_task_notification(&message));
+        assert_eq!(notified_task(&message), None);
+        assert_eq!(
+            text(&message),
+            format!(
+                "{}\n<task-notification>\n<task-id>m1</task-id>\n<tool-use-id>call_7</tool-use-id>\n<output-file>/tmp/tasks/b1234abcd.output</output-file>\n<status>running</status>\n<summary>watch the &lt;log&gt;</summary>\n<event>error: a &lt; b\nerror: c</event>\n</task-notification>",
+                super_agent::placeholder::prompt_todo("Notification.monitor_event")
+            )
+        );
+        assert_eq!(
+            monitored_event(&message),
+            Some((monitor.clone(), "error: a < b\nerror: c".to_string()))
+        );
+        let converted = super_agent::convert_to_llm(std::slice::from_ref(&message));
+        assert!(matches!(converted.as_slice(), [super_ai::Message::User(_)]));
+        let shortened = text(&monitor_event(&monitor, "first", 12));
+        assert!(shortened.ends_with(
+            "<event>first</event>\n<omitted-lines>12</omitted-lines>\n</task-notification>"
+        ));
     }
 
     #[test]
