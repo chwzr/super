@@ -117,6 +117,15 @@ async fn asked(session: &Arc<Session>, events: &Arc<Mutex<Vec<Value>>>) -> Strin
 /// After the question was withdrawn: nobody can answer it, it is listed no
 /// more, every surface was told, and no run started.
 async fn withdrawn(session: &Arc<Session>, events: &Arc<Mutex<Vec<Value>>>, id: &str) {
+    // The events reach the collector on a task of their own.
+    eventually("every surface is told", || {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "approval_resolved")
+    })
+    .await;
     let resolved = events
         .lock()
         .unwrap()
@@ -171,6 +180,14 @@ async fn turning_workflows_off_while_the_question_waits_withdraws_it() {
     assert!(response.success, "{response:?}");
     eventually("the turn ends", || !session.state().is_streaming).await;
     withdrawn(&session, &events, &id).await;
+    eventually("the Workflow call's end arrives", || {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "tool_execution_end")
+    })
+    .await;
     let result = events
         .lock()
         .unwrap()
