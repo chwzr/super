@@ -34,6 +34,31 @@ pub fn try_lock(session_file: &Path) -> std::io::Result<Option<File>> {
     }
 }
 
+/// The session files a [`SessionFileLock`] of this process holds now.
+static HELD_HERE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Whether a [`SessionFileLock`] of this process holds the lock of
+/// `session_file` now, such as a [`SessionLockKeeper`] that has not yet
+/// followed its session to the next file. [`is_held`] says `true` for such
+/// a file too.
+pub fn held_by_this_process(session_file: &Path) -> bool {
+    let canonical = std::fs::canonicalize(session_file).ok();
+    HELD_HERE.lock().unwrap().iter().any(|held| {
+        held == session_file || canonical.as_ref().is_some_and(|canonical| held == canonical)
+    })
+}
+
+fn note_held(path: &Path, held: bool) {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut here = HELD_HERE.lock().unwrap();
+    if let Some(index) = here.iter().position(|known| *known == path) {
+        here.swap_remove(index);
+    }
+    if held {
+        here.push(path);
+    }
+}
+
 /// Whether another process holds the lock of `session_file` right now. A
 /// session file that does not exist yet has no holder.
 pub fn is_held(session_file: &Path) -> bool {
@@ -93,7 +118,7 @@ impl SessionFileLock {
         if self.locked() == current && current.is_some() {
             return Ok(());
         }
-        self.held = None;
+        self.release();
         let Some(current) = current else {
             return Ok(());
         };
@@ -102,6 +127,7 @@ impl SessionFileLock {
         }
         match try_lock(current) {
             Ok(Some(file)) => {
+                note_held(current, true);
                 self.held = Some((current.to_path_buf(), file));
                 Ok(())
             }
@@ -109,6 +135,20 @@ impl SessionFileLock {
             // A directory we cannot write is no reason to stop working.
             Err(_) => Ok(()),
         }
+    }
+}
+
+impl SessionFileLock {
+    fn release(&mut self) {
+        if let Some((path, _)) = self.held.take() {
+            note_held(&path, false);
+        }
+    }
+}
+
+impl Drop for SessionFileLock {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 

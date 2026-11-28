@@ -504,10 +504,12 @@ fn refuse_held_file(
     path: &std::path::Path,
 ) -> std::result::Result<(), String> {
     let canonical = |path: &std::path::Path| std::fs::canonicalize(path).ok();
+    // The file this process holds is ours too while its lock keeper has
+    // not yet followed the session to the file it switched to.
     let ours = current.is_some_and(|current| {
         current == path
             || canonical(current).is_some_and(|current| Some(current) == canonical(path))
-    });
+    }) || super_daemon::session_lock::held_by_this_process(path);
     if !ours && super_daemon::session_lock::is_held(path) {
         return Err(format!(
             "{} (the SUPER daemon or another terminal)",
@@ -770,6 +772,15 @@ mod tests {
             )
         );
         assert_eq!(refuse_held_file(Some(&ours), &free), Ok(()));
+        // A file this process's lock keeper still holds while the session
+        // moved on is not another process's.
+        let left = dir.path().join("2026_dddd4444-0000.jsonl");
+        std::fs::write(&left, "{}\n").unwrap();
+        let mut keeper = super_daemon::session_lock::SessionFileLock::new();
+        keeper.follow(Some(&left)).unwrap();
+        assert_eq!(refuse_held_file(Some(&free), &left), Ok(()));
+        drop(keeper);
+        assert!(!super_daemon::session_lock::held_by_this_process(&left));
         assert_eq!(
             refuse_held_file(Some(&ours), &ours),
             Ok(()),

@@ -410,6 +410,10 @@
   still fails with "Could not start shell …".
 - Rust SDK: `ShellProcess::start` starts a shell command with an error that
   says what is missing.
+- `switch_session` back to a session the process left a moment before opens
+  it, with its agents. Within half a second it was refused as "open in
+  another SUPER process", because the process's own lock on that file had not
+  moved yet. Rust SDK: `session_lock::held_by_this_process` tells such a file.
 
 ## 0.0.42 - 2026-11-27
 
