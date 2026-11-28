@@ -286,17 +286,24 @@ the advanced mode; see [Mode](#mode).
 - `SendMessage` reaches a running child at its next step and resumes one that
   has ended, in the background. A child writes to the agent that started it
   with `to` set to `main`.
+- Each child's conversation is saved beside its session, in the folder named
+  after the session's file, and is no session of its own in `/resume` or the
+  apps. A session you open again knows its children: `ListAgents` lists
+  them and `SendMessage` resumes one where it left off.
 - A child's own background commands belong to its run: their notices reach
   the child, and its report comes when the last of them is done.
 - At most 20 children of a session run at once, and children nest three
   levels deep.
 - `Esc` and `Ctrl+C` stop the turn and the child the main agent waits for.
   Children in the background keep running; `/tasks` and `TaskStop` stop them.
-- `isolation` is accepted, but neither `worktree` nor `remote` is available
-  yet.
+- With `isolation` set to `worktree`, a child works in a git worktree of its
+  own, `.super/worktrees/agent-<id>` in the project, on the new branch
+  `worktree-agent-<id>`. When it ends with nothing changed, the worktree and
+  the branch are removed; otherwise they stay, and its report names them.
+  `remote` is not available.
 
-Each child uses the same working directory. Project settings cannot enable
-subagents, and `--no-tools` keeps them off.
+Every other child uses the same working directory. Project settings cannot
+enable subagents, and `--no-tools` keeps them off.
 
 ### Dynamic workflows
 

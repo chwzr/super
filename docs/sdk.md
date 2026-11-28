@@ -268,7 +268,9 @@ id is the agent's id; its notice's `result` is the agent's report.
 In Rust, `AgentSession::agent_registry` returns the session's
 `super_coding::AgentRegistry`, the agents it started, with `list` and `find`
 returning `AgentInfo` (`id`, `name`, `type`, `status`, `background`,
-`sessionFile`) and `session_of` an agent's own `AgentSession`.
+`sessionFile`, `worktree`) and `session_of` an agent's own `AgentSession`.
+`AgentSession::agent_at("a1b2c3d4e/a5f6g7h8i")` reaches an agent's agent by
+the path of ids.
 `AgentSession::agent_types` returns the agent types (`super_coding::AgentType`)
 and `AgentSession::agent_type_list` their names and descriptions. An agent's
 session knows who started it from `AgentSession::agent_link`.
@@ -283,6 +285,38 @@ prompt_context })`, using `super_coding::agents::discover(cwd, trusted)` and
 `super_coding::system_prompt::prompt_context`; without it an agent's prompt
 ends with the working directory only, and only the built-in types exist. A
 message between agents is a `super_coding::agent_message`.
+
+An agent's session is stored like the session itself, in the folder beside
+the session's file (`<file without .jsonl>/agents/<agent id>.jsonl`,
+`super_coding::session::manager::agents_dir`), and is left out of
+`SessionManager::list` and `list_all`. A session built on a stored file
+rebuilds its registry from that folder (`AgentRegistry::restore`), so
+`list` has the agents of earlier runs at once, and an agent's session is
+loaded from its file the first time it is needed: a `SendMessage` that
+resumes it, `session_of`, `agent_at`, or a client's `get_agent_entries`.
+`AgentRegistry::built_sessions` lists the loaded ones.
+
+A `Session` wraps every loaded agent session as a `Session` of its own, a
+view whose events are the agent's and which answers reading commands only
+(`Session::is_agent_view`; other commands fail with
+`super_sdk::AGENT_VIEW_REFUSAL`). `Session::agent_sessions` lists the views
+by agent id, and `Session::subscribe_agents` returns them with a receiver of
+`super_sdk::AgentChange`: `Loaded { id, session, events }`, with the agent's
+events subscribed before its run starts, and `Reset` when the session moved
+to another conversation. The RPC commands `get_agents` and
+`get_agent_entries` list a session's agents and read one's transcript
+([rpc.md](rpc.md#agents)). `super_remote::SessionTransport` mirrors each view
+to streams nested under the session's (`SessionStreams::agent`). An embedder
+that builds its own `AgentSession` hears of the agent sessions through
+`AgentSession::set_agent_observer` (`super_coding::agents::AgentObserver`)
+and sends an agent session's events where it wants them with
+`AgentSession::forward_events`; until then they go nowhere.
+
+An agent with `isolation: "worktree"` works in a git worktree made by
+`super_coding::worktree` (`create`, `has_changes`, `remove`, `recreate`),
+with its built-in tools copied to that folder through
+`AgentTool::in_directory`; a custom tool keeps the folder it was built for
+unless it implements that method.
 
 The module `super_coding::subagents` and its six tools are gone.
 

@@ -125,6 +125,28 @@ See [Background tasks](#background-tasks) for what a task is.
   and returns `data.task` with `status: "stopped"`. Fails when no task has
   that id or name, or when the task is not running any more.
 
+### Agents
+
+See [Agents](#agents-1) for how an agent's session is stored and sent.
+
+- `get_agents`, optional `agent`: `data.agents`, the agents the session
+  started with the `Agent` tool, oldest first, those of an earlier run of the
+  session included. Each is `{id, path, name, type, status, background,
+  sessionFile, worktree}`: `path` is what the agent commands take, `status`
+  is `running`, `completed`, `failed` or `stopped`, `background` says whether
+  its latest run is or was a background task, and `sessionFile` and
+  `worktree` (`{path, branch, base, project}`) are there when the agent has
+  them. With `agent`, the agents that agent started.
+- `get_agent_entries` with `agent`, optional `since`: the entries of the
+  agent's session, its transcript, as `get_entries` answers for the session
+  (`entries` after the `since` entry id, and `leafId`), with the agent's
+  `sessionId` and `sessionFile`. Fails when no agent has that path.
+
+`agent` is an agent's `path`: its id for an agent of this session, and the
+ids from there down, separated by `/`, for an agent of an agent
+(`a1b2c3d4e/a5f6g7h8i`). An agent that had ended before the session was
+loaded again is read from its stored session.
+
 ### Approvals
 
 Some steps wait for a human: a dynamic workflow before it starts, the project
@@ -225,9 +247,11 @@ An agent in the background (`kind: "agent"`) is a task with the agent's id;
 its notice's `result` is the agent's report and `outputFile` its stored
 transcript. A message that resumes an agent that had ended starts a new run
 of the same task id. An `Agent` call's `details` carry the `agent` (`id`,
-`name`, `type`, `status`, `background`, `sessionFile`) and, for an agent the
-call waited for, its `usage`; a `SendMessage` call's carry `to` and, for an
-agent, the `agent` and `resumed`.
+`name`, `type`, `status`, `background`, `sessionFile`, and `worktree` while
+it has one) and, for an agent the call waited for, its `usage`; a
+`SendMessage` call's carry `to` and, for an agent, the `agent` and
+`resumed`. The notice of an agent that left changes in its worktree names it
+in `outcome.worktree`.
 
 A `Bash` call with `run_in_background` answers at once; its `details` carry
 `backgroundTaskId` and `outputFile`. A `Bash` call in the foreground has
@@ -240,6 +264,46 @@ on the client: one that shows a stop control for each task (`initialize`
 with `taskControls: true`, or `hello.taskControls` on the daemon) keeps them
 running and stops them one by one with `stop_task`; any other client stops
 them all with `abort`, since it has no other way to.
+
+## Agents
+
+An agent the `Agent` tool starts runs in a session of its own, which is
+stored and sent like the session itself, but is not a session of its own in
+any list:
+
+- **Stored** next to its parent's session file, in a folder named after it:
+  `<session file without .jsonl>/agents/<agent id>.jsonl`, and an agent's
+  agents one folder further. The listings of stored sessions (the terminal's
+  pickers, the daemon's `list_sessions`, the platform's registry) leave them
+  out, and `--session <id>` does not find them. The child's first entries
+  are a `custom` entry with `customType: "subagent"` (`agentId`, `taskName`,
+  `agentType`, `canonicalPath`, `depth`, `toolUseId`, `parentSessionId`,
+  `model`, `thinkingLevel`, `worktree`), and every run's end adds one with
+  `customType: "agent_run"` (`status`, `background`, `worktree`).
+- **Rebuilt** when the session is loaded again, after a restart or in the
+  daemon: `get_agents` and the model's `ListAgents` list the stored agents,
+  and a message to one resumes it from its transcript. An agent whose run was
+  cut off by the end of its process counts as `stopped`.
+- **Sent** to its own S2 streams, nested under its parent's, while the
+  session is mirrored for remote control:
+  `sessions/<machine>/<session>/agents/<agent id>/events`, `entries` and
+  `commands`, one level further for an agent of an agent. They are written
+  from the moment the agent's session is loaded: when it starts, and when a
+  stored one is resumed or read. The events are those of a session, from the
+  agent's `agent_start` to its `agent_settled`; the entries are its
+  transcript.
+- **Read only.** An agent runs as its parent says. Its `commands` stream,
+  and the view of its session the SDK hands out, answer the reading
+  commands (`get_*` and `ping`) and refuse every other one with "An agent's
+  session takes reading commands only; send this command to the session that
+  started the agent." Stop an agent with `stop_task` on its parent's
+  session; the model writes to it with `SendMessage`.
+
+An agent started with `isolation: "worktree"` works in a git worktree of its
+own, `.super/worktrees/agent-<id>` at the top of the project, on the new
+branch `worktree-agent-<id>`. When a run ends with nothing changed in it, the
+worktree and its branch are removed; otherwise both stay, and the agent's
+`worktree` names them. A resumed agent gets its worktree back first.
 
 ## Minimal Python subprocess client
 

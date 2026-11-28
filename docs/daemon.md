@@ -216,6 +216,15 @@ null for a stored session.
 - Workflow approvals are asked as `approval_request` events and answered with
   `answer_approval` from any attached client; `approval_resolved.by` names the
   client's `hello.name`.
+- The agents a hosted session starts run inside it, in the daemon, and are
+  stored in the folder beside its file (`<file without .jsonl>/agents/`).
+  They are not sessions of their own: `list_sessions`, `status`'s
+  `storedSessions`, `resume_session` and the platform's registry leave them
+  out. A session the daemon loads again rebuilds its agents from that
+  folder, so the model's `ListAgents` lists them and `SendMessage` resumes
+  one; a client lists them with `get_agents` and reads one's transcript with
+  `get_agent_entries` on the session ([rpc.md](rpc.md#agents)). An agent
+  that still ran when the daemon stopped counts as `stopped`.
 
 ## The terminal
 
@@ -574,7 +583,13 @@ not false), the daemon keeps a link to it, checked every 30 seconds:
 
 - `sessions/{machineId}/{sessionId}/{events,entries,commands}`: every
   hosted session is mirrored exactly like a terminal session, from the
-  moment it loads until it unloads.
+  moment it loads until it unloads. Its agents are mirrored the same way to
+  streams nested under it,
+  `sessions/{machineId}/{sessionId}/agents/{agentId}/{events,entries,commands}`
+  (one level further for an agent's agent), from the moment an agent's
+  session is loaded: when it starts, or when a stored one is resumed or
+  read. An agent's `commands` stream answers reading commands only
+  ([rpc.md](rpc.md#agents-1)). The registry gets no record for an agent.
 - `machines/{machineId}/commands`: controllers append daemon-level commands
   here with the same headers as session commands (`t`, `from`, `name`,
   `exp`). `status`, `list_sessions`, `list_workspaces`, `list_directories`,

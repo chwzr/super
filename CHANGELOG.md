@@ -85,6 +85,28 @@
   `agent_type_list`, `agent_link` and `set_agent_resources`,
   `super_coding::agents`, `super_coding::agent_message` and
   `super_coding::system_prompt::prompt_context` are new.
+- A subagent's session is saved like the session itself, beside it, and a
+  session opened again, in the terminal or in the daemon, knows its
+  subagents: `ListAgents` lists them and `SendMessage` resumes one from its
+  transcript. While the session is mirrored to the platform, each subagent
+  is mirrored to streams nested under the session's,
+  `sessions/<machine>/<session>/agents/<agent>/events`, `entries` and
+  `commands`; an agent's commands stream answers reading commands only.
+- `Agent` with `isolation: "worktree"` runs the child in a git worktree of
+  its own under `.super/worktrees/` in the project, on a new branch. A
+  worktree the child changed nothing in is removed with its branch when the
+  child ends; one with changes stays, and the report names its folder and
+  branch.
+- RPC: `get_agents` lists a session's subagents, those of earlier runs
+  included, and `get_agent_entries` reads a subagent's transcript.
+- Rust SDK: `Session::agent_sessions` and `Session::subscribe_agents` hand
+  out each loaded subagent session as a read-only `Session`
+  (`Session::is_agent_view`), `AgentSession::agent_at` reaches an agent by
+  its path of ids, `AgentSession::set_agent_observer` and `forward_events`
+  let an embedder follow agent sessions, `AgentRegistry::restore` rebuilds a
+  registry from the stored agents, `super_coding::worktree` makes, checks
+  and removes worktrees, `AgentTool::in_directory` copies a tool to another
+  folder, and `SessionStreams::agent` names an agent's streams.
 
 ### Changed
 
@@ -99,6 +121,10 @@
 - A child agent's run, and a workflow agent's or a loop's, lasts until the
   child's own background commands and the turns their notices start are
   done.
+- A child session, a subagent's, a workflow agent's or a loop's, is stored
+  in a folder named after its parent's session file instead of next to it,
+  and the session lists leave it out. Child sessions stored next to their
+  parent by earlier versions are left out of the lists too.
 
 - The four core tools are named `Read`, `Write`, `Edit` and `Bash`. The
   model sees these names, and `defaultTools`, `--tools`, `--exclude-tools`
