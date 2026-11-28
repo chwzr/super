@@ -166,9 +166,6 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
         super_coding::prompts::discover(cwd, trusted, &template_paths)
     };
 
-    if let Some(note) = unknown_tools_note(args, &settings) {
-        eprintln!("warning: {note}");
-    }
     let (tool_names, mcp) = configured_tools(args, cwd, trusted, &settings)?;
     let system_prompt = system_prompt(args, cwd, &settings, &tool_names, &context, &skills);
     let agent_resources = agent_resources(
@@ -631,6 +628,9 @@ pub async fn build_startup(
     };
 
     // System prompt.
+    if let Some(note) = unknown_tools_note(args, &settings) {
+        eprintln!("warning: {note}");
+    }
     let (tool_names, mcp) = configured_tools(args, &cwd, trusted, &settings)?;
     let system_prompt = system_prompt(args, &cwd, &settings, &tool_names, &context, &skills);
     let agent_resources = agent_resources(
