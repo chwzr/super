@@ -146,9 +146,75 @@ pub fn tool_selection(
     }
 }
 
+/// The tools a session adds itself, which the lists name too: they are no
+/// unknown names.
+pub const SESSION_TOOLS: &[&str] = &[
+    "Monitor",
+    "TaskStop",
+    "Agent",
+    "SendMessage",
+    "ListAgents",
+    "Workflow",
+    "Skill",
+    "ScheduleWakeup",
+    "EnterWorktree",
+    "ExitWorktree",
+    "webmcp",
+];
+
+/// The names in the allowlist, the exclusions and `defaults`
+/// (`defaultTools`, without its `+` and `-`) that are no tool's, each with
+/// the tool name it differs from only in case, such as `read` and `Read`
+/// from an earlier version, when there is one. They are left out without a
+/// word otherwise, so a host can say so.
+pub fn unknown_tool_names(
+    allow: Option<&[String]>,
+    exclude: &[String],
+    defaults: Option<&[String]>,
+) -> Vec<(String, Option<&'static str>)> {
+    let known = || ALL_TOOLS.iter().chain(SESSION_TOOLS);
+    let mut out: Vec<(String, Option<&'static str>)> = Vec::new();
+    let entries = allow
+        .unwrap_or_default()
+        .iter()
+        .chain(exclude)
+        .chain(defaults.unwrap_or_default());
+    for entry in entries {
+        let name = entry.trim_start_matches(['+', '-']);
+        if name.is_empty()
+            || known().any(|known| *known == name)
+            || out.iter().any(|(seen, _)| seen == name)
+        {
+            continue;
+        }
+        let like = known()
+            .copied()
+            .find(|known| known.eq_ignore_ascii_case(name));
+        out.push((name.to_string(), like));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_of_no_tool_are_found_with_the_name_they_meant() {
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let allow = names(&["read", "Bash", "Monitor"]);
+        let defaults = names(&["+grep", "-bash", "write", "nothing", "read"]);
+        assert_eq!(
+            unknown_tool_names(Some(&allow), &names(&["Agent"]), Some(&defaults)),
+            [
+                ("read".to_string(), Some("Read")),
+                ("bash".to_string(), Some("Bash")),
+                ("write".to_string(), Some("Write")),
+                ("nothing".to_string(), None),
+            ]
+        );
+        assert!(unknown_tool_names(None, &[], Some(&names(&["Read", "-Monitor"]))).is_empty());
+    }
 
     #[test]
     fn the_same_lists_choose_among_the_tools_a_session_adds() {

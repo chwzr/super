@@ -394,6 +394,13 @@
 - A session opened again refuses a file it had read and that changed on disk
   since with the same words as a session that kept running, "has changed on
   disk since it was read", where it said the file had not been read yet.
+- A name in `--tools`, `--exclude-tools` or `defaultTools` that no tool has,
+  such as `read` from an earlier version, is named in a warning on standard
+  error when SUPER starts, with the tool's name in its new case (`read (use
+  Read)`). Such a name was left out without a word, so a saved selection could
+  start sessions without file tools.
+- Rust SDK: `super_sdk::tools::unknown_tool_names` finds those names and
+  `SESSION_TOOLS` lists the tools a session adds itself.
 
 ## 0.0.42 - 2026-11-27
 

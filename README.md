@@ -1148,7 +1148,8 @@ two tools.
 
 Tool names are case-sensitive. `Read`, `Write`, `Edit`, and `Bash` start with a
 capital letter, and their lower-case names from earlier versions are no longer
-recognized. The other tools of the advanced mode are not added here: `Monitor`
+recognized: SUPER leaves out a name no tool has and says so on standard error
+when it starts, with the tool's name in its new case. The other tools of the advanced mode are not added here: `Monitor`
 and `TaskStop` come with `Bash` (see [Shell tools](#shell-tools)), `Skill`,
 `ScheduleWakeup`, `EnterWorktree` and `ExitWorktree` with `Read` or `Bash`
 (see [Wake-ups and worktrees](#wake-ups-and-worktrees)), and the agent tools

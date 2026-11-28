@@ -87,6 +87,28 @@ fn configured_tools(
     Ok((names, manager))
 }
 
+/// A line about the names in `--tools`, `--exclude-tools` and `defaultTools`
+/// that are no tool's, which would otherwise be left out without a word.
+fn unknown_tools_note(args: &Args, settings: &Settings) -> Option<String> {
+    let allow = args.tools.as_ref().map(|_| Args::split_csv(&args.tools));
+    let unknown = super_sdk::tools::unknown_tool_names(
+        allow.as_deref(),
+        &Args::split_csv(&args.exclude_tools),
+        settings.default_tools.as_deref(),
+    );
+    if unknown.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = unknown
+        .into_iter()
+        .map(|(name, like)| match like {
+            Some(like) => format!("{name} (use {like})"),
+            None => name,
+        })
+        .collect();
+    Some(format!("unknown tool names ignored: {}", names.join(", ")))
+}
+
 /// Which of the tools a session adds itself `--tools`, `--exclude-tools` and
 /// the `-Name` entries of `defaultTools` let through.
 fn tool_selection(args: &Args, settings: &Settings) -> super_coding::ToolSelection {
@@ -144,6 +166,9 @@ pub fn reload_runtime(args: &Args, cwd: &std::path::Path) -> Result<ReloadedRunt
         super_coding::prompts::discover(cwd, trusted, &template_paths)
     };
 
+    if let Some(note) = unknown_tools_note(args, &settings) {
+        eprintln!("warning: {note}");
+    }
     let (tool_names, mcp) = configured_tools(args, cwd, trusted, &settings)?;
     let system_prompt = system_prompt(args, cwd, &settings, &tool_names, &context, &skills);
     let agent_resources = agent_resources(
@@ -704,6 +729,22 @@ pub async fn build_startup(
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn names_of_no_tool_are_named_in_a_warning() {
+        let mut settings = Settings {
+            default_tools: Some(vec!["read".into(), "+bash".into()]),
+            ..Default::default()
+        };
+        let args = Args::parse_from(["super", "--tools", "Read,edit"]);
+        assert_eq!(
+            unknown_tools_note(&args, &settings).as_deref(),
+            Some("unknown tool names ignored: edit (use Edit), read (use Read), bash (use Bash)")
+        );
+        settings.default_tools = Some(vec!["Read".into(), "-Monitor".into()]);
+        let args = Args::parse_from(["super", "--exclude-tools", "Bash"]);
+        assert_eq!(unknown_tools_note(&args, &settings), None);
+    }
 
     #[test]
     fn switching_to_a_file_another_process_holds_is_refused() {
