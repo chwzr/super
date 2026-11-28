@@ -122,9 +122,12 @@ See [Background tasks](#background-tasks) for what a task is.
 
 - `get_tasks`: `data.tasks`, every background task the session remembers,
   oldest first, as the `task` object below.
-- `stop_task` with `taskId`, the task's id or name: stops one running task
-  and returns `data.task` with `status: "stopped"`. Fails when no task has
-  that id or name, or when the task is not running any more.
+- `stop_task` with `taskId`, the task's id, name or description: stops one
+  running task and returns `data.task` with `status: "stopped"`. A name or
+  description names the running task that has it, also when a task that
+  ended has it too. Fails when no task has that id, name or description,
+  when several running tasks have it, or when the task is not running any
+  more.
 
 ### Agents
 

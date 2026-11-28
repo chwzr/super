@@ -1810,14 +1810,10 @@ impl AgentSession {
     /// reported about the task.
     pub fn stop_task(&self, id_or_name: &str) -> Result<TaskInfo, TaskStopError> {
         if let Some(backend) = self.backend() {
-            let task = self
-                .remote_tasks
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|task| task.id == id_or_name || task.name.as_deref() == Some(id_or_name))
-                .cloned()
-                .ok_or_else(|| TaskStopError::Unknown(id_or_name.to_string()))?;
+            let task = {
+                let tasks = self.remote_tasks.lock().unwrap();
+                tasks[crate::tasks::pick(&tasks, id_or_name)?].clone()
+            };
             if !task.status.is_running() {
                 return Err(TaskStopError::NotRunning {
                     id: task.id,

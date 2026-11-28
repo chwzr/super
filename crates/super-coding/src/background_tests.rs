@@ -386,6 +386,58 @@ async fn a_later_entry_waits_until_the_turn_is_over() {
     );
 }
 
+/// A command or a monitor stops by the description its call gave it, as an
+/// agent does; a name several running tasks share is refused, and one a
+/// task that ended shares with a running one stops the running one.
+#[tokio::test]
+async fn a_task_stops_by_its_description_and_a_shared_name_names_the_running_one() {
+    let fixture = fixture(Vec::new());
+    let tasks = fixture.session.background_tasks();
+    let command = tasks
+        .register(TaskSpec::new(TaskKind::Shell, "sleeper"))
+        .unwrap();
+    let monitor = tasks
+        .register(TaskSpec::new(TaskKind::Monitor, "watch"))
+        .unwrap();
+    assert_eq!(
+        fixture.session.stop_task("sleeper").unwrap().id,
+        command.id()
+    );
+    assert_eq!(tasks.stop("watch").unwrap().id, monitor.id());
+
+    let ended = tasks
+        .register(TaskSpec::new(TaskKind::Agent, "Dup").with_name("Dup"))
+        .unwrap();
+    assert!(ended.finish(TaskOutcome::completed("done")));
+    let running = tasks
+        .register(TaskSpec::new(TaskKind::Agent, "Dup"))
+        .unwrap();
+    assert_eq!(tasks.stop("Dup").unwrap().id, running.id());
+    assert_eq!(
+        tasks.stop("Dup"),
+        Err(TaskStopError::NotRunning {
+            id: running.id().to_string(),
+            status: TaskStatus::Stopped,
+        })
+    );
+
+    let _one = tasks
+        .register(TaskSpec::new(TaskKind::Shell, "npm test"))
+        .unwrap();
+    let _two = tasks
+        .register(TaskSpec::new(TaskKind::Shell, "npm test"))
+        .unwrap();
+    assert_eq!(
+        tasks.stop("npm test"),
+        Err(TaskStopError::Ambiguous("npm test".into()))
+    );
+    assert_eq!(
+        TaskStopError::Ambiguous("npm test".into()).to_string(),
+        "Several running background tasks are named 'npm test'; give the id of one of them."
+    );
+    tasks.stop_all();
+}
+
 #[tokio::test]
 async fn a_task_stops_by_id_or_by_name_without_a_notice() {
     let fixture = fixture(Vec::new());

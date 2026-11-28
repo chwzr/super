@@ -1444,24 +1444,40 @@ async fn a_background_agent_is_stopped_by_its_name() {
     );
 
     let stop = TaskStopTool::new(Arc::downgrade(&session));
-    let stopped = stop
-        .execute(
+    let stop_named = |name: &'static str| {
+        stop.execute(
             "call",
-            json!({"task_id": "Sleeper"}),
+            json!({"task_id": name}),
             CancellationToken::new(),
             None,
         )
-        .await
-        .unwrap();
+    };
+    // Two running agents share the name: stopping one of them by it would
+    // be a guess.
+    let refused = stop_named("Sleeper").await.unwrap_err().to_string();
+    assert_eq!(
+        refused,
+        "Several running background tasks are named 'Sleeper'; give the id of one of them."
+    );
+    session.stop_task(&ids[0]).unwrap();
+    // Once the first one has ended, the name names the one that runs.
+    let stopped = stop_named("Sleeper").await.unwrap();
     assert_eq!(
         stopped.output_text(),
-        format!("Stopped the agent task {} (Sleeper).", ids[0])
+        format!("Stopped the agent task {} (Sleeper).", ids[1])
     );
     let stopped = session.stop_task("Third").unwrap();
     assert_eq!(stopped.id, ids[2]);
-    let status = |id: &str| session.background_tasks().find(id).unwrap().status;
+    let status = |id: &str| {
+        session
+            .tasks()
+            .into_iter()
+            .find(|task| task.id == id)
+            .unwrap()
+            .status
+    };
     assert_eq!(status(&ids[0]), TaskStatus::Stopped);
-    assert_eq!(status(&ids[1]), TaskStatus::Running);
+    assert_eq!(status(&ids[1]), TaskStatus::Stopped);
     assert_eq!(status(&ids[2]), TaskStatus::Stopped);
     session.stop_background_tasks();
 }

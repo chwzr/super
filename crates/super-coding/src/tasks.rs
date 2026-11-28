@@ -257,6 +257,33 @@ pub enum TaskStopError {
     Unknown(String),
     #[error("Background task {id} is not running: it {status} already.")]
     NotRunning { id: String, status: TaskStatus },
+    #[error("Several running background tasks are named '{0}'; give the id of one of them.")]
+    Ambiguous(String),
+}
+
+/// The task `id_or_name` names among `tasks`, oldest first: the one with
+/// that id, else the running one whose name or description it is, else the
+/// newest one of that name or description that has ended. Several running
+/// tasks of that name or description are refused: stopping one of them
+/// would be a guess. Returns the task's position.
+pub(crate) fn pick(tasks: &[TaskInfo], id_or_name: &str) -> Result<usize, TaskStopError> {
+    if let Some(position) = tasks.iter().position(|task| task.id == id_or_name) {
+        return Ok(position);
+    }
+    let named = |task: &TaskInfo| {
+        task.name.as_deref() == Some(id_or_name) || task.description == id_or_name
+    };
+    let running: Vec<usize> = (0..tasks.len())
+        .filter(|&position| named(&tasks[position]) && tasks[position].status.is_running())
+        .collect();
+    match running.as_slice() {
+        [one] => Ok(*one),
+        [] => tasks
+            .iter()
+            .rposition(named)
+            .ok_or_else(|| TaskStopError::Unknown(id_or_name.to_string())),
+        _ => Err(TaskStopError::Ambiguous(id_or_name.to_string())),
+    }
 }
 
 struct TaskRecord {
@@ -386,7 +413,8 @@ impl BackgroundTasks {
                 .any(|record| record.info.lock().unwrap().status.is_running())
     }
 
-    /// The task with this id, else the newest task with this name.
+    /// The task with this id, else the one with this name or description
+    /// ([`pick`]); `None` also when several running tasks have it.
     pub fn find(&self, id_or_name: &str) -> Option<TaskInfo> {
         self.find_record(id_or_name)
             .map(|record| record.info.lock().unwrap().clone())
@@ -396,9 +424,7 @@ impl BackgroundTasks {
     /// `stopped`, its owner is told through [`TaskHandle::stop_signal`], and
     /// no notice is queued.
     pub fn stop(&self, id_or_name: &str) -> Result<TaskInfo, TaskStopError> {
-        let record = self
-            .find_record(id_or_name)
-            .ok_or_else(|| TaskStopError::Unknown(id_or_name.to_string()))?;
+        let record = self.resolve(id_or_name)?;
         let ended = {
             let mut info = record.info.lock().unwrap();
             if !info.status.is_running() {
@@ -486,18 +512,18 @@ impl BackgroundTasks {
             .cloned()
     }
 
-    fn find_record(&self, id_or_name: &str) -> Option<Arc<TaskRecord>> {
+    /// The record of the task `id_or_name` names ([`pick`]).
+    fn resolve(&self, id_or_name: &str) -> Result<Arc<TaskRecord>, TaskStopError> {
         let records = self.records.lock().unwrap();
-        records
+        let infos: Vec<TaskInfo> = records
             .iter()
-            .find(|record| record.info.lock().unwrap().id == id_or_name)
-            .or_else(|| {
-                records
-                    .iter()
-                    .rev()
-                    .find(|record| record.info.lock().unwrap().name.as_deref() == Some(id_or_name))
-            })
-            .cloned()
+            .map(|record| record.info.lock().unwrap().clone())
+            .collect();
+        pick(&infos, id_or_name).map(|position| records[position].clone())
+    }
+
+    fn find_record(&self, id_or_name: &str) -> Option<Arc<TaskRecord>> {
+        self.resolve(id_or_name).ok()
     }
 
     fn emit(&self, event: SessionEvent) {

@@ -1273,8 +1273,11 @@ In the advanced mode two tools come with `Bash`:
   and one that brings more than 60 events within a minute is stopped. The
   agent is told when a monitor ends.
 - `TaskStop` stops a background task by its id or its name: a command, a
-  monitor, an agent or a workflow run. It does not touch `/loop` and
-  `/autoresearch` jobs.
+  monitor, an agent or a workflow run. A command's, a monitor's and an
+  agent's name is the `description` its call gave it; a name several running
+  tasks share is refused, and the running one is stopped when a task that
+  ended has the same name. It does not touch `/loop` and `/autoresearch`
+  jobs.
 
 ### Wake-ups and worktrees
 

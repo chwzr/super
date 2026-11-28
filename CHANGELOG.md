@@ -388,6 +388,18 @@
   agent's name while no other running task has it. A workflow run that a
   `Workflow` call named with `name` is stopped by that name; its task was
   named after the script.
+- `TaskStop` and `stop_task` stop a background command or a monitor by the
+  `description` its call gave it, as they stop an agent by its description.
+  A name that several running tasks share is refused with "Several running
+  background tasks are named '…'; give the id of one of them.", and one that
+  a task that ended shares with a running one stops the running one; it
+  answered about the one that ended, so the running one could not be
+  stopped by name.
+- The full-screen terminal names a background task by its id in `/tasks`,
+  its notice and a monitor's event, with its description once, as the tool
+  result that started it and an agent's messages name it. Since agents'
+  tasks are named by their description, `/tasks` showed the description in
+  place of the id and its columns did not line up.
 - `Workflow` with `name` finds the project's saved workflows in the project
   SUPER found the session's skills in, with the same trust: a project trusted
   for one run with `--approve`, and a session that works in a worktree, no

@@ -68,10 +68,10 @@ impl TaskView {
                     Duration::from_millis(now.saturating_sub(task.started_at).max(0) as u64);
                 let row = format!(
                     "{marker} {:<10} {:<9} {:>6}  {}",
-                    task.name.as_deref().unwrap_or(&task.id),
+                    task.id,
                     task.kind.as_str(),
                     format_elapsed(elapsed),
-                    task.description,
+                    described(task),
                 );
                 lines.push(if index == self.selected {
                     theme.fg("accent", &theme.bold(&text::truncate_to_width(&row, width)))
@@ -140,13 +140,25 @@ pub(crate) fn stopped_line(count: usize) -> String {
     format!("stopped {count} background {noun}")
 }
 
-/// The transcript line for a task's notice: which task ended and how.
+/// What a task is: its description, and its name after it when that is
+/// something else (a workflow run's name, say). An agent's name is its
+/// description.
+fn described(task: &TaskInfo) -> String {
+    match task.name.as_deref() {
+        Some(name) if name != task.description => format!("{} ({name})", task.description),
+        _ => task.description.clone(),
+    }
+}
+
+/// The transcript line for a task's notice: which task ended and how. A
+/// task is named by its id, as the tool result that started it and an
+/// agent's messages name it.
 pub(crate) fn notice_line(task: &TaskInfo) -> String {
     format!(
         "task {} {} · {}",
-        task.name.as_deref().unwrap_or(&task.id),
+        task.id,
         task.status.as_str(),
-        task.description
+        described(task)
     )
 }
 
@@ -156,10 +168,7 @@ pub(crate) fn event_line(task: &TaskInfo, event: &str) -> String {
     let first = event.lines().next().unwrap_or_default();
     let first: String = first.chars().take(100).collect();
     let more = event.lines().count().saturating_sub(1);
-    let mut line = format!(
-        "monitor {} · {first}",
-        task.name.as_deref().unwrap_or(&task.id)
-    );
+    let mut line = format!("monitor {} · {first}", task.id);
     if more > 0 {
         line.push_str(&format!(" (+{more} lines)"));
     }
@@ -332,8 +341,27 @@ mod tests {
             .unwrap();
         let shown = plain(&view.render(80, &theme, &session));
         assert!(shown.contains(first.id()), "{shown}");
-        assert!(shown.contains("reviewer"), "{shown}");
-        assert!(shown.contains("review the diff"), "{shown}");
+        assert!(shown.contains(second.id()), "{shown}");
+        assert!(shown.contains("review the diff (reviewer)"), "{shown}");
+        // An agent's task is named by its description: the row names its
+        // id, and the description once, in line with the others.
+        let agent = tasks
+            .register(
+                TaskSpec::new(TaskKind::Agent, "Review the parser").with_name("Review the parser"),
+            )
+            .unwrap();
+        let shown = plain(&view.render(120, &theme, &session));
+        let row = shown
+            .lines()
+            .find(|line| line.contains(agent.id()))
+            .unwrap();
+        assert_eq!(row.matches("Review the parser").count(), 1, "{row}");
+        let column = |id: &str| {
+            let line = shown.lines().find(|line| line.contains(id)).unwrap();
+            line[..line.find(id).unwrap()].chars().count()
+        };
+        assert_eq!(column(agent.id()), column(first.id()));
+        session.stop_task(agent.id()).unwrap();
         assert!(
             text::strip_ansi(&progress_line(&session, &theme, 80, None).unwrap())
                 .contains("2 background tasks running")
@@ -355,7 +383,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             notice_line(&stopped),
-            "task reviewer stopped · review the diff"
+            format!("task {} stopped · review the diff (reviewer)", second.id())
         );
     }
 
