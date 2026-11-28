@@ -202,6 +202,12 @@
   unloaded while idle.
 - `/remote` no longer waits for a pending wake-up: the daemon takes it over
   from the session's file. Rust SDK: `Wakeups::park` and `unpark`.
+- `super` with piped input or output, the line-based front end on the
+  daemon, names tool calls as the full-screen terminal does (a file tool by
+  its file, an `Agent` call by its description, `ScheduleWakeup` by its
+  delay and reason) where it showed the new tools' arguments as JSON, and
+  shows a task's notice, a monitor's event, an agent's message, a wake-up
+  and a loop's round as one line each, where it showed nothing.
 - While background tasks run, the terminal's footer says how many and which
   key stops them all, `● 2 background tasks running · Ctrl+X to stop`, also
   when it is attached to the daemon. One press stops every command,

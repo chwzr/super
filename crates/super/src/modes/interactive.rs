@@ -1207,7 +1207,9 @@ fn note_user_activity(app: &mut App) {
 /// absolute `file_path` is shown relative to the session's folder `cwd`
 /// when it is inside it; `path` is what the search tools (and sessions
 /// stored before the file tools took `file_path`) name.
-fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
+/// The line a tool call is shown by: the tool's name and what it works on.
+/// The line front end of `super attach` shows calls by it too.
+pub(crate) fn tool_title(name: &str, args: &serde_json::Value, cwd: &Path) -> String {
     if name == "mcp"
         && args["action"] == "call"
         && let (Some(server), Some(tool)) = (args["server"].as_str(), args["name"].as_str())

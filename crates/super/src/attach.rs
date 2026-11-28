@@ -16,6 +16,7 @@
 //! the full TUI continues here when it switches to one.
 
 use crate::args::Args;
+use crate::modes::interactive::tool_title;
 use crate::session_link::Link;
 use anyhow::Result;
 use serde_json::Value;
@@ -559,7 +560,13 @@ async fn run(
                     ClientEvent::Daemon(_) => {}
                     ClientEvent::Session(event) => {
                         let kind = event.event_type().to_string();
-                        render(&mut screen, &event.0, &mut own_prompts, &mut approval);
+                        render(
+                            &mut screen,
+                            &event.0,
+                            Path::new(&session.cwd),
+                            &mut own_prompts,
+                            &mut approval,
+                        );
                         match kind.as_str() {
                             "agent_start" => working = true,
                             "agent_settled" => {
@@ -624,10 +631,12 @@ async fn send_prompt(
     }
 }
 
-/// Print one session event the way a reader wants to see it.
+/// Print one session event the way a reader wants to see it. `cwd` is the
+/// session's folder, which tool calls name their files relative to.
 fn render(
     screen: &mut Screen,
     event: &Value,
+    cwd: &Path,
     own_prompts: &mut VecDeque<String>,
     approval: &mut Option<OpenApproval>,
 ) {
@@ -649,6 +658,13 @@ fn render(
                 screen.line(&format!("› {text}"));
             }
         }
+        // A task's notice, a monitor's event, an agent's message, a wake-up
+        // or a loop's round: one line, as the full-screen terminal shows it.
+        "message_end" if event["message"]["role"] == "custom" => {
+            if let Some(line) = background_text(&event["message"]) {
+                screen.meta(&line);
+            }
+        }
         "message_end" if event["message"]["role"] == "assistant" => {
             screen.end_reply();
             if event["message"]["stopReason"] == "error" {
@@ -660,7 +676,7 @@ fn render(
         }
         "tool_execution_start" => {
             let name = event["toolName"].as_str().unwrap_or("tool");
-            screen.meta(&format!("• {}", tool_summary(name, &event["args"])));
+            screen.meta(&format!("• {}", tool_title(name, &event["args"], cwd)));
         }
         "tool_execution_end" if event["isError"] == true => {
             let name = event["toolName"].as_str().unwrap_or("tool");
@@ -726,29 +742,48 @@ fn render(
     }
 }
 
-/// The last `count` user and assistant messages, shortened.
+/// How a message of the recent history is shown.
+enum Recent {
+    User(String),
+    Assistant(String),
+    /// A notice, an event or a round that reached the agent from outside.
+    Background(String),
+}
+
+/// The last `count` user and assistant messages, shortened, and the lines
+/// of the notices, events, wake-ups and rounds among them.
 fn print_recent(screen: &mut Screen, messages: &[Value], count: usize) {
-    let readable: Vec<(bool, String)> = messages
+    let readable: Vec<Recent> = messages
         .iter()
         .filter_map(|message| {
-            let user = match message["role"].as_str()? {
-                "user" => true,
-                "assistant" => false,
+            let text = match message["role"].as_str()? {
+                "custom" => return background_text(message).map(Recent::Background),
+                "user" => Recent::User(message_text(message)),
+                "assistant" => Recent::Assistant(message_text(message)),
                 _ => return None,
             };
-            let text = message_text(message);
-            (!text.trim().is_empty()).then_some((user, text))
+            match &text {
+                Recent::User(shown) | Recent::Assistant(shown) if shown.trim().is_empty() => None,
+                _ => Some(text),
+            }
         })
         .collect();
     let skip = readable.len().saturating_sub(count);
-    for (user, text) in &readable[skip..] {
-        let text = shorten(text, 400);
-        if *user {
-            screen.line(&format!("› {text}"));
-        } else {
-            screen.line(&text);
+    for recent in &readable[skip..] {
+        match recent {
+            Recent::User(text) => screen.line(&format!("› {}", shorten(text, 400))),
+            Recent::Assistant(text) => screen.line(&shorten(text, 400)),
+            Recent::Background(line) => screen.meta(line),
         }
     }
+}
+
+/// The line of a custom message that reached the agent from outside a tool
+/// call (a task's notice, a monitor's event, an agent's message, a wake-up,
+/// a loop's round), from its wire form; `None` for any other message.
+fn background_text(message: &Value) -> Option<String> {
+    let message: super_agent::AgentMessage = serde_json::from_value(message.clone()).ok()?;
+    crate::task_ui::background_line(&message)
 }
 
 /// The readable text of a stored message: a user's string or text blocks,
@@ -768,26 +803,6 @@ fn message_text(message: &Value) -> String {
         crate::modes::interactive::visible_user_text(&text)
     } else {
         text
-    }
-}
-
-/// `Read /work/src/main.rs`, `Bash cargo test`, or the name and its
-/// arguments. The file tools name their file in `file_path`; the search
-/// tools, and sessions stored before that, in `path`.
-fn tool_summary(name: &str, args: &Value) -> String {
-    let detail = ["file_path", "path", "command", "pattern", "url"]
-        .iter()
-        .find_map(|key| args[*key].as_str())
-        .map(|value| value.lines().next().unwrap_or_default().to_string())
-        .unwrap_or_else(|| match args {
-            Value::Null => String::new(),
-            other => other.to_string(),
-        });
-    let detail = shorten(&detail, 100);
-    if detail.is_empty() {
-        name.to_string()
-    } else {
-        format!("{name} {detail}")
     }
 }
 
@@ -985,19 +1000,73 @@ mod tests {
 
     #[test]
     fn tools_and_messages_read_short() {
+        // Tool calls read as in the full-screen terminal: a file tool by its
+        // path, relative to the session's folder inside it, an agent by
+        // its description, the other new tools by what they act on.
+        let cwd = Path::new("/work");
+        let title = |name: &str, args: Value| tool_title(name, &args, cwd);
         assert_eq!(
-            tool_summary("Bash", &json!({"command": "cargo test\necho done"})),
-            "Bash cargo test"
+            title("Bash", json!({"command": "cargo test\necho done"})),
+            "Bash cargo test echo done"
         );
         assert_eq!(
-            tool_summary("Read", &json!({"file_path": "/work/src/main.rs"})),
-            "Read /work/src/main.rs"
+            title("Read", json!({"file_path": "/work/src/main.rs"})),
+            "Read src/main.rs"
         );
         assert_eq!(
-            tool_summary("grep", &json!({"pattern": "fn main", "path": "src"})),
+            title(
+                "Edit",
+                json!({"file_path": "/elsewhere/notes.md", "old_string": "a"})
+            ),
+            "Edit /elsewhere/notes.md"
+        );
+        assert_eq!(
+            title("grep", json!({"pattern": "fn main", "path": "src"})),
             "grep src"
         );
-        assert_eq!(tool_summary("todo", &Value::Null), "todo");
+        assert_eq!(
+            title(
+                "Agent",
+                json!({"description": "Review the diff", "prompt": "Look at it\nclosely", "subagent_type": "Explore"})
+            ),
+            "Agent Review the diff"
+        );
+        assert_eq!(
+            title(
+                "SendMessage",
+                json!({"to": "a1b2c3d4e", "message": "go on"})
+            ),
+            "SendMessage a1b2c3d4e"
+        );
+        assert_eq!(
+            title(
+                "Monitor",
+                json!({"description": "Watch", "timeout_ms": 1000, "command": "tail -f log"})
+            ),
+            "Monitor tail -f log"
+        );
+        assert_eq!(
+            title("TaskStop", json!({"task_id": "b12345678"})),
+            "TaskStop b12345678"
+        );
+        assert_eq!(title("Skill", json!({"skill": "review"})), "Skill review");
+        assert_eq!(
+            title("Workflow", json!({"script": "return 1", "name": "audit"})),
+            "Workflow audit"
+        );
+        assert_eq!(
+            title(
+                "ScheduleWakeup",
+                json!({"delaySeconds": 300, "reason": "CI runs"})
+            ),
+            "ScheduleWakeup 300s · CI runs"
+        );
+        assert_eq!(
+            title("ExitWorktree", json!({"action": "keep"})),
+            "ExitWorktree keep"
+        );
+        assert_eq!(title("ListAgents", json!({})), "ListAgents");
+        assert_eq!(title("todo", Value::Null), "todo");
         assert_eq!(
             message_text(&json!({"role": "assistant", "content": [
                 {"type": "thinking", "thinking": "hmm"},
@@ -1011,5 +1080,78 @@ mod tests {
         );
         assert_eq!(shorten("abcdef", 3), "abc…");
         assert_eq!(short_id("a1b2c3d4-e5f6"), "a1b2c3d4");
+    }
+
+    /// A custom message on the wire, as events and `get_messages` carry it.
+    fn wire(message: &super_agent::AgentMessage) -> Value {
+        serde_json::to_value(message).unwrap()
+    }
+
+    fn task(kind: super_coding::TaskKind, description: &str) -> super_coding::TaskInfo {
+        super_coding::TaskInfo {
+            id: "b12345678".into(),
+            name: None,
+            kind,
+            description: description.into(),
+            status: super_coding::TaskStatus::Running,
+            tool_use_id: None,
+            output_file: None,
+            progress: None,
+            summary: None,
+            started_at: 0,
+            ended_at: None,
+        }
+    }
+
+    #[test]
+    fn notices_events_wake_ups_and_rounds_read_as_lines() {
+        let mut ended = task(super_coding::TaskKind::Shell, "npm test");
+        ended.status = super_coding::TaskStatus::Completed;
+        let notice = super_coding::task_notification(
+            &ended,
+            &super_coding::TaskOutcome::completed("npm test (exit code 0)"),
+        );
+        assert_eq!(
+            background_text(&wire(&notice)).unwrap(),
+            "task b12345678 completed · npm test"
+        );
+        let event = super_coding::monitor_event(
+            &task(super_coding::TaskKind::Monitor, "watch the log"),
+            "error: disk full\nretrying",
+            0,
+        );
+        assert_eq!(
+            background_text(&wire(&event)).unwrap(),
+            "monitor b12345678 · error: disk full (+1 lines)"
+        );
+        let wakeup = super_coding::WakeupInfo {
+            id: 1,
+            delay_seconds: 300,
+            due_at: 0,
+            reason: Some("CI runs for five minutes".into()),
+            noop: false,
+            prompt: Some("check CI".into()),
+            job: None,
+            round: None,
+        };
+        assert_eq!(
+            background_text(&wire(&super_coding::notifications::wakeup_message(&wakeup))).unwrap(),
+            "wake-up · CI runs for five minutes"
+        );
+        let round = super_coding::notifications::loop_round(1, "tidy the docs", 2, 100, None);
+        assert_eq!(
+            background_text(&wire(&round)).unwrap(),
+            "loop round 2/100 · tidy the docs"
+        );
+        let message = super_coding::agent_message("a1234abcd", "main", None, "found it");
+        assert_eq!(
+            background_text(&wire(&message)).unwrap(),
+            "message from a1234abcd · found it"
+        );
+        assert_eq!(
+            background_text(&json!({"role": "user", "content": "hi", "timestamp": 0})),
+            None
+        );
+        assert_eq!(background_text(&json!({"role": "custom"})), None);
     }
 }
