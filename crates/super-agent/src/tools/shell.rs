@@ -196,17 +196,19 @@ pub const NEVER_RAN_SUMMARY: &str =
 /// POSIX shell text that puts the entries of `inherited` in front of the
 /// `PATH` the profile left, keeping each entry once and leaving out empty
 /// ones, without splitting a word or matching a pattern of the entries.
+/// Its errors go nowhere, which keeps a profile that traces commands from
+/// printing every step of the loop.
 fn path_first(inherited: &str) -> String {
     format!(
         concat!(
-            "__super_rest={}:$PATH; __super_path=; while :; do ",
+            "{{ __super_rest={}:$PATH; __super_path=; while :; do ",
             "__super_entry=${{__super_rest%%:*}}; ",
             "case $__super_entry in '') ;; *) case :$__super_path: in ",
             "*:\"$__super_entry\":*) ;; ",
             "*) __super_path=$__super_path${{__super_path:+:}}$__super_entry ;; ",
             "esac ;; esac; ",
             "case $__super_rest in *:*) __super_rest=${{__super_rest#*:}} ;; *) break ;; esac; ",
-            "done; PATH=$__super_path; export PATH; unset __super_rest __super_path __super_entry; "
+            "done; PATH=$__super_path; export PATH; unset __super_rest __super_path __super_entry; }} 2>/dev/null; "
         ),
         posix_quote(inherited)
     )
@@ -1034,6 +1036,32 @@ mod tests {
             .expect("the output ends with the command, not with the profile's job")
             .unwrap();
         assert_eq!(read_as_the_tools_do(&output.stdout), "hi\n");
+    }
+
+    /// A profile that traces its commands traces the command, not the
+    /// script's own work on `PATH`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_profile_that_traces_commands_does_not_trace_the_scripts_path_work() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join(".bash_profile"), "set -x\n").unwrap();
+        std::fs::write(home.path().join(".zprofile"), "setopt xtrace\n").unwrap();
+        let mut shells = vec!["/bin/bash"];
+        if Path::new("/bin/zsh").is_file() {
+            shells.push("/bin/zsh");
+        }
+        for shell in shells {
+            let output = piped(shell, home.path(), "echo hi", folder.path(), None, true)
+                .output()
+                .await
+                .unwrap();
+            assert!(output.status.success(), "{shell}: {output:?}");
+            let text = read_as_the_tools_do(&output.stdout);
+            assert!(text.contains("hi\n"), "{shell}: {text}");
+            assert!(!text.contains("__super_"), "{shell}: {text}");
+            assert!(text.lines().count() <= 8, "{shell}: {text}");
+        }
     }
 
     /// A syntax error in the command is reported, also by zsh, which parses
