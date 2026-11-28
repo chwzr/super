@@ -467,7 +467,9 @@ running after the terminal closes. In order:
    - a socket named by `SUPER_DAEMON_SOCKET` is connected to, never started.
 3. It waits until the turn, queued messages, background requests that write
    the session, its background tasks, a self-paced loop and open questions
-   are done: a session never moves mid-turn. `/remote cancel` keeps the
+   are done: a session never moves mid-turn. The line it shows meanwhile
+   says whether it waits for the turn, for the background tasks (which the
+   stop key stops) or for the rest. `/remote cancel` keeps the
    session where it is. A pending wake-up does not hold it up: it comes along
    in the session's file, and the terminal lets go of it.
 4. The terminal stops mirroring the session itself, lets go of the session

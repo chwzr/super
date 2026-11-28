@@ -221,9 +221,7 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
             app.command_status = None;
             app.command_cancel = None;
             if busy(app, session) {
-                show(app, Cell::Notice(
-                    "♦ the SUPER daemon is ready; this session moves there once the turn is over · /remote cancel keeps it here".into(),
-                ));
+                show(app, Cell::Notice(ready_line(app, session)));
             }
         }
         Progress::Failed(error) => {
@@ -237,6 +235,26 @@ pub(super) fn on_progress(app: &mut App, progress: Progress, session: &AgentSess
         }
         Progress::Cancelled => app.handover.pending = None,
     }
+}
+
+/// The line that says the daemon is ready while the hand-over waits, and
+/// for what: the turn, the session's background tasks, or the rest of its
+/// work ([`busy`]).
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(super) fn ready_line(app: &App, session: &AgentSession) -> String {
+    let until = if !matches!(
+        terminal_host_state(app, session),
+        crate::terminal_hosts::State::Idle
+    ) {
+        "once the turn is over"
+    } else if session.background_tasks().has_running() {
+        "once its background tasks have ended"
+    } else {
+        "once its work here is done"
+    };
+    format!(
+        "♦ the SUPER daemon is ready; this session moves there {until} · /remote cancel keeps it here"
+    )
 }
 
 /// A turn, a queued message, a background request that writes the session,

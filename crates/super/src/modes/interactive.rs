@@ -9750,6 +9750,28 @@ mod tests {
 
     /// A waited agent's line shows its report, and `ListAgents` a line per
     /// agent, not the text made for the model.
+    /// While `/remote` waits for background tasks and no turn runs, its line
+    /// says it waits for them, not for a turn.
+    #[test]
+    fn the_remote_line_says_what_the_move_waits_for() {
+        let app = test_app();
+        let session = test_session(super_coding::SessionManager::in_memory(Path::new(
+            "/synthetic",
+        )));
+        assert!(remote_handover::ready_line(&app, &session).contains("once its work here is done"));
+        let _task = session
+            .background_tasks()
+            .register(super_coding::TaskSpec::new(
+                super_coding::TaskKind::Shell,
+                "sleep 20",
+            ))
+            .unwrap();
+        assert_eq!(
+            remote_handover::ready_line(&app, &session),
+            "♦ the SUPER daemon is ready; this session moves there once its background tasks have ended · /remote cancel keeps it here"
+        );
+    }
+
     #[test]
     fn a_loaded_skill_reads_as_its_text() {
         let loaded = super_coding::skills::skill_text(
