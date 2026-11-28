@@ -56,6 +56,19 @@ pub enum AgentTypeSource {
     Project(PathBuf),
 }
 
+impl AgentTypeSource {
+    /// How an agent's stored session names where its type came from:
+    /// `built-in`, or the definition file's path.
+    pub fn label(&self) -> String {
+        match self {
+            AgentTypeSource::BuiltIn => "built-in".to_string(),
+            AgentTypeSource::User(path) | AgentTypeSource::Project(path) => {
+                path.display().to_string()
+            }
+        }
+    }
+}
+
 /// One type of agent the `Agent` tool can start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentType {

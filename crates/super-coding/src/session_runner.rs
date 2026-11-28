@@ -2510,6 +2510,7 @@ impl AgentSession {
                 "canonicalPath": self.agent_path(child.id),
                 "agentId": child.id,
                 "agentType": child.agent_type.name,
+                "agentTypeSource": child.agent_type.source.label(),
                 "depth": child.depth,
                 "toolUseId": child.tool_use_id,
                 "model": {"provider": model.provider, "id": model.id},

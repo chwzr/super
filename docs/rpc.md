@@ -398,8 +398,10 @@ reach them, since they run as their workflow or job says:
   `SessionSource::Open` and `Fork` refuse it: "<file> is the session of an
   agent, not a session of its own; open the session that started it." The child's first entries
   are a `custom` entry with `customType: "subagent"` (`agentId`, `taskName`,
-  `agentType`, `origin`, `canonicalPath`, `depth`, `toolUseId`, `parentSessionId`,
-  `model`, `thinkingLevel`, `worktree`), and every run's end adds one with
+  `agentType`, `agentTypeSource` (`built-in` or the type's definition file,
+  for an agent an `Agent` call started), `origin`, `canonicalPath`, `depth`,
+  `toolUseId`, `parentSessionId`, `model`, `thinkingLevel`, `worktree`), and
+  every run's end adds one with
   `customType: "agent_run"` (`status`, `background`, `worktree`).
 - **Rebuilt** when the session is loaded again, after a restart or in the
   daemon: `get_agents` and the model's `ListAgents` list the stored agents,

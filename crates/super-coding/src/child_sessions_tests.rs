@@ -1181,3 +1181,78 @@ async fn a_job_started_first_in_a_new_session_leaves_a_session_that_opens_again_
     assert_eq!(agents.len(), 1, "{agents:?}");
     assert_eq!(agents[0].name, format!("loop_{}", job.snapshot().id));
 }
+
+/// A stored agent of a user type that replaced a built-in type is not
+/// resumed as the built-in type once the file is gone: it would go on with
+/// other instructions and tools. With the file there, it resumes.
+#[tokio::test]
+async fn a_stored_agent_of_a_type_file_that_replaced_a_built_in_type_needs_that_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let sessions = directory.path().join("sessions");
+    let types = directory.path().join("types");
+    std::fs::create_dir_all(&types).unwrap();
+    std::fs::write(
+        types.join("Explore.md"),
+        "---\nname: Explore\ntools: Read\n---\nMY-EXPLORE\n",
+    )
+    .unwrap();
+    let (stream, seen) = lanes(vec![(
+        "look",
+        vec![Some(text("looked")), Some(text("again"))],
+    )]);
+    let first = main_session(
+        stored_manager(directory.path(), &sessions),
+        stream.clone(),
+        Vec::new(),
+    );
+    let resources = || crate::agents::AgentResources {
+        definitions: crate::agents::types::discover_in(Some(&types), None),
+        ..Default::default()
+    };
+    first.set_agent_resources(resources());
+    let mut look = request("Ex", "look", false);
+    look.agent_type = Some("Explore".into());
+    registry(&first)
+        .start(look, "call_1", CancellationToken::new())
+        .await
+        .unwrap();
+    let ex = registry(&first).list()[0].clone();
+    let main_file = session_file(&first);
+    drop(first);
+
+    let send = |session: &Arc<AgentSession>| {
+        let send = tool(session, "SendMessage");
+        let to = ex.id.clone();
+        async move {
+            send.execute(
+                "call_2",
+                json!({"to": to, "message": "again"}),
+                CancellationToken::new(),
+                None,
+            )
+            .await
+        }
+    };
+    let without_file = main_session(
+        SessionManager::open(&main_file).unwrap(),
+        stream.clone(),
+        Vec::new(),
+    );
+    assert_eq!(
+        format!("{:#}", send(&without_file).await.expect_err("refused")),
+        format!(
+            "Agent {} ran as the agent type Explore, which is not defined any more, so it cannot be resumed; start a new agent.",
+            ex.id
+        )
+    );
+    assert_eq!(seen.count("look"), 1, "no run started");
+    drop(without_file);
+
+    let with_file = main_session(
+        SessionManager::open(&main_file).unwrap(),
+        stream,
+        Vec::new(),
+    );
+    with_file.set_agent_resources(resources());
+    send(&with_file).await.unwrap();
+}

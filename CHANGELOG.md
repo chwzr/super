@@ -486,7 +486,10 @@
   model is no longer in the model list, is refused with a sentence that
   names the type or the model. The agent was resumed as a general-purpose
   agent with every tool, or on the session's model, in the middle of a
-  conversation it had under its own type.
+  conversation it had under its own type. So is one whose type file had
+  replaced a built-in type of the same name: the agent's stored session
+  names where its type came from (`agentTypeSource`), and the built-in type
+  no longer resumes it.
 - RPC and the daemon answer a command whose fields do not fit, such as
   `get_agent_entries` without `agent`, with the command's `id` and its own
   `command`, so a client that waits for that id gets its answer; it came

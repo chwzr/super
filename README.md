@@ -328,7 +328,10 @@ the advanced mode; see [Mode](#mode).
   on in the session's folder. A child whose type is no longer defined, or
   whose model is no longer in the model list, is not resumed: the message is
   refused with a sentence that names the type or the model, since the child
-  would go on with other instructions, tools or model.
+  would go on with other instructions, tools or model. A type counts as the
+  one the child ran as only when it comes from the same place: when your
+  file that replaced a built-in type is gone, the built-in type of that
+  name does not resume the child.
 - A child's own background commands and monitors belong to its run: their
   notices and events reach the child, and so does a message sent to it in
   the meantime. Its report comes when it has answered the last of them and

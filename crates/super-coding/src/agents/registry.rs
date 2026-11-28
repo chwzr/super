@@ -197,6 +197,9 @@ pub(crate) struct StoredAgent {
     pub id: String,
     pub name: String,
     pub agent_type: String,
+    /// Where its type came from ([`AgentTypeSource::label`](crate::agents::types::AgentTypeSource::label)), when the
+    /// stored session says.
+    pub agent_type_source: Option<String>,
     /// Provider and model id.
     pub model: Option<(String, String)>,
     pub thinking: Option<ThinkingLevel>,
@@ -957,6 +960,10 @@ struct SubagentEntry {
     task_name: String,
     #[serde(default)]
     agent_type: Option<String>,
+    /// Where the type came from ([`AgentTypeSource::label`](crate::agents::types::AgentTypeSource::label)); missing in
+    /// an agent stored before it was recorded.
+    #[serde(default)]
+    agent_type_source: Option<String>,
     #[serde(default)]
     model: Option<StoredModel>,
     #[serde(default)]
@@ -1051,6 +1058,7 @@ pub(crate) fn read_stored_agent(file: &Path) -> Option<StoredAgent> {
         agent_type: subagent
             .agent_type
             .unwrap_or_else(|| GENERAL_PURPOSE.to_string()),
+        agent_type_source: subagent.agent_type_source,
         model: subagent.model.map(|model| (model.provider, model.id)),
         thinking: subagent.thinking_level,
         worktree,
@@ -1064,13 +1072,17 @@ pub(crate) fn read_stored_agent(file: &Path) -> Option<StoredAgent> {
 /// Whether the stored agent `stored` of `owner` can go on as it ran: the
 /// type it was started as and the model it ran on are still there. Without
 /// them it would go on with other instructions, tools or model in the middle
-/// of its conversation.
+/// of its conversation. A type of that name from somewhere else, such as the
+/// built-in type a removed file had replaced, is not the type it ran as.
 fn resumable(owner: &AgentSession, stored: &StoredAgent) -> anyhow::Result<()> {
     if stored.origin.is_agent_call()
-        && !owner
-            .agent_types()
-            .iter()
-            .any(|known| known.name == stored.agent_type)
+        && !owner.agent_types().iter().any(|known| {
+            known.name == stored.agent_type
+                && stored
+                    .agent_type_source
+                    .as_ref()
+                    .is_none_or(|source| *source == known.source.label())
+        })
     {
         anyhow::bail!(
             "Agent {} ran as the agent type {}, which is not defined any more, so it cannot be resumed; start a new agent.",
