@@ -177,7 +177,7 @@ impl AgentTool for LaunchAgentTool {
     }
 }
 
-fn agent_details(agent: &super::AgentInfo, outcome: &ChildTurnOutcome) -> Value {
+pub(crate) fn agent_details(agent: &super::AgentInfo, outcome: &ChildTurnOutcome) -> Value {
     json!({
         "agent": agent,
         "usage": {
@@ -190,7 +190,7 @@ fn agent_details(agent: &super::AgentInfo, outcome: &ChildTurnOutcome) -> Value 
 
 /// The result of an agent that ran in the caller's turn: its report, then
 /// its id, what it used and the worktree it left with changes in it.
-fn finished_result(id: &str, details: Value, outcome: &ChildTurnOutcome) -> ToolResult {
+pub(crate) fn finished_result(id: &str, details: Value, outcome: &ChildTurnOutcome) -> ToolResult {
     let mut usage = format!(
         "<agent-result>\n<agent-id>{id}</agent-id>\n<usage><subagent_tokens>{}</subagent_tokens><tool_uses>{}</tool_uses><duration_ms>{}</duration_ms></usage>\n",
         details["usage"]["subagentTokens"],

@@ -72,8 +72,9 @@ test("state, models, tools, and ping use typed helpers", async () => {
   const state = await session.state()
   assert.equal(state.model.provider, "mock")
   assert.equal(state.thinkingLevel, "off")
-  // In the advanced mode, the default, Monitor and TaskStop come with Bash.
-  const tools = ["Read", "Write", "Edit", "Bash", "Monitor", "TaskStop"]
+  // In the advanced mode, the default, Monitor and TaskStop come with Bash,
+  // and Skill with Read and Bash.
+  const tools = ["Read", "Write", "Edit", "Bash", "Monitor", "TaskStop", "Skill"]
   assert.deepEqual(state.tools, tools)
   assert.equal(await session.ping(), true)
   assert.deepEqual(await session.tools(), tools)

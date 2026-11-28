@@ -336,6 +336,9 @@ pub struct AgentSession {
     /// `Monitor` and `TaskStop`, which work on this session's background
     /// tasks; offered alongside `Bash`.
     task_tools: OnceLock<Vec<DynTool>>,
+    /// `Skill`, which loads this session's skills; offered in the advanced
+    /// mode alongside `Read` or `Bash`, or with the `Workflow` tool.
+    skill_tool: OnceLock<DynTool>,
     /// What the session's process last reported about its tasks, while the
     /// engine runs elsewhere.
     remote_tasks: Mutex<Vec<TaskInfo>>,
@@ -511,6 +514,7 @@ impl AgentSession {
             tasks: OnceLock::new(),
             tool_session: OnceLock::new(),
             task_tools: OnceLock::new(),
+            skill_tool: OnceLock::new(),
             remote_tasks: Mutex::new(Vec::new()),
             turn_starter: Mutex::new(None),
             activity: tokio::sync::watch::channel(0).0,
@@ -540,6 +544,10 @@ impl AgentSession {
             Arc::new(crate::tools::task_stop::TaskStopTool::new(this)),
         ];
         assert!(session.task_tools.set(task_tools).is_ok());
+        let skill_tool: DynTool = Arc::new(crate::tools::skill::SkillTool::new(Arc::downgrade(
+            &session,
+        )));
+        assert!(session.skill_tool.set(skill_tool).is_ok());
         let agent_tools = crate::agents::tools::agent_tools(Arc::downgrade(&session));
         assert!(session.agent_tools.set(agent_tools).is_ok());
         if subagents_allowed {
@@ -776,7 +784,7 @@ impl AgentSession {
     /// Whether this session offers the agent tools: it may start agents,
     /// runs in the advanced mode and has the Subagents switch on. The basic
     /// mode has no child agents, whatever the switch says.
-    fn subagents_enabled(&self) -> bool {
+    pub(crate) fn subagents_enabled(&self) -> bool {
         self.agents.get().is_some()
             && self.mode().is_advanced()
             && self.settings.lock().unwrap().subagents.enabled
@@ -856,6 +864,18 @@ impl AgentSession {
                     })
                     .cloned(),
             );
+        }
+        // Skills tell the model how to work with files and commands, as the
+        // basic mode's list does for `Read` or `Bash`; the guide to writing
+        // a workflow is a skill too.
+        let workflows_offered = self.workflows_enabled();
+        let works_with_files = tools
+            .iter()
+            .any(|tool| matches!(tool.name(), "Read" | "Bash"));
+        if (works_with_files || workflows_offered)
+            && let Some(skill_tool) = self.skill_tool.get()
+        {
+            tools.push(skill_tool.clone());
         }
         let tools = self.bound_to_session(tools);
         *self.tools.lock().unwrap() = self.offered_in_mode(tools);
@@ -1793,6 +1813,15 @@ impl AgentSession {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&crate::agents::type_list_section(&self.agent_type_list()));
         }
+        // The advanced mode lists the skills for its `Skill` tool here; the
+        // basic mode's prompt lists them with their files.
+        if tools.iter().any(|tool| tool.name() == "Skill") {
+            let list = crate::skills::skill_list_section(&crate::tools::skill::summaries(self));
+            if !list.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&list);
+            }
+        }
         if prompt_mode == PromptMode::Workflow
             && self.workflows_enabled()
             && let Some(runtime) = self.workflows.get()
@@ -1863,7 +1892,7 @@ impl AgentSession {
                 "canonicalPath": canonical_path,
             }),
         )?;
-        Ok(self.create_child(
+        let child = self.create_child(
             manager,
             ChildSpec {
                 // A fork carries on the parent's conversation and starts
@@ -1876,7 +1905,10 @@ impl AgentSession {
                 tools: self.base_tools.lock().unwrap().clone(),
                 settings,
             },
-        ))
+        );
+        // Its `Skill` tool loads the parent's skills.
+        child.set_agent_resources(self.agent_resources());
+        Ok(child)
     }
 
     /// The session of an agent the `Agent` tool starts. A fork starts with
@@ -3749,13 +3781,22 @@ mod ephemeral_tests {
         let mut enabled = session.settings();
         enabled.subagents.enabled = true;
         session.update_settings(enabled.clone());
-        // TaskStop stops the agents a session leaves running.
+        // TaskStop stops the agents a session leaves running; the skill with
+        // the workflow guide comes with dynamic workflows, which are on by
+        // default.
+        assert_eq!(
+            session.available_tool_names(),
+            ["Agent", "SendMessage", "ListAgents", "TaskStop", "Skill"]
+        );
+        let prompt = session.build_context().system_prompt;
+        assert!(prompt.starts_with(&format!("root prompt\n\n{section}\n\n{type_list}\n")));
+
+        enabled.workflows.enabled = false;
+        session.update_settings(enabled.clone());
         assert_eq!(
             session.available_tool_names(),
             ["Agent", "SendMessage", "ListAgents", "TaskStop"]
         );
-        let prompt = session.build_context().system_prompt;
-        assert!(prompt.starts_with(&format!("root prompt\n\n{section}\n\n{type_list}\n")));
 
         enabled.subagents.enabled = false;
         session.update_settings(enabled);
@@ -3885,8 +3926,12 @@ mod ephemeral_tests {
         let mut advanced = session.settings();
         advanced.mode = Mode::Advanced;
         session.update_settings(advanced);
-        assert_eq!(session.available_tool_names(), ["Read", "AdvancedOnly"]);
-        assert_eq!(names(&session), ["Read", "AdvancedOnly"]);
+        // `Skill` comes with `Read` in the advanced mode.
+        assert_eq!(
+            session.available_tool_names(),
+            ["Read", "AdvancedOnly", "Skill"]
+        );
+        assert_eq!(names(&session), ["Read", "AdvancedOnly", "Skill"]);
     }
 
     #[test]

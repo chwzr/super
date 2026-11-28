@@ -45,6 +45,10 @@ pub fn build_system_prompt(options: &SystemPromptOptions) -> String {
 /// What the system prompt adds after its body: the appended text, the
 /// project context, the skills and the working directory. A child agent's
 /// prompt repeats it after the instructions of its type.
+///
+/// The skills, with their files, are listed in the basic mode only. In the
+/// advanced mode the session lists them for its `Skill` tool on each
+/// request instead (`crate::skills::skill_list_section`).
 pub fn prompt_context(options: &SystemPromptOptions) -> String {
     let cwd = options.cwd.replace('\\', "/");
     let mut prompt = String::new();
@@ -73,6 +77,7 @@ pub fn prompt_context(options: &SystemPromptOptions) -> String {
         .find(|tool| matches!(tool.as_str(), "Read" | "Bash"));
     if let Some(tool) = file_read_tool
         && !options.skills.is_empty()
+        && options.mode == Mode::Basic
     {
         prompt.push('\n');
         prompt.push_str(&crate::skills::format_skills_for_prompt_with_tool(
@@ -207,15 +212,25 @@ mod tests {
         assert!(advanced_prompt.starts_with(&format!("{placeholder}\n\n")));
         assert!(!advanced_prompt.contains("expert coding assistant"));
         assert!(!advanced_prompt.contains("- Read:"));
-        // Everything after the body is what the basic mode appends.
+        // Everything after the body is what the basic mode appends, except
+        // the skills with their files: the advanced mode lists them for its
+        // `Skill` tool on each request.
+        assert!(basic_prompt.contains("<name>example</name>"));
+        assert!(basic_prompt.contains("<location>/skills/example/SKILL.md</location>"));
+        assert!(!advanced_prompt.contains("<available_skills>"));
+        assert!(!advanced_prompt.contains("SKILL.md"));
         let basic_body = default_prompt(&advanced);
+        let without_skills = SystemPromptOptions {
+            mode: Mode::Basic,
+            skills: &[],
+            ..advanced
+        };
         assert_eq!(
             advanced_prompt.strip_prefix(placeholder.as_str()),
-            basic_prompt.strip_prefix(basic_body.as_str())
+            build_system_prompt(&without_skills).strip_prefix(basic_body.as_str())
         );
         assert!(advanced_prompt.contains("Rhyme everything."));
         assert!(advanced_prompt.contains("<project_instructions path=\"/p/AGENTS.md\">"));
-        assert!(advanced_prompt.contains("<name>example</name>"));
         assert!(advanced_prompt.ends_with("Current working directory: /work"));
     }
 

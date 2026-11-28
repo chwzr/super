@@ -226,9 +226,15 @@ impl SessionOptions {
             skills: &skills,
         };
         let system_prompt = build_system_prompt(&prompt_options);
+        // Agents run in the advanced mode, which lists the skills for the
+        // `Skill` tool on each request: their context has no list of its own.
         let agent_resources = super_coding::agents::AgentResources {
             definitions: super_coding::agents::discover(&cwd, trusted),
-            prompt_context: Some(prompt_context(&prompt_options)),
+            prompt_context: Some(prompt_context(&SystemPromptOptions {
+                skills: &[],
+                ..prompt_options
+            })),
+            skills: skills.clone(),
         };
 
         let mut tools = build_tools(&tool_names, &cwd, &settings, mcp.as_ref());

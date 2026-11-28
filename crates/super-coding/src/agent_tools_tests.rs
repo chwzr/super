@@ -541,6 +541,7 @@ fn type_named(session: &AgentSession, name: &str) -> AgentType {
 async fn each_agent_type_gets_its_tools() {
     let fixture = fixture_with(core_tools, Vec::new());
     let session = fixture.session.clone();
+    // Every session with Read or Bash loads skills.
     assert_eq!(
         session.available_tool_names(),
         [
@@ -554,7 +555,8 @@ async fn each_agent_type_gets_its_tools() {
             "SendMessage",
             "ListAgents",
             "Monitor",
-            "TaskStop"
+            "TaskStop",
+            "Skill"
         ]
     );
     let names = |agent_type: &str| {
@@ -573,7 +575,8 @@ async fn each_agent_type_gets_its_tools() {
             "SendMessage",
             "ListAgents",
             "Monitor",
-            "TaskStop"
+            "TaskStop",
+            "Skill"
         ]
     );
     for read_only in ["Explore", "Plan"] {
@@ -586,7 +589,8 @@ async fn each_agent_type_gets_its_tools() {
                 "Probe",
                 "SendMessage",
                 "Monitor",
-                "TaskStop"
+                "TaskStop",
+                "Skill"
             ],
             "{read_only}"
         );
@@ -602,7 +606,8 @@ async fn each_agent_type_gets_its_tools() {
             "Probe",
             "SendMessage",
             "Monitor",
-            "TaskStop"
+            "TaskStop",
+            "Skill"
         ]
     );
     let definition = |text: &str| {
@@ -616,12 +621,19 @@ async fn each_agent_type_gets_its_tools() {
     let reader = definition("---\nname: reader\ntools: Read\n---\nRead.");
     assert_eq!(
         child_of(&session, &reader, 1).available_tool_names(),
-        ["Read", "SendMessage"]
+        ["Read", "SendMessage", "Skill"]
     );
     let delegator = definition("---\nname: delegator\ntools: [Read, Agent]\n---\nDelegate.");
     assert_eq!(
         child_of(&session, &delegator, 1).available_tool_names(),
-        ["Read", "Agent", "SendMessage", "ListAgents", "TaskStop"]
+        [
+            "Read",
+            "Agent",
+            "SendMessage",
+            "ListAgents",
+            "TaskStop",
+            "Skill"
+        ]
     );
 
     // The instructions of a type start its agent's system prompt; a fork
@@ -649,7 +661,7 @@ async fn each_agent_type_gets_its_tools() {
     assert_eq!(
         session.available_tool_names(),
         [
-            "Read", "Write", "Edit", "Bash", "Gate", "Probe", "Monitor", "TaskStop"
+            "Read", "Write", "Edit", "Bash", "Gate", "Probe", "Monitor", "TaskStop", "Skill"
         ]
     );
 }
@@ -766,6 +778,7 @@ async fn definition_files_add_types_with_their_instructions_model_and_effort() {
     session.set_agent_resources(AgentResources {
         definitions: crate::agents::types::discover_in(Some(&folder), None),
         prompt_context: Some("\n\nThe context.".into()),
+        ..Default::default()
     });
     let list = session.agent_type_list();
     let names: Vec<&str> = list.iter().map(|summary| summary.name.as_str()).collect();

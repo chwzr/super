@@ -1,13 +1,20 @@
 //! Agent Skills (agentskills.io style): Markdown files with YAML frontmatter,
-//! discovered from user/project locations, surfaced in the system prompt and
-//! through `$name` or `/name` input tokens. The older `/skill:name` form is
-//! also accepted.
+//! discovered from user/project locations, and called by the user through
+//! `$name` or `/name` input tokens. The older `/skill:name` form is also
+//! accepted.
+//!
+//! How the model reaches them depends on the mode. In the basic mode the
+//! system prompt lists each skill with its file, and the model reads the file
+//! ([`format_skills_for_prompt`]). In the advanced mode the session lists
+//! them without their files ([`skill_list_section`]) and the model loads one
+//! with the `Skill` tool ([`load`]), which can also run it in an agent of its
+//! own when its frontmatter asks for that ([`SkillRun`]).
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -240,6 +247,133 @@ pub fn format_skills_for_prompt_with_tool(skills: &[Skill], tool: &str) -> Strin
     out
 }
 
+/// A skill as the advanced mode lists it to the model: no file, since the
+/// model loads it with the `Skill` tool by its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+}
+
+/// The list of skills the advanced mode puts after the system prompt while
+/// the session offers the `Skill` tool: the placeholder `Skill.list`, then
+/// one entry per skill. Empty when there is no skill.
+pub fn skill_list_section(skills: &[SkillSummary]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut out = super_agent::placeholder::prompt_todo("Skill.list");
+    out.push_str("\n<available_skills>\n");
+    for skill in skills {
+        out.push_str("  <skill>\n");
+        out.push_str(&format!("    <name>{}</name>\n", escape_xml(&skill.name)));
+        out.push_str(&format!(
+            "    <description>{}</description>\n",
+            escape_xml(&skill.description)
+        ));
+        out.push_str("  </skill>\n");
+    }
+    out.push_str("</available_skills>");
+    out
+}
+
+/// How a skill runs in an agent of its own instead of in the turn that
+/// loads it. A skill asks for this with `context: fork` in its frontmatter;
+/// `agent` names the agent type (`general-purpose` when it is missing),
+/// `model` and `effort` choose the agent's model and thinking level as the
+/// `Agent` tool's parameters of those names do, and `background: true` runs
+/// the agent in the background instead of waiting for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillRun {
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub background: bool,
+}
+
+/// A skill file as the `Skill` tool loads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedSkill {
+    /// The text after the frontmatter.
+    pub body: String,
+    /// Set when the skill runs in an agent of its own.
+    pub run: Option<SkillRun>,
+}
+
+/// Read a skill's file: its body, and whether its frontmatter asks for an
+/// agent of its own.
+pub fn load(skill: &Skill) -> Result<LoadedSkill> {
+    let text = std::fs::read_to_string(&skill.file_path).with_context(|| {
+        format!(
+            "Could not read the skill {} at {}",
+            skill.name,
+            skill.file_path.display()
+        )
+    })?;
+    Ok(parse_loaded(&text))
+}
+
+fn parse_loaded(text: &str) -> LoadedSkill {
+    let (frontmatter, body) = split_frontmatter(text);
+    let value = frontmatter
+        .and_then(|frontmatter| serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok())
+        .unwrap_or(serde_yaml::Value::Null);
+    let text_of = |key: &str| {
+        value[key]
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(String::from)
+    };
+    let run = (value["context"].as_str().map(str::trim) == Some("fork")).then(|| SkillRun {
+        agent: text_of("agent"),
+        model: text_of("model"),
+        effort: text_of("effort"),
+        background: value["background"].as_bool().unwrap_or(false),
+    });
+    LoadedSkill {
+        body: body.to_string(),
+        run,
+    }
+}
+
+/// The text the `Skill` tool hands over for a skill: the placeholder
+/// `header` (`Skill.loaded` for the turn that loads it, `Skill.agent_prompt`
+/// for an agent that runs it), then a block with the skill's name, its file
+/// when it has one, and its body. Every `$ARGUMENTS` in the body becomes
+/// `args`; when the body has none, `args` goes into the block as its own
+/// element.
+pub fn skill_text(
+    header: &str,
+    name: &str,
+    file: Option<&Path>,
+    body: &str,
+    args: Option<&str>,
+) -> String {
+    let args = args.map(str::trim).filter(|args| !args.is_empty());
+    let (body, separate) = match args {
+        Some(args) if body.contains("$ARGUMENTS") => (body.replace("$ARGUMENTS", args), None),
+        Some(args) => (body.to_string(), Some(args)),
+        None => (body.to_string(), None),
+    };
+    let mut out = super_agent::placeholder::prompt_todo(header);
+    out.push_str("\n<skill>\n");
+    out.push_str(&format!("<name>{}</name>\n", escape_xml(name)));
+    if let Some(file) = file {
+        out.push_str(&format!(
+            "<path>{}</path>\n",
+            escape_xml(&file.display().to_string())
+        ));
+    }
+    if let Some(args) = separate {
+        out.push_str(&format!("<arguments>{}</arguments>\n", escape_xml(args)));
+    }
+    out.push_str("<content>\n");
+    out.push_str(body.trim_matches('\n'));
+    out.push_str("\n</content>\n</skill>");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +478,90 @@ mod tests {
         assert_eq!(expanded.matches("Review instructions").count(), 1);
         assert_eq!(expanded.matches("Test instructions").count(), 1);
         assert!(expanded.ends_with("<user_request>\ninspect it\n</user_request>"));
+    }
+
+    #[test]
+    fn the_advanced_list_names_skills_without_their_files() {
+        let list = skill_list_section(&[
+            SkillSummary {
+                name: "review".into(),
+                description: "Review <staged> changes".into(),
+            },
+            SkillSummary {
+                name: "tests".into(),
+                description: "Write tests".into(),
+            },
+        ]);
+        let placeholder = super_agent::placeholder::prompt_todo("Skill.list");
+        assert_eq!(
+            list,
+            format!(
+                "{placeholder}\n<available_skills>\n  <skill>\n    <name>review</name>\n    <description>Review &lt;staged&gt; changes</description>\n  </skill>\n  <skill>\n    <name>tests</name>\n    <description>Write tests</description>\n  </skill>\n</available_skills>"
+            )
+        );
+        assert!(!list.contains("<location>"));
+        assert!(skill_list_section(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_frontmatter_says_whether_a_skill_runs_in_an_agent() {
+        let inline = parse_loaded("---\nname: x\ndescription: y\n---\nDo the thing.\n");
+        assert_eq!(inline.body, "Do the thing.\n");
+        assert_eq!(inline.run, None);
+
+        let forked = parse_loaded("---\nname: x\ncontext: fork\n---\nDo it.");
+        assert_eq!(forked.run, Some(SkillRun::default()));
+
+        let background = parse_loaded(
+            "---\nname: x\ncontext: fork\nagent: Explore\nmodel: mock-1\neffort: low\nbackground: true\n---\nLook.",
+        );
+        assert_eq!(
+            background.run,
+            Some(SkillRun {
+                agent: Some("Explore".into()),
+                model: Some("mock-1".into()),
+                effort: Some("low".into()),
+                background: true,
+            })
+        );
+        // `background` alone asks for nothing: only `context: fork` does.
+        assert_eq!(parse_loaded("---\nbackground: true\n---\nx").run, None);
+        assert_eq!(parse_loaded("No frontmatter at all.").run, None);
+    }
+
+    #[test]
+    fn the_arguments_replace_their_marker_or_go_into_the_block() {
+        let header = super_agent::placeholder::prompt_todo("Skill.loaded");
+        let file = Path::new("/skills/review/SKILL.md");
+        assert_eq!(
+            skill_text(
+                "Skill.loaded",
+                "review",
+                Some(file),
+                "Review $ARGUMENTS now.\n",
+                Some("src/a.rs")
+            ),
+            format!(
+                "{header}\n<skill>\n<name>review</name>\n<path>/skills/review/SKILL.md</path>\n<content>\nReview src/a.rs now.\n</content>\n</skill>"
+            )
+        );
+        assert_eq!(
+            skill_text("Skill.loaded", "review", None, "Review.", Some("a & b")),
+            format!(
+                "{header}\n<skill>\n<name>review</name>\n<arguments>a &amp; b</arguments>\n<content>\nReview.\n</content>\n</skill>"
+            )
+        );
+        // Without arguments the marker stays as the skill wrote it.
+        assert!(
+            skill_text(
+                "Skill.loaded",
+                "review",
+                None,
+                "Use $ARGUMENTS.",
+                Some("  ")
+            )
+            .contains("Use $ARGUMENTS.")
+        );
     }
 
     #[test]

@@ -25,6 +25,8 @@ pub mod session_runner;
 pub mod settings;
 #[cfg(test)]
 mod shell_tasks_tests;
+#[cfg(test)]
+mod skill_tests;
 pub mod skills;
 pub mod system_prompt;
 pub mod tasks;

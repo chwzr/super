@@ -26,18 +26,23 @@ pub use types::{
     type_list_section, with_definitions,
 };
 
-/// What a session's agents start from, besides the session itself: the
-/// agent types of the definition files, and the part of the session's
+/// What a session and its agents start from, besides the session itself:
+/// the agent types of the definition files, the part of the session's
 /// system prompt after its body, which an agent's system prompt repeats
-/// after the instructions of its type. The host that builds the session's
-/// prompt sets it with
+/// after the instructions of its type, and the skills the `Skill` tool
+/// loads. The host that builds the session's prompt sets it with
 /// [`AgentSession::set_agent_resources`](crate::AgentSession::set_agent_resources).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentResources {
     pub definitions: Vec<AgentType>,
     /// `None` when the host did not say; an agent's prompt then ends with
-    /// the working directory only.
+    /// the working directory only. It holds no list of skills: in the
+    /// advanced mode, where agents run, the session lists them on each
+    /// request.
     pub prompt_context: Option<String>,
+    /// The skills of the session's folder and of the user, as the host
+    /// discovered them; the advanced mode's `Skill` tool loads them.
+    pub skills: Vec<crate::skills::Skill>,
 }
 
 /// Hears of the agent sessions of one session, so that the host of that

@@ -187,8 +187,10 @@ pub fn system_prompt(
 }
 
 /// What the agents of a session in `cwd` start from: the agent types of
-/// the definition files (the project's only when it is trusted) and the
-/// context of the system prompt that [`system_prompt`] builds.
+/// the definition files (the project's only when it is trusted), the
+/// context of the system prompt that [`system_prompt`] builds, without the
+/// skills (agents run in the advanced mode, which lists them for the
+/// `Skill` tool on each request), and the skills that tool loads.
 pub fn agent_resources(
     args: &Args,
     cwd: &std::path::Path,
@@ -209,8 +211,9 @@ pub fn agent_resources(
             selected_tools: tool_names,
             cwd: &cwd.display().to_string(),
             context_files: context,
-            skills,
+            skills: &[],
         })),
+        skills: skills.to_vec(),
     }
 }
 
