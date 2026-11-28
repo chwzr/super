@@ -2,7 +2,8 @@
 //! keep or remove it, through the same approvals the terminal and the apps
 //! answer.
 
-#![cfg(feature = "native")]
+// Paths are compared as git spells them, which is the Unix spelling.
+#![cfg(all(feature = "native", unix))]
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};

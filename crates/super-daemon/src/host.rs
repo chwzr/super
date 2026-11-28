@@ -943,6 +943,7 @@ mod tests {
         assert_eq!(fixture.host.sweep_idle().await, 1);
     }
 
+    #[cfg(unix)]
     fn git(directory: &Path, arguments: &[&str]) {
         let status = std::process::Command::new("git")
             .arg("-C")
@@ -958,6 +959,7 @@ mod tests {
 
     /// Make `root` a repository with one commit, and move `hosted` into a
     /// new worktree `name` of it, as `EnterWorktree` does.
+    #[cfg(unix)]
     fn enter_worktree(hosted: &Hosted, root: &Path, name: &str) -> PathBuf {
         if !root.join(".git").exists() {
             for arguments in [
@@ -986,6 +988,7 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_session_stopped_in_its_worktree_asks_its_clients_and_an_idle_one_keeps_it() {
         let fixture = fixture(Duration::from_millis(10)).await;

@@ -522,6 +522,7 @@ pub(crate) mod tests {
         remote
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_fresh_worktree_starts_from_the_remotes_default_branch_fetched_first() {
         let repository = repository();
@@ -587,6 +588,7 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn changes_count_files_and_commits_and_worktrees_are_listed() {
         let repository = repository();

@@ -37,7 +37,8 @@ pub mod wakeup;
 mod wakeup_tests;
 pub mod workflows;
 pub mod worktree;
-#[cfg(test)]
+// Paths are compared as git spells them, which is the Unix spelling.
+#[cfg(all(test, unix))]
 mod worktree_tests;
 
 pub use agents::{AgentInfo, AgentRegistry, AgentResources, AgentType, AgentTypeSummary};

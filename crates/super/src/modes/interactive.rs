@@ -9806,6 +9806,7 @@ mod tests {
     }
 
     /// A repository with one commit, for a session that enters a worktree.
+    #[cfg(unix)]
     fn git_repository() -> (tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
@@ -9831,6 +9832,7 @@ mod tests {
         (directory, root)
     }
 
+    #[cfg(unix)]
     fn enter_worktree(session: &super_coding::AgentSession, root: &Path, name: &str) -> PathBuf {
         let worktree = super_coding::worktree::create(root, name, None).unwrap();
         let path = worktree.path.clone();
@@ -9843,6 +9845,7 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn quitting_in_a_worktree_asks_first_to_keep_or_remove_it() {
         let (_directory, root) = git_repository();
