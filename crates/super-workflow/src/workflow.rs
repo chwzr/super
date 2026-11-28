@@ -66,10 +66,15 @@ impl Workflow {
     /// Run the script to completion.
     ///
     /// A stopped run is not an error: it returns whatever the script had
-    /// produced, so completed work is not thrown away.
+    /// produced, so completed work is not thrown away. A run stopped while
+    /// its last agent call was in flight, whose script then returned, is
+    /// stopped too, not completed.
     pub async fn run(&self) -> Result<Json, RunError> {
         let result = self.interp.run().await;
         match &result {
+            Ok(_) if self.state.stop_token().is_cancelled() => {
+                self.state.finish(RunStatus::Stopped, None)
+            }
             Ok(_) => self.state.finish(RunStatus::Completed, None),
             Err(error) if self.state.stop_token().is_cancelled() => {
                 self.state.finish(RunStatus::Stopped, None);
@@ -624,6 +629,48 @@ mod tests {
         workflow.stop();
         let result = workflow.run().await.unwrap();
         assert_eq!(result, Json::Null);
+        assert_eq!(workflow.snapshot().status, RunStatus::Stopped);
+    }
+
+    /// A run stopped during its last agent call, whose script returns the
+    /// stopped call's value, ends stopped.
+    #[tokio::test]
+    async fn a_run_stopped_during_its_last_agent_call_ends_stopped() {
+        struct StopDuringCall {
+            workflow: std::sync::OnceLock<std::sync::Weak<Workflow>>,
+        }
+
+        #[async_trait::async_trait]
+        impl AgentRunner for StopDuringCall {
+            async fn run_agent(
+                &self,
+                _request: AgentRequest,
+                cancel: CancellationToken,
+            ) -> AgentOutcome {
+                if let Some(workflow) = self.workflow.get().and_then(|weak| weak.upgrade()) {
+                    workflow.stop();
+                }
+                cancel.cancelled().await;
+                AgentOutcome::Stopped
+            }
+
+            fn tokens_used(&self, _index: AgentId) -> u64 {
+                0
+            }
+        }
+
+        let runner = Arc::new(StopDuringCall {
+            workflow: std::sync::OnceLock::new(),
+        });
+        let workflow = Arc::new(Workflow::new(
+            Script::parse(&script("return await agent('K-ONE work')")).unwrap(),
+            Json::Null,
+            "/repo".into(),
+            runner.clone(),
+            Limits::default(),
+        ));
+        runner.workflow.set(Arc::downgrade(&workflow)).unwrap();
+        workflow.run().await.unwrap();
         assert_eq!(workflow.snapshot().status, RunStatus::Stopped);
     }
 

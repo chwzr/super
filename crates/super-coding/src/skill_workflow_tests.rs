@@ -726,6 +726,49 @@ async fn task_stop_stops_a_workflow_without_a_notice() {
     assert_eq!(fixture.seen.count("second agent Ada"), 0);
 }
 
+/// A run stopped while its last agent call is in flight ends stopped, also
+/// when its script then returns: its stored end says so, as its task does.
+#[tokio::test]
+async fn a_run_stopped_during_its_last_agent_call_is_stored_as_stopped() {
+    let script = "export const meta = { name: 'last', description: 'Last call' }\n\
+const r = await agent('last agent')\n\
+return { r }\n";
+    let fixture = fixture(vec![
+        (
+            "main",
+            vec![
+                Some(tool_call("w1", "Workflow", json!({"script": script}))),
+                Some(text("started it")),
+            ],
+        ),
+        ("last agent", vec![None]),
+    ])
+    .quiet();
+    let session = fixture.session.clone();
+    session.prompt(vec![AgentMessage::user("main")]).await;
+    let run = fixture.latest_run();
+    let seen = fixture.seen.clone();
+    eventually("the agent asks", || seen.count("last agent") == 1).await;
+    TaskStopTool::new(Arc::downgrade(&session))
+        .execute(
+            "t1",
+            json!({"task_id": run.run_id}),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    eventually("the run ends", || run.snapshot().status.is_finished()).await;
+    assert_eq!(run.snapshot().status, RunStatus::Stopped);
+    let file = fixture.session_file();
+    eventually("its end is stored", || run_states(&file).len() == 2).await;
+    let states: Vec<Value> = run_states(&file)
+        .into_iter()
+        .map(|state| state["status"].clone())
+        .collect();
+    assert_eq!(states, [json!("running"), json!("stopped")]);
+}
+
 #[tokio::test]
 async fn a_workflow_is_stopped_by_the_name_its_call_gave_it() {
     let fixture = fixture(vec![

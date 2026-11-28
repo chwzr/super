@@ -420,6 +420,11 @@
   `Edit` and `Write` refuse a file that was read only on the branch left
   behind, also when the session is opened again; they took it as read,
   though the conversation the model gets has no such read.
+- A workflow run stopped while its last agent call runs (Ctrl+X, `/tasks`,
+  `stop_task`, `TaskStop`, `abort`, turning the switches off) ends as
+  stopped: its `workflow_outcome`, its stored `workflow_run` entry and
+  `/workflows` say so, as its task does. A script whose last step was that
+  call returned normally, and the run was recorded as completed.
 - Two `ScheduleWakeup` calls in one answer take effect in its order: a
   `stop` after a wake-up cancels it, and the second of two wake-ups is the
   one that waits. They ran at the same time, so the stop often came first

@@ -354,7 +354,7 @@ fn spawn_run(
             snapshot.tokens,
         );
         let (status, ended) = match outcome {
-            Ok(Value::Null) if snapshot.status == super_workflow::RunStatus::Stopped => (
+            Ok(_) if snapshot.status == super_workflow::RunStatus::Stopped => (
                 WorkflowTurnStatus::Stopped,
                 // The notice's task id is the run id, which resumeFromRunId
                 // takes; the fixed text is the prompt team's.
