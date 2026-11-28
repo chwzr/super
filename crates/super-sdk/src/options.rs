@@ -462,8 +462,15 @@ mod tests {
         let before = std::fs::read_to_string(&file).unwrap();
         let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = asked.clone();
+        // A named model, so that the test needs no credential to get there.
+        let model = Registry::from_builtin()
+            .all()
+            .first()
+            .cloned()
+            .expect("a builtin model");
         let options = SessionOptions {
             cwd: directory.path().into(),
+            model: Some(format!("{}/{}", model.provider, model.id)),
             settings: Some(Settings::default()),
             session: SessionSource::Open(file.clone()),
             file_guard: Some(Arc::new(move |path: &Path| {
