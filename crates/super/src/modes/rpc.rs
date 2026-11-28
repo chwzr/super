@@ -53,6 +53,10 @@ pub fn options_from_args(args: &Args) -> Result<SessionOptions> {
         // A file another process holds is refused before the session
         // starts what it stored.
         file_guard: Some(crate::setup::held_file_guard()),
+        // Over stdio what the session stored starts once the client hears
+        // its events (`serve_stdio`), so that a worktree gone since reaches
+        // it as `worktree_changed`.
+        defer_stored_work: args.rpc_listen.is_none(),
         ..Default::default()
     })
 }

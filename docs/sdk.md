@@ -432,9 +432,14 @@ worktree whose folder is gone is written down and announced
 workflow run that was cut off is marked and announced. `Session::create` and
 `Session::attach` call it once the session's turn starter is installed; an
 embedder that drives an `AgentSession` without the SDK calls it once it is
-ready and holds the session's file. `SessionOptions::file_guard` is asked
-about the session's file before the session is built from it, so a host can
-refuse a file another process holds (`--mode rpc` does).
+ready and holds the session's file. With `SessionOptions::defer_stored_work`
+set, `Session::create` leaves it to the host, which calls
+`Session::resume_stored_work()` once it listens to the session's events, so
+that the announcements reach its client; `rpc::serve_streams` and
+`serve_websocket` call it after they subscribe, and `--mode rpc` over stdio
+defers. `SessionOptions::file_guard` is asked about the session's file
+before the session is built from it, so a host can refuse a file another
+process holds (`--mode rpc` does).
 
 A session that ends in a worktree it made asks whether to keep or remove it:
 `Session::settle_worktree(wait)` opens the question

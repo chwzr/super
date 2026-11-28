@@ -429,6 +429,11 @@
   commit the session's worktree is at. It was made inside the session's
   worktree, so `ExitWorktree` with `remove` deleted it, with the agent's
   uncommitted work, without asking for `discard_changes`.
+- `--mode rpc` sends its client the `worktree_changed` event with `missing`
+  when a session opened again worked in a worktree that is gone. The session
+  announced it before the client listened. Rust SDK:
+  `SessionOptions::defer_stored_work` and `Session::resume_stored_work` let a
+  host listen first; the RPC servers start the stored work once they do.
 
 ## 0.0.42 - 2026-11-27
 

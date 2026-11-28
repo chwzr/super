@@ -96,6 +96,12 @@ pub struct SessionOptions {
     /// holds, before anything of the session (its stored wake-up, the
     /// workflow runs it announces) touches it.
     pub file_guard: Option<crate::session::SessionFileGuard>,
+    /// Leave what the session stored (a worktree whose folder is gone, a
+    /// wake-up that is due, the notices of cut-off workflow runs) until
+    /// [`Session::resume_stored_work`](crate::Session::resume_stored_work),
+    /// so that a host can listen to the session's events first. The RPC
+    /// servers call it once they listen.
+    pub defer_stored_work: bool,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -120,6 +126,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("event_capacity", &self.event_capacity)
             .field("stream_fn", &self.stream_fn.is_some())
             .field("file_guard", &self.file_guard.is_some())
+            .field("defer_stored_work", &self.defer_stored_work)
             .finish()
     }
 }
@@ -149,6 +156,7 @@ impl Default for SessionOptions {
             event_capacity: 1024,
             stream_fn: None,
             file_guard: None,
+            defer_stored_work: false,
         }
     }
 }

@@ -560,12 +560,21 @@ impl Session {
             }
             built => built?,
         };
-        Ok(Self::wrap(
-            built.session,
-            options.cwd.clone(),
-            sender,
-            Some(catalog),
-        ))
+        let session =
+            Self::wrap_deferred(built.session, options.cwd.clone(), sender, Some(catalog));
+        if !options.defer_stored_work {
+            session.resume_stored_work();
+        }
+        Ok(session)
+    }
+
+    /// Start what the session stored: a worktree whose folder is gone is
+    /// announced (`worktree_changed` with `missing`), a wake-up that is due
+    /// fires, its self-paced loop goes on, cut-off workflow runs are
+    /// announced. [`Session::create`] does it unless
+    /// [`SessionOptions::defer_stored_work`] is set; later calls do nothing.
+    pub fn resume_stored_work(&self) {
+        self.inner.resume_stored_work();
     }
 
     /// Wrap a harness session that something else built and drives, such as
@@ -587,12 +596,23 @@ impl Session {
         events: broadcast::Sender<Event>,
         catalog: Option<Catalog>,
     ) -> Arc<Session> {
-        let session = Self::build(inner, cwd, events, catalog, false);
-        session.install_turn_starter();
+        let session = Self::wrap_deferred(inner, cwd, events, catalog);
         // What the session stored starts now that its turns run here: a
         // wake-up that is due, its self-paced loop, the notices of workflow
         // runs that were cut off.
-        session.inner.resume_stored_work();
+        session.resume_stored_work();
+        session
+    }
+
+    /// [`wrap`](Self::wrap) without starting what the session stored.
+    fn wrap_deferred(
+        inner: Arc<AgentSession>,
+        cwd: PathBuf,
+        events: broadcast::Sender<Event>,
+        catalog: Option<Catalog>,
+    ) -> Arc<Session> {
+        let session = Self::build(inner, cwd, events, catalog, false);
+        session.install_turn_starter();
         session
     }
 

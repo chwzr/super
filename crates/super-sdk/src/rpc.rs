@@ -62,6 +62,9 @@ where
 
     let events_tx = lines_tx.clone();
     let mut events = session.events();
+    // A session created with `defer_stored_work` starts what it stored now
+    // that its events reach the client.
+    session.resume_stored_work();
     let event_pump = tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             if events_tx.send(event.to_line()).is_err() {
@@ -139,6 +142,7 @@ async fn serve_websocket_connection(
 
     let events_tx = lines_tx.clone();
     let mut events = session.events();
+    session.resume_stored_work();
     let event_pump = tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             if events_tx.send(event.to_line()).is_err() {
