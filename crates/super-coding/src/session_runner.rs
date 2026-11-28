@@ -1445,6 +1445,7 @@ impl AgentSession {
         // worktree it moved into; the worktree stays on disk, and the
         // conversation that is left keeps them written down for when it is
         // loaded again.
+        self.leave_queued_entries();
         self.file_state().clear();
         if let Some(shell) = &self.tool_session().shell {
             shell.reset();
@@ -1455,9 +1456,6 @@ impl AgentSession {
         self.background_tasks().reset();
         self.remote_tasks.lock().unwrap().clear();
         *self.remote_folder.lock().unwrap() = None;
-        for queue in [&self.steering, &self.follow_up] {
-            queue.lock().unwrap().retain(|prompt| !prompt.starts_turn);
-        }
         let totals = manager.usage_totals();
         let context = manager.build_session_context();
         if let Some((provider, model_id)) = context.model
@@ -1480,6 +1478,57 @@ impl AgentSession {
         if let Some(this) = self.weak_self.upgrade() {
             this.resume_stored_work();
         }
+    }
+
+    /// Empty the queues for a move to another conversation. What a client
+    /// queued is dropped, as `clear_queue` drops it. What the session queued
+    /// itself stays with the conversation that is left: a wake-up that came
+    /// due is pending there again, so that it comes at once when that
+    /// conversation is loaded, and a notice, a monitor's events or a message
+    /// from an agent is written into its history, where the model reads it
+    /// with the next prompt there.
+    fn leave_queued_entries(&self) {
+        let mut entries = Vec::new();
+        for queue in [&self.steering, &self.follow_up] {
+            entries.extend(queue.lock().unwrap().drain(..));
+        }
+        if self.is_remote() {
+            self.emit_queues();
+            return;
+        }
+        let mut manager = self.manager.lock().unwrap();
+        for entry in entries.into_iter().filter(|entry| entry.starts_turn) {
+            let wakeup = match &entry.message {
+                AgentMessage::Custom(custom)
+                    if custom.custom_type == crate::notifications::WAKEUP =>
+                {
+                    custom
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("wakeup"))
+                        .and_then(|wakeup| {
+                            serde_json::from_value::<crate::wakeup::WakeupInfo>(wakeup.clone()).ok()
+                        })
+                }
+                _ => None,
+            };
+            match wakeup {
+                Some(wakeup) => {
+                    let mut stored = self.wakeups().stored();
+                    stored.wakeup.get_or_insert(wakeup);
+                    crate::stored_state::record(
+                        &mut manager,
+                        crate::stored_state::WAKEUP_ENTRY,
+                        serde_json::to_value(&stored).unwrap_or_default(),
+                    );
+                }
+                None => {
+                    let _ = manager.append_message(entry.message);
+                }
+            }
+        }
+        drop(manager);
+        self.emit_queues();
     }
 
     pub fn set_model(&self, model: Model) {

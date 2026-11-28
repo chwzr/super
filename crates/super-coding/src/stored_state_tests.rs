@@ -416,6 +416,92 @@ mod wakeups {
         assert_eq!(written.last().unwrap()["wakeup"], Value::Null);
     }
 
+    /// A move to another conversation leaves what the session queued with
+    /// the conversation that is left: a wake-up that came due is pending
+    /// there again and comes at once when it is loaded, a notice is in its
+    /// history, and what a client queued is dropped. The other conversation
+    /// gets none of it.
+    #[tokio::test(start_paused = true)]
+    async fn what_waits_in_the_queue_stays_with_the_conversation_that_is_left() {
+        let stored = stored();
+        let session = stored.session(None);
+        session.set_turn_starter(Some(Arc::new(|_turn| {})));
+        session
+            .manager
+            .lock()
+            .unwrap()
+            .append_message(AgentMessage::user("go"))
+            .unwrap();
+        let file = file_of(&session);
+        let due: crate::wakeup::WakeupInfo = serde_json::from_value(json!({
+            "id": 1,
+            "delaySeconds": 60,
+            "dueAt": super_ai::now_ms() - 1_000,
+            "reason": "came due",
+            "noop": false,
+            "prompt": "WAKE-A",
+            "job": null,
+            "round": null,
+        }))
+        .unwrap();
+        session.queue_entry(
+            crate::notifications::wakeup_message(&due),
+            crate::notifications::Priority::Later,
+        );
+        let notice = AgentMessage::Custom(super_agent::CustomMessage {
+            custom_type: crate::notifications::TASK_NOTIFICATION.into(),
+            content: super_ai::UserContent::Text("NOTICE-A".into()),
+            display: true,
+            details: None,
+            timestamp: super_ai::now_ms(),
+        });
+        session.queue_entry(notice, crate::notifications::Priority::Next);
+        session.queue_steering(AgentMessage::user("STEER-A"));
+        session.queue_follow_up(AgentMessage::user("FOLLOWUP-A"));
+
+        session.replace_manager(SessionManager::in_memory(&stored.root));
+        assert!(!session.has_queued_entries());
+        assert!(session.reclaim_queued().is_empty());
+        assert!(
+            session
+                .manager
+                .lock()
+                .unwrap()
+                .build_session_context()
+                .messages
+                .is_empty()
+        );
+
+        let texts: Vec<String> = SessionManager::open(&file)
+            .unwrap()
+            .build_session_context()
+            .messages
+            .iter()
+            .map(|message| serde_json::to_string(message).unwrap())
+            .collect();
+        assert!(
+            texts.iter().any(|text| text.contains("NOTICE-A")),
+            "{texts:?}"
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text.contains("STEER-A") || text.contains("FOLLOWUP-A")),
+            "{texts:?}"
+        );
+        let written = state_entries(&file, stored_state::WAKEUP_ENTRY);
+        assert_eq!(written.last().unwrap()["wakeup"]["prompt"], "WAKE-A");
+
+        let (stream, seen) = lanes(vec![("go", vec![Some(text("woke"))])]);
+        let again = loaded(&file, &stored.root, &Events::default(), Some(stream));
+        again.resume_stored_work();
+        pass(1).await;
+        again.wait_for_background_work().await;
+        assert_eq!(seen.count("go"), 1, "the wake-up came at once");
+        let wakeup = woken(&custom(&again, WAKEUP)[0]).unwrap();
+        assert_eq!(wakeup.prompt.as_deref(), Some("WAKE-A"));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_wake_up_whose_time_has_passed_fires_at_once_when_the_session_is_loaded() {
         let stored = stored();

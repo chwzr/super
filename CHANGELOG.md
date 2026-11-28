@@ -448,6 +448,13 @@
   answer once it has ended. The rest of the turn, its tool results and its
   last answer, was written into the conversation the session moved to, so
   that conversation's next request carried a tool result without its call.
+  What waited in the queue stays out of the other conversation too: a
+  queued `steer` or `follow_up` is dropped, as `clear_queue` drops it, and a
+  notice, a monitor's events or an agent's message that waited for the turn
+  is written into the conversation that is left, and a wake-up that came due
+  is pending there again. The queued messages ran as turns of the other
+  conversation, and the notices and the wake-up were lost. The terminal's
+  `/new` and `/resume` do the same.
 - A workflow run that still works when the conversation changes
   (`switch_session`, `new_session`, `/new`, `/resume`) stores its end in the
   conversation it started in. Its end went into the new conversation, a
